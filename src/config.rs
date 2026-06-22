@@ -9,6 +9,7 @@ use anyhow::{anyhow, Result};
 use serde::Deserialize;
 
 use crate::github::GithubConfig;
+use crate::hackernews::HackernewsConfig;
 use crate::model::RedditConfig;
 
 /// The parsed config file.
@@ -23,6 +24,8 @@ pub struct Config {
     pub reddit: Vec<RedditAccount>,
     #[serde(default)]
     pub github: Vec<GithubAccount>,
+    #[serde(default)]
+    pub hackernews: Vec<HackernewsAccount>,
 }
 
 /// Cross-cutting hooks.
@@ -123,9 +126,43 @@ impl GithubAccount {
     }
 }
 
+/// One HackerNews account: a public username plus the (non-secret) tag config.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HackernewsAccount {
+    pub name: Option<String>,
+    pub username: Option<String>,
+    pub limit: Option<usize>,
+    pub tag_comment: Option<String>,
+    pub tag_author_prefix: Option<String>,
+    pub tag_special_prefix: Option<String>,
+    /// Tags applied to every bookmark (default `["hackernews"]`); a full override.
+    pub tags: Option<Vec<String>>,
+}
+
+impl HackernewsAccount {
+    /// Build the non-secret [`HackernewsConfig`] (tag vocabulary), each field
+    /// falling back to its built-in default.
+    pub fn hackernews_config(&self) -> HackernewsConfig {
+        let d = HackernewsConfig::default();
+        HackernewsConfig {
+            tags: self.tags.clone().unwrap_or(d.tags),
+            comment: self.tag_comment.clone().unwrap_or(d.comment),
+            author_prefix: self.tag_author_prefix.clone().unwrap_or(d.author_prefix),
+            special_prefix: self.tag_special_prefix.clone().unwrap_or(d.special_prefix),
+        }
+    }
+}
+
 /// An account that can be selected by `name`.
 pub trait Named {
     fn account_name(&self) -> Option<&str>;
+}
+
+impl Named for HackernewsAccount {
+    fn account_name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
 }
 
 impl Named for RedditAccount {
@@ -223,6 +260,7 @@ mod tests {
         let cfg = Config::parse(include_str!("config.example.toml")).unwrap();
         assert_eq!(cfg.reddit.len(), 1);
         assert_eq!(cfg.github.len(), 1);
+        assert_eq!(cfg.hackernews.len(), 1);
     }
 
     #[test]

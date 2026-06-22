@@ -55,3 +55,15 @@ name = "personal"
 # limit = 0                              # cap new bookmarks per run (0 = all)
 tags = ["github-star"]                   # applied to every bookmark (default ["github-star"])
 tag_lang_prefix = "lang:"                # lang:<language>
+
+# A HackerNews account (public favorites by username). Repeat [[hackernews]] for
+# multiple accounts; select one with `sync hackernews <name>`, or run them all with
+# `sync hackernews --all`.
+[[hackernews]]
+name = "me"
+# username = "your-hn-username"          # public; whose favorites to read (env HN_USERNAME)
+# limit = 0                              # cap new bookmarks per run (0 = all)
+tags = ["hackernews"]                    # applied to every bookmark (default ["hackernews"])
+tag_comment = "hackernews-comment"       # added to favorited comments
+tag_author_prefix = "author:hackernews:" # author:hackernews:<name>
+tag_special_prefix = "hackernews:"       # "Show HN:" → hackernews:show-hn (and Ask/Tell/Launch)

@@ -3,6 +3,7 @@
 mod cleanup;
 mod config;
 mod github;
+mod hackernews;
 mod http;
 mod model;
 mod pinboard;
@@ -18,8 +19,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
-use config::{Config, GithubAccount, RedditAccount};
+use config::{Config, GithubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
+use hackernews::HnClient;
 use pinboard::PinboardClient;
 use reddit::RedditClient;
 use source::SourceError;
@@ -75,6 +77,8 @@ enum SyncSource {
     Reddit(RedditSyncArgs),
     /// Sync starred GitHub repositories.
     Github(GithubSyncArgs),
+    /// Sync favorited HackerNews stories and comments.
+    Hackernews(HackernewsSyncArgs),
 }
 
 #[derive(Args, Clone)]
@@ -131,6 +135,32 @@ struct GithubSyncArgs {
     /// Shell command run when the GitHub token needs refreshing (a 401).
     #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
     on_auth_failure: Option<String>,
+    /// Fetch and print what would be posted, without writing to Pinboard.
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(short, long)]
+    verbose: bool,
+}
+
+#[derive(Args, Clone)]
+struct HackernewsSyncArgs {
+    /// Account name to select from the config (default: the first hackernews account).
+    account: Option<String>,
+    /// Run every hackernews account in the config.
+    #[arg(long)]
+    all: bool,
+    /// HackerNews username whose favorites to sync (env HN_USERNAME, or *_FILE).
+    #[arg(long)]
+    username: Option<String>,
+    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
+    #[arg(long)]
+    pinboard_token: Option<String>,
+    /// Cap on new bookmarks written this run; 0 = all.
+    #[arg(long, default_value_t = 0)]
+    limit: usize,
+    /// Create bookmarks public (default: private).
+    #[arg(long)]
+    public: bool,
     /// Fetch and print what would be posted, without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
@@ -240,7 +270,8 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
-            if config.reddit.is_empty() && config.github.is_empty() {
+            if config.reddit.is_empty() && config.github.is_empty() && config.hackernews.is_empty()
+            {
                 bail!("--all requires a --config with at least one configured account");
             }
             let ovr = SyncOverrides {
@@ -255,10 +286,14 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
             for acct in &config.github {
                 run.record(sync_one_github(Some(acct), &ovr, config).await);
             }
+            for acct in &config.hackernews {
+                run.record(sync_one_hackernews(Some(acct), &ovr, config).await);
+            }
             run.finish()
         }
         (false, Some(SyncSource::Reddit(args))) => run_sync_reddit(args, config).await,
         (false, Some(SyncSource::Github(args))) => run_sync_github(args, config).await,
+        (false, Some(SyncSource::Hackernews(args))) => run_sync_hackernews(args, config).await,
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
     }
 }
@@ -316,11 +351,37 @@ async fn run_sync_github(args: GithubSyncArgs, config: &Config) -> Result<()> {
     }
 }
 
+async fn run_sync_hackernews(args: HackernewsSyncArgs, config: &Config) -> Result<()> {
+    let ovr = SyncOverrides {
+        hackernews_username: args.username,
+        pinboard_token: args.pinboard_token,
+        limit: args.limit,
+        public: args.public,
+        dry_run: args.dry_run,
+        verbose: args.verbose,
+        ..SyncOverrides::default()
+    };
+    if args.all {
+        if config.hackernews.is_empty() {
+            bail!("--all requires a --config with at least one hackernews account");
+        }
+        let mut run = AllRun::default();
+        for acct in &config.hackernews {
+            run.record(sync_one_hackernews(Some(acct), &ovr, config).await);
+        }
+        run.finish()
+    } else {
+        let account = config::select_account(&config.hackernews, args.account.as_deref())?;
+        sync_one_hackernews(account, &ovr, config).await
+    }
+}
+
 #[derive(Default)]
 struct SyncOverrides {
     reddit_username: Option<String>,
     reddit_cookie: Option<String>,
     github_token: Option<String>,
+    hackernews_username: Option<String>,
     pinboard_token: Option<String>,
     on_auth_failure: Option<String>,
     limit: usize,
@@ -418,6 +479,47 @@ async fn sync_one_github(
     sync::run(&github, &pinboard, &cfg)
         .await
         .map_err(|e| handle_reddit_err(e, hook.as_deref()))?;
+    Ok(())
+}
+
+async fn sync_one_hackernews(
+    account: Option<&HackernewsAccount>,
+    ovr: &SyncOverrides,
+    config: &Config,
+) -> Result<()> {
+    let pinboard_token = resolve_pinboard_token(ovr.pinboard_token.clone(), &config.pinboard)
+        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, [pinboard] in the config, or ~/.pinboardrc)")?;
+    let pinboard = PinboardClient::new(pinboard_token, ovr.public || config.pinboard.public)?;
+
+    let username = resolve_secret(
+        ovr.hackernews_username.clone(),
+        "HN_USERNAME",
+        account.and_then(|a| a.username.clone()),
+        None,
+    )
+    .context(
+        "missing HackerNews username (set --username, HN_USERNAME, or `username` in the config)",
+    )?;
+
+    let hn_config = account
+        .map(HackernewsAccount::hackernews_config)
+        .unwrap_or_default();
+    let limit = if ovr.limit > 0 {
+        ovr.limit
+    } else {
+        account.and_then(|a| a.limit).unwrap_or(0)
+    };
+
+    let cfg = sync::SyncConfig {
+        limit,
+        dry_run: ovr.dry_run,
+        verbose: ovr.verbose,
+    };
+    let hn = HnClient::new(username, hn_config)?;
+    // HackerNews favorites are public, so there is no auth-failure hook to fire.
+    sync::run(&hn, &pinboard, &cfg)
+        .await
+        .map_err(|e| handle_reddit_err(e, None))?;
     Ok(())
 }
 

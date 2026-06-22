@@ -192,11 +192,8 @@ enum CleanupSource {
 
 #[derive(Args, Clone)]
 struct HackernewsCleanupArgs {
-    /// Account name to select from the config (default: the first hackernews account).
+    /// Account name whose tag config to use (default: the first hackernews account).
     account: Option<String>,
-    /// Run cleanup for every hackernews account in the config.
-    #[arg(long)]
-    all: bool,
     /// Pinboard API token (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
     #[arg(long)]
     pinboard_token: Option<String>,
@@ -209,11 +206,8 @@ struct HackernewsCleanupArgs {
 
 #[derive(Args, Clone)]
 struct RedditCleanupArgs {
-    /// Account name to select from the config (default: the first reddit account).
+    /// Account name whose cookie + domain/tags to use (default: the first reddit account).
     account: Option<String>,
-    /// Run cleanup for every reddit account in the config.
-    #[arg(long)]
-    all: bool,
     /// Reddit session cookie (env REDDIT_COOKIE, or *_FILE). Needed for the
     /// `/api/info` lookups; not required with --no-nsfw --no-titles.
     #[arg(long)]
@@ -576,16 +570,17 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
     match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
-            // Cleanup-capable sources: reddit + hackernews (github has no cleanup).
+            // Cleanup normalizes the shared Pinboard bookmark set, so it runs once
+            // per cleanup-capable service (reddit + hackernews; github has none),
+            // using the first configured account of each for its cookie/domain/tags.
             if config.reddit.is_empty() && config.hackernews.is_empty() {
                 bail!("cleanup --all requires a --config with at least one reddit or hackernews account");
             }
             let (pinboard, bookmarks) = open_pinboard(None, false, config).await?;
             let mut run = AllRun::default();
-            for acct in &config.reddit {
+            if let Some(acct) = config.reddit.first() {
                 let args = RedditCleanupArgs {
                     account: None,
-                    all: false,
                     reddit_cookie: None,
                     pinboard_token: None,
                     no_nsfw: false,
@@ -595,7 +590,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                 };
                 run.record(cleanup_one_reddit(Some(acct), &args, &pinboard, &bookmarks).await);
             }
-            for acct in &config.hackernews {
+            if let Some(acct) = config.hackernews.first() {
                 run.record(
                     cleanup_one_hackernews(
                         Some(acct),
@@ -618,20 +613,11 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
 }
 
 async fn run_cleanup_reddit(args: RedditCleanupArgs, config: &Config) -> Result<()> {
+    // One pass over the Pinboard account's reddit bookmarks, using the selected (or
+    // first, or implicit CLI/env) account's cookie + domain/tags.
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), false, config).await?;
-    if args.all {
-        if config.reddit.is_empty() {
-            bail!("--all requires a --config with at least one reddit account");
-        }
-        let mut run = AllRun::default();
-        for acct in &config.reddit {
-            run.record(cleanup_one_reddit(Some(acct), &args, &pinboard, &bookmarks).await);
-        }
-        run.finish()
-    } else {
-        let account = config::select_account(&config.reddit, args.account.as_deref())?;
-        cleanup_one_reddit(account, &args, &pinboard, &bookmarks).await
-    }
+    let account = config::select_account(&config.reddit, args.account.as_deref())?;
+    cleanup_one_reddit(account, &args, &pinboard, &bookmarks).await
 }
 
 async fn cleanup_one_reddit(
@@ -671,29 +657,11 @@ async fn cleanup_one_reddit(
 }
 
 async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) -> Result<()> {
+    // One pass over the Pinboard account's HN bookmarks, using the selected (or
+    // first, or implicit) account's tag config.
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), false, config).await?;
-    if args.all {
-        if config.hackernews.is_empty() {
-            bail!("--all requires a --config with at least one hackernews account");
-        }
-        let mut run = AllRun::default();
-        for acct in &config.hackernews {
-            run.record(
-                cleanup_one_hackernews(
-                    Some(acct),
-                    args.dry_run,
-                    args.verbose,
-                    &pinboard,
-                    &bookmarks,
-                )
-                .await,
-            );
-        }
-        run.finish()
-    } else {
-        let account = config::select_account(&config.hackernews, args.account.as_deref())?;
-        cleanup_one_hackernews(account, args.dry_run, args.verbose, &pinboard, &bookmarks).await
-    }
+    let account = config::select_account(&config.hackernews, args.account.as_deref())?;
+    cleanup_one_hackernews(account, args.dry_run, args.verbose, &pinboard, &bookmarks).await
 }
 
 async fn cleanup_one_hackernews(

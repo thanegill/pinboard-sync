@@ -67,3 +67,4 @@ tags = ["hackernews"]                    # applied to every bookmark (default ["
 tag_comment = "hackernews-comment"       # added to favorited comments
 tag_author_prefix = "author:hackernews:" # author:hackernews:<name>
 tag_special_prefix = "hackernews:"       # "Show HN:" → hackernews:show-hn (and Ask/Tell/Launch)
+tag_link = "find-hn"                      # marker tag for `cleanup hackernews --link-discussions`

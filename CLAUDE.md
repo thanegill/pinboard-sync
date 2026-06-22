@@ -50,7 +50,10 @@ constructors.
 HackerNews ([`hackernews.rs`](src/hackernews.rs) — scrapes `/favorites` for item IDs
 then batch-reads item details from the Algolia HN search API — `objectID:… OR …`,
 chunked, so hundreds of favorites cost a couple of queries, not one per item).
-Reddit's bookmark/tag shaping lives in
+`cleanup hackernews --link-discussions` (default off) is the reverse: for article
+bookmarks carrying the `link_tag` marker (default `find-hn`), it looks each up on HN
+by URL (one Algolia query each) and adds the discussion link. Reddit's bookmark/tag
+shaping lives in
 [`src/model.rs`](src/model.rs).
 
 **All tags are config-driven; there are no tag CLI flags.** Each source has a tag

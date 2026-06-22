@@ -35,6 +35,9 @@ pub struct HackernewsConfig {
     pub author_prefix: String,
     /// Prefix for the tag derived from a `Show/Ask/Tell/Launch HN:` title.
     pub special_prefix: String,
+    /// Marker tag for `cleanup --link-discussions`: bookmarks carrying it are
+    /// looked up on HN by URL and linked to their discussion.
+    pub link_tag: String,
 }
 
 impl Default for HackernewsConfig {
@@ -44,6 +47,7 @@ impl Default for HackernewsConfig {
             comment: "hackernews-comment".into(),
             author_prefix: "author:hackernews:".into(),
             special_prefix: "hackernews:".into(),
+            link_tag: "find-hn".into(),
         }
     }
 }
@@ -282,6 +286,35 @@ impl HnClient {
         }
         Ok(out)
     }
+
+    /// Find the HN story id discussing `url`, via the Algolia URL search. Returns
+    /// the id only when a hit's URL matches `url` (so loose matches are ignored).
+    async fn search_by_url(&self, url: &str) -> Result<Option<String>, SourceError> {
+        let endpoint = format!("{}/api/v1/search", self.algolia);
+        let resp = send_retrying("hn algolia url", MAX_RETRIES, RETRY_DELAY, || {
+            self.http.get(&endpoint).query(&[
+                ("restrictSearchableAttributes", "url"),
+                ("query", url),
+                ("hitsPerPage", "5"),
+            ])
+        })
+        .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!(
+                "hn algolia url search returned {status}: {}",
+                body.trim()
+            )
+            .into());
+        }
+        let search: SearchResponse = resp.json().await.context("parsing hn algolia response")?;
+        let want = url_key(url);
+        Ok(search.hits.into_iter().find_map(|h| {
+            let hit_key = h.url.as_deref().and_then(url_key);
+            (want.is_some() && hit_key == want).then_some(h.object_id)
+        }))
+    }
 }
 
 impl Source for HnClient {
@@ -313,6 +346,8 @@ impl Source for HnClient {
 pub struct HnCleanupOpts {
     pub dry_run: bool,
     pub verbose: bool,
+    /// Also link `link_tag`-tagged article bookmarks to their HN discussion.
+    pub link_discussions: bool,
 }
 
 impl HnClient {
@@ -423,6 +458,107 @@ impl HnClient {
             println!("{changed} bookmark(s) would change.");
         } else {
             println!("Done. Updated {changed} bookmark(s).");
+        }
+
+        if opts.link_discussions {
+            self.link_discussions(pinboard, opts, bookmarks).await?;
+        }
+        Ok(())
+    }
+
+    /// For each article bookmark tagged `link_tag`, look it up on HN by URL and, if
+    /// it has a discussion, add `HN Link: <discussion>` to the notes, swap the
+    /// marker tag for the base HN tags, and update in place. Default-off (opt-in via
+    /// `--link-discussions`) because it issues one Algolia query per tagged bookmark.
+    async fn link_discussions<P: BookmarkStore>(
+        &self,
+        pinboard: &P,
+        opts: &HnCleanupOpts,
+        bookmarks: &[Bookmark],
+    ) -> Result<()> {
+        let candidates: Vec<_> = bookmarks
+            .iter()
+            .filter(|b| {
+                hn_item_id(&b.url).is_none() && b.tag_list().contains(&self.config.link_tag)
+            })
+            .cloned()
+            .collect();
+        println!(
+            "Linking {} '{}'-tagged bookmark(s) to HN discussions{}...",
+            candidates.len(),
+            self.config.link_tag,
+            if opts.dry_run { " (dry run)" } else { "" }
+        );
+
+        let mut changed = 0usize;
+        let mut wrote = false;
+        for bm in &candidates {
+            let Some(id) = self.search_by_url(&bm.url).await.map_err(source_err)? else {
+                continue;
+            };
+
+            let hn_link = format!("HN Link: https://news.ycombinator.com/item?id={id}");
+            let extended = if bm.extended.contains("HN Link:") {
+                bm.extended.clone()
+            } else if bm.extended.is_empty() {
+                hn_link.clone()
+            } else {
+                format!("{}\n\n{hn_link}", bm.extended)
+            };
+
+            // Drop the marker tag, add the base HN tags.
+            let mut tags: Vec<String> = bm
+                .tag_list()
+                .into_iter()
+                .filter(|t| *t != self.config.link_tag)
+                .collect();
+            for tag in &self.config.tags {
+                if !tags.contains(tag) {
+                    tags.push(tag.clone());
+                }
+            }
+
+            let mut old_sorted = bm.tag_list();
+            old_sorted.sort();
+            let mut new_sorted = tags.clone();
+            new_sorted.sort();
+            if extended == bm.extended && old_sorted == new_sorted {
+                continue;
+            }
+            changed += 1;
+
+            if opts.dry_run {
+                println!("[dry-run] {}", bm.url);
+                println!("          notes -> {hn_link}");
+                println!("          tags  -> [{}]", tags.join(" "));
+                continue;
+            }
+
+            if wrote {
+                tokio::time::sleep(Duration::from_secs(RATE_LIMIT_SECS)).await;
+            }
+            pinboard
+                .update(
+                    &bm.url,
+                    &bm.description,
+                    &extended,
+                    &tags,
+                    bm.is_shared(),
+                    bm.is_toread(),
+                    &bm.time,
+                )
+                .await
+                .with_context(|| format!("updating bookmark {}", bm.url))?;
+            wrote = true;
+            if opts.verbose {
+                eprintln!("linked {} -> item?id={id}", bm.url);
+            }
+        }
+
+        if opts.dry_run {
+            println!("{changed} bookmark(s) would be linked.");
+        } else {
+            println!("Done. Linked {changed} bookmark(s).");
         }
         Ok(())
     }
@@ -718,6 +854,7 @@ mod net_tests {
                 &HnCleanupOpts {
                     dry_run: false,
                     verbose: false,
+                    link_discussions: false,
                 },
                 &bookmarks,
             )
@@ -735,5 +872,69 @@ mod net_tests {
             pinboard.deleted.borrow().as_slice(),
             &["https://news.ycombinator.com/item?id=42".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn link_discussions_adds_hn_link_to_tagged_article() {
+        use crate::pinboard::Bookmark;
+        use crate::test_support::FakePinboard;
+
+        // The URL search returns a matching HN story id; the item batch (unused
+        // here) would hit the same path, so the matcher keys on restrictSearch...
+        let algolia = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .and(query_param("restrictSearchableAttributes", "url"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "hits": [
+                    { "objectID": "99", "url": "https://example.com/x",
+                      "_tags": ["story", "author_a", "story_99"] }
+                ]
+            })))
+            .mount(&algolia)
+            .await;
+
+        let pinboard = FakePinboard {
+            all: vec![Bookmark {
+                url: "https://example.com/x".into(),
+                description: "An article".into(),
+                extended: "my notes".into(),
+                tags: "find-hn reading".into(),
+                time: "2020-01-01T00:00:00Z".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }],
+            ..Default::default()
+        };
+
+        let client = HnClient::with_base_urls(
+            String::new(),
+            HackernewsConfig::default(),
+            "unused".into(),
+            algolia.uri(),
+        );
+        let bookmarks = pinboard.all.clone();
+        client
+            .cleanup(
+                &pinboard,
+                &HnCleanupOpts {
+                    dry_run: false,
+                    verbose: false,
+                    link_discussions: true,
+                },
+                &bookmarks,
+            )
+            .await
+            .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        // URL unchanged (in-place), notes gain the HN link, marker tag swapped for
+        // the base HN tag, existing tags kept.
+        assert_eq!(updated[0].url, "https://example.com/x");
+        assert!(updated[0].tags.contains(&"hackernews".to_string()));
+        assert!(!updated[0].tags.contains(&"find-hn".to_string()));
+        assert!(updated[0].tags.contains(&"reading".to_string()));
+        assert!(pinboard.deleted.borrow().is_empty());
     }
 }

@@ -197,6 +197,10 @@ struct HackernewsCleanupArgs {
     /// Pinboard API token (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
     #[arg(long)]
     pinboard_token: Option<String>,
+    /// Also link article bookmarks tagged with the link tag (default `find-hn`) to
+    /// their HN discussion, via an Algolia URL lookup per tagged bookmark.
+    #[arg(long)]
+    link_discussions: bool,
     /// Show what would change without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
@@ -620,6 +624,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                         Some(acct),
                         cmd.dry_run,
                         cmd.verbose,
+                        false, // linking is opt-in via `cleanup hackernews --link-discussions`
                         &pinboard,
                         &bookmarks,
                     )
@@ -685,13 +690,22 @@ async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) ->
     // first, or implicit) account's tag config.
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), false, config).await?;
     let account = config::select_account(&config.hackernews, args.account.as_deref())?;
-    cleanup_one_hackernews(account, args.dry_run, args.verbose, &pinboard, &bookmarks).await
+    cleanup_one_hackernews(
+        account,
+        args.dry_run,
+        args.verbose,
+        args.link_discussions,
+        &pinboard,
+        &bookmarks,
+    )
+    .await
 }
 
 async fn cleanup_one_hackernews(
     account: Option<&HackernewsAccount>,
     dry_run: bool,
     verbose: bool,
+    link_discussions: bool,
     pinboard: &PinboardClient,
     bookmarks: &[Bookmark],
 ) -> Result<()> {
@@ -699,8 +713,16 @@ async fn cleanup_one_hackernews(
         .map(HackernewsAccount::hackernews_config)
         .unwrap_or_default();
     let hn = HnClient::for_cleanup(hn_config)?;
-    hn.cleanup(pinboard, &HnCleanupOpts { dry_run, verbose }, bookmarks)
-        .await
+    hn.cleanup(
+        pinboard,
+        &HnCleanupOpts {
+            dry_run,
+            verbose,
+            link_discussions,
+        },
+        bookmarks,
+    )
+    .await
 }
 
 // --- shared dispatch helpers -------------------------------------------------

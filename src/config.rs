@@ -136,6 +136,7 @@ pub struct HackernewsAccount {
     pub tag_comment: Option<String>,
     pub tag_author_prefix: Option<String>,
     pub tag_special_prefix: Option<String>,
+    pub tag_link: Option<String>,
     /// Tags applied to every bookmark (default `["hackernews"]`); a full override.
     pub tags: Option<Vec<String>>,
 }
@@ -150,6 +151,7 @@ impl HackernewsAccount {
             comment: self.tag_comment.clone().unwrap_or(d.comment),
             author_prefix: self.tag_author_prefix.clone().unwrap_or(d.author_prefix),
             special_prefix: self.tag_special_prefix.clone().unwrap_or(d.special_prefix),
+            link_tag: self.tag_link.clone().unwrap_or(d.link_tag),
         }
     }
 }

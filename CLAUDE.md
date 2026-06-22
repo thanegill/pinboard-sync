@@ -81,8 +81,10 @@ environment. Don't add a secret that only reads `$VAR`.
 **`sync <source> [account]` / `cleanup <source> [account]` select one account**
 (by name, else the first, else an implicit CLI/env account). `--all` (per-source or
 top-level) runs every configured account, aggregating failures via `AllRun` and
-exiting non-zero if any fail. `cleanup --all` runs once per cleanup-capable service
-(reddit + hackernews; github has none), since it normalizes the shared bookmark set.
+exiting non-zero if any fail. `cleanup --all` runs once per source (reddit, github,
+hackernews), since it normalizes the shared bookmark set. `cleanup github`
+canonicalizes repo-root URLs and, unless `--no-refresh`, looks each repo up via the
+API to rewrite renamed/moved repos and refresh the title + language tag.
 
 **`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
 `SyncJob { client: SourceClient, hook, limit }`; `SourceClient` is an enum over the

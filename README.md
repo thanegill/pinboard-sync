@@ -85,6 +85,7 @@ pinboard-sync sync reddit --dry-run
 
 # Normalize existing bookmarks
 pinboard-sync cleanup reddit          # URLs → configured domain, tags, NSFW, titles
+pinboard-sync cleanup github          # canonicalize repo URLs + refresh renamed repos
 pinboard-sync cleanup hackernews      # rewrite HN item URLs to the linked article
 ```
 
@@ -125,7 +126,7 @@ Then select an account by name, or run them all:
 pinboard-sync --config ./config.toml sync github personal   # one named account
 pinboard-sync --config ./config.toml sync github --all      # every github account
 pinboard-sync --config ./config.toml sync --all             # every account, every source
-pinboard-sync --config ./config.toml cleanup --all          # reddit + hackernews
+pinboard-sync --config ./config.toml cleanup --all          # reddit + github + hackernews
 ```
 
 With no name, a command uses the first account of that source. All tag settings

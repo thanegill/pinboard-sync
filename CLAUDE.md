@@ -48,7 +48,9 @@ constructors.
 `saved.json`/`api/info.json`, plus the `PostInfo` port for cleanup), GitHub
 ([`github.rs`](src/github.rs) — `/user/starred` with Link-header pagination),
 HackerNews ([`hackernews.rs`](src/hackernews.rs) — scrapes `/favorites` for item IDs
-then reads the Firebase item API). Reddit's bookmark/tag shaping lives in
+then batch-reads item details from the Algolia HN search API — `objectID:… OR …`,
+chunked, so hundreds of favorites cost a couple of queries, not one per item).
+Reddit's bookmark/tag shaping lives in
 [`src/model.rs`](src/model.rs).
 
 **All tags are config-driven; there are no tag CLI flags.** Each source has a tag

@@ -1,10 +1,10 @@
 //! The HackerNews source: a user's public favorites. Scrapes the favorites pages
-//! (`/favorites?id=<user>` and `&comments=t`) for item IDs, then reads each item
-//! from the Firebase API for its title/url/text. Favorited *stories* bookmark the
-//! linked article (with the HN discussion in the notes); favorited *comments*
-//! bookmark the HN permalink.
+//! (`/favorites?id=<user>` and `&comments=t`) for item IDs, then batch-reads their
+//! details from the Algolia HN search API. Favorited *stories* bookmark the linked
+//! article (with the HN discussion in the notes); favorited *comments* bookmark the
+//! HN permalink.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -18,7 +18,10 @@ use crate::source::{push_prefixed, push_tag, url_key, BookmarkDraft, Source, Sou
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0";
 const HN_BASE: &str = "https://news.ycombinator.com";
-const FIREBASE_BASE: &str = "https://hacker-news.firebaseio.com";
+const ALGOLIA_BASE: &str = "https://hn.algolia.com";
+/// Item IDs per Algolia `objectID:… OR …` query. The API rejects very long filter
+/// strings (~200+ clauses), so stay well under that.
+const ITEM_BATCH: usize = 100;
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 
@@ -45,8 +48,7 @@ impl Default for HackernewsConfig {
     }
 }
 
-/// A HackerNews item, as returned by the Firebase API. Missing items decode to
-/// `null` → `None`.
+/// A normalized HackerNews item (built from an Algolia hit).
 #[derive(Debug, Clone, Deserialize)]
 struct Item {
     id: u64,
@@ -60,6 +62,51 @@ struct Item {
     title: Option<String>,
     #[serde(default)]
     text: Option<String>,
+}
+
+/// An Algolia HN search response.
+#[derive(Debug, Deserialize)]
+struct SearchResponse {
+    #[serde(default)]
+    hits: Vec<AlgoliaHit>,
+}
+
+/// One hit from the Algolia HN search API.
+#[derive(Debug, Deserialize)]
+struct AlgoliaHit {
+    #[serde(rename = "objectID")]
+    object_id: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    story_text: Option<String>,
+    #[serde(default)]
+    comment_text: Option<String>,
+    #[serde(rename = "_tags", default)]
+    tags: Vec<String>,
+}
+
+impl From<AlgoliaHit> for Item {
+    fn from(h: AlgoliaHit) -> Self {
+        // The item type is carried in `_tags` (e.g. "story"/"comment"/"poll"/"job").
+        let kind = ["comment", "poll", "job", "story"]
+            .into_iter()
+            .find(|k| h.tags.iter().any(|t| t == k))
+            .unwrap_or("story")
+            .to_string();
+        Item {
+            id: h.object_id.parse().unwrap_or(0),
+            kind,
+            by: h.author.unwrap_or_default(),
+            url: h.url,
+            title: h.title,
+            text: h.comment_text.or(h.story_text),
+        }
+    }
 }
 
 impl Item {
@@ -122,8 +169,8 @@ pub struct HnClient {
     config: HackernewsConfig,
     /// HN site base (overridden in tests).
     base: String,
-    /// Firebase API base (overridden in tests).
-    firebase: String,
+    /// Algolia API base (overridden in tests).
+    algolia: String,
 }
 
 impl HnClient {
@@ -132,7 +179,7 @@ impl HnClient {
             username,
             config,
             HN_BASE.to_string(),
-            FIREBASE_BASE.to_string(),
+            ALGOLIA_BASE.to_string(),
         )
     }
 
@@ -140,7 +187,7 @@ impl HnClient {
         username: String,
         config: HackernewsConfig,
         base: String,
-        firebase: String,
+        algolia: String,
     ) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(BROWSER_UA)
@@ -151,7 +198,7 @@ impl HnClient {
             username,
             config,
             base,
-            firebase,
+            algolia,
         })
     }
 
@@ -197,19 +244,43 @@ impl HnClient {
         }
     }
 
-    /// Fetch one item from the Firebase API (`None` if it no longer exists).
-    async fn fetch_item(&self, id: &str) -> Result<Option<Item>, SourceError> {
-        let url = format!("{}/v0/item/{}.json", self.firebase, id);
-        let resp =
-            send_retrying("hn item", MAX_RETRIES, RETRY_DELAY, || self.http.get(&url)).await?;
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(anyhow::anyhow!("hn item {id} returned {status}").into());
+    /// Batch-fetch item details by ID from the Algolia HN search API, keyed by ID.
+    /// IDs are queried in chunks of [`ITEM_BATCH`] via `objectID:… OR …`; items that
+    /// no longer exist are simply absent from the map.
+    async fn fetch_items(&self, ids: &[String]) -> Result<HashMap<String, Item>, SourceError> {
+        let endpoint = format!("{}/api/v1/search", self.algolia);
+        let mut out = HashMap::new();
+        for chunk in ids.chunks(ITEM_BATCH) {
+            let filters = chunk
+                .iter()
+                .map(|id| format!("objectID:{id}"))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let hits_per_page = chunk.len().to_string();
+            let resp = send_retrying("hn algolia", MAX_RETRIES, RETRY_DELAY, || {
+                self.http.get(&endpoint).query(&[
+                    ("filters", filters.as_str()),
+                    ("hitsPerPage", hits_per_page.as_str()),
+                ])
+            })
+            .await?;
+            let status = resp.status();
+            if !status.is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                return Err(
+                    anyhow::anyhow!("hn algolia returned {status}: {}", body.trim()).into(),
+                );
+            }
+            let search: SearchResponse =
+                resp.json().await.context("parsing hn algolia response")?;
+            for hit in search.hits {
+                let item = Item::from(hit);
+                out.insert(item.id.to_string(), item);
+            }
+            // Be gentle between chunk queries.
+            tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        resp.json()
-            .await
-            .context("parsing hn item")
-            .map_err(Into::into)
+        Ok(out)
     }
 }
 
@@ -222,13 +293,12 @@ impl Source for HnClient {
         let mut seen = HashSet::new();
         ids.retain(|id| seen.insert(id.clone()));
 
-        let mut drafts = Vec::new();
-        for id in ids {
-            if let Some(item) = self.fetch_item(&id).await? {
-                drafts.push(item.into_draft(&self.config));
-            }
-        }
-        Ok(drafts)
+        let items = self.fetch_items(&ids).await?;
+        Ok(ids
+            .iter()
+            .filter_map(|id| items.get(id).cloned())
+            .map(|item| item.into_draft(&self.config))
+            .collect())
     }
 
     fn existing_key(&self, url: &str) -> Option<String> {
@@ -246,14 +316,14 @@ pub struct HnCleanupOpts {
 }
 
 impl HnClient {
-    /// Client for `cleanup hackernews`: only the Firebase API is used (no favorites
+    /// Client for `cleanup hackernews`: only the Algolia API is used (no favorites
     /// scraping), so no username is needed.
     pub fn for_cleanup(config: HackernewsConfig) -> anyhow::Result<Self> {
         Self::build(
             String::new(),
             config,
             HN_BASE.to_string(),
-            FIREBASE_BASE.to_string(),
+            ALGOLIA_BASE.to_string(),
         )
     }
 
@@ -278,16 +348,18 @@ impl HnClient {
             if opts.dry_run { " (dry run)" } else { "" }
         );
 
+        // Batch-fetch every referenced item once.
+        let ids: Vec<String> = hn_bms.iter().filter_map(|b| hn_item_id(&b.url)).collect();
+        let items = self.fetch_items(&ids).await.map_err(source_err)?;
+
         let mut changed = 0usize;
         let mut wrote = false;
         for bm in &hn_bms {
             let id = hn_item_id(&bm.url).expect("filtered to HN item URLs");
-            let item = match self.fetch_item(&id).await {
-                Ok(Some(item)) => item,
-                Ok(None) => continue,
-                Err(e) => return Err(source_err(e)),
+            let Some(item) = items.get(&id) else {
+                continue;
             };
-            let draft = item.into_draft(&self.config);
+            let draft = item.clone().into_draft(&self.config);
 
             // Preserve existing tags, appending any freshly-derived ones.
             let mut tags = bm.tag_list();
@@ -422,9 +494,9 @@ impl HnClient {
         username: String,
         config: HackernewsConfig,
         base: String,
-        firebase: String,
+        algolia: String,
     ) -> Self {
-        Self::build(username, config, base, firebase).unwrap()
+        Self::build(username, config, base, algolia).unwrap()
     }
 }
 
@@ -574,28 +646,27 @@ mod net_tests {
             .mount(&hn)
             .await;
 
-        let fb = MockServer::start().await;
+        // Algolia returns both items (story + comment) in one batched search.
+        let algolia = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v0/item/42.json"))
+            .and(path("/api/v1/search"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "id": 42, "type": "story", "by": "alice",
-                "title": "Cool", "url": "https://example.com/x"
+                "hits": [
+                    { "objectID": "42", "title": "Cool", "url": "https://example.com/x",
+                      "author": "alice", "_tags": ["story", "author_alice", "story_42"] },
+                    { "objectID": "9", "comment_text": "hi", "author": "carol",
+                      "_tags": ["comment", "author_carol", "story_8"] }
+                ]
             })))
-            .mount(&fb)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/v0/item/9.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "id": 9, "type": "comment", "by": "carol", "text": "hi"
-            })))
-            .mount(&fb)
+            .expect(1) // a single batched query, not one per item
+            .mount(&algolia)
             .await;
 
         let client = HnClient::with_base_urls(
             "psophis".into(),
             HackernewsConfig::default(),
             hn.uri(),
-            fb.uri(),
+            algolia.uri(),
         );
         let drafts = client.fetch().await.unwrap();
         assert_eq!(drafts.len(), 2);
@@ -609,14 +680,16 @@ mod net_tests {
         use crate::pinboard::Bookmark;
         use crate::test_support::FakePinboard;
 
-        let fb = MockServer::start().await;
+        let algolia = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v0/item/42.json"))
+            .and(path("/api/v1/search"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "id": 42, "type": "story", "by": "alice",
-                "title": "Cool", "url": "https://example.com/x"
+                "hits": [
+                    { "objectID": "42", "title": "Cool", "url": "https://example.com/x",
+                      "author": "alice", "_tags": ["story", "author_alice", "story_42"] }
+                ]
             })))
-            .mount(&fb)
+            .mount(&algolia)
             .await;
 
         let pinboard = FakePinboard {
@@ -636,7 +709,7 @@ mod net_tests {
             String::new(),
             HackernewsConfig::default(),
             "unused".into(),
-            fb.uri(),
+            algolia.uri(),
         );
         let bookmarks = pinboard.all.clone();
         client

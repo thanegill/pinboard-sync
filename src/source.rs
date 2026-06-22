@@ -55,3 +55,42 @@ pub fn push_prefixed(tags: &mut Vec<String>, prefix: &str, value: &str) {
         tags.push(format!("{prefix}{value}"));
     }
 }
+
+/// A host+path dedup key for a URL: scheme dropped, host lowercased (userinfo and
+/// port stripped), path lowercased with any query/fragment and trailing slash
+/// removed — e.g. `https://GitHub.com/Owner/Repo/?tab=x` → `github.com/owner/repo`.
+/// Returns `None` for inputs without a host.
+pub fn url_key(url: &str) -> Option<String> {
+    let after = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let (host, path) = match after.find('/') {
+        Some(i) => (&after[..i], &after[i..]),
+        None => (after, "/"),
+    };
+    let host = host.rsplit('@').next().unwrap_or(host); // strip userinfo
+    let host = host.split(':').next().unwrap_or(host); // strip port
+    let host = host.to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let path = path.trim_end_matches('/').to_ascii_lowercase();
+    Some(format!("{host}{path}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_key_normalizes_host_and_path() {
+        assert_eq!(
+            url_key("https://GitHub.com/Owner/Repo/?tab=stars").as_deref(),
+            Some("github.com/owner/repo")
+        );
+        assert_eq!(
+            url_key("http://news.ycombinator.com/item?id=42").as_deref(),
+            Some("news.ycombinator.com/item")
+        );
+        assert_eq!(url_key("not a url").as_deref(), Some("not a url"));
+    }
+}

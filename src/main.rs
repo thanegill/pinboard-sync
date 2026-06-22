@@ -2,6 +2,7 @@
 
 mod cleanup;
 mod config;
+mod github;
 mod http;
 mod model;
 mod pinboard;
@@ -17,7 +18,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
-use config::{Config, RedditAccount};
+use config::{Config, GithubAccount, RedditAccount};
+use github::GitHubClient;
 use pinboard::PinboardClient;
 use reddit::RedditClient;
 use source::SourceError;
@@ -71,6 +73,8 @@ struct SyncCmd {
 enum SyncSource {
     /// Sync saved Reddit posts and comments.
     Reddit(RedditSyncArgs),
+    /// Sync starred GitHub repositories.
+    Github(GithubSyncArgs),
 }
 
 #[derive(Args, Clone)]
@@ -96,6 +100,35 @@ struct RedditSyncArgs {
     #[arg(long)]
     public: bool,
     /// Shell command run when the Reddit cookie needs refreshing (a 401/403).
+    #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
+    on_auth_failure: Option<String>,
+    /// Fetch and print what would be posted, without writing to Pinboard.
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(short, long)]
+    verbose: bool,
+}
+
+#[derive(Args, Clone)]
+struct GithubSyncArgs {
+    /// Account name to select from the config (default: the first github account).
+    account: Option<String>,
+    /// Run every github account in the config.
+    #[arg(long)]
+    all: bool,
+    /// GitHub personal access token (env GITHUB_TOKEN, or *_FILE).
+    #[arg(long)]
+    github_token: Option<String>,
+    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
+    #[arg(long)]
+    pinboard_token: Option<String>,
+    /// Cap on new bookmarks written this run; 0 = all.
+    #[arg(long, default_value_t = 0)]
+    limit: usize,
+    /// Create bookmarks public (default: private).
+    #[arg(long)]
+    public: bool,
+    /// Shell command run when the GitHub token needs refreshing (a 401).
     #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
     on_auth_failure: Option<String>,
     /// Fetch and print what would be posted, without writing to Pinboard.
@@ -207,18 +240,25 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
-            require_config_accounts(config)?;
+            if config.reddit.is_empty() && config.github.is_empty() {
+                bail!("--all requires a --config with at least one configured account");
+            }
             let ovr = SyncOverrides {
                 dry_run: cmd.dry_run,
                 verbose: cmd.verbose,
                 ..SyncOverrides::default()
             };
-            run_each(config.reddit.iter().map(Some), |acct| {
-                sync_one_reddit(acct, &ovr, config)
-            })
-            .await
+            let mut run = AllRun::default();
+            for acct in &config.reddit {
+                run.record(sync_one_reddit(Some(acct), &ovr, config).await);
+            }
+            for acct in &config.github {
+                run.record(sync_one_github(Some(acct), &ovr, config).await);
+            }
+            run.finish()
         }
         (false, Some(SyncSource::Reddit(args))) => run_sync_reddit(args, config).await,
+        (false, Some(SyncSource::Github(args))) => run_sync_github(args, config).await,
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
     }
 }
@@ -233,16 +273,46 @@ async fn run_sync_reddit(args: RedditSyncArgs, config: &Config) -> Result<()> {
         public: args.public,
         dry_run: args.dry_run,
         verbose: args.verbose,
+        ..SyncOverrides::default()
     };
     if args.all {
-        require_config_accounts(config)?;
-        run_each(config.reddit.iter().map(Some), |acct| {
-            sync_one_reddit(acct, &ovr, config)
-        })
-        .await
+        if config.reddit.is_empty() {
+            bail!("--all requires a --config with at least one reddit account");
+        }
+        let mut run = AllRun::default();
+        for acct in &config.reddit {
+            run.record(sync_one_reddit(Some(acct), &ovr, config).await);
+        }
+        run.finish()
     } else {
         let account = config::select_account(&config.reddit, args.account.as_deref())?;
         sync_one_reddit(account, &ovr, config).await
+    }
+}
+
+async fn run_sync_github(args: GithubSyncArgs, config: &Config) -> Result<()> {
+    let ovr = SyncOverrides {
+        github_token: args.github_token,
+        pinboard_token: args.pinboard_token,
+        on_auth_failure: args.on_auth_failure,
+        limit: args.limit,
+        public: args.public,
+        dry_run: args.dry_run,
+        verbose: args.verbose,
+        ..SyncOverrides::default()
+    };
+    if args.all {
+        if config.github.is_empty() {
+            bail!("--all requires a --config with at least one github account");
+        }
+        let mut run = AllRun::default();
+        for acct in &config.github {
+            run.record(sync_one_github(Some(acct), &ovr, config).await);
+        }
+        run.finish()
+    } else {
+        let account = config::select_account(&config.github, args.account.as_deref())?;
+        sync_one_github(account, &ovr, config).await
     }
 }
 
@@ -250,6 +320,7 @@ async fn run_sync_reddit(args: RedditSyncArgs, config: &Config) -> Result<()> {
 struct SyncOverrides {
     reddit_username: Option<String>,
     reddit_cookie: Option<String>,
+    github_token: Option<String>,
     pinboard_token: Option<String>,
     on_auth_failure: Option<String>,
     limit: usize,
@@ -307,13 +378,59 @@ async fn sync_one_reddit(
     Ok(())
 }
 
+async fn sync_one_github(
+    account: Option<&GithubAccount>,
+    ovr: &SyncOverrides,
+    config: &Config,
+) -> Result<()> {
+    let pinboard_token = resolve_pinboard_token(ovr.pinboard_token.clone(), &config.pinboard)
+        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, [pinboard] in the config, or ~/.pinboardrc)")?;
+    let pinboard = PinboardClient::new(pinboard_token, ovr.public || config.pinboard.public)?;
+
+    let token = resolve_secret(
+        ovr.github_token.clone(),
+        "GITHUB_TOKEN",
+        account.and_then(|a| a.token.clone()),
+        account.and_then(|a| a.token_file.as_deref()),
+    )
+    .context("missing GitHub token (set --github-token, GITHUB_TOKEN, or `token`/`token_file` in the config)")?;
+
+    let github_config = account
+        .map(GithubAccount::github_config)
+        .unwrap_or_default();
+    let limit = if ovr.limit > 0 {
+        ovr.limit
+    } else {
+        account.and_then(|a| a.limit).unwrap_or(0)
+    };
+    let hook = resolve_hook(
+        ovr.on_auth_failure.clone(),
+        account.and_then(|a| a.on_auth_failure.as_deref()),
+        config,
+    );
+
+    let cfg = sync::SyncConfig {
+        limit,
+        dry_run: ovr.dry_run,
+        verbose: ovr.verbose,
+    };
+    let github = GitHubClient::new(token, github_config)?;
+    sync::run(&github, &pinboard, &cfg)
+        .await
+        .map_err(|e| handle_reddit_err(e, hook.as_deref()))?;
+    Ok(())
+}
+
 // --- cleanup -----------------------------------------------------------------
 
 async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
     match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
-            require_config_accounts(config)?;
+            // GitHub has no cleanup, so cleanup --all covers reddit only.
+            if config.reddit.is_empty() {
+                bail!("cleanup --all requires a --config with at least one reddit account");
+            }
             let args = RedditCleanupArgs {
                 account: None,
                 all: true,
@@ -333,12 +450,14 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
 
 async fn run_cleanup_reddit(args: RedditCleanupArgs, config: &Config) -> Result<()> {
     if args.all {
-        require_config_accounts(config)?;
-        let accounts: Vec<Option<&RedditAccount>> = config.reddit.iter().map(Some).collect();
-        run_each(accounts.into_iter(), |acct| {
-            cleanup_one_reddit(acct, &args, config)
-        })
-        .await
+        if config.reddit.is_empty() {
+            bail!("--all requires a --config with at least one reddit account");
+        }
+        let mut run = AllRun::default();
+        for acct in &config.reddit {
+            run.record(cleanup_one_reddit(Some(acct), &args, config).await);
+        }
+        run.finish()
     } else {
         let account = config::select_account(&config.reddit, args.account.as_deref())?;
         cleanup_one_reddit(account, &args, config).await
@@ -385,32 +504,27 @@ async fn cleanup_one_reddit(
 
 // --- shared dispatch helpers -------------------------------------------------
 
-/// Run `f` for each account, continuing past failures and erroring at the end if
-/// any failed. Used by the `--all` paths.
-async fn run_each<'a, I, F, Fut>(accounts: I, mut f: F) -> Result<()>
-where
-    I: Iterator<Item = Option<&'a RedditAccount>>,
-    F: FnMut(Option<&'a RedditAccount>) -> Fut,
-    Fut: std::future::Future<Output = Result<()>>,
-{
-    let mut failed = 0usize;
-    for acct in accounts {
-        if let Err(e) = f(acct).await {
-            eprintln!("error: {e:#}");
-            failed += 1;
-        }
-    }
-    if failed > 0 {
-        bail!("{failed} account(s) failed");
-    }
-    Ok(())
+/// Accumulates failures across an `--all` run: each account is attempted, errors
+/// are reported and counted, and the run errors at the end if any account failed.
+#[derive(Default)]
+struct AllRun {
+    failed: usize,
 }
 
-fn require_config_accounts(config: &Config) -> Result<()> {
-    if config.reddit.is_empty() {
-        bail!("--all requires a --config with at least one configured account");
+impl AllRun {
+    fn record(&mut self, result: Result<()>) {
+        if let Err(e) = result {
+            eprintln!("error: {e:#}");
+            self.failed += 1;
+        }
     }
-    Ok(())
+
+    fn finish(self) -> Result<()> {
+        if self.failed > 0 {
+            bail!("{} account(s) failed", self.failed);
+        }
+        Ok(())
+    }
 }
 
 /// Map a `SourceError` to an `anyhow::Error`, firing the auth-failure hook when

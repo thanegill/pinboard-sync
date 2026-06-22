@@ -8,6 +8,7 @@
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 
+use crate::github::GithubConfig;
 use crate::model::RedditConfig;
 
 /// The parsed config file.
@@ -20,6 +21,8 @@ pub struct Config {
     pub pinboard: Pinboard,
     #[serde(default)]
     pub reddit: Vec<RedditAccount>,
+    #[serde(default)]
+    pub github: Vec<GithubAccount>,
 }
 
 /// Cross-cutting hooks.
@@ -97,12 +100,47 @@ impl RedditAccount {
     }
 }
 
+/// One GitHub account: a personal access token plus the (non-secret) tag config.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GithubAccount {
+    pub name: Option<String>,
+    pub token: Option<String>,
+    pub token_file: Option<String>,
+    pub on_auth_failure: Option<String>,
+    pub limit: Option<usize>,
+    pub tag_base: Option<String>,
+    pub tag_lang_prefix: Option<String>,
+    /// Extra tags appended to every bookmark from this account.
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+impl GithubAccount {
+    /// Build the non-secret [`GithubConfig`] (tag vocabulary), each field falling
+    /// back to its built-in default.
+    pub fn github_config(&self) -> GithubConfig {
+        let d = GithubConfig::default();
+        GithubConfig {
+            base: self.tag_base.clone().unwrap_or(d.base),
+            lang_prefix: self.tag_lang_prefix.clone().unwrap_or(d.lang_prefix),
+            extra: self.tags.clone(),
+        }
+    }
+}
+
 /// An account that can be selected by `name`.
 pub trait Named {
     fn account_name(&self) -> Option<&str>;
 }
 
 impl Named for RedditAccount {
+    fn account_name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+}
+
+impl Named for GithubAccount {
     fn account_name(&self) -> Option<&str> {
         self.name.as_deref()
     }
@@ -191,6 +229,7 @@ mod tests {
         // The `config example` template must stay a valid Config.
         let cfg = Config::parse(include_str!("config.example.toml")).unwrap();
         assert_eq!(cfg.reddit.len(), 1);
+        assert_eq!(cfg.github.len(), 1);
     }
 
     #[test]

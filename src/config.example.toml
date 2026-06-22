@@ -43,3 +43,15 @@ tag_flair_prefix = "reddit-flair:"       # reddit-flair:<slug>
 tag_media_prefix = "type:"               # type:image / type:video
 tag_media_types = ["image", "video"]     # which media types get a type:<x> tag ([] = none)
 tags = []                                # extra tags appended to every bookmark
+
+# A GitHub account (starred repos). Repeat [[github]] for multiple accounts; select
+# one with `sync github <name>`, or run them all with `sync github --all`.
+[[github]]
+name = "personal"
+# token = "ghp_…"                        # a personal access token, or:
+# token_file = "/run/secrets/github-token"
+# on_auth_failure = "…"                  # per-account override of [hooks].on_auth_failure
+# limit = 0                              # cap new bookmarks per run (0 = all)
+tag_base = "github-star"                 # applied to every bookmark
+tag_lang_prefix = "lang:"                # lang:<language>
+tags = []                                # extra tags appended to every bookmark

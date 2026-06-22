@@ -585,6 +585,7 @@ async fn cleanup_one_reddit(
         fix_titles: !args.no_titles,
         base_tag: reddit_config.tags.first().cloned().unwrap_or_default(),
         subreddit_tag_prefix: reddit_config.subreddit_prefix.clone(),
+        domain: reddit_config.domain.clone(),
     };
 
     // Reddit (for /api/info) is only needed when marking NSFW or fixing titles.

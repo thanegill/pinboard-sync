@@ -20,6 +20,8 @@ pub struct CleanupOpts {
     pub fix_titles: bool,
     pub base_tag: String,
     pub subreddit_tag_prefix: String,
+    /// Reddit host that URLs are rewritten to (default `old.reddit.com`).
+    pub domain: String,
 }
 
 /// Authoritative per-post data from `/api/info`.
@@ -48,7 +50,7 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
     for bm in &reddit_bms {
         let mut new_url = bm.url.clone();
         let mut url_changed = false;
-        if let Some(n) = normalize_url(&bm.url) {
+        if let Some(n) = normalize_url(&bm.url, &opts.domain) {
             new_url = n;
             url_changed = true;
         }
@@ -154,7 +156,7 @@ async fn fetch_post_info<R: PostInfo>(
     let fullnames: Vec<String> = bookmarks
         .iter()
         .filter_map(|b| {
-            let url = normalize_url(&b.url).unwrap_or_else(|| b.url.clone());
+            let url = normalize_url(&b.url, &opts.domain).unwrap_or_else(|| b.url.clone());
             post_fullname(&url)
         })
         .collect::<BTreeSet<_>>()
@@ -202,16 +204,16 @@ fn host_of(after_scheme: &str) -> String {
 }
 
 /// Normalize a Reddit bookmark URL: unwrap an `over18/?dest=` redirect (recursively
-/// URL-decoding the destination), then rewrite a bare / `www.` / `m.` reddit host
-/// to `old.reddit.com`. Returns `Some(new)` only if it changed.
-pub fn normalize_url(url: &str) -> Option<String> {
+/// URL-decoding the destination), then rewrite any reddit host to the configured
+/// `domain`. Returns `Some(new)` only if it changed.
+pub fn normalize_url(url: &str, domain: &str) -> Option<String> {
     let mut current = url.to_string();
     let mut changed = false;
     if let Some(dest) = over18_dest(&current) {
         current = dest;
         changed = true;
     }
-    if let Some(n) = to_old_reddit_host(&current) {
+    if let Some(n) = to_reddit_domain(&current, domain) {
         if n != current {
             current = n;
             changed = true;
@@ -229,9 +231,10 @@ fn over18_dest(url: &str) -> Option<String> {
     Some(recursive_percent_decode(&rest[dpos + 5..]))
 }
 
-/// Rewrite a bare / `www.` / `m.` reddit host to `old.reddit.com`, preserving the
-/// rest of the URL. Returns `None` for any other host (incl. already-`old.`).
-fn to_old_reddit_host(url: &str) -> Option<String> {
+/// Rewrite any reddit host (`reddit.com` or a `*.reddit.com` subdomain) to the
+/// configured `domain`, preserving the rest of the URL. Returns `None` for a
+/// non-reddit host or one already equal to `domain`.
+fn to_reddit_domain(url: &str, domain: &str) -> Option<String> {
     let (_scheme, after) = url.split_once("://")?;
     let (host_port, rest) = match after.find('/') {
         Some(i) => (&after[..i], &after[i..]),
@@ -245,11 +248,9 @@ fn to_old_reddit_host(url: &str) -> Option<String> {
         .next()
         .unwrap_or(host_port)
         .to_ascii_lowercase();
-    if matches!(
-        host.as_str(),
-        "reddit.com" | "www.reddit.com" | "m.reddit.com"
-    ) {
-        Some(format!("https://old.reddit.com{rest}"))
+    let is_reddit = host == "reddit.com" || host.ends_with(".reddit.com");
+    if is_reddit && host != domain {
+        Some(format!("https://{domain}{rest}"))
     } else {
         None
     }
@@ -365,27 +366,39 @@ mod tests {
     }
 
     #[test]
-    fn normalize_url_rewrites_host_to_old() {
+    fn normalize_url_rewrites_host_to_domain() {
         assert_eq!(
-            normalize_url("https://www.reddit.com/r/Rust/comments/abc/x/").as_deref(),
+            normalize_url(
+                "https://www.reddit.com/r/Rust/comments/abc/x/",
+                "old.reddit.com"
+            )
+            .as_deref(),
             Some("https://old.reddit.com/r/Rust/comments/abc/x/")
         );
         assert_eq!(
-            normalize_url("https://reddit.com/r/x/").as_deref(),
+            normalize_url("https://reddit.com/r/x/", "old.reddit.com").as_deref(),
             Some("https://old.reddit.com/r/x/")
         );
         assert_eq!(
-            normalize_url("https://m.reddit.com/r/x/").as_deref(),
+            normalize_url("https://m.reddit.com/r/x/", "old.reddit.com").as_deref(),
             Some("https://old.reddit.com/r/x/")
         );
-        assert_eq!(normalize_url("https://old.reddit.com/r/x/"), None);
+        assert_eq!(
+            normalize_url("https://old.reddit.com/r/x/", "old.reddit.com"),
+            None
+        );
+        // A non-default domain rewrites old.reddit.com too.
+        assert_eq!(
+            normalize_url("https://old.reddit.com/r/x/", "www.reddit.com").as_deref(),
+            Some("https://www.reddit.com/r/x/")
+        );
     }
 
     #[test]
     fn normalize_url_unwraps_over18_then_normalizes_host() {
         let url = "https://www.reddit.com/over18/?dest=https%3A%2F%2Fwww.reddit.com%2Fr%2Fx%2Fcomments%2Fa%2F";
         assert_eq!(
-            normalize_url(url).as_deref(),
+            normalize_url(url, "old.reddit.com").as_deref(),
             Some("https://old.reddit.com/r/x/comments/a/")
         );
     }
@@ -482,6 +495,7 @@ mod loop_tests {
             fix_titles: true,
             base_tag: "reddit".into(),
             subreddit_tag_prefix: "subreddit:".into(),
+            domain: "old.reddit.com".into(),
         }
     }
 

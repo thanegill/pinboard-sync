@@ -191,6 +191,8 @@ pub struct RedditConfig {
     pub flair_prefix: String,
     pub media_prefix: String,
     pub media_types: Vec<String>,
+    /// Extra tags appended to every bookmark from this account.
+    pub extra: Vec<String>,
 }
 
 impl Default for RedditConfig {
@@ -205,6 +207,7 @@ impl Default for RedditConfig {
             flair_prefix: "reddit-flair:".into(),
             media_prefix: "type:".into(),
             media_types: vec!["image".into(), "video".into()],
+            extra: Vec::new(),
         }
     }
 }
@@ -240,6 +243,9 @@ impl SavedItem {
             if cfg.media_types.iter().any(|t| t == media_type) {
                 push_prefixed(&mut tags, &cfg.media_prefix, media_type);
             }
+        }
+        for tag in &cfg.extra {
+            push_tag(&mut tags, tag);
         }
         tags
     }

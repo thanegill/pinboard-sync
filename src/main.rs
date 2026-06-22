@@ -1,6 +1,7 @@
-//! pinboard-sync: sync saved Reddit items to a Pinboard account.
+//! pinboard-sync: sync saved/favorited items from multiple services to Pinboard.
 
 mod cleanup;
+mod config;
 mod http;
 mod model;
 mod pinboard;
@@ -12,10 +13,10 @@ mod test_support;
 
 use std::process::ExitCode;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 
-use model::RedditConfig;
+use config::{Config, RedditAccount};
 use pinboard::PinboardClient;
 use reddit::RedditClient;
 use source::SourceError;
@@ -23,42 +24,60 @@ use source::SourceError;
 #[derive(Parser)]
 #[command(name = "pinboard-sync", version, about, arg_required_else_help = true)]
 struct Cli {
+    /// Path to the TOML config file (env PINBOARD_SYNC_CONFIG, or *_FILE).
+    #[arg(long, global = true)]
+    config: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Sync saved Reddit items to Pinboard.
-    Sync(SyncArgs),
-    /// Normalize existing reddit bookmarks (URLs, tags, NSFW, titles).
-    Cleanup(CleanupArgs),
+    /// Sync a source's saved/favorited items to Pinboard.
+    Sync(SyncCmd),
+    /// Normalize existing bookmarks for a source.
+    Cleanup(CleanupCmd),
+}
+
+#[derive(Args)]
+struct SyncCmd {
+    /// Run every configured account across every source (requires --config).
+    #[arg(long)]
+    all: bool,
+    /// Show what would be written without touching Pinboard (with --all).
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(short, long)]
+    verbose: bool,
+    #[command(subcommand)]
+    source: Option<SyncSource>,
+}
+
+#[derive(Subcommand)]
+enum SyncSource {
+    /// Sync saved Reddit posts and comments.
+    Reddit(RedditSyncArgs),
 }
 
 #[derive(Args, Clone)]
-struct SyncArgs {
+struct RedditSyncArgs {
+    /// Account name to select from the config (default: the first reddit account).
+    account: Option<String>,
+    /// Run every reddit account in the config.
+    #[arg(long)]
+    all: bool,
+    /// Reddit username whose saved items to sync (env REDDIT_USERNAME, or *_FILE).
+    #[arg(long)]
+    reddit_username: Option<String>,
+    /// Reddit session cookie, e.g. `reddit_session=…` (env REDDIT_COOKIE, or *_FILE).
+    #[arg(long)]
+    reddit_cookie: Option<String>,
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
     #[arg(long)]
     pinboard_token: Option<String>,
-    /// Reddit username whose saved items to sync (env REDDIT_USERNAME, or *_FILE).
-    /// Required; non-secret. Reads `old.reddit.com/user/<name>/saved.json`.
-    #[arg(long)]
-    reddit_username: Option<String>,
-    /// Cookie header for Reddit, e.g. `reddit_session=…` (env REDDIT_COOKIE, or
-    /// *_FILE). Reddit blocks cookieless requests, so this is required; copy
-    /// `reddit_session` from a logged-in browser.
-    #[arg(long)]
-    reddit_cookie: Option<String>,
-    /// Optional cap on new bookmarks written per run; 0 = all. Dedup against
-    /// Pinboard handles correctness, so this is just a throttle (e.g. first run).
+    /// Cap on new bookmarks written this run; 0 = all.
     #[arg(long, default_value_t = 0)]
     limit: usize,
-    /// Base tag applied to every bookmark.
-    #[arg(long, default_value = "reddit")]
-    base_tag: String,
-    /// Prefix for the subreddit tag.
-    #[arg(long, default_value = "subreddit:")]
-    subreddit_tag_prefix: String,
     /// Create bookmarks public (default: private).
     #[arg(long)]
     public: bool,
@@ -73,21 +92,39 @@ struct SyncArgs {
 }
 
 #[derive(Args)]
-struct CleanupArgs {
-    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
+struct CleanupCmd {
+    /// Run cleanup for every configured account across every cleanup-capable source.
     #[arg(long)]
-    pinboard_token: Option<String>,
-    /// Cookie header for Reddit, e.g. `reddit_session=…` (env REDDIT_COOKIE, or
-    /// *_FILE). Needed for the `/api/info` lookups that mark NSFW and fix titles;
-    /// not required with --no-nsfw --no-titles.
+    all: bool,
+    /// Show what would change without writing to Pinboard (with --all).
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(short, long)]
+    verbose: bool,
+    #[command(subcommand)]
+    source: Option<CleanupSource>,
+}
+
+#[derive(Subcommand)]
+enum CleanupSource {
+    /// Normalize existing reddit bookmarks (URLs, tags, NSFW, titles).
+    Reddit(RedditCleanupArgs),
+}
+
+#[derive(Args, Clone)]
+struct RedditCleanupArgs {
+    /// Account name to select from the config (default: the first reddit account).
+    account: Option<String>,
+    /// Run cleanup for every reddit account in the config.
+    #[arg(long)]
+    all: bool,
+    /// Reddit session cookie (env REDDIT_COOKIE, or *_FILE). Needed for the
+    /// `/api/info` lookups; not required with --no-nsfw --no-titles.
     #[arg(long)]
     reddit_cookie: Option<String>,
-    /// Base tag applied to every reddit bookmark.
-    #[arg(long, default_value = "reddit")]
-    base_tag: String,
-    /// Prefix for the subreddit tag.
-    #[arg(long, default_value = "subreddit:")]
-    subreddit_tag_prefix: String,
+    /// Pinboard API token (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
+    #[arg(long)]
+    pinboard_token: Option<String>,
     /// Skip NSFW tagging (no Reddit /api/info call for over_18).
     #[arg(long)]
     no_nsfw: bool,
@@ -106,10 +143,14 @@ async fn main() -> ExitCode {
     let _ = dotenvy::dotenv();
     let cli = Cli::parse();
 
-    let result = match cli.command {
-        Command::Sync(args) => sync(args).await,
-        Command::Cleanup(args) => run_cleanup(args).await,
-    };
+    let result = async {
+        let config = load_config(cli.config.clone())?;
+        match cli.command {
+            Command::Sync(cmd) => run_sync(cmd, &config).await,
+            Command::Cleanup(cmd) => run_cleanup(cmd, &config).await,
+        }
+    }
+    .await;
 
     if let Err(e) = result {
         eprintln!("error: {e:#}");
@@ -118,81 +159,228 @@ async fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-async fn sync(args: SyncArgs) -> Result<()> {
-    let pinboard_token = resolve_pinboard_token(args.pinboard_token.clone()).context(
-        "missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, or ~/.pinboardrc)",
-    )?;
-    let pinboard = PinboardClient::new(pinboard_token, args.public)?;
-    let cfg = sync::SyncConfig {
+/// Load the config from `--config`/`$PINBOARD_SYNC_CONFIG`/`_FILE`; absent = defaults.
+fn load_config(flag: Option<String>) -> Result<Config> {
+    match resolve_secret(flag, "PINBOARD_SYNC_CONFIG", None, None) {
+        Some(path) => {
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading config file {path}"))?;
+            Config::parse(&text)
+        }
+        None => Ok(Config::default()),
+    }
+}
+
+// --- sync --------------------------------------------------------------------
+
+async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
+    match (cmd.all, cmd.source) {
+        (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
+        (true, None) => {
+            require_config_accounts(config)?;
+            let ovr = SyncOverrides {
+                dry_run: cmd.dry_run,
+                verbose: cmd.verbose,
+                ..SyncOverrides::default()
+            };
+            run_each(config.reddit.iter().map(Some), |acct| {
+                sync_one_reddit(acct, &ovr, config)
+            })
+            .await
+        }
+        (false, Some(SyncSource::Reddit(args))) => run_sync_reddit(args, config).await,
+        (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
+    }
+}
+
+async fn run_sync_reddit(args: RedditSyncArgs, config: &Config) -> Result<()> {
+    let ovr = SyncOverrides {
+        reddit_username: args.reddit_username,
+        reddit_cookie: args.reddit_cookie,
+        pinboard_token: args.pinboard_token,
+        on_auth_failure: args.on_auth_failure,
         limit: args.limit,
+        public: args.public,
         dry_run: args.dry_run,
         verbose: args.verbose,
     };
-    let reddit_config = RedditConfig {
-        base: args.base_tag.clone(),
-        subreddit_prefix: args.subreddit_tag_prefix.clone(),
-        ..RedditConfig::default()
-    };
-    let hook = args.on_auth_failure.as_deref();
-
-    let username = resolve_secret(args.reddit_username.clone(), "REDDIT_USERNAME")
-        .context("missing Reddit username (set --reddit-username or REDDIT_USERNAME)")?;
-    let cookie = resolve_secret(args.reddit_cookie.clone(), "REDDIT_COOKIE");
-    if args.verbose {
-        // Diagnostic only — never print cookie values, just the cookie *names*/length,
-        // so a cookieless request (which 403s) is obvious. The username is non-secret.
-        match &cookie {
-            Some(c) => {
-                let names: Vec<&str> = c
-                    .split(';')
-                    .filter_map(|p| p.trim().split('=').next())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                eprintln!(
-                    "saved source: user={username}; cookie present ({} bytes), names: {}",
-                    c.len(),
-                    names.join(" ")
-                );
-            }
-            None => eprintln!(
-                "saved source: user={username}; NO cookie (REDDIT_COOKIE/--reddit-cookie unset) \
-                 — Reddit will almost certainly 403"
-            ),
-        }
+    if args.all {
+        require_config_accounts(config)?;
+        run_each(config.reddit.iter().map(Some), |acct| {
+            sync_one_reddit(acct, &ovr, config)
+        })
+        .await
+    } else {
+        let account = config::select_account(&config.reddit, args.account.as_deref())?;
+        sync_one_reddit(account, &ovr, config).await
     }
+}
+
+#[derive(Default)]
+struct SyncOverrides {
+    reddit_username: Option<String>,
+    reddit_cookie: Option<String>,
+    pinboard_token: Option<String>,
+    on_auth_failure: Option<String>,
+    limit: usize,
+    public: bool,
+    dry_run: bool,
+    verbose: bool,
+}
+
+async fn sync_one_reddit(
+    account: Option<&RedditAccount>,
+    ovr: &SyncOverrides,
+    config: &Config,
+) -> Result<()> {
+    let pinboard_token = resolve_pinboard_token(ovr.pinboard_token.clone(), &config.pinboard)
+        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, [pinboard] in the config, or ~/.pinboardrc)")?;
+    let pinboard = PinboardClient::new(pinboard_token, ovr.public || config.pinboard.public)?;
+
+    let username = resolve_secret(
+        ovr.reddit_username.clone(),
+        "REDDIT_USERNAME",
+        account.and_then(|a| a.username.clone()),
+        None,
+    )
+    .context("missing Reddit username (set --reddit-username, REDDIT_USERNAME, or `username` in the config)")?;
+    let cookie = resolve_secret(
+        ovr.reddit_cookie.clone(),
+        "REDDIT_COOKIE",
+        account.and_then(|a| a.cookie.clone()),
+        account.and_then(|a| a.cookie_file.as_deref()),
+    );
+
+    let reddit_config = account
+        .map(RedditAccount::reddit_config)
+        .unwrap_or_default();
+    let limit = if ovr.limit > 0 {
+        ovr.limit
+    } else {
+        account.and_then(|a| a.limit).unwrap_or(0)
+    };
+    let hook = resolve_hook(
+        ovr.on_auth_failure.clone(),
+        account.and_then(|a| a.on_auth_failure.as_deref()),
+        config,
+    );
+
+    let cfg = sync::SyncConfig {
+        limit,
+        dry_run: ovr.dry_run,
+        verbose: ovr.verbose,
+    };
     let reddit = RedditClient::for_user(username, cookie, reddit_config)?;
     sync::run(&reddit, &pinboard, &cfg)
         .await
-        .map_err(|e| handle_reddit_err(e, hook))?;
+        .map_err(|e| handle_reddit_err(e, hook.as_deref()))?;
     Ok(())
 }
 
-async fn run_cleanup(args: CleanupArgs) -> Result<()> {
-    let pinboard_token = resolve_pinboard_token(args.pinboard_token.clone()).context(
-        "missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, or ~/.pinboardrc)",
-    )?;
+// --- cleanup -----------------------------------------------------------------
+
+async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
+    match (cmd.all, cmd.source) {
+        (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
+        (true, None) => {
+            require_config_accounts(config)?;
+            let args = RedditCleanupArgs {
+                account: None,
+                all: true,
+                reddit_cookie: None,
+                pinboard_token: None,
+                no_nsfw: false,
+                no_titles: false,
+                dry_run: cmd.dry_run,
+                verbose: cmd.verbose,
+            };
+            run_cleanup_reddit(args, config).await
+        }
+        (false, Some(CleanupSource::Reddit(args))) => run_cleanup_reddit(args, config).await,
+        (false, None) => bail!("specify a source (e.g. `cleanup reddit`) or pass --all"),
+    }
+}
+
+async fn run_cleanup_reddit(args: RedditCleanupArgs, config: &Config) -> Result<()> {
+    if args.all {
+        require_config_accounts(config)?;
+        let accounts: Vec<Option<&RedditAccount>> = config.reddit.iter().map(Some).collect();
+        run_each(accounts.into_iter(), |acct| {
+            cleanup_one_reddit(acct, &args, config)
+        })
+        .await
+    } else {
+        let account = config::select_account(&config.reddit, args.account.as_deref())?;
+        cleanup_one_reddit(account, &args, config).await
+    }
+}
+
+async fn cleanup_one_reddit(
+    account: Option<&RedditAccount>,
+    args: &RedditCleanupArgs,
+    config: &Config,
+) -> Result<()> {
+    let pinboard_token = resolve_pinboard_token(args.pinboard_token.clone(), &config.pinboard)
+        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, [pinboard] in the config, or ~/.pinboardrc)")?;
     let pinboard = PinboardClient::new(pinboard_token, false)?;
 
+    let reddit_config = account
+        .map(RedditAccount::reddit_config)
+        .unwrap_or_default();
     let opts = cleanup::CleanupOpts {
         dry_run: args.dry_run,
         verbose: args.verbose,
         mark_nsfw: !args.no_nsfw,
         fix_titles: !args.no_titles,
-        base_tag: args.base_tag.clone(),
-        subreddit_tag_prefix: args.subreddit_tag_prefix.clone(),
+        base_tag: reddit_config.base.clone(),
+        subreddit_tag_prefix: reddit_config.subreddit_prefix.clone(),
     };
 
     // Reddit (for /api/info) is only needed when marking NSFW or fixing titles.
     let reddit = if opts.mark_nsfw || opts.fix_titles {
-        let cookie = resolve_secret(args.reddit_cookie.clone(), "REDDIT_COOKIE").context(
-            "missing Reddit cookie (set --reddit-cookie or REDDIT_COOKIE, or pass --no-nsfw --no-titles)",
-        )?;
+        let cookie = resolve_secret(
+            args.reddit_cookie.clone(),
+            "REDDIT_COOKIE",
+            account.and_then(|a| a.cookie.clone()),
+            account.and_then(|a| a.cookie_file.as_deref()),
+        )
+        .context("missing Reddit cookie (set --reddit-cookie, REDDIT_COOKIE, or pass --no-nsfw --no-titles)")?;
         Some(RedditClient::for_info(Some(cookie))?)
     } else {
         None
     };
 
     cleanup::run(&pinboard, reddit.as_ref(), &opts).await
+}
+
+// --- shared dispatch helpers -------------------------------------------------
+
+/// Run `f` for each account, continuing past failures and erroring at the end if
+/// any failed. Used by the `--all` paths.
+async fn run_each<'a, I, F, Fut>(accounts: I, mut f: F) -> Result<()>
+where
+    I: Iterator<Item = Option<&'a RedditAccount>>,
+    F: FnMut(Option<&'a RedditAccount>) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    let mut failed = 0usize;
+    for acct in accounts {
+        if let Err(e) = f(acct).await {
+            eprintln!("error: {e:#}");
+            failed += 1;
+        }
+    }
+    if failed > 0 {
+        bail!("{failed} account(s) failed");
+    }
+    Ok(())
+}
+
+fn require_config_accounts(config: &Config) -> Result<()> {
+    if config.reddit.is_empty() {
+        bail!("--all requires a --config with at least one configured account");
+    }
+    Ok(())
 }
 
 /// Map a `SourceError` to an `anyhow::Error`, firing the auth-failure hook when
@@ -225,53 +413,59 @@ fn run_auth_failure_hook(cmd: Option<&str>, err: &str) {
     }
 }
 
-/// Resolve a secret from, in order: the CLI flag, `$VAR`, then `$VAR_FILE`
-/// (a path to a file whose trimmed contents are the value).
-fn resolve_secret(flag: Option<String>, var: &str) -> Option<String> {
-    let env_val = std::env::var(var).ok();
-    let file_contents = std::env::var(format!("{var}_FILE"))
-        .ok()
-        .and_then(|path| std::fs::read_to_string(path).ok());
-    choose_secret(flag, env_val, file_contents)
-}
+// --- secret / value resolution ----------------------------------------------
 
-/// Pick a secret by precedence: a non-empty flag, then a non-empty `$VAR`, then
-/// the trimmed non-empty contents of `$VAR_FILE`. Pure, so it is unit-tested
-/// without touching the environment or filesystem.
-fn choose_secret(
+/// Resolve a value through the ladder: CLI flag → `$VAR` → `$VAR_FILE` → config
+/// inline value → config file path. File-sourced values are read and trimmed; the
+/// first non-empty candidate wins.
+fn resolve_secret(
     flag: Option<String>,
-    env_val: Option<String>,
-    file_contents: Option<String>,
+    var: &str,
+    cfg_inline: Option<String>,
+    cfg_file: Option<&str>,
 ) -> Option<String> {
-    if let Some(v) = flag {
-        if !v.is_empty() {
-            return Some(v);
-        }
-    }
-    if let Some(v) = env_val {
-        if !v.is_empty() {
-            return Some(v);
-        }
-    }
-    let trimmed = file_contents?.trim().to_string();
-    (!trimmed.is_empty()).then_some(trimmed)
+    first_nonempty([
+        flag,
+        std::env::var(var).ok(),
+        std::env::var(format!("{var}_FILE"))
+            .ok()
+            .and_then(|p| read_file_secret(&p)),
+        cfg_inline,
+        cfg_file.and_then(read_file_secret),
+    ])
 }
 
-/// A single-line, length-bounded preview of (possibly multi-line) text, for
-/// dry-run output only. The full text is still sent to Pinboard's `extended`.
-pub(crate) fn preview(text: &str) -> String {
-    const MAX: usize = 160;
-    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one_line.chars().count() > MAX {
-        let head: String = one_line.chars().take(MAX).collect();
-        format!("{head}…")
-    } else {
-        one_line
-    }
+/// The first non-empty value among the candidates.
+fn first_nonempty(candidates: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    candidates.into_iter().flatten().find(|s| !s.is_empty())
 }
 
-fn resolve_pinboard_token(flag: Option<String>) -> Option<String> {
-    resolve_secret(flag, "PINBOARD_TOKEN").or_else(read_pinboardrc)
+/// Read a file's trimmed contents, or `None` if missing or empty.
+fn read_file_secret(path: &str) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The auth-failure hook: CLI flag (with its env) → per-account override → `[hooks]`.
+fn resolve_hook(
+    flag: Option<String>,
+    account_override: Option<&str>,
+    config: &Config,
+) -> Option<String> {
+    flag.or_else(|| account_override.map(str::to_string))
+        .or_else(|| config.hooks.on_auth_failure.clone())
+}
+
+fn resolve_pinboard_token(flag: Option<String>, pb: &config::Pinboard) -> Option<String> {
+    resolve_secret(
+        flag,
+        "PINBOARD_TOKEN",
+        pb.token.clone(),
+        pb.token_file.as_deref(),
+    )
+    .or_else(read_pinboardrc)
 }
 
 /// Read `api_token` from `~/.pinboardrc` (`[authentication]` section).
@@ -296,47 +490,40 @@ fn parse_pinboardrc(contents: &str) -> Option<String> {
     None
 }
 
+/// A single-line, length-bounded preview of (possibly multi-line) text, for
+/// dry-run output only. The full text is still sent to Pinboard's `extended`.
+pub(crate) fn preview(text: &str) -> String {
+    const MAX: usize = 160;
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() > MAX {
+        let head: String = one_line.chars().take(MAX).collect();
+        format!("{head}…")
+    } else {
+        one_line
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn choose_secret_prefers_flag_then_env_then_file() {
+    fn first_nonempty_prefers_earlier_nonempty_candidates() {
         assert_eq!(
-            choose_secret(Some("flag".into()), Some("env".into()), Some("file".into())),
-            Some("flag".into())
+            first_nonempty([Some("a".into()), Some("b".into())]),
+            Some("a".into())
         );
         assert_eq!(
-            choose_secret(None, Some("env".into()), Some("file".into())),
-            Some("env".into())
+            first_nonempty([None, Some(String::new()), Some("b".into())]),
+            Some("b".into())
         );
-        assert_eq!(
-            choose_secret(None, None, Some("file".into())),
-            Some("file".into())
-        );
-        assert_eq!(choose_secret(None, None, None), None);
-    }
-
-    #[test]
-    fn choose_secret_skips_empty_values_and_trims_file() {
-        // Empty flag and env fall through to the file, whose contents are trimmed.
-        assert_eq!(
-            choose_secret(
-                Some(String::new()),
-                Some(String::new()),
-                Some("  tok\n".into())
-            ),
-            Some("tok".into())
-        );
-        // A whitespace-only file yields nothing.
-        assert_eq!(choose_secret(None, None, Some("   \n".into())), None);
+        assert_eq!(first_nonempty([None, Some(String::new())]), None);
     }
 
     #[test]
     fn parse_pinboardrc_reads_api_token() {
         let ini = "[authentication]\napi_token = user:ABC123\n";
         assert_eq!(parse_pinboardrc(ini), Some("user:ABC123".into()));
-        // No spaces around '=' also works.
         assert_eq!(
             parse_pinboardrc("api_token=user:XYZ"),
             Some("user:XYZ".into())
@@ -356,9 +543,9 @@ mod tests {
 
     #[test]
     fn preview_truncates_long_text_with_ellipsis() {
-        let long = "word ".repeat(100); // ~500 chars once collapsed
+        let long = "word ".repeat(100);
         let p = preview(&long);
         assert!(p.ends_with('…'));
-        assert_eq!(p.chars().count(), 161); // 160 chars + the ellipsis
+        assert_eq!(p.chars().count(), 161);
     }
 }

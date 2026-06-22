@@ -4,7 +4,6 @@
 use std::time::Duration;
 
 use anyhow::Context;
-use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
 
 use crate::http::send_retrying;
@@ -80,7 +79,6 @@ impl Repo {
 /// Reads a user's starred repos via a personal access token.
 pub struct GitHubClient {
     http: reqwest::Client,
-    token: String,
     config: GithubConfig,
     /// API base (overridden in tests).
     base: String,
@@ -92,34 +90,45 @@ impl GitHubClient {
     }
 
     fn build(token: String, config: GithubConfig, base: String) -> anyhow::Result<Self> {
+        use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
+
+        // The auth/accept/version headers are constant for the client's lifetime, so
+        // set them (and the User-Agent GitHub requires) once as defaults.
+        let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))
+            .context("invalid GitHub token (bad header bytes)")?;
+        auth.set_sensitive(true);
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, auth);
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/vnd.github+json"),
+        );
+        headers.insert(
+            "X-GitHub-Api-Version",
+            HeaderValue::from_static("2022-11-28"),
+        );
+
         let http = reqwest::Client::builder()
+            .user_agent(UA)
+            .default_headers(headers)
             .build()
             .context("building HTTP client")?;
-        Ok(Self {
-            http,
-            token,
-            config,
-            base,
-        })
+        Ok(Self { http, config, base })
     }
 }
 
 impl Source for GitHubClient {
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
         let endpoint = format!("{}/user/starred", self.base);
-        let mut out: Vec<BookmarkDraft> = Vec::new();
+        let mut out = Vec::new();
         let mut page: u32 = 1;
 
         loop {
-            let page_str = page.to_string();
             let resp = send_retrying("github starred", MAX_RETRIES, RETRY_DELAY, || {
                 self.http
                     .get(&endpoint)
-                    .query(&[("sort", "created"), ("page", page_str.as_str())])
-                    .header(AUTHORIZATION, format!("Bearer {}", self.token))
-                    .header(ACCEPT, "application/vnd.github+json")
-                    .header("X-GitHub-Api-Version", "2022-11-28")
-                    .header(USER_AGENT, UA)
+                    .query(&[("sort", "created")])
+                    .query(&[("page", page)])
             })
             .await?;
 

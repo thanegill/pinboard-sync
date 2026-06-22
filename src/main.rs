@@ -14,7 +14,8 @@ mod test_support;
 use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 use config::{Config, RedditAccount};
 use pinboard::PinboardClient;
@@ -37,6 +38,19 @@ enum Command {
     Sync(SyncCmd),
     /// Normalize existing bookmarks for a source.
     Cleanup(CleanupCmd),
+    /// Print a shell completion script (bash, zsh, fish, …) to stdout.
+    Completions { shell: Shell },
+    /// Config helpers.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Print a fully-commented example config (every key with its default).
+    Example,
 }
 
 #[derive(Args)]
@@ -144,10 +158,19 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let result = async {
-        let config = load_config(cli.config.clone())?;
         match cli.command {
-            Command::Sync(cmd) => run_sync(cmd, &config).await,
-            Command::Cleanup(cmd) => run_cleanup(cmd, &config).await,
+            Command::Sync(cmd) => run_sync(cmd, &load_config(cli.config.clone())?).await,
+            Command::Cleanup(cmd) => run_cleanup(cmd, &load_config(cli.config.clone())?).await,
+            Command::Completions { shell } => {
+                print_completions(shell);
+                Ok(())
+            }
+            Command::Config {
+                action: ConfigAction::Example,
+            } => {
+                print!("{}", include_str!("config.example.toml"));
+                Ok(())
+            }
         }
     }
     .await;
@@ -157,6 +180,13 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+/// Write a shell completion script for `shell` to stdout.
+fn print_completions(shell: Shell) {
+    let mut cmd = Cli::command();
+    let name = cmd.get_name().to_string();
+    clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
 }
 
 /// Load the config from `--config`/`$PINBOARD_SYNC_CONFIG`/`_FILE`; absent = defaults.

@@ -187,6 +187,13 @@ mod tests {
     }
 
     #[test]
+    fn shipped_example_config_parses() {
+        // The `config example` template must stay a valid Config.
+        let cfg = Config::parse(include_str!("config.example.toml")).unwrap();
+        assert_eq!(cfg.reddit.len(), 1);
+    }
+
+    #[test]
     fn select_account_by_name_or_first_or_error() {
         let accounts = vec![
             RedditAccount {

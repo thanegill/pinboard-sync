@@ -1,0 +1,45 @@
+# pinboard-sync configuration.
+#
+# Pass with `--config <path>`, or set PINBOARD_SYNC_CONFIG (or
+# PINBOARD_SYNC_CONFIG_FILE, a path whose contents are the path). Every field is
+# optional; an absent config means all built-in defaults. Secret fields accept an
+# inline value OR a `<field>_file` sibling holding a path whose trimmed contents
+# are the value (handy for sops-nix / systemd credentials).
+#
+# Resolution order for any single value: CLI flag > $ENV > $ENV_FILE >
+# this config (inline, then *_file). Tag settings have no CLI flag — they live
+# here only, each shown below with its built-in default.
+
+# Shell command run when a source needs re-authentication (e.g. an expired Reddit
+# cookie). Runs via `sh -c` with PINBOARD_SYNC_AUTH_ERROR / PINBOARD_SYNC_EVENT in
+# the environment. A reddit account may override this with its own on_auth_failure.
+[hooks]
+# on_auth_failure = "systemctl --user restart refresh-reddit-cookie.service"
+
+# The shared Pinboard destination for every source.
+[pinboard]
+# token = "user:0123456789ABCDEF"        # or:
+# token_file = "/run/secrets/pinboard-token"
+public = false                           # write bookmarks public (default: private)
+
+# A reddit account. Repeat the [[reddit]] table for multiple accounts; select one
+# with `sync reddit <name>`, or run them all with `sync reddit --all`.
+[[reddit]]
+name = "main"                            # used to select this account and in logs
+# username = "your-reddit-username"      # non-secret; whose saved.json to read
+# cookie = "reddit_session=…"            # or:
+# cookie_file = "/run/secrets/reddit-cookie"
+# on_auth_failure = "…"                  # per-account override of [hooks].on_auth_failure
+# limit = 0                              # cap new bookmarks per run (0 = all)
+
+# Tags (config-only). Each line shows the built-in default; set "" to disable a tag.
+reddit_domain = "old.reddit.com"         # host for bookmark/thread URLs
+tag_base = "reddit"                      # applied to every bookmark
+tag_subreddit_prefix = "subreddit:"      # subreddit:<sub>
+tag_comment = "reddit-comment"           # added to comments
+tag_nsfw = "nsfw"                        # added when the post is over_18
+tag_author_prefix = "author:reddit:"     # author:reddit:<name>
+tag_flair_prefix = "reddit-flair:"       # reddit-flair:<slug>
+tag_media_prefix = "type:"               # type:image / type:video
+tag_media_types = ["image", "video"]     # which media types get a type:<x> tag ([] = none)
+tags = []                                # extra tags appended to every bookmark

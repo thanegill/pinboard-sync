@@ -61,7 +61,10 @@ config struct (`RedditConfig`, `GithubConfig`, `HackernewsConfig`) of overridabl
 fields with built-in defaults; the `tags` list (default e.g. `["reddit"]`) is the
 base tag plus any extras, and `push_tag`/`push_prefixed` in `source.rs` render them
 (empty string disables a tag). `model.rs`'s tag tests are the spec — keep them in
-sync with rule changes. Reddit's URL host is the configurable `reddit_domain` (used
+sync with rule changes. Pinboard tags can't contain spaces (the API splits the tag
+string on them), so `push_prefixed` slugs internal whitespace in the value (e.g. the
+GitHub language `Jupyter Notebook` → `lang:jupyter-notebook`) and `Config::parse`
+rejects whitespace in config-supplied tags/prefixes. Reddit's URL host is the configurable `reddit_domain` (used
 by both sync `bookmark_url` and cleanup's `normalize_url`); `reddit_key` stays
 host-agnostic so dedup matches across subdomains.
 

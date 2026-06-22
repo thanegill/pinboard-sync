@@ -49,8 +49,11 @@ pub fn push_tag(tags: &mut Vec<String>, key: &str) {
     }
 }
 
-/// Append `prefix + value` to `tags` unless either side is empty.
+/// Append `prefix + value` to `tags`, collapsing internal whitespace in `value` to
+/// `-` (Pinboard tags can't contain spaces — the API splits on them). Skipped if
+/// `prefix` is empty or `value` is empty/all-whitespace.
 pub fn push_prefixed(tags: &mut Vec<String>, prefix: &str, value: &str) {
+    let value = value.split_whitespace().collect::<Vec<_>>().join("-");
     if !prefix.is_empty() && !value.is_empty() {
         tags.push(format!("{prefix}{value}"));
     }
@@ -80,6 +83,16 @@ pub fn url_key(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_prefixed_slugs_internal_whitespace() {
+        let mut tags = Vec::new();
+        push_prefixed(&mut tags, "lang:", "Jupyter Notebook");
+        push_prefixed(&mut tags, "x:", "  spaced  out ");
+        push_prefixed(&mut tags, "y:", "   "); // all whitespace → skipped
+        push_prefixed(&mut tags, "", "v"); // empty prefix → skipped
+        assert_eq!(tags, vec!["lang:Jupyter-Notebook", "x:spaced-out"]);
+    }
 
     #[test]
     fn url_key_normalizes_host_and_path() {

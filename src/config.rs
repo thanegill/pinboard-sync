@@ -5,7 +5,7 @@
 //! account → typed-config mapping. Every field is optional, so an absent or empty
 //! config yields all defaults.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 
 use crate::github::GithubConfig;
@@ -72,10 +72,59 @@ pub struct RedditAccount {
 }
 
 impl Config {
-    /// Parse a config from TOML text.
+    /// Parse a config from TOML text, validating tag fields.
     pub fn parse(text: &str) -> Result<Self> {
-        toml::from_str(text).map_err(|e| anyhow!("parsing config: {e}"))
+        let config: Config = toml::from_str(text).map_err(|e| anyhow!("parsing config: {e}"))?;
+        config.validate()?;
+        Ok(config)
     }
+
+    /// Reject tag values containing whitespace — Pinboard tags can't contain spaces
+    /// (its API splits the tag string on them), so a space here is silently
+    /// corrupting and should fail loudly instead.
+    fn validate(&self) -> Result<()> {
+        for a in &self.reddit {
+            check_tags("reddit.tags", &a.tags)?;
+            check_tag("reddit.tag_subreddit_prefix", &a.tag_subreddit_prefix)?;
+            check_tag("reddit.tag_comment", &a.tag_comment)?;
+            check_tag("reddit.tag_nsfw", &a.tag_nsfw)?;
+            check_tag("reddit.tag_author_prefix", &a.tag_author_prefix)?;
+            check_tag("reddit.tag_flair_prefix", &a.tag_flair_prefix)?;
+            check_tag("reddit.tag_media_prefix", &a.tag_media_prefix)?;
+        }
+        for a in &self.github {
+            check_tags("github.tags", &a.tags)?;
+            check_tag("github.tag_lang_prefix", &a.tag_lang_prefix)?;
+        }
+        for a in &self.hackernews {
+            check_tags("hackernews.tags", &a.tags)?;
+            check_tag("hackernews.tag_comment", &a.tag_comment)?;
+            check_tag("hackernews.tag_author_prefix", &a.tag_author_prefix)?;
+            check_tag("hackernews.tag_special_prefix", &a.tag_special_prefix)?;
+            check_tag("hackernews.tag_link", &a.tag_link)?;
+        }
+        Ok(())
+    }
+}
+
+/// Error if `value` (a tag or tag prefix) contains whitespace.
+fn check_tag(field: &str, value: &Option<String>) -> Result<()> {
+    if let Some(v) = value {
+        if v.chars().any(char::is_whitespace) {
+            bail!("config: `{field}` must not contain whitespace (got {v:?})");
+        }
+    }
+    Ok(())
+}
+
+/// Error if any tag in the list contains whitespace.
+fn check_tags(field: &str, values: &Option<Vec<String>>) -> Result<()> {
+    if let Some(values) = values {
+        for v in values {
+            check_tag(field, &Some(v.clone()))?;
+        }
+    }
+    Ok(())
 }
 
 impl RedditAccount {
@@ -254,6 +303,15 @@ mod tests {
     #[test]
     fn rejects_unknown_keys() {
         assert!(Config::parse("[[reddit]]\nnonsense = 1").is_err());
+    }
+
+    #[test]
+    fn rejects_whitespace_in_tags() {
+        assert!(Config::parse("[[reddit]]\ntags = [\"a b\"]").is_err());
+        assert!(Config::parse("[[github]]\ntag_lang_prefix = \"lang :\"").is_err());
+        assert!(Config::parse("[[hackernews]]\ntag_link = \"find hn\"").is_err());
+        // No whitespace → fine (hyphens/colons allowed).
+        assert!(Config::parse("[[reddit]]\ntags = [\"reddit\", \"a-b\"]").is_ok());
     }
 
     #[test]

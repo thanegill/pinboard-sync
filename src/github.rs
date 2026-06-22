@@ -215,6 +215,18 @@ mod tests {
     }
 
     #[test]
+    fn language_with_spaces_is_slugged() {
+        // GitHub languages like "Jupyter Notebook" must not produce a space in the
+        // tag (Pinboard would split it into two tags).
+        let d = repo(json!({
+            "full_name": "o/r", "html_url": "https://github.com/o/r",
+            "language": "Jupyter Notebook"
+        }))
+        .into_draft(&GithubConfig::default());
+        assert_eq!(d.tags, vec!["github-star", "lang:jupyter-notebook"]);
+    }
+
+    #[test]
     fn draft_without_description_or_language() {
         let d = repo(json!({
             "full_name": "o/r",

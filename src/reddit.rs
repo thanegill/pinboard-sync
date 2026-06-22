@@ -12,8 +12,8 @@ use anyhow::Context;
 use serde::de::DeserializeOwned;
 
 use crate::http::send_retrying;
-use crate::model::{ListingEntry, RedditListing};
-use crate::source::SourceError;
+use crate::model::{reddit_key, ListingEntry, RedditConfig, RedditListing};
+use crate::source::{BookmarkDraft, Source, SourceError};
 
 /// Descriptive User-Agent built from the crate name + version. Reddit rejects
 /// generic or missing User-Agents.
@@ -53,23 +53,37 @@ pub struct RedditClient {
     username: Option<String>,
     /// Host base for both endpoints (overridden in tests).
     base: String,
+    /// Per-account config: bookmark domain + tag vocabulary for shaping drafts.
+    config: RedditConfig,
 }
 
 impl RedditClient {
-    /// Client for `sync`: reads `<base>/user/<username>/saved.json`.
-    pub fn for_user(username: String, cookie: Option<String>) -> anyhow::Result<Self> {
-        Self::build(cookie, Some(username), REDDIT_BASE.to_string())
+    /// Client for `sync`: reads `<base>/user/<username>/saved.json` and shapes
+    /// drafts using `config` (bookmark domain + tag vocabulary).
+    pub fn for_user(
+        username: String,
+        cookie: Option<String>,
+        config: RedditConfig,
+    ) -> anyhow::Result<Self> {
+        Self::build(cookie, Some(username), REDDIT_BASE.to_string(), config)
     }
 
-    /// Client for `cleanup`: `/api/info.json` lookups only (no saved listing).
+    /// Client for `cleanup`: `/api/info.json` lookups only (no saved listing, so
+    /// the bookmark domain/tag config are irrelevant).
     pub fn for_info(cookie: Option<String>) -> anyhow::Result<Self> {
-        Self::build(cookie, None, REDDIT_BASE.to_string())
+        Self::build(
+            cookie,
+            None,
+            REDDIT_BASE.to_string(),
+            RedditConfig::default(),
+        )
     }
 
     fn build(
         cookie: Option<String>,
         username: Option<String>,
         base: String,
+        config: RedditConfig,
     ) -> anyhow::Result<Self> {
         // native-tls is the only TLS backend compiled in (see Cargo.toml), so it's
         // the default connector — Reddit's edge rejects rustls's TLS fingerprint.
@@ -82,6 +96,7 @@ impl RedditClient {
             cookie,
             username,
             base,
+            config,
         })
     }
 
@@ -163,6 +178,23 @@ impl PostInfo for RedditClient {
     }
 }
 
+impl Source for RedditClient {
+    /// Fetch the saved listing and shape each post/comment into a draft.
+    async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
+        Ok(self
+            .fetch_saved()
+            .await?
+            .into_iter()
+            .filter_map(|e| e.into_saved_item(&self.config.domain))
+            .map(|it| it.into_draft(&self.config))
+            .collect())
+    }
+
+    fn existing_key(&self, url: &str) -> Option<String> {
+        reddit_key(url)
+    }
+}
+
 /// Decode a Reddit JSON response into `T`, centralizing status handling: 401/403
 /// become [`SourceError::ReauthRequired`] (with a fixed, actionable message — the
 /// body is usually a large anti-bot HTML page, so it isn't echoed), any other
@@ -193,7 +225,7 @@ async fn decode_reddit_json<T: DeserializeOwned>(
 impl RedditClient {
     /// Test constructor pointing both endpoints at a mock server.
     fn for_test(cookie: Option<String>, username: Option<String>, base: String) -> Self {
-        Self::build(cookie, username, base).unwrap()
+        Self::build(cookie, username, base, RedditConfig::default()).unwrap()
     }
 }
 
@@ -302,11 +334,11 @@ mod net_tests {
             .await
             .unwrap()
             .into_iter()
-            .filter_map(ListingEntry::into_saved_item)
+            .filter_map(|e| e.into_saved_item("old.reddit.com"))
             .collect();
         assert_eq!(items.len(), 2);
         assert_eq!(
-            items[0].tags("reddit", "subreddit:"),
+            items[0].tags(&RedditConfig::default()),
             vec![
                 "reddit",
                 "subreddit:rust",

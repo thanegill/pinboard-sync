@@ -1,21 +1,18 @@
-//! The sync loop: fetch saved items, skip those already on Pinboard, write the
-//! rest. Generic over the [`SavedSource`]/[`BookmarkStore`] ports so it can be
+//! The sync loop: fetch a source's drafts, skip those already on Pinboard, write
+//! the rest. Generic over the [`Source`]/[`BookmarkStore`] ports so it can be
 //! unit-tested with in-memory fakes.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::model::{reddit_key, ListingEntry, SavedItem};
 use crate::pinboard::{BookmarkStore, RATE_LIMIT_SECS};
-use crate::reddit::SavedSource;
-use crate::source::SourceError;
+use crate::source::{Source, SourceError};
 
 pub struct SyncConfig {
     /// Optional cap on bookmarks written per run; 0 = all.
     pub limit: usize,
-    pub base_tag: String,
-    pub subreddit_tag_prefix: String,
     pub dry_run: bool,
     pub verbose: bool,
 }
@@ -30,24 +27,25 @@ pub struct SyncSummary {
 
 /// Run the sync. Errors as `SourceError` so the caller can fire the
 /// auth-failure hook on `ReauthRequired`; Pinboard errors map to `Other`.
-pub async fn run<R: SavedSource, P: BookmarkStore>(
-    reddit: &R,
+pub async fn run<S: Source, P: BookmarkStore>(
+    source: &S,
     pinboard: &P,
     cfg: &SyncConfig,
 ) -> Result<SyncSummary, SourceError> {
-    let items: Vec<SavedItem> = reddit
-        .fetch_saved()
-        .await?
-        .into_iter()
-        .filter_map(ListingEntry::into_saved_item)
-        .collect();
-    let fetched = items.len();
+    let drafts = source.fetch().await?;
+    let fetched = drafts.len();
 
-    // Pinboard is the sync state: skip saved items already bookmarked there.
-    let existing = pinboard.existing_reddit_keys().await?;
-    let mut new_items: Vec<SavedItem> = items
+    // Pinboard is the sync state: skip drafts whose dedup key is already present,
+    // mapping each existing bookmark URL through this source's `existing_key`.
+    let existing: HashSet<String> = pinboard
+        .all()
+        .await?
+        .iter()
+        .filter_map(|b| source.existing_key(&b.url))
+        .collect();
+    let mut new_items: Vec<_> = drafts
         .into_iter()
-        .filter(|it| reddit_key(&it.permalink).is_none_or(|k| !existing.contains(&k)))
+        .filter(|d| !existing.contains(&d.dedup_key))
         .collect();
     let new = new_items.len();
 
@@ -57,7 +55,7 @@ pub async fn run<R: SavedSource, P: BookmarkStore>(
     }
 
     println!(
-        "Fetched {fetched} saved item(s); {} already on Pinboard; {new} new{}{}.",
+        "Fetched {fetched} item(s); {} already on Pinboard; {new} new{}{}.",
         fetched - new,
         if capped {
             format!(", writing {}", cfg.limit)
@@ -69,17 +67,14 @@ pub async fn run<R: SavedSource, P: BookmarkStore>(
 
     let mut written = 0usize;
     let mut posted = false;
-    for item in &new_items {
-        let url = item.bookmark_url();
-        let tags = item.tags(&cfg.base_tag, &cfg.subreddit_tag_prefix);
-
+    for draft in &new_items {
         if cfg.dry_run {
-            println!("[dry-run] {url}");
-            println!("          title: {}", item.description);
-            if !item.extended.is_empty() {
-                println!("          notes: {}", crate::preview(&item.extended));
+            println!("[dry-run] {}", draft.url);
+            println!("          title: {}", draft.description);
+            if !draft.extended.is_empty() {
+                println!("          notes: {}", crate::preview(&draft.extended));
             }
-            println!("          tags:  [{}]", tags.join(" "));
+            println!("          tags:  [{}]", draft.tags.join(" "));
             continue;
         }
 
@@ -88,13 +83,13 @@ pub async fn run<R: SavedSource, P: BookmarkStore>(
             tokio::time::sleep(Duration::from_secs(RATE_LIMIT_SECS)).await;
         }
         pinboard
-            .add(&url, &item.description, &item.extended, &tags)
+            .add(&draft.url, &draft.description, &draft.extended, &draft.tags)
             .await
-            .with_context(|| format!("adding bookmark {url}"))?;
+            .with_context(|| format!("adding bookmark {}", draft.url))?;
         posted = true;
         written += 1;
         if cfg.verbose {
-            eprintln!("added {url}  [{}]", tags.join(" "));
+            eprintln!("added {}  [{}]", draft.url, draft.tags.join(" "));
         }
     }
 
@@ -112,15 +107,13 @@ pub async fn run<R: SavedSource, P: BookmarkStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pinboard::Bookmark;
     use crate::test_support::{listing_entry, FakePinboard, FakeReddit};
     use serde_json::json;
-    use std::collections::HashSet;
 
     fn config() -> SyncConfig {
         SyncConfig {
             limit: 0,
-            base_tag: "reddit".into(),
-            subreddit_tag_prefix: "subreddit:".into(),
             dry_run: false,
             verbose: false,
         }
@@ -133,6 +126,19 @@ mod tests {
         )
     }
 
+    /// An existing Pinboard bookmark at `url` (other fields irrelevant to dedup).
+    fn bookmark(url: &str) -> Bookmark {
+        Bookmark {
+            url: url.into(),
+            description: String::new(),
+            extended: String::new(),
+            tags: String::new(),
+            time: String::new(),
+            shared: "no".into(),
+            toread: "no".into(),
+        }
+    }
+
     #[tokio::test]
     async fn writes_only_items_not_already_present() {
         let reddit = FakeReddit {
@@ -142,8 +148,9 @@ mod tests {
             ],
             ..Default::default()
         };
+        // Post a is already on Pinboard (any reddit host/case matches via reddit_key).
         let pinboard = FakePinboard {
-            existing: HashSet::from(["/r/rust/comments/a/x".to_string()]),
+            all: vec![bookmark("https://www.reddit.com/r/Rust/comments/a/x/")],
             ..Default::default()
         };
 

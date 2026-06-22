@@ -15,6 +15,7 @@ use std::process::ExitCode;
 use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand};
 
+use model::RedditConfig;
 use pinboard::PinboardClient;
 use reddit::RedditClient;
 use source::SourceError;
@@ -124,10 +125,13 @@ async fn sync(args: SyncArgs) -> Result<()> {
     let pinboard = PinboardClient::new(pinboard_token, args.public)?;
     let cfg = sync::SyncConfig {
         limit: args.limit,
-        base_tag: args.base_tag.clone(),
-        subreddit_tag_prefix: args.subreddit_tag_prefix.clone(),
         dry_run: args.dry_run,
         verbose: args.verbose,
+    };
+    let reddit_config = RedditConfig {
+        base: args.base_tag.clone(),
+        subreddit_prefix: args.subreddit_tag_prefix.clone(),
+        ..RedditConfig::default()
     };
     let hook = args.on_auth_failure.as_deref();
 
@@ -156,7 +160,7 @@ async fn sync(args: SyncArgs) -> Result<()> {
             ),
         }
     }
-    let reddit = RedditClient::for_user(username, cookie)?;
+    let reddit = RedditClient::for_user(username, cookie, reddit_config)?;
     sync::run(&reddit, &pinboard, &cfg)
         .await
         .map_err(|e| handle_reddit_err(e, hook))?;

@@ -3,6 +3,8 @@
 
 use serde::Deserialize;
 
+use crate::source::{push_prefixed, push_tag, BookmarkDraft};
+
 /// A Reddit "Listing" envelope (`{ "kind": "Listing", "data": { ... } }`).
 #[derive(Debug, Deserialize)]
 pub struct RedditListing {
@@ -86,8 +88,9 @@ pub struct SavedItem {
 
 impl ListingEntry {
     /// Convert a listing entry into a `SavedItem`, or `None` if it is neither a
-    /// post (`t3`) nor a comment (`t1`) or is missing the fields we need.
-    pub fn into_saved_item(self) -> Option<SavedItem> {
+    /// post (`t3`) nor a comment (`t1`) or is missing the fields we need. `domain`
+    /// is the reddit host used for the parent-thread link prepended to comments.
+    pub fn into_saved_item(self, domain: &str) -> Option<SavedItem> {
         let is_comment = match self.kind.as_str() {
             "t1" => true,
             "t3" => false,
@@ -119,7 +122,7 @@ impl ListingEntry {
         let extended = if is_comment {
             // Prepend a link to the parent thread, which a bare comment lacks.
             let body = fields.body.unwrap_or_default();
-            match parent_thread_url(fields.link_permalink.as_deref()) {
+            match parent_thread_url(fields.link_permalink.as_deref(), domain) {
                 Some(url) if body.is_empty() => format!("Thread: {url}"),
                 Some(url) => format!("Thread: {url}\n\n{body}"),
                 None => body,
@@ -150,13 +153,13 @@ impl ListingEntry {
 }
 
 /// Build the parent-thread URL for a comment from its `link_permalink` (which may
-/// be absolute or a relative path), normalized to `old.reddit.com`.
-fn parent_thread_url(link_permalink: Option<&str>) -> Option<String> {
+/// be absolute or a relative path), relative paths resolved against `domain`.
+fn parent_thread_url(link_permalink: Option<&str>, domain: &str) -> Option<String> {
     let lp = link_permalink.filter(|s| !s.is_empty())?;
     if lp.starts_with("http") {
         Some(lp.to_string())
     } else {
-        Some(format!("https://old.reddit.com{lp}"))
+        Some(format!("https://{domain}{lp}"))
     }
 }
 
@@ -173,37 +176,86 @@ fn post_media_type(is_video: bool, post_hint: Option<&str>) -> Option<String> {
     }
 }
 
+/// Per-account reddit config: the host used in bookmark/thread URLs plus the tag
+/// vocabulary (every tag/prefix the source emits, each defaulting to its built-in
+/// value; an empty string disables that tag). `media_types` is the allowlist of
+/// post media types (`image`/`video`) that get a `media_prefix` tag.
+#[derive(Debug, Clone)]
+pub struct RedditConfig {
+    pub domain: String,
+    pub base: String,
+    pub subreddit_prefix: String,
+    pub comment: String,
+    pub nsfw: String,
+    pub author_prefix: String,
+    pub flair_prefix: String,
+    pub media_prefix: String,
+    pub media_types: Vec<String>,
+}
+
+impl Default for RedditConfig {
+    fn default() -> Self {
+        Self {
+            domain: "old.reddit.com".into(),
+            base: "reddit".into(),
+            subreddit_prefix: "subreddit:".into(),
+            comment: "reddit-comment".into(),
+            nsfw: "nsfw".into(),
+            author_prefix: "author:reddit:".into(),
+            flair_prefix: "reddit-flair:".into(),
+            media_prefix: "type:".into(),
+            media_types: vec!["image".into(), "video".into()],
+        }
+    }
+}
+
 impl SavedItem {
-    /// The bookmark URL: the `old.reddit.com` permalink.
-    pub fn bookmark_url(&self) -> String {
-        format!("https://old.reddit.com{}", self.permalink)
+    /// The bookmark URL: the permalink under the configured reddit `domain`.
+    pub fn bookmark_url(&self, domain: &str) -> String {
+        format!("https://{domain}{}", self.permalink)
     }
 
-    /// Build the Pinboard tag list for this item.
-    pub fn tags(&self, base_tag: &str, subreddit_prefix: &str) -> Vec<String> {
-        let mut tags = vec![
-            base_tag.to_string(),
-            format!("{}{}", subreddit_prefix, cased_subreddit(&self.subreddit)),
-        ];
+    /// Build the Pinboard tag list for this item from the reddit config.
+    pub fn tags(&self, cfg: &RedditConfig) -> Vec<String> {
+        let mut tags = Vec::new();
+        push_tag(&mut tags, &cfg.base);
+        push_prefixed(
+            &mut tags,
+            &cfg.subreddit_prefix,
+            &cased_subreddit(&self.subreddit),
+        );
         if self.is_comment {
-            tags.push("reddit-comment".to_string());
+            push_tag(&mut tags, &cfg.comment);
         }
         if self.over_18 {
-            tags.push("nsfw".to_string());
+            push_tag(&mut tags, &cfg.nsfw);
         }
         if let Some(author) = &self.author {
-            tags.push(format!("author:reddit:{author}"));
+            push_prefixed(&mut tags, &cfg.author_prefix, author);
         }
         if let Some(flair) = &self.flair {
-            let slug = tag_slug(flair);
-            if !slug.is_empty() {
-                tags.push(format!("reddit-flair:{slug}"));
-            }
+            push_prefixed(&mut tags, &cfg.flair_prefix, &tag_slug(flair));
         }
         if let Some(media_type) = &self.media_type {
-            tags.push(format!("type:{media_type}"));
+            if cfg.media_types.iter().any(|t| t == media_type) {
+                push_prefixed(&mut tags, &cfg.media_prefix, media_type);
+            }
         }
         tags
+    }
+
+    /// Shape this item into a Pinboard draft using the reddit config.
+    pub fn into_draft(self, cfg: &RedditConfig) -> BookmarkDraft {
+        let url = self.bookmark_url(&cfg.domain);
+        let dedup_key = reddit_key(&self.permalink).unwrap_or_else(|| url.clone());
+        let tags = self.tags(cfg);
+        BookmarkDraft {
+            url,
+            description: self.description,
+            extended: self.extended,
+            tags,
+            dedup_key,
+        }
     }
 }
 
@@ -289,7 +341,7 @@ mod tests {
     fn item(kind: &str, fields: serde_json::Value) -> SavedItem {
         let entry: ListingEntry =
             serde_json::from_value(serde_json::json!({ "kind": kind, "data": fields })).unwrap();
-        entry.into_saved_item().unwrap()
+        entry.into_saved_item("old.reddit.com").unwrap()
     }
 
     #[test]
@@ -306,13 +358,13 @@ mod tests {
         );
         assert!(!it.is_comment);
         assert_eq!(
-            it.bookmark_url(),
+            it.bookmark_url("old.reddit.com"),
             "https://old.reddit.com/r/rust/comments/abc/title/"
         );
         assert_eq!(it.description, "A title");
         // A plain link post gets no `type:` tag (only image/video do).
         assert_eq!(
-            it.tags("reddit", "subreddit:"),
+            it.tags(&RedditConfig::default()),
             vec!["reddit", "subreddit:rust"]
         );
     }
@@ -327,10 +379,37 @@ mod tests {
                 "post_hint": "image"
             }),
         );
-        let tags = it.tags("reddit", "subreddit:");
+        let tags = it.tags(&RedditConfig::default());
         assert!(tags.contains(&"author:reddit:alice".to_string()));
         assert!(tags.contains(&"reddit-flair:help-wanted".to_string()));
         assert!(tags.contains(&"type:image".to_string()));
+    }
+
+    #[test]
+    fn media_type_tag_is_gated_by_the_media_types_allowlist() {
+        let img = item(
+            "t3",
+            serde_json::json!({
+                "name": "t3_a", "subreddit": "rust", "permalink": "/r/rust/comments/a/x/",
+                "title": "T", "post_hint": "image"
+            }),
+        );
+        // Allowlisting only "video" drops the image tag; "" disables media tags.
+        let only_video = RedditConfig {
+            media_types: vec!["video".into()],
+            ..RedditConfig::default()
+        };
+        assert!(!img.tags(&only_video).iter().any(|t| t.starts_with("type:")));
+        assert!(img
+            .tags(&RedditConfig::default())
+            .contains(&"type:image".to_string()));
+
+        // An empty media_prefix disables the tag even when the type is allowed.
+        let no_prefix = RedditConfig {
+            media_prefix: String::new(),
+            ..RedditConfig::default()
+        };
+        assert!(!img.tags(&no_prefix).iter().any(|t| t.starts_with("type:")));
     }
 
     #[test]
@@ -344,7 +423,7 @@ mod tests {
             }),
         );
         assert!(!post
-            .tags("reddit", "subreddit:")
+            .tags(&RedditConfig::default())
             .iter()
             .any(|t| t.starts_with("type:")));
 
@@ -361,7 +440,7 @@ mod tests {
         );
         // Comments get no `type:` tag.
         assert!(!comment
-            .tags("reddit", "subreddit:")
+            .tags(&RedditConfig::default())
             .iter()
             .any(|t| t.starts_with("type:")));
     }
@@ -383,7 +462,7 @@ mod tests {
         assert_eq!(it.extended, "my comment");
         // All-caps subreddit lowercased.
         assert_eq!(
-            it.tags("reddit", "subreddit:"),
+            it.tags(&RedditConfig::default()),
             vec!["reddit", "subreddit:news", "reddit-comment"]
         );
     }
@@ -401,7 +480,7 @@ mod tests {
             }),
         );
         assert!(it
-            .tags("reddit", "subreddit:")
+            .tags(&RedditConfig::default())
             .contains(&"nsfw".to_string()));
     }
 
@@ -439,7 +518,7 @@ mod tests {
             "data": { "subreddit": "rust", "permalink": "/r/rust/" }
         }))
         .unwrap();
-        assert!(entry.into_saved_item().is_none());
+        assert!(entry.into_saved_item("old.reddit.com").is_none());
     }
 
     #[test]
@@ -466,7 +545,7 @@ mod tests {
             .data
             .children
             .into_iter()
-            .filter_map(ListingEntry::into_saved_item)
+            .filter_map(|e| e.into_saved_item("old.reddit.com"))
             .collect();
         assert_eq!(items.len(), 2);
         assert!(items[1].is_comment);

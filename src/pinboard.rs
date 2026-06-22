@@ -1,14 +1,12 @@
 //! Minimal Pinboard API client: `posts/add`, `posts/all`, and `posts/delete`,
 //! with rate limiting and transient-failure retries (see [`crate::http`]).
 
-use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 
 use crate::http::send_retrying;
-use crate::model::reddit_key;
 
 const DEFAULT_BASE: &str = "https://api.pinboard.in/v1";
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
@@ -72,8 +70,6 @@ pub struct PinboardClient {
 pub trait BookmarkStore {
     /// Every bookmark in the account (`posts/all`).
     async fn all(&self) -> Result<Vec<Bookmark>>;
-    /// The set of Reddit permalink keys already bookmarked.
-    async fn existing_reddit_keys(&self) -> Result<HashSet<String>>;
     /// Add a new bookmark.
     async fn add(
         &self,
@@ -132,18 +128,6 @@ impl BookmarkStore for PinboardClient {
             .get_with_backoff(&self.url("posts/all"), &params)
             .await?;
         resp.json().await.context("parsing Pinboard posts/all")
-    }
-
-    /// The set of Reddit permalink keys already bookmarked — the destination *is*
-    /// the sync state. Matched by host + permalink path, so it covers reddit
-    /// bookmarks regardless of their tags or subdomain.
-    async fn existing_reddit_keys(&self) -> Result<HashSet<String>> {
-        Ok(self
-            .all()
-            .await?
-            .into_iter()
-            .filter_map(|b| reddit_key(&b.url))
-            .collect())
     }
 
     async fn delete(&self, url: &str) -> Result<()> {
@@ -325,7 +309,7 @@ mod net_tests {
     }
 
     #[tokio::test]
-    async fn all_parses_and_existing_keys_filters_to_reddit() {
+    async fn all_parses_bookmarks() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/posts/all"))
@@ -339,12 +323,10 @@ mod net_tests {
             .mount(&server)
             .await;
 
-        let c = client(&server);
-        assert_eq!(c.all().await.unwrap().len(), 2);
-
-        let keys = c.existing_reddit_keys().await.unwrap();
-        assert_eq!(keys.len(), 1);
-        assert!(keys.contains("/r/rust/comments/a/x"));
+        let all = client(&server).all().await.unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].url, "https://old.reddit.com/r/rust/comments/a/x/");
+        assert_eq!(all[0].tag_list(), vec!["reddit", "subreddit:rust"]);
     }
 
     #[tokio::test]

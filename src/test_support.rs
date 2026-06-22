@@ -3,15 +3,14 @@
 //! any network. Compiled only under `#[cfg(test)]`.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
 
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::model::ListingEntry;
+use crate::model::{reddit_key, ListingEntry, RedditConfig};
 use crate::pinboard::{Bookmark, BookmarkStore};
-use crate::reddit::{PostInfo, SavedSource};
-use crate::source::SourceError;
+use crate::reddit::PostInfo;
+use crate::source::{BookmarkDraft, Source, SourceError};
 
 /// Build a `ListingEntry` from `kind` (`t3`/`t1`) and a `data` JSON object.
 pub fn listing_entry(kind: &str, data: Value) -> ListingEntry {
@@ -24,9 +23,20 @@ pub struct FakeReddit {
     pub info: Vec<ListingEntry>,
 }
 
-impl SavedSource for FakeReddit {
-    async fn fetch_saved(&self) -> Result<Vec<ListingEntry>, SourceError> {
-        Ok(self.saved.clone())
+impl Source for FakeReddit {
+    async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
+        let cfg = RedditConfig::default();
+        Ok(self
+            .saved
+            .iter()
+            .cloned()
+            .filter_map(|e| e.into_saved_item(&cfg.domain))
+            .map(|it| it.into_draft(&cfg))
+            .collect())
+    }
+
+    fn existing_key(&self, url: &str) -> Option<String> {
+        reddit_key(url)
     }
 }
 
@@ -51,7 +61,6 @@ pub struct UpdateCall {
 
 #[derive(Default)]
 pub struct FakePinboard {
-    pub existing: HashSet<String>,
     pub all: Vec<Bookmark>,
     pub added: RefCell<Vec<AddCall>>,
     pub updated: RefCell<Vec<UpdateCall>>,
@@ -61,9 +70,6 @@ pub struct FakePinboard {
 impl BookmarkStore for FakePinboard {
     async fn all(&self) -> Result<Vec<Bookmark>> {
         Ok(self.all.clone())
-    }
-    async fn existing_reddit_keys(&self) -> Result<HashSet<String>> {
-        Ok(self.existing.clone())
     }
     async fn add(
         &self,

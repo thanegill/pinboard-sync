@@ -3,10 +3,11 @@
 
 use std::time::Duration;
 
-use anyhow::Context;
+use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::http::send_retrying;
+use crate::pinboard::{Bookmark, BookmarkStore, RATE_LIMIT_SECS};
 use crate::source::{push_prefixed, push_tag, url_key, BookmarkDraft, Source, SourceError};
 
 const UA: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
@@ -171,6 +172,116 @@ impl Source for GitHubClient {
     }
 }
 
+/// Options for `cleanup github`.
+pub struct GhCleanupOpts {
+    pub dry_run: bool,
+    pub verbose: bool,
+}
+
+/// Normalize existing GitHub repo bookmarks: canonicalize each repo-root URL to
+/// `https://github.com/<owner>/<repo>` (updating + deleting the old URL when it
+/// changes), preserving the title, notes, tags, and creation time.
+pub async fn cleanup<P: BookmarkStore>(
+    pinboard: &P,
+    opts: &GhCleanupOpts,
+    bookmarks: &[Bookmark],
+) -> Result<()> {
+    let gh_bms: Vec<_> = bookmarks
+        .iter()
+        .filter(|b| is_github_url(&b.url))
+        .cloned()
+        .collect();
+    println!(
+        "Scanning {} github bookmark(s){}...",
+        gh_bms.len(),
+        if opts.dry_run { " (dry run)" } else { "" }
+    );
+
+    let mut changed = 0usize;
+    let mut wrote = false;
+    for bm in &gh_bms {
+        let Some(new_url) = canonical_repo_url(&bm.url) else {
+            continue;
+        };
+        changed += 1;
+
+        if opts.dry_run {
+            println!("[dry-run] {}", bm.url);
+            println!("          url -> {new_url}");
+            continue;
+        }
+
+        if wrote {
+            tokio::time::sleep(Duration::from_secs(RATE_LIMIT_SECS)).await;
+        }
+        pinboard
+            .update(
+                &new_url,
+                &bm.description,
+                &bm.extended,
+                &bm.tag_list(),
+                bm.is_shared(),
+                bm.is_toread(),
+                &bm.time,
+            )
+            .await
+            .with_context(|| format!("updating bookmark {new_url}"))?;
+        pinboard
+            .delete(&bm.url)
+            .await
+            .with_context(|| format!("deleting old URL {}", bm.url))?;
+        wrote = true;
+        if opts.verbose {
+            eprintln!("updated {} -> {new_url}", bm.url);
+        }
+    }
+
+    if opts.dry_run {
+        println!("{changed} bookmark(s) would change.");
+    } else {
+        println!("Done. Updated {changed} bookmark(s).");
+    }
+    Ok(())
+}
+
+/// Whether `url`'s host is github.com or a `*.github.com` subdomain.
+fn is_github_url(url: &str) -> bool {
+    let after = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let host = after.split('/').next().unwrap_or(after);
+    let host = host
+        .rsplit('@')
+        .next()
+        .unwrap_or(host)
+        .split(':')
+        .next()
+        .unwrap_or(host)
+        .to_ascii_lowercase();
+    host == "github.com" || host.ends_with(".github.com")
+}
+
+/// Canonicalize a GitHub *repo-root* URL to `https://github.com/<owner>/<repo>`
+/// (lowercasing the host, forcing https, dropping a `.git` suffix, trailing slash,
+/// and any query/fragment). Returns `Some(new)` only if it changed; `None` for a
+/// non-GitHub host, an already-canonical URL, or a deeper path (e.g. `/tree/...`,
+/// `/issues`) which is left untouched.
+pub fn canonical_repo_url(url: &str) -> Option<String> {
+    if !is_github_url(url) {
+        return None;
+    }
+    let after = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let path = after.split('/').skip(1).collect::<Vec<_>>().join("/");
+    let path = path.split(['?', '#']).next().unwrap_or(&path);
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    // Only act on a bare owner/repo (don't mangle deeper links).
+    if segments.len() != 2 {
+        return None;
+    }
+    let owner = segments[0];
+    let repo = segments[1].strip_suffix(".git").unwrap_or(segments[1]);
+    let canonical = format!("https://github.com/{owner}/{repo}");
+    (canonical != url).then_some(canonical)
+}
+
 /// Extract the `page` number of the `rel="next"` link from a GitHub `Link` header,
 /// or `None` when there is no next page.
 fn parse_link_next(link: &str) -> Option<u32> {
@@ -256,6 +367,69 @@ mod tests {
         let d = repo(json!({ "full_name": "o/r", "html_url": "https://github.com/o/r" }))
             .into_draft(&cfg);
         assert_eq!(d.tags, vec!["github-star", "account:work"]);
+    }
+
+    #[test]
+    fn canonical_repo_url_normalizes_repo_roots_only() {
+        // Scheme, host case, .git, trailing slash, and query are all normalized.
+        for url in [
+            "http://github.com/Owner/Repo",
+            "https://www.github.com/Owner/Repo/",
+            "https://github.com/Owner/Repo.git",
+            "https://github.com/Owner/Repo?tab=stars",
+        ] {
+            assert_eq!(
+                canonical_repo_url(url).as_deref(),
+                Some("https://github.com/Owner/Repo"),
+                "url: {url}"
+            );
+        }
+        // Already canonical → no change.
+        assert_eq!(canonical_repo_url("https://github.com/o/r"), None);
+        // Non-GitHub and deeper paths are left untouched.
+        assert_eq!(canonical_repo_url("https://example.com/o/r"), None);
+        assert_eq!(canonical_repo_url("https://github.com/o/r/issues/5"), None);
+        assert_eq!(canonical_repo_url("https://github.com/o"), None);
+    }
+
+    #[tokio::test]
+    async fn cleanup_canonicalizes_url_and_deletes_old() {
+        use crate::pinboard::Bookmark;
+        use crate::test_support::FakePinboard;
+
+        let pinboard = FakePinboard {
+            all: vec![Bookmark {
+                url: "https://www.github.com/Owner/Repo.git".into(),
+                description: "Owner/Repo".into(),
+                extended: "notes".into(),
+                tags: "github-star lang:rust".into(),
+                time: "2020-01-01T00:00:00Z".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }],
+            ..Default::default()
+        };
+        let bookmarks = pinboard.all.clone();
+        cleanup(
+            &pinboard,
+            &GhCleanupOpts {
+                dry_run: false,
+                verbose: false,
+            },
+            &bookmarks,
+        )
+        .await
+        .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://github.com/Owner/Repo");
+        // Tags are preserved as-is (phase 1 only touches the URL).
+        assert_eq!(updated[0].tags, vec!["github-star", "lang:rust"]);
+        assert_eq!(
+            pinboard.deleted.borrow().as_slice(),
+            &["https://www.github.com/Owner/Repo.git".to_string()]
+        );
     }
 
     #[test]

@@ -186,8 +186,22 @@ struct CleanupCmd {
 enum CleanupSource {
     /// Normalize existing reddit bookmarks (URLs, tags, NSFW, titles).
     Reddit(RedditCleanupArgs),
+    /// Canonicalize existing GitHub repo bookmark URLs.
+    Github(GithubCleanupArgs),
     /// Normalize existing HackerNews bookmarks (rewrite item URLs to articles).
     Hackernews(HackernewsCleanupArgs),
+}
+
+#[derive(Args, Clone)]
+struct GithubCleanupArgs {
+    /// Pinboard API token (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
+    #[arg(long)]
+    pinboard_token: Option<String>,
+    /// Show what would change without writing to Pinboard.
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 #[derive(Args, Clone)]
@@ -602,13 +616,21 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
             // Cleanup normalizes the shared Pinboard bookmark set, so it runs once
-            // per cleanup-capable service (reddit + hackernews; github has none),
-            // using the first configured account of each for its cookie/domain/tags.
-            if config.reddit.is_empty() && config.hackernews.is_empty() {
-                bail!("cleanup --all requires a --config with at least one reddit or hackernews account");
+            // per cleanup-capable service (reddit, github, hackernews), using the
+            // first configured account of each for its cookie/domain/tags.
+            if config.reddit.is_empty() && config.github.is_empty() && config.hackernews.is_empty()
+            {
+                bail!("cleanup --all requires a --config with at least one configured account");
             }
             let (pinboard, bookmarks) = open_pinboard(None, false, config).await?;
             let mut run = AllRun::default();
+            if !config.github.is_empty() {
+                let opts = github::GhCleanupOpts {
+                    dry_run: cmd.dry_run,
+                    verbose: cmd.verbose,
+                };
+                run.record(github::cleanup(&pinboard, &opts, &bookmarks).await);
+            }
             if let Some(acct) = config.reddit.first() {
                 let args = RedditCleanupArgs {
                     account: None,
@@ -638,11 +660,22 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             run.finish()
         }
         (false, Some(CleanupSource::Reddit(args))) => run_cleanup_reddit(args, config).await,
+        (false, Some(CleanupSource::Github(args))) => run_cleanup_github(args, config).await,
         (false, Some(CleanupSource::Hackernews(args))) => {
             run_cleanup_hackernews(args, config).await
         }
         (false, None) => bail!("specify a source (e.g. `cleanup reddit`) or pass --all"),
     }
+}
+
+async fn run_cleanup_github(args: GithubCleanupArgs, config: &Config) -> Result<()> {
+    // URL canonicalization needs no GitHub API token (only Pinboard).
+    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, false, config).await?;
+    let opts = github::GhCleanupOpts {
+        dry_run: args.dry_run,
+        verbose: args.verbose,
+    };
+    github::cleanup(&pinboard, &opts, &bookmarks).await
 }
 
 async fn run_cleanup_reddit(args: RedditCleanupArgs, config: &Config) -> Result<()> {

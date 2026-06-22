@@ -22,12 +22,22 @@
           # reqwest uses native-tls (see Cargo.toml): on Linux that's OpenSSL via
           # openssl-sys, which needs pkg-config + openssl at build time. On darwin
           # native-tls uses the Security framework (provided by the stdenv).
-          nativeBuildInputs = [ pkgs.pkg-config ];
+          # installShellFiles provides `installShellCompletion` for postInstall.
+          nativeBuildInputs = [ pkgs.pkg-config pkgs.installShellFiles ];
           buildInputs = [ pkgs.openssl ];
           # The `net_tests` integration tests spin up a mock HTTP server, which
           # can't bind a socket in the build sandbox. They run under `cargo test`
           # in the dev shell / CI; the sandboxed build runs everything else.
           checkFlags = [ "--skip=net_tests" ];
+          # Generate shell completions and the example config from the built binary.
+          postInstall = ''
+            installShellCompletion --cmd pinboard-sync \
+              --bash <($out/bin/pinboard-sync completions bash) \
+              --zsh <($out/bin/pinboard-sync completions zsh) \
+              --fish <($out/bin/pinboard-sync completions fish)
+            mkdir -p $out/share/pinboard-sync
+            $out/bin/pinboard-sync config example > $out/share/pinboard-sync/config.example.toml
+          '';
           meta = {
             description = "Sync saved/favorited items from multiple services to a Pinboard account";
             mainProgram = "pinboard-sync";

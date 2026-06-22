@@ -21,7 +21,7 @@ use clap_complete::Shell;
 
 use config::{Config, GithubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
-use hackernews::HnClient;
+use hackernews::{HnCleanupOpts, HnClient};
 use pinboard::PinboardClient;
 use reddit::RedditClient;
 use source::SourceError;
@@ -186,6 +186,25 @@ struct CleanupCmd {
 enum CleanupSource {
     /// Normalize existing reddit bookmarks (URLs, tags, NSFW, titles).
     Reddit(RedditCleanupArgs),
+    /// Normalize existing HackerNews bookmarks (rewrite item URLs to articles).
+    Hackernews(HackernewsCleanupArgs),
+}
+
+#[derive(Args, Clone)]
+struct HackernewsCleanupArgs {
+    /// Account name to select from the config (default: the first hackernews account).
+    account: Option<String>,
+    /// Run cleanup for every hackernews account in the config.
+    #[arg(long)]
+    all: bool,
+    /// Pinboard API token (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
+    #[arg(long)]
+    pinboard_token: Option<String>,
+    /// Show what would change without writing to Pinboard.
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 #[derive(Args, Clone)]
@@ -529,23 +548,36 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
     match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
-            // GitHub has no cleanup, so cleanup --all covers reddit only.
-            if config.reddit.is_empty() {
-                bail!("cleanup --all requires a --config with at least one reddit account");
+            // Cleanup-capable sources: reddit + hackernews (github has no cleanup).
+            if config.reddit.is_empty() && config.hackernews.is_empty() {
+                bail!("cleanup --all requires a --config with at least one reddit or hackernews account");
             }
-            let args = RedditCleanupArgs {
-                account: None,
-                all: true,
-                reddit_cookie: None,
-                pinboard_token: None,
-                no_nsfw: false,
-                no_titles: false,
-                dry_run: cmd.dry_run,
-                verbose: cmd.verbose,
-            };
-            run_cleanup_reddit(args, config).await
+            let mut run = AllRun::default();
+            for acct in &config.reddit {
+                let args = RedditCleanupArgs {
+                    account: None,
+                    all: false,
+                    reddit_cookie: None,
+                    pinboard_token: None,
+                    no_nsfw: false,
+                    no_titles: false,
+                    dry_run: cmd.dry_run,
+                    verbose: cmd.verbose,
+                };
+                run.record(cleanup_one_reddit(Some(acct), &args, config).await);
+            }
+            for acct in &config.hackernews {
+                run.record(
+                    cleanup_one_hackernews(Some(acct), cmd.dry_run, cmd.verbose, None, config)
+                        .await,
+                );
+            }
+            run.finish()
         }
         (false, Some(CleanupSource::Reddit(args))) => run_cleanup_reddit(args, config).await,
+        (false, Some(CleanupSource::Hackernews(args))) => {
+            run_cleanup_hackernews(args, config).await
+        }
         (false, None) => bail!("specify a source (e.g. `cleanup reddit`) or pass --all"),
     }
 }
@@ -603,6 +635,57 @@ async fn cleanup_one_reddit(
     };
 
     cleanup::run(&pinboard, reddit.as_ref(), &opts).await
+}
+
+async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) -> Result<()> {
+    if args.all {
+        if config.hackernews.is_empty() {
+            bail!("--all requires a --config with at least one hackernews account");
+        }
+        let mut run = AllRun::default();
+        for acct in &config.hackernews {
+            run.record(
+                cleanup_one_hackernews(
+                    Some(acct),
+                    args.dry_run,
+                    args.verbose,
+                    args.pinboard_token.clone(),
+                    config,
+                )
+                .await,
+            );
+        }
+        run.finish()
+    } else {
+        let account = config::select_account(&config.hackernews, args.account.as_deref())?;
+        cleanup_one_hackernews(
+            account,
+            args.dry_run,
+            args.verbose,
+            args.pinboard_token,
+            config,
+        )
+        .await
+    }
+}
+
+async fn cleanup_one_hackernews(
+    account: Option<&HackernewsAccount>,
+    dry_run: bool,
+    verbose: bool,
+    pinboard_token: Option<String>,
+    config: &Config,
+) -> Result<()> {
+    let pinboard_token = resolve_pinboard_token(pinboard_token, &config.pinboard)
+        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, [pinboard] in the config, or ~/.pinboardrc)")?;
+    let pinboard = PinboardClient::new(pinboard_token, false)?;
+
+    let hn_config = account
+        .map(HackernewsAccount::hackernews_config)
+        .unwrap_or_default();
+    let hn = HnClient::for_cleanup(hn_config)?;
+    hn.cleanup(&pinboard, &HnCleanupOpts { dry_run, verbose })
+        .await
 }
 
 // --- shared dispatch helpers -------------------------------------------------

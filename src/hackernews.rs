@@ -7,11 +7,12 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use anyhow::Context;
+use anyhow::{Context, Result};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
 use crate::http::send_retrying;
+use crate::pinboard::{BookmarkStore, RATE_LIMIT_SECS};
 use crate::source::{push_prefixed, push_tag, url_key, BookmarkDraft, Source, SourceError};
 
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.
@@ -235,6 +236,130 @@ impl Source for HnClient {
             Some(id) => Some(format!("hn:{id}")),
             None => url_key(url),
         }
+    }
+}
+
+/// Options for `cleanup hackernews`.
+pub struct HnCleanupOpts {
+    pub dry_run: bool,
+    pub verbose: bool,
+}
+
+impl HnClient {
+    /// Client for `cleanup hackernews`: only the Firebase API is used (no favorites
+    /// scraping), so no username is needed.
+    pub fn for_cleanup(config: HackernewsConfig) -> anyhow::Result<Self> {
+        Self::build(
+            String::new(),
+            config,
+            HN_BASE.to_string(),
+            FIREBASE_BASE.to_string(),
+        )
+    }
+
+    /// Normalize existing `news.ycombinator.com/item?id=*` bookmarks: re-fetch each
+    /// item and re-shape it (stories rewrite to the article URL, deleting the old HN
+    /// URL; comments/text posts update in place), preserving existing tags and the
+    /// creation time.
+    pub async fn cleanup<P: BookmarkStore>(
+        &self,
+        pinboard: &P,
+        opts: &HnCleanupOpts,
+    ) -> Result<()> {
+        let all = pinboard.all().await.context("listing Pinboard bookmarks")?;
+        let hn_bms: Vec<_> = all
+            .into_iter()
+            .filter(|b| hn_item_id(&b.url).is_some())
+            .collect();
+        println!(
+            "Scanning {} HN bookmark(s){}...",
+            hn_bms.len(),
+            if opts.dry_run { " (dry run)" } else { "" }
+        );
+
+        let mut changed = 0usize;
+        let mut wrote = false;
+        for bm in &hn_bms {
+            let id = hn_item_id(&bm.url).expect("filtered to HN item URLs");
+            let item = match self.fetch_item(&id).await {
+                Ok(Some(item)) => item,
+                Ok(None) => continue,
+                Err(e) => return Err(source_err(e)),
+            };
+            let draft = item.into_draft(&self.config);
+
+            // Preserve existing tags, appending any freshly-derived ones.
+            let mut tags = bm.tag_list();
+            for tag in &draft.tags {
+                if !tags.contains(tag) {
+                    tags.push(tag.clone());
+                }
+            }
+
+            let url_changed = draft.url != bm.url;
+            let tags_changed = tags != bm.tag_list();
+            let desc_changed = draft.description != bm.description;
+            let ext_changed = draft.extended != bm.extended;
+            if !(url_changed || tags_changed || desc_changed || ext_changed) {
+                continue;
+            }
+            changed += 1;
+
+            if opts.dry_run {
+                println!("[dry-run] {}", bm.url);
+                if url_changed {
+                    println!("          url   -> {}", draft.url);
+                }
+                if desc_changed {
+                    println!("          title -> {}", draft.description);
+                }
+                if tags_changed {
+                    println!("          tags  -> [{}]", tags.join(" "));
+                }
+                continue;
+            }
+
+            if wrote {
+                tokio::time::sleep(Duration::from_secs(RATE_LIMIT_SECS)).await;
+            }
+            pinboard
+                .update(
+                    &draft.url,
+                    &draft.description,
+                    &draft.extended,
+                    &tags,
+                    bm.is_shared(),
+                    bm.is_toread(),
+                    &bm.time,
+                )
+                .await
+                .with_context(|| format!("updating bookmark {}", draft.url))?;
+            if url_changed {
+                pinboard
+                    .delete(&bm.url)
+                    .await
+                    .with_context(|| format!("deleting old URL {}", bm.url))?;
+            }
+            wrote = true;
+            if opts.verbose {
+                eprintln!("updated {} -> {} [{}]", bm.url, draft.url, tags.join(" "));
+            }
+        }
+
+        if opts.dry_run {
+            println!("{changed} bookmark(s) would change.");
+        } else {
+            println!("Done. Updated {changed} bookmark(s).");
+        }
+        Ok(())
+    }
+}
+
+/// Flatten a `SourceError` into an `anyhow::Error` (HN never requires re-auth).
+fn source_err(e: SourceError) -> anyhow::Error {
+    match e {
+        SourceError::ReauthRequired(m) => anyhow::anyhow!(m),
+        SourceError::Other(e) => e,
     }
 }
 
@@ -476,5 +601,63 @@ mod net_tests {
         assert_eq!(drafts[0].url, "https://example.com/x");
         assert_eq!(drafts[1].url, "https://news.ycombinator.com/item?id=9");
         assert!(drafts[1].tags.contains(&"hackernews-comment".to_string()));
+    }
+
+    #[tokio::test]
+    async fn cleanup_rewrites_story_url_and_deletes_old() {
+        use crate::pinboard::Bookmark;
+        use crate::test_support::FakePinboard;
+
+        let fb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v0/item/42.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 42, "type": "story", "by": "alice",
+                "title": "Cool", "url": "https://example.com/x"
+            })))
+            .mount(&fb)
+            .await;
+
+        let pinboard = FakePinboard {
+            all: vec![Bookmark {
+                url: "https://news.ycombinator.com/item?id=42".into(),
+                description: "old title".into(),
+                extended: String::new(),
+                tags: "hackernews mine".into(),
+                time: "2020-01-01T00:00:00Z".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }],
+            ..Default::default()
+        };
+
+        let client = HnClient::with_base_urls(
+            String::new(),
+            HackernewsConfig::default(),
+            "unused".into(),
+            fb.uri(),
+        );
+        client
+            .cleanup(
+                &pinboard,
+                &HnCleanupOpts {
+                    dry_run: false,
+                    verbose: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://example.com/x");
+        assert_eq!(updated[0].description, "Cool");
+        // Existing tags are preserved and augmented.
+        assert!(updated[0].tags.contains(&"mine".to_string()));
+        // The old HN item URL is deleted after the rewrite.
+        assert_eq!(
+            pinboard.deleted.borrow().as_slice(),
+            &["https://news.ycombinator.com/item?id=42".to_string()]
+        );
     }
 }

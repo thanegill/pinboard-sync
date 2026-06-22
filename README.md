@@ -143,7 +143,7 @@ running on a timer under a hardened `DynamicUser`:
   imports = [ inputs.pinboard-sync.nixosModules.default ];
   services.pinboard-sync = {
     enable = true;
-    source = "reddit";                       # or mode = "all"
+    mode = "all";                            # every configured account; or mode = "source"
     settings.reddit = [ { name = "main"; username = "you"; } ];
     reddit.cookieFile = config.sops.secrets.reddit-cookie.path;
     pinboardTokenFile = config.sops.secrets.pinboard-token.path;

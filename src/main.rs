@@ -201,6 +201,9 @@ struct HackernewsCleanupArgs {
     /// their HN discussion, via an Algolia URL lookup per tagged bookmark.
     #[arg(long)]
     link_discussions: bool,
+    /// Override the marker tag used by --link-discussions (config: `tag_link`).
+    #[arg(long)]
+    link_tag: Option<String>,
     /// Show what would change without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
@@ -625,6 +628,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                         cmd.dry_run,
                         cmd.verbose,
                         false, // linking is opt-in via `cleanup hackernews --link-discussions`
+                        None,
                         &pinboard,
                         &bookmarks,
                     )
@@ -695,6 +699,7 @@ async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) ->
         args.dry_run,
         args.verbose,
         args.link_discussions,
+        args.link_tag,
         &pinboard,
         &bookmarks,
     )
@@ -706,12 +711,17 @@ async fn cleanup_one_hackernews(
     dry_run: bool,
     verbose: bool,
     link_discussions: bool,
+    link_tag: Option<String>,
     pinboard: &PinboardClient,
     bookmarks: &[Bookmark],
 ) -> Result<()> {
-    let hn_config = account
+    let mut hn_config = account
         .map(HackernewsAccount::hackernews_config)
         .unwrap_or_default();
+    // CLI flag overrides the config `tag_link`.
+    if let Some(tag) = link_tag {
+        hn_config.link_tag = tag;
+    }
     let hn = HnClient::for_cleanup(hn_config)?;
     hn.cleanup(
         pinboard,

@@ -15,22 +15,20 @@ const API_BASE: &str = "https://api.github.com";
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 
-/// Tag vocabulary for GitHub stars; each field defaults to its built-in value, and
-/// an empty string disables that tag.
+/// Tag vocabulary for GitHub stars. `tags` are applied to every bookmark
+/// (defaulting to `["github-star"]`); `lang_prefix` defaults to its built-in value,
+/// and an empty string disables that tag.
 #[derive(Debug, Clone)]
 pub struct GithubConfig {
-    pub base: String,
+    pub tags: Vec<String>,
     pub lang_prefix: String,
-    /// Extra tags appended to every bookmark from this account.
-    pub extra: Vec<String>,
 }
 
 impl Default for GithubConfig {
     fn default() -> Self {
         Self {
-            base: "github-star".into(),
+            tags: vec!["github-star".into()],
             lang_prefix: "lang:".into(),
-            extra: Vec::new(),
         }
     }
 }
@@ -62,12 +60,11 @@ impl Repo {
         }
 
         let mut tags = Vec::new();
-        push_tag(&mut tags, &cfg.base);
+        for tag in &cfg.tags {
+            push_tag(&mut tags, tag);
+        }
         if let Some(lang) = self.language.filter(|s| !s.is_empty()) {
             push_prefixed(&mut tags, &cfg.lang_prefix, &lang.to_lowercase());
-        }
-        for tag in &cfg.extra {
-            push_tag(&mut tags, tag);
         }
 
         BookmarkDraft {
@@ -230,14 +227,14 @@ mod tests {
     }
 
     #[test]
-    fn extra_tags_appended() {
+    fn tags_list_replaces_the_default_base() {
         let cfg = GithubConfig {
-            extra: vec!["account:work".into()],
+            tags: vec!["github-star".into(), "account:work".into()],
             ..GithubConfig::default()
         };
         let d = repo(json!({ "full_name": "o/r", "html_url": "https://github.com/o/r" }))
             .into_draft(&cfg);
-        assert!(d.tags.contains(&"account:work".to_string()));
+        assert_eq!(d.tags, vec!["github-star", "account:work"]);
     }
 
     #[test]

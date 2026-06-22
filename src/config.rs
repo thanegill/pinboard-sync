@@ -57,7 +57,6 @@ pub struct RedditAccount {
     pub limit: Option<usize>,
     // Non-secret tag/domain config (`tag_*`), each defaulting in `reddit_config`.
     pub reddit_domain: Option<String>,
-    pub tag_base: Option<String>,
     pub tag_subreddit_prefix: Option<String>,
     pub tag_comment: Option<String>,
     pub tag_nsfw: Option<String>,
@@ -65,9 +64,8 @@ pub struct RedditAccount {
     pub tag_flair_prefix: Option<String>,
     pub tag_media_prefix: Option<String>,
     pub tag_media_types: Option<Vec<String>>,
-    /// Extra tags appended to every bookmark from this account.
-    #[serde(default)]
-    pub tags: Vec<String>,
+    /// Tags applied to every bookmark (default `["reddit"]`); a full override.
+    pub tags: Option<Vec<String>>,
 }
 
 impl Config {
@@ -84,7 +82,7 @@ impl RedditAccount {
         let d = RedditConfig::default();
         RedditConfig {
             domain: self.reddit_domain.clone().unwrap_or(d.domain),
-            base: self.tag_base.clone().unwrap_or(d.base),
+            tags: self.tags.clone().unwrap_or(d.tags),
             subreddit_prefix: self
                 .tag_subreddit_prefix
                 .clone()
@@ -95,7 +93,6 @@ impl RedditAccount {
             flair_prefix: self.tag_flair_prefix.clone().unwrap_or(d.flair_prefix),
             media_prefix: self.tag_media_prefix.clone().unwrap_or(d.media_prefix),
             media_types: self.tag_media_types.clone().unwrap_or(d.media_types),
-            extra: self.tags.clone(),
         }
     }
 }
@@ -109,11 +106,9 @@ pub struct GithubAccount {
     pub token_file: Option<String>,
     pub on_auth_failure: Option<String>,
     pub limit: Option<usize>,
-    pub tag_base: Option<String>,
     pub tag_lang_prefix: Option<String>,
-    /// Extra tags appended to every bookmark from this account.
-    #[serde(default)]
-    pub tags: Vec<String>,
+    /// Tags applied to every bookmark (default `["github-star"]`); a full override.
+    pub tags: Option<Vec<String>>,
 }
 
 impl GithubAccount {
@@ -122,9 +117,8 @@ impl GithubAccount {
     pub fn github_config(&self) -> GithubConfig {
         let d = GithubConfig::default();
         GithubConfig {
-            base: self.tag_base.clone().unwrap_or(d.base),
+            tags: self.tags.clone().unwrap_or(d.tags),
             lang_prefix: self.tag_lang_prefix.clone().unwrap_or(d.lang_prefix),
-            extra: self.tags.clone(),
         }
     }
 }
@@ -192,9 +186,8 @@ mod tests {
             username = "alice"
             cookie_file = "/run/secrets/cookie"
             reddit_domain = "www.reddit.com"
-            tag_base = "rdt"
             tag_media_types = ["image"]
-            tags = ["account:main"]
+            tags = ["reddit", "account:main"]
 
             [[reddit]]
             name = "alt"
@@ -212,11 +205,11 @@ mod tests {
         assert_eq!(main.username.as_deref(), Some("alice"));
         let rc = main.reddit_config();
         assert_eq!(rc.domain, "www.reddit.com");
-        assert_eq!(rc.base, "rdt");
+        assert_eq!(rc.tags, vec!["reddit", "account:main"]);
         assert_eq!(rc.media_types, vec!["image"]);
-        assert_eq!(rc.extra, vec!["account:main"]);
-        // Unset tag fields keep their defaults.
+        // Unset tag fields keep their defaults; an unset `tags` defaults to ["reddit"].
         assert_eq!(rc.subreddit_prefix, "subreddit:");
+        assert_eq!(cfg.reddit[1].reddit_config().tags, vec!["reddit"]);
     }
 
     #[test]

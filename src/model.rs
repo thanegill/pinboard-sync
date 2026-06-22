@@ -177,13 +177,14 @@ fn post_media_type(is_video: bool, post_hint: Option<&str>) -> Option<String> {
 }
 
 /// Per-account reddit config: the host used in bookmark/thread URLs plus the tag
-/// vocabulary (every tag/prefix the source emits, each defaulting to its built-in
-/// value; an empty string disables that tag). `media_types` is the allowlist of
-/// post media types (`image`/`video`) that get a `media_prefix` tag.
+/// vocabulary. `tags` are applied to every bookmark (defaulting to `["reddit"]`);
+/// the `*_prefix`/conditional fields each default to a built-in value, and an empty
+/// string disables that tag. `media_types` is the allowlist of post media types
+/// (`image`/`video`) that get a `media_prefix` tag.
 #[derive(Debug, Clone)]
 pub struct RedditConfig {
     pub domain: String,
-    pub base: String,
+    pub tags: Vec<String>,
     pub subreddit_prefix: String,
     pub comment: String,
     pub nsfw: String,
@@ -191,15 +192,13 @@ pub struct RedditConfig {
     pub flair_prefix: String,
     pub media_prefix: String,
     pub media_types: Vec<String>,
-    /// Extra tags appended to every bookmark from this account.
-    pub extra: Vec<String>,
 }
 
 impl Default for RedditConfig {
     fn default() -> Self {
         Self {
             domain: "old.reddit.com".into(),
-            base: "reddit".into(),
+            tags: vec!["reddit".into()],
             subreddit_prefix: "subreddit:".into(),
             comment: "reddit-comment".into(),
             nsfw: "nsfw".into(),
@@ -207,7 +206,6 @@ impl Default for RedditConfig {
             flair_prefix: "reddit-flair:".into(),
             media_prefix: "type:".into(),
             media_types: vec!["image".into(), "video".into()],
-            extra: Vec::new(),
         }
     }
 }
@@ -221,7 +219,9 @@ impl SavedItem {
     /// Build the Pinboard tag list for this item from the reddit config.
     pub fn tags(&self, cfg: &RedditConfig) -> Vec<String> {
         let mut tags = Vec::new();
-        push_tag(&mut tags, &cfg.base);
+        for tag in &cfg.tags {
+            push_tag(&mut tags, tag);
+        }
         push_prefixed(
             &mut tags,
             &cfg.subreddit_prefix,
@@ -243,9 +243,6 @@ impl SavedItem {
             if cfg.media_types.iter().any(|t| t == media_type) {
                 push_prefixed(&mut tags, &cfg.media_prefix, media_type);
             }
-        }
-        for tag in &cfg.extra {
-            push_tag(&mut tags, tag);
         }
         tags
     }

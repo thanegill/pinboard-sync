@@ -481,7 +481,7 @@ async fn cleanup_one_reddit(
         verbose: args.verbose,
         mark_nsfw: !args.no_nsfw,
         fix_titles: !args.no_titles,
-        base_tag: reddit_config.base.clone(),
+        base_tag: reddit_config.tags.first().cloned().unwrap_or_default(),
         subreddit_tag_prefix: reddit_config.subreddit_prefix.clone(),
     };
 

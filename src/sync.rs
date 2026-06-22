@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::pinboard::{BookmarkStore, RATE_LIMIT_SECS};
+use crate::pinboard::{Bookmark, BookmarkStore, RATE_LIMIT_SECS};
 use crate::source::{Source, SourceError};
 
 pub struct SyncConfig {
@@ -25,21 +25,22 @@ pub struct SyncSummary {
     pub written: usize,
 }
 
-/// Run the sync. Errors as `SourceError` so the caller can fire the
-/// auth-failure hook on `ReauthRequired`; Pinboard errors map to `Other`.
+/// Run the sync. `existing_bookmarks` is the already-fetched `posts/all` set (the
+/// caller fetches it once and shares it across accounts in an `--all` run). Errors
+/// as `SourceError` so the caller can fire the auth-failure hook on `ReauthRequired`;
+/// Pinboard errors map to `Other`.
 pub async fn run<S: Source, P: BookmarkStore>(
     source: &S,
     pinboard: &P,
     cfg: &SyncConfig,
+    existing_bookmarks: &[Bookmark],
 ) -> Result<SyncSummary, SourceError> {
     let drafts = source.fetch().await?;
     let fetched = drafts.len();
 
     // Pinboard is the sync state: skip drafts whose dedup key is already present,
     // mapping each existing bookmark URL through this source's `existing_key`.
-    let existing: HashSet<String> = pinboard
-        .all()
-        .await?
+    let existing: HashSet<String> = existing_bookmarks
         .iter()
         .filter_map(|b| source.existing_key(&b.url))
         .collect();
@@ -148,18 +149,19 @@ mod tests {
             ],
             ..Default::default()
         };
+        let pinboard = FakePinboard::default();
         // Post a is already on Pinboard (any reddit host/case matches via reddit_key).
-        let pinboard = FakePinboard {
-            all: vec![bookmark("https://www.reddit.com/r/Rust/comments/a/x/")],
-            ..Default::default()
-        };
+        let existing = vec![bookmark("https://www.reddit.com/r/Rust/comments/a/x/")];
 
-        let summary = run(&reddit, &pinboard, &config()).await.unwrap();
+        let summary = run(&reddit, &pinboard, &config(), &existing).await.unwrap();
 
         assert_eq!(summary.fetched, 2);
         assert_eq!(summary.already_present, 1);
         assert_eq!(summary.new, 1);
         assert_eq!(summary.written, 1);
+
+        // run() must not fetch posts/all itself — the caller supplies it.
+        assert_eq!(*pinboard.all_calls.borrow(), 0);
 
         let added = pinboard.added.borrow();
         assert_eq!(added.len(), 1);
@@ -179,7 +181,7 @@ mod tests {
             ..config()
         };
 
-        let summary = run(&reddit, &pinboard, &cfg).await.unwrap();
+        let summary = run(&reddit, &pinboard, &cfg, &[]).await.unwrap();
         assert_eq!(summary.new, 1);
         assert_eq!(summary.written, 0);
         assert!(pinboard.added.borrow().is_empty());
@@ -201,7 +203,7 @@ mod tests {
             ..config()
         };
 
-        let summary = run(&reddit, &pinboard, &cfg).await.unwrap();
+        let summary = run(&reddit, &pinboard, &cfg, &[]).await.unwrap();
         assert_eq!(summary.new, 3);
         assert_eq!(summary.written, 2);
         assert_eq!(pinboard.added.borrow().len(), 2);

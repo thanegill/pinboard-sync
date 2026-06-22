@@ -34,9 +34,13 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
     pinboard: &P,
     reddit: Option<&R>,
     opts: &CleanupOpts,
+    bookmarks: &[Bookmark],
 ) -> Result<()> {
-    let all = pinboard.all().await.context("listing Pinboard bookmarks")?;
-    let reddit_bms: Vec<_> = all.into_iter().filter(|b| is_reddit_url(&b.url)).collect();
+    let reddit_bms: Vec<_> = bookmarks
+        .iter()
+        .filter(|b| is_reddit_url(&b.url))
+        .cloned()
+        .collect();
     println!(
         "Scanning {} reddit bookmark(s){}...",
         reddit_bms.len(),
@@ -531,7 +535,9 @@ mod loop_tests {
             ..Default::default()
         };
 
-        run(&pinboard, Some(&reddit), &opts()).await.unwrap();
+        run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
+            .await
+            .unwrap();
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -573,7 +579,9 @@ mod loop_tests {
             ..Default::default()
         };
 
-        run(&pinboard, Some(&reddit), &opts()).await.unwrap();
+        run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
+            .await
+            .unwrap();
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());
     }
@@ -595,7 +603,9 @@ mod loop_tests {
             fix_titles: false,
             ..opts()
         };
-        run(&pinboard, Some(&reddit), &opts).await.unwrap();
+        run(&pinboard, Some(&reddit), &opts, &pinboard.all)
+            .await
+            .unwrap();
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());
     }

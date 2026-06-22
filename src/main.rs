@@ -22,7 +22,7 @@ use clap_complete::Shell;
 use config::{Config, GithubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
 use hackernews::{HnCleanupOpts, HnClient};
-use pinboard::PinboardClient;
+use pinboard::{Bookmark, BookmarkStore, PinboardClient};
 use reddit::RedditClient;
 use source::SourceError;
 
@@ -298,15 +298,17 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
                 verbose: cmd.verbose,
                 ..SyncOverrides::default()
             };
+            let (pinboard, bookmarks) =
+                open_pinboard(ovr.pinboard_token.clone(), config.pinboard.public, config).await?;
             let mut run = AllRun::default();
             for acct in &config.reddit {
-                run.record(sync_one_reddit(Some(acct), &ovr, config).await);
+                run.record(sync_one_reddit(Some(acct), &ovr, config, &pinboard, &bookmarks).await);
             }
             for acct in &config.github {
-                run.record(sync_one_github(Some(acct), &ovr, config).await);
+                run.record(sync_one_github(Some(acct), &ovr, config, &pinboard, &bookmarks).await);
             }
             for acct in &config.hackernews {
-                run.record(sync_one_hackernews(Some(acct), &ovr, config).await);
+                run.record(sync_one_hackernews(Some(acct), &ovr, &pinboard, &bookmarks).await);
             }
             run.finish()
         }
@@ -329,18 +331,24 @@ async fn run_sync_reddit(args: RedditSyncArgs, config: &Config) -> Result<()> {
         verbose: args.verbose,
         ..SyncOverrides::default()
     };
+    let (pinboard, bookmarks) = open_pinboard(
+        ovr.pinboard_token.clone(),
+        ovr.public || config.pinboard.public,
+        config,
+    )
+    .await?;
     if args.all {
         if config.reddit.is_empty() {
             bail!("--all requires a --config with at least one reddit account");
         }
         let mut run = AllRun::default();
         for acct in &config.reddit {
-            run.record(sync_one_reddit(Some(acct), &ovr, config).await);
+            run.record(sync_one_reddit(Some(acct), &ovr, config, &pinboard, &bookmarks).await);
         }
         run.finish()
     } else {
         let account = config::select_account(&config.reddit, args.account.as_deref())?;
-        sync_one_reddit(account, &ovr, config).await
+        sync_one_reddit(account, &ovr, config, &pinboard, &bookmarks).await
     }
 }
 
@@ -355,18 +363,24 @@ async fn run_sync_github(args: GithubSyncArgs, config: &Config) -> Result<()> {
         verbose: args.verbose,
         ..SyncOverrides::default()
     };
+    let (pinboard, bookmarks) = open_pinboard(
+        ovr.pinboard_token.clone(),
+        ovr.public || config.pinboard.public,
+        config,
+    )
+    .await?;
     if args.all {
         if config.github.is_empty() {
             bail!("--all requires a --config with at least one github account");
         }
         let mut run = AllRun::default();
         for acct in &config.github {
-            run.record(sync_one_github(Some(acct), &ovr, config).await);
+            run.record(sync_one_github(Some(acct), &ovr, config, &pinboard, &bookmarks).await);
         }
         run.finish()
     } else {
         let account = config::select_account(&config.github, args.account.as_deref())?;
-        sync_one_github(account, &ovr, config).await
+        sync_one_github(account, &ovr, config, &pinboard, &bookmarks).await
     }
 }
 
@@ -380,18 +394,24 @@ async fn run_sync_hackernews(args: HackernewsSyncArgs, config: &Config) -> Resul
         verbose: args.verbose,
         ..SyncOverrides::default()
     };
+    let (pinboard, bookmarks) = open_pinboard(
+        ovr.pinboard_token.clone(),
+        ovr.public || config.pinboard.public,
+        config,
+    )
+    .await?;
     if args.all {
         if config.hackernews.is_empty() {
             bail!("--all requires a --config with at least one hackernews account");
         }
         let mut run = AllRun::default();
         for acct in &config.hackernews {
-            run.record(sync_one_hackernews(Some(acct), &ovr, config).await);
+            run.record(sync_one_hackernews(Some(acct), &ovr, &pinboard, &bookmarks).await);
         }
         run.finish()
     } else {
         let account = config::select_account(&config.hackernews, args.account.as_deref())?;
-        sync_one_hackernews(account, &ovr, config).await
+        sync_one_hackernews(account, &ovr, &pinboard, &bookmarks).await
     }
 }
 
@@ -413,11 +433,9 @@ async fn sync_one_reddit(
     account: Option<&RedditAccount>,
     ovr: &SyncOverrides,
     config: &Config,
+    pinboard: &PinboardClient,
+    bookmarks: &[Bookmark],
 ) -> Result<()> {
-    let pinboard_token = resolve_pinboard_token(ovr.pinboard_token.clone(), &config.pinboard)
-        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, [pinboard] in the config, or ~/.pinboardrc)")?;
-    let pinboard = PinboardClient::new(pinboard_token, ovr.public || config.pinboard.public)?;
-
     let username = resolve_secret(
         ovr.reddit_username.clone(),
         "REDDIT_USERNAME",
@@ -452,7 +470,7 @@ async fn sync_one_reddit(
         verbose: ovr.verbose,
     };
     let reddit = RedditClient::for_user(username, cookie, reddit_config)?;
-    sync::run(&reddit, &pinboard, &cfg)
+    sync::run(&reddit, pinboard, &cfg, bookmarks)
         .await
         .map_err(|e| handle_reddit_err(e, hook.as_deref()))?;
     Ok(())
@@ -462,11 +480,9 @@ async fn sync_one_github(
     account: Option<&GithubAccount>,
     ovr: &SyncOverrides,
     config: &Config,
+    pinboard: &PinboardClient,
+    bookmarks: &[Bookmark],
 ) -> Result<()> {
-    let pinboard_token = resolve_pinboard_token(ovr.pinboard_token.clone(), &config.pinboard)
-        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, [pinboard] in the config, or ~/.pinboardrc)")?;
-    let pinboard = PinboardClient::new(pinboard_token, ovr.public || config.pinboard.public)?;
-
     let token = resolve_secret(
         ovr.github_token.clone(),
         "GITHUB_TOKEN",
@@ -495,7 +511,7 @@ async fn sync_one_github(
         verbose: ovr.verbose,
     };
     let github = GitHubClient::new(token, github_config)?;
-    sync::run(&github, &pinboard, &cfg)
+    sync::run(&github, pinboard, &cfg, bookmarks)
         .await
         .map_err(|e| handle_reddit_err(e, hook.as_deref()))?;
     Ok(())
@@ -504,12 +520,9 @@ async fn sync_one_github(
 async fn sync_one_hackernews(
     account: Option<&HackernewsAccount>,
     ovr: &SyncOverrides,
-    config: &Config,
+    pinboard: &PinboardClient,
+    bookmarks: &[Bookmark],
 ) -> Result<()> {
-    let pinboard_token = resolve_pinboard_token(ovr.pinboard_token.clone(), &config.pinboard)
-        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, [pinboard] in the config, or ~/.pinboardrc)")?;
-    let pinboard = PinboardClient::new(pinboard_token, ovr.public || config.pinboard.public)?;
-
     let username = resolve_secret(
         ovr.hackernews_username.clone(),
         "HN_USERNAME",
@@ -536,10 +549,25 @@ async fn sync_one_hackernews(
     };
     let hn = HnClient::new(username, hn_config)?;
     // HackerNews favorites are public, so there is no auth-failure hook to fire.
-    sync::run(&hn, &pinboard, &cfg)
+    sync::run(&hn, pinboard, &cfg, bookmarks)
         .await
         .map_err(|e| handle_reddit_err(e, None))?;
     Ok(())
+}
+
+/// Resolve the Pinboard token and fetch `posts/all` once. Returns the client and
+/// the bookmark set to share across every account in a run (so `posts/all` — the
+/// most rate-limited endpoint — is hit once, not once per account).
+async fn open_pinboard(
+    token_flag: Option<String>,
+    public: bool,
+    config: &Config,
+) -> Result<(PinboardClient, Vec<Bookmark>)> {
+    let token = resolve_pinboard_token(token_flag, &config.pinboard)
+        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, [pinboard] in the config, or ~/.pinboardrc)")?;
+    let pinboard = PinboardClient::new(token, public)?;
+    let bookmarks = pinboard.all().await.context("listing Pinboard bookmarks")?;
+    Ok((pinboard, bookmarks))
 }
 
 // --- cleanup -----------------------------------------------------------------
@@ -552,6 +580,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             if config.reddit.is_empty() && config.hackernews.is_empty() {
                 bail!("cleanup --all requires a --config with at least one reddit or hackernews account");
             }
+            let (pinboard, bookmarks) = open_pinboard(None, false, config).await?;
             let mut run = AllRun::default();
             for acct in &config.reddit {
                 let args = RedditCleanupArgs {
@@ -564,12 +593,18 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                     dry_run: cmd.dry_run,
                     verbose: cmd.verbose,
                 };
-                run.record(cleanup_one_reddit(Some(acct), &args, config).await);
+                run.record(cleanup_one_reddit(Some(acct), &args, &pinboard, &bookmarks).await);
             }
             for acct in &config.hackernews {
                 run.record(
-                    cleanup_one_hackernews(Some(acct), cmd.dry_run, cmd.verbose, None, config)
-                        .await,
+                    cleanup_one_hackernews(
+                        Some(acct),
+                        cmd.dry_run,
+                        cmd.verbose,
+                        &pinboard,
+                        &bookmarks,
+                    )
+                    .await,
                 );
             }
             run.finish()
@@ -583,30 +618,28 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
 }
 
 async fn run_cleanup_reddit(args: RedditCleanupArgs, config: &Config) -> Result<()> {
+    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), false, config).await?;
     if args.all {
         if config.reddit.is_empty() {
             bail!("--all requires a --config with at least one reddit account");
         }
         let mut run = AllRun::default();
         for acct in &config.reddit {
-            run.record(cleanup_one_reddit(Some(acct), &args, config).await);
+            run.record(cleanup_one_reddit(Some(acct), &args, &pinboard, &bookmarks).await);
         }
         run.finish()
     } else {
         let account = config::select_account(&config.reddit, args.account.as_deref())?;
-        cleanup_one_reddit(account, &args, config).await
+        cleanup_one_reddit(account, &args, &pinboard, &bookmarks).await
     }
 }
 
 async fn cleanup_one_reddit(
     account: Option<&RedditAccount>,
     args: &RedditCleanupArgs,
-    config: &Config,
+    pinboard: &PinboardClient,
+    bookmarks: &[Bookmark],
 ) -> Result<()> {
-    let pinboard_token = resolve_pinboard_token(args.pinboard_token.clone(), &config.pinboard)
-        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, [pinboard] in the config, or ~/.pinboardrc)")?;
-    let pinboard = PinboardClient::new(pinboard_token, false)?;
-
     let reddit_config = account
         .map(RedditAccount::reddit_config)
         .unwrap_or_default();
@@ -634,10 +667,11 @@ async fn cleanup_one_reddit(
         None
     };
 
-    cleanup::run(&pinboard, reddit.as_ref(), &opts).await
+    cleanup::run(pinboard, reddit.as_ref(), &opts, bookmarks).await
 }
 
 async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) -> Result<()> {
+    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), false, config).await?;
     if args.all {
         if config.hackernews.is_empty() {
             bail!("--all requires a --config with at least one hackernews account");
@@ -649,8 +683,8 @@ async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) ->
                     Some(acct),
                     args.dry_run,
                     args.verbose,
-                    args.pinboard_token.clone(),
-                    config,
+                    &pinboard,
+                    &bookmarks,
                 )
                 .await,
             );
@@ -658,14 +692,7 @@ async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) ->
         run.finish()
     } else {
         let account = config::select_account(&config.hackernews, args.account.as_deref())?;
-        cleanup_one_hackernews(
-            account,
-            args.dry_run,
-            args.verbose,
-            args.pinboard_token,
-            config,
-        )
-        .await
+        cleanup_one_hackernews(account, args.dry_run, args.verbose, &pinboard, &bookmarks).await
     }
 }
 
@@ -673,18 +700,14 @@ async fn cleanup_one_hackernews(
     account: Option<&HackernewsAccount>,
     dry_run: bool,
     verbose: bool,
-    pinboard_token: Option<String>,
-    config: &Config,
+    pinboard: &PinboardClient,
+    bookmarks: &[Bookmark],
 ) -> Result<()> {
-    let pinboard_token = resolve_pinboard_token(pinboard_token, &config.pinboard)
-        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, [pinboard] in the config, or ~/.pinboardrc)")?;
-    let pinboard = PinboardClient::new(pinboard_token, false)?;
-
     let hn_config = account
         .map(HackernewsAccount::hackernews_config)
         .unwrap_or_default();
     let hn = HnClient::for_cleanup(hn_config)?;
-    hn.cleanup(&pinboard, &HnCleanupOpts { dry_run, verbose })
+    hn.cleanup(pinboard, &HnCleanupOpts { dry_run, verbose }, bookmarks)
         .await
 }
 

@@ -62,6 +62,8 @@ pub struct UpdateCall {
 #[derive(Default)]
 pub struct FakePinboard {
     pub all: Vec<Bookmark>,
+    /// How many times `all()` was called (to assert single-fetch behavior).
+    pub all_calls: RefCell<usize>,
     pub added: RefCell<Vec<AddCall>>,
     pub updated: RefCell<Vec<UpdateCall>>,
     pub deleted: RefCell<Vec<String>>,
@@ -69,6 +71,7 @@ pub struct FakePinboard {
 
 impl BookmarkStore for FakePinboard {
     async fn all(&self) -> Result<Vec<Bookmark>> {
+        *self.all_calls.borrow_mut() += 1;
         Ok(self.all.clone())
     }
     async fn add(

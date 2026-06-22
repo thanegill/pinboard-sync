@@ -12,7 +12,7 @@ use scraper::{Html, Selector};
 use serde::Deserialize;
 
 use crate::http::send_retrying;
-use crate::pinboard::{BookmarkStore, RATE_LIMIT_SECS};
+use crate::pinboard::{Bookmark, BookmarkStore, RATE_LIMIT_SECS};
 use crate::source::{push_prefixed, push_tag, url_key, BookmarkDraft, Source, SourceError};
 
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.
@@ -265,11 +265,12 @@ impl HnClient {
         &self,
         pinboard: &P,
         opts: &HnCleanupOpts,
+        bookmarks: &[Bookmark],
     ) -> Result<()> {
-        let all = pinboard.all().await.context("listing Pinboard bookmarks")?;
-        let hn_bms: Vec<_> = all
-            .into_iter()
+        let hn_bms: Vec<_> = bookmarks
+            .iter()
             .filter(|b| hn_item_id(&b.url).is_some())
+            .cloned()
             .collect();
         println!(
             "Scanning {} HN bookmark(s){}...",
@@ -637,6 +638,7 @@ mod net_tests {
             "unused".into(),
             fb.uri(),
         );
+        let bookmarks = pinboard.all.clone();
         client
             .cleanup(
                 &pinboard,
@@ -644,6 +646,7 @@ mod net_tests {
                     dry_run: false,
                     verbose: false,
                 },
+                &bookmarks,
             )
             .await
             .unwrap();

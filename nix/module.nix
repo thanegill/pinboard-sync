@@ -6,24 +6,14 @@ let
   tomlFormat = pkgs.formats.toml { };
   # Non-secret settings rendered to the store and passed via --config. Secrets are
   # NOT placed here (it lands in the world-readable nix store) — they come from the
-  # *File env vars below.
+  # `environmentFile` (a sops-nix rendered template).
   configFile = tomlFormat.generate "pinboard-sync.toml" cfg.settings;
 
-  # Non-secret values + secret-file *paths* exported to the unit environment. Secret
-  # values themselves stay in the referenced files (sops-nix), never in the env.
+  # The generated config path and the optional hook are the only things put in the
+  # unit environment; all credentials (incl. usernames) come from `environmentFile`
+  # (a sops-nix rendered template, read by systemd as root), never the nix store.
   environment =
     { PINBOARD_SYNC_CONFIG = toString configFile; }
-    // lib.optionalAttrs (cfg.pinboardTokenFile != null) {
-      PINBOARD_TOKEN_FILE = toString cfg.pinboardTokenFile;
-    }
-    // lib.optionalAttrs (cfg.reddit.username != null) { REDDIT_USERNAME = cfg.reddit.username; }
-    // lib.optionalAttrs (cfg.reddit.cookieFile != null) {
-      REDDIT_COOKIE_FILE = toString cfg.reddit.cookieFile;
-    }
-    // lib.optionalAttrs (cfg.github.tokenFile != null) {
-      GITHUB_TOKEN_FILE = toString cfg.github.tokenFile;
-    }
-    // lib.optionalAttrs (cfg.hackernews.username != null) { HN_USERNAME = cfg.hackernews.username; }
     // lib.optionalAttrs (cfg.onAuthFailure != null) {
       PINBOARD_SYNC_ON_AUTH_FAILURE = cfg.onAuthFailure;
     };
@@ -148,50 +138,20 @@ in
       default = null;
       example = "/run/secrets/rendered/pinboard-sync-env";
       description = ''
-        Optional systemd `EnvironmentFile` providing any of `PINBOARD_TOKEN`,
-        `REDDIT_USERNAME`/`REDDIT_COOKIE`, `GITHUB_TOKEN`, `HN_USERNAME` (or their
-        `_FILE` variants). Read by systemd as root, so it works with `DynamicUser`
-        and a sops-nix rendered template — an alternative to the `*File` options.
+        Systemd `EnvironmentFile` providing every credential the configured
+        source(s) need — `PINBOARD_TOKEN`, `REDDIT_USERNAME`/`REDDIT_COOKIE`,
+        `GITHUB_TOKEN`, `HN_USERNAME` (or their `_FILE` variants). Read by systemd as
+        root, so it works with the hardened `DynamicUser` and a sops-nix rendered
+        template, keeping everything out of the nix store.
       '';
-    };
-
-    pinboardTokenFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
-      description = ''Path to a file with the Pinboard API token ("user:TOKEN"). Exported as PINBOARD_TOKEN_FILE.'';
-    };
-
-    reddit = {
-      username = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Reddit username (not secret). Exported as REDDIT_USERNAME.";
-      };
-      cookieFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.path;
-        default = null;
-        description = ''Path to a file with the Reddit session cookie ("reddit_session=…"). Exported as REDDIT_COOKIE_FILE.'';
-      };
-    };
-
-    github.tokenFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
-      description = "Path to a file with a GitHub personal access token. Exported as GITHUB_TOKEN_FILE.";
-    };
-
-    hackernews.username = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      description = "HackerNews username (public). Exported as HN_USERNAME.";
     };
   };
 
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.environmentFile != null || cfg.pinboardTokenFile != null;
-        message = "services.pinboard-sync: set `pinboardTokenFile` or `environmentFile` for the Pinboard token.";
+        assertion = cfg.environmentFile != null;
+        message = "services.pinboard-sync: set `environmentFile` to provide the credentials (e.g. a sops-nix rendered template with PINBOARD_TOKEN).";
       }
     ];
 

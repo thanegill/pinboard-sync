@@ -134,19 +134,27 @@ special-type prefix) live in the config only — there are no tag CLI flags.
 
 ## Running as a NixOS service
 
-The flake exports `nixosModules.default`, which renders the config to the Nix store
-and feeds secrets via systemd from sops-nix paths (never into the unit environment),
-running on a timer under a hardened `DynamicUser`:
+The flake exports `nixosModules.default`, which renders the non-secret config to the
+Nix store and reads secrets from a systemd `environmentFile` (e.g. a sops-nix
+rendered template, read as root — never in the store), running on a timer under a
+hardened `DynamicUser`:
 
 ```nix
 {
   imports = [ inputs.pinboard-sync.nixosModules.default ];
+
+  # A sops-nix template that renders every credential into a root-only env file.
+  sops.templates."pinboard-sync.env".content = ''
+    PINBOARD_TOKEN=${config.sops.placeholder.pinboard-token}
+    REDDIT_USERNAME=${config.sops.placeholder.reddit-username}
+    REDDIT_COOKIE=${config.sops.placeholder.reddit-cookie}
+  '';
+
   services.pinboard-sync = {
     enable = true;
     mode = "all";                            # every configured account; or mode = "source"
-    settings.reddit = [ { name = "main"; username = "you"; } ];
-    reddit.cookieFile = config.sops.secrets.reddit-cookie.path;
-    pinboardTokenFile = config.sops.secrets.pinboard-token.path;
+    settings.reddit = [ { name = "main"; } ];
+    environmentFile = config.sops.templates."pinboard-sync.env".path;
     schedule = "hourly";
   };
 }

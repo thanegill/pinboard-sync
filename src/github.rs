@@ -203,15 +203,14 @@ pub struct GhCleanupOpts {
     pub verbose: bool,
 }
 
-/// Normalize existing GitHub repo bookmarks. Always canonicalizes the repo-root URL
-/// to `https://github.com/<owner>/<repo>`. When `client` is `Some` (refresh on), it
-/// also looks each repo up via the API: a renamed/moved repo's URL is rewritten to
-/// the current one, the title is set to the current `owner/repo`, and the `lang:`
-/// tag is refreshed. A URL change updates + deletes the old; title, notes (kept),
-/// tags, and creation time are otherwise preserved.
+/// Normalize existing GitHub repo bookmarks: look each repo up via the API (which
+/// follows renames/transfers), rewriting a moved repo's URL to the current one,
+/// setting the title to the current `owner/repo`, and refreshing the `lang:` tag. A
+/// URL change updates + deletes the old; notes are kept and creation time preserved.
+/// A repo that no longer exists (404) keeps just the URL canonicalization.
 pub async fn cleanup<P: BookmarkStore>(
     pinboard: &P,
-    client: Option<&GitHubClient>,
+    client: &GitHubClient,
     config: &GithubConfig,
     opts: &GhCleanupOpts,
     bookmarks: &[Bookmark],
@@ -232,19 +231,16 @@ pub async fn cleanup<P: BookmarkStore>(
     for bm in &gh_bms {
         let canonical = canonical_repo_url(&bm.url).unwrap_or_else(|| bm.url.clone());
 
-        // Defaults: just the canonicalization, everything else preserved.
+        // Default to the canonicalization, then refresh from the API when the repo
+        // still exists (a 404 keeps just the canonical URL).
         let mut url = canonical.clone();
         let mut description = bm.description.clone();
         let mut tags = bm.tag_list();
-
-        if let Some(client) = client {
-            if let Some((owner, repo)) = owner_repo(&canonical) {
-                if let Some(info) = client.repo(owner, repo).await.map_err(source_err)? {
-                    url = info.html_url.clone(); // follows renames/transfers
-                    description = info.full_name.clone();
-                    tags = refresh_tags(bm.tag_list(), &info, config);
-                }
-                // A 404 (deleted repo) keeps just the canonicalization above.
+        if let Some((owner, repo)) = owner_repo(&canonical) {
+            if let Some(info) = client.repo(owner, repo).await.map_err(source_err)? {
+                url = info.html_url.clone(); // follows renames/transfers
+                description = info.full_name.clone();
+                tags = refresh_tags(bm.tag_list(), &info, config);
             }
         }
 
@@ -493,49 +489,6 @@ mod tests {
         assert_eq!(canonical_repo_url("https://github.com/o"), None);
     }
 
-    #[tokio::test]
-    async fn cleanup_canonicalizes_url_and_deletes_old() {
-        use crate::pinboard::Bookmark;
-        use crate::test_support::FakePinboard;
-
-        let pinboard = FakePinboard {
-            all: vec![Bookmark {
-                url: "https://www.github.com/Owner/Repo.git".into(),
-                description: "Owner/Repo".into(),
-                extended: "notes".into(),
-                tags: "github-star lang:rust".into(),
-                time: "2020-01-01T00:00:00Z".into(),
-                shared: "no".into(),
-                toread: "no".into(),
-            }],
-            ..Default::default()
-        };
-        let bookmarks = pinboard.all.clone();
-        // No client → canonicalization only (no API refresh).
-        cleanup(
-            &pinboard,
-            None,
-            &GithubConfig::default(),
-            &GhCleanupOpts {
-                dry_run: false,
-                verbose: false,
-            },
-            &bookmarks,
-        )
-        .await
-        .unwrap();
-
-        let updated = pinboard.updated.borrow();
-        assert_eq!(updated.len(), 1);
-        assert_eq!(updated[0].url, "https://github.com/Owner/Repo");
-        // Tags are preserved as-is (canonicalization doesn't touch them).
-        assert_eq!(updated[0].tags, vec!["github-star", "lang:rust"]);
-        assert_eq!(
-            pinboard.deleted.borrow().as_slice(),
-            &["https://www.github.com/Owner/Repo.git".to_string()]
-        );
-    }
-
     #[test]
     fn parse_link_next_extracts_next_page() {
         let link = "<https://api.github.com/user/starred?sort=created&page=2>; rel=\"next\", \
@@ -657,7 +610,7 @@ mod net_tests {
             GitHubClient::with_base_url("tok".into(), GithubConfig::default(), server.uri());
         cleanup(
             &pinboard,
-            Some(&client),
+            &client,
             &GithubConfig::default(),
             &GhCleanupOpts {
                 dry_run: false,

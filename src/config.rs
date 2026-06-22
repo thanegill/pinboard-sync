@@ -5,6 +5,8 @@
 //! account → typed-config mapping. Every field is optional, so an absent or empty
 //! config yields all defaults.
 
+use std::collections::HashSet;
+
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 
@@ -83,7 +85,12 @@ impl Config {
     /// (its API splits the tag string on them), so a space here is silently
     /// corrupting and should fail loudly instead.
     fn validate(&self) -> Result<()> {
+        check_unique_names("reddit", &self.reddit)?;
+        check_unique_names("github", &self.github)?;
+        check_unique_names("hackernews", &self.hackernews)?;
+
         for a in &self.reddit {
+            check_domain("reddit.reddit_domain", &a.reddit_domain)?;
             check_tags("reddit.tags", &a.tags)?;
             check_tag("reddit.tag_subreddit_prefix", &a.tag_subreddit_prefix)?;
             check_tag("reddit.tag_comment", &a.tag_comment)?;
@@ -122,6 +129,31 @@ fn check_tags(field: &str, values: &Option<Vec<String>>) -> Result<()> {
     if let Some(values) = values {
         for v in values {
             check_tag(field, &Some(v.clone()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Error if two accounts of a source share a `name` (the second would be
+/// unreachable by name in `sync <source> <name>`).
+fn check_unique_names<T: Named>(source: &str, accounts: &[T]) -> Result<()> {
+    let mut seen = HashSet::new();
+    for account in accounts {
+        if let Some(name) = account.account_name() {
+            if !seen.insert(name) {
+                bail!("config: duplicate {source} account name {name:?}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Error if `value` isn't a bare host (it's interpolated as `https://<domain>…`, so
+/// a scheme, slash, or whitespace would corrupt the bookmark URLs).
+fn check_domain(field: &str, value: &Option<String>) -> Result<()> {
+    if let Some(v) = value {
+        if v.is_empty() || v.contains('/') || v.chars().any(char::is_whitespace) {
+            bail!("config: `{field}` must be a bare host like \"old.reddit.com\" (got {v:?})");
         }
     }
     Ok(())
@@ -312,6 +344,34 @@ mod tests {
         assert!(Config::parse("[[hackernews]]\ntag_link = \"find hn\"").is_err());
         // No whitespace → fine (hyphens/colons allowed).
         assert!(Config::parse("[[reddit]]\ntags = [\"reddit\", \"a-b\"]").is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_account_names() {
+        let dup = r#"
+            [[reddit]]
+            name = "main"
+            [[reddit]]
+            name = "main"
+        "#;
+        assert!(Config::parse(dup).is_err());
+        // Distinct names (and unnamed accounts) are fine.
+        let ok = r#"
+            [[reddit]]
+            name = "main"
+            [[reddit]]
+            name = "alt"
+            [[reddit]]
+        "#;
+        assert!(Config::parse(ok).is_ok());
+    }
+
+    #[test]
+    fn rejects_malformed_reddit_domain() {
+        assert!(Config::parse("[[reddit]]\nreddit_domain = \"https://old.reddit.com\"").is_err());
+        assert!(Config::parse("[[reddit]]\nreddit_domain = \"old.reddit.com/\"").is_err());
+        assert!(Config::parse("[[reddit]]\nreddit_domain = \"\"").is_err());
+        assert!(Config::parse("[[reddit]]\nreddit_domain = \"www.reddit.com\"").is_ok());
     }
 
     #[test]

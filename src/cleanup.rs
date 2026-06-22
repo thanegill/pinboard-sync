@@ -10,7 +10,8 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::model::cased_subreddit;
 use crate::pinboard::{Bookmark, BookmarkStore, RATE_LIMIT_SECS};
-use crate::reddit::{PostInfo, RedditError};
+use crate::reddit::PostInfo;
+use crate::source::SourceError;
 
 pub struct CleanupOpts {
     pub dry_run: bool,
@@ -164,10 +165,10 @@ async fn fetch_post_info<R: PostInfo>(
     }
 
     let entries = reddit.info(&fullnames).await.map_err(|e| match e {
-        RedditError::ReauthRequired(m) => {
+        SourceError::ReauthRequired(m) => {
             anyhow!("{m}\nSet a fresh REDDIT_COOKIE (reddit_session) and retry.")
         }
-        RedditError::Other(e) => e,
+        SourceError::Other(e) => e,
     })?;
     for entry in entries {
         if let Some(name) = entry.fields.name.clone() {

@@ -10,7 +10,8 @@ use serde_json::Value;
 
 use crate::model::ListingEntry;
 use crate::pinboard::{Bookmark, BookmarkStore};
-use crate::reddit::{PostInfo, RedditError, SavedSource};
+use crate::reddit::{PostInfo, SavedSource};
+use crate::source::SourceError;
 
 /// Build a `ListingEntry` from `kind` (`t3`/`t1`) and a `data` JSON object.
 pub fn listing_entry(kind: &str, data: Value) -> ListingEntry {
@@ -24,13 +25,13 @@ pub struct FakeReddit {
 }
 
 impl SavedSource for FakeReddit {
-    async fn fetch_saved(&self) -> Result<Vec<ListingEntry>, RedditError> {
+    async fn fetch_saved(&self) -> Result<Vec<ListingEntry>, SourceError> {
         Ok(self.saved.clone())
     }
 }
 
 impl PostInfo for FakeReddit {
-    async fn info(&self, _fullnames: &[String]) -> Result<Vec<ListingEntry>, RedditError> {
+    async fn info(&self, _fullnames: &[String]) -> Result<Vec<ListingEntry>, SourceError> {
         Ok(self.info.clone())
     }
 }

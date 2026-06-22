@@ -13,6 +13,7 @@ use serde::de::DeserializeOwned;
 
 use crate::http::send_retrying;
 use crate::model::{ListingEntry, RedditListing};
+use crate::source::SourceError;
 
 /// Descriptive User-Agent built from the crate name + version. Reddit rejects
 /// generic or missing User-Agents.
@@ -26,19 +27,6 @@ const REDDIT_BASE: &str = "https://old.reddit.com";
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 
-/// Errors from talking to Reddit, separating the "must re-authenticate" case
-/// (the session cookie expired/was reset → a 401/403) from transient/other
-/// failures, because only the former should fire the auth-failure hook.
-#[derive(Debug, thiserror::Error)]
-pub enum RedditError {
-    /// Reddit rejected the request (401/403): the `reddit_session` cookie likely
-    /// expired or is missing. Needs operator action.
-    #[error("Reddit re-authentication required: {0}")]
-    ReauthRequired(String),
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
-
 /// A source of a user's saved items (used by `sync`). Abstracted from the
 /// concrete client so the loop can be tested with a fake. (Crate-internal, never
 /// spawned across threads, so the missing `Send` bound from `async fn` in a trait
@@ -46,13 +34,13 @@ pub enum RedditError {
 #[allow(async_fn_in_trait)]
 pub trait SavedSource {
     /// All saved items, newest first.
-    async fn fetch_saved(&self) -> Result<Vec<ListingEntry>, RedditError>;
+    async fn fetch_saved(&self) -> Result<Vec<ListingEntry>, SourceError>;
 }
 
 /// Reddit `/api/info` lookups by fullname (used by `cleanup` for over_18/title).
 #[allow(async_fn_in_trait)]
 pub trait PostInfo {
-    async fn info(&self, fullnames: &[String]) -> Result<Vec<ListingEntry>, RedditError>;
+    async fn info(&self, fullnames: &[String]) -> Result<Vec<ListingEntry>, SourceError>;
 }
 
 /// Reads Reddit's saved listing and `/api/info.json`, authenticated by a session
@@ -109,7 +97,7 @@ impl RedditClient {
 impl SavedSource for RedditClient {
     /// Fetch all saved items, newest first, following `after` pagination (Reddit
     /// caps any listing at ~1000).
-    async fn fetch_saved(&self) -> Result<Vec<ListingEntry>, RedditError> {
+    async fn fetch_saved(&self) -> Result<Vec<ListingEntry>, SourceError> {
         let username = self
             .username
             .as_deref()
@@ -150,7 +138,7 @@ impl SavedSource for RedditClient {
 impl PostInfo for RedditClient {
     /// Batch-fetch Thing data by fullname via `/api/info.json` (100 per request).
     /// Returns the entries that exist.
-    async fn info(&self, fullnames: &[String]) -> Result<Vec<ListingEntry>, RedditError> {
+    async fn info(&self, fullnames: &[String]) -> Result<Vec<ListingEntry>, SourceError> {
         let mut out: Vec<ListingEntry> = Vec::new();
         let chunks: Vec<&[String]> = fullnames.chunks(100).collect();
         let endpoint = format!("{}/api/info.json", self.base);
@@ -176,18 +164,18 @@ impl PostInfo for RedditClient {
 }
 
 /// Decode a Reddit JSON response into `T`, centralizing status handling: 401/403
-/// become [`RedditError::ReauthRequired`] (with a fixed, actionable message — the
+/// become [`SourceError::ReauthRequired`] (with a fixed, actionable message — the
 /// body is usually a large anti-bot HTML page, so it isn't echoed), any other
-/// non-success status becomes [`RedditError::Other`]. `what` names the request.
+/// non-success status becomes [`SourceError::Other`]. `what` names the request.
 async fn decode_reddit_json<T: DeserializeOwned>(
     resp: reqwest::Response,
     what: &str,
-) -> Result<T, RedditError> {
+) -> Result<T, SourceError> {
     use reqwest::StatusCode;
 
     let status = resp.status();
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-        return Err(RedditError::ReauthRequired(format!(
+        return Err(SourceError::ReauthRequired(format!(
             "{what} returned {status} — Reddit blocked the request. REDDIT_COOKIE (your \
              reddit_session) likely expired or is missing; re-copy it from a logged-in browser."
         )));
@@ -235,7 +223,7 @@ mod tests {
                 .await
                 .unwrap_err();
             assert!(
-                matches!(err, RedditError::ReauthRequired(_)),
+                matches!(err, SourceError::ReauthRequired(_)),
                 "status {code} should require re-auth"
             );
         }
@@ -246,7 +234,7 @@ mod tests {
         let err = decode_reddit_json::<Sample>(response(500, "boom"), "req")
             .await
             .unwrap_err();
-        assert!(matches!(err, RedditError::Other(_)));
+        assert!(matches!(err, SourceError::Other(_)));
     }
 
     #[tokio::test]
@@ -259,7 +247,7 @@ mod tests {
         let err = decode_reddit_json::<Sample>(response(200, "not json"), "req")
             .await
             .unwrap_err();
-        assert!(matches!(err, RedditError::Other(_)));
+        assert!(matches!(err, SourceError::Other(_)));
     }
 }
 
@@ -339,7 +327,7 @@ mod net_tests {
         let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
         assert!(matches!(
             client.fetch_saved().await,
-            Err(RedditError::ReauthRequired(_))
+            Err(SourceError::ReauthRequired(_))
         ));
     }
 

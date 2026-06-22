@@ -5,6 +5,7 @@ mod http;
 mod model;
 mod pinboard;
 mod reddit;
+mod source;
 mod sync;
 #[cfg(test)]
 mod test_support;
@@ -15,7 +16,8 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand};
 
 use pinboard::PinboardClient;
-use reddit::{RedditClient, RedditError};
+use reddit::RedditClient;
+use source::SourceError;
 
 #[derive(Parser)]
 #[command(name = "pinboard-sync", version, about, arg_required_else_help = true)]
@@ -189,15 +191,15 @@ async fn run_cleanup(args: CleanupArgs) -> Result<()> {
     cleanup::run(&pinboard, reddit.as_ref(), &opts).await
 }
 
-/// Map a `RedditError` to an `anyhow::Error`, firing the auth-failure hook when
+/// Map a `SourceError` to an `anyhow::Error`, firing the auth-failure hook when
 /// re-authentication is required.
-fn handle_reddit_err(e: RedditError, hook: Option<&str>) -> anyhow::Error {
+fn handle_reddit_err(e: SourceError, hook: Option<&str>) -> anyhow::Error {
     match e {
-        RedditError::ReauthRequired(msg) => {
+        SourceError::ReauthRequired(msg) => {
             run_auth_failure_hook(hook, &msg);
             anyhow!("{msg}")
         }
-        RedditError::Other(e) => e,
+        SourceError::Other(e) => e,
     }
 }
 

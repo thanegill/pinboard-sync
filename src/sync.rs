@@ -8,7 +8,8 @@ use anyhow::{Context, Result};
 
 use crate::model::{reddit_key, ListingEntry, SavedItem};
 use crate::pinboard::{BookmarkStore, RATE_LIMIT_SECS};
-use crate::reddit::{RedditError, SavedSource};
+use crate::reddit::SavedSource;
+use crate::source::SourceError;
 
 pub struct SyncConfig {
     /// Optional cap on bookmarks written per run; 0 = all.
@@ -27,13 +28,13 @@ pub struct SyncSummary {
     pub written: usize,
 }
 
-/// Run the sync. Errors as `RedditError` so the caller can fire the
+/// Run the sync. Errors as `SourceError` so the caller can fire the
 /// auth-failure hook on `ReauthRequired`; Pinboard errors map to `Other`.
 pub async fn run<R: SavedSource, P: BookmarkStore>(
     reddit: &R,
     pinboard: &P,
     cfg: &SyncConfig,
-) -> Result<SyncSummary, RedditError> {
+) -> Result<SyncSummary, SourceError> {
     let items: Vec<SavedItem> = reddit
         .fetch_saved()
         .await?

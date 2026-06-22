@@ -194,9 +194,19 @@ enum CleanupSource {
 
 #[derive(Args, Clone)]
 struct GithubCleanupArgs {
+    /// Account name whose token/tags to use (default: the first github account).
+    account: Option<String>,
+    /// GitHub personal access token (env GITHUB_TOKEN, or *_FILE). Used for the
+    /// repo refresh; not required with --no-refresh.
+    #[arg(long)]
+    github_token: Option<String>,
     /// Pinboard API token (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
     #[arg(long)]
     pinboard_token: Option<String>,
+    /// Skip the GitHub API refresh (renamed repos, title, language) — only
+    /// canonicalize the bookmark URLs (no token needed).
+    #[arg(long)]
+    no_refresh: bool,
     /// Show what would change without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
@@ -624,12 +634,14 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             }
             let (pinboard, bookmarks) = open_pinboard(None, false, config).await?;
             let mut run = AllRun::default();
-            if !config.github.is_empty() {
+            if let Some(acct) = config.github.first() {
                 let opts = github::GhCleanupOpts {
                     dry_run: cmd.dry_run,
                     verbose: cmd.verbose,
                 };
-                run.record(github::cleanup(&pinboard, &opts, &bookmarks).await);
+                run.record(
+                    cleanup_github_for(&pinboard, &bookmarks, Some(acct), None, false, &opts).await,
+                );
             }
             if let Some(acct) = config.reddit.first() {
                 let args = RedditCleanupArgs {
@@ -669,13 +681,49 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
 }
 
 async fn run_cleanup_github(args: GithubCleanupArgs, config: &Config) -> Result<()> {
-    // URL canonicalization needs no GitHub API token (only Pinboard).
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, false, config).await?;
+    let account = config::select_account(&config.github, args.account.as_deref())?;
     let opts = github::GhCleanupOpts {
         dry_run: args.dry_run,
         verbose: args.verbose,
     };
-    github::cleanup(&pinboard, &opts, &bookmarks).await
+    cleanup_github_for(
+        &pinboard,
+        &bookmarks,
+        account,
+        args.github_token,
+        args.no_refresh,
+        &opts,
+    )
+    .await
+}
+
+/// Run github cleanup: canonicalize URLs, and (unless `no_refresh`) build an
+/// API client from the account/env token to refresh renamed repos/titles/language.
+async fn cleanup_github_for(
+    pinboard: &PinboardClient,
+    bookmarks: &[Bookmark],
+    account: Option<&GithubAccount>,
+    token_flag: Option<String>,
+    no_refresh: bool,
+    opts: &github::GhCleanupOpts,
+) -> Result<()> {
+    if no_refresh {
+        let config = github::GithubConfig::default();
+        return github::cleanup(pinboard, None, &config, opts, bookmarks).await;
+    }
+    let config = account
+        .map(GithubAccount::github_config)
+        .unwrap_or_default();
+    let token = resolve_secret(
+        token_flag,
+        "GITHUB_TOKEN",
+        account.and_then(|a| a.token.clone()),
+        account.and_then(|a| a.token_file.as_deref()),
+    )
+    .context("missing GitHub token (set --github-token, GITHUB_TOKEN, `token`/`token_file` in the config, or pass --no-refresh)")?;
+    let client = GitHubClient::new(token, config.clone())?;
+    github::cleanup(pinboard, Some(&client), &config, opts, bookmarks).await
 }
 
 async fn run_cleanup_reddit(args: RedditCleanupArgs, config: &Config) -> Result<()> {

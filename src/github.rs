@@ -116,6 +116,31 @@ impl GitHubClient {
             .context("building HTTP client")?;
         Ok(Self { http, config, base })
     }
+
+    /// Look up a repo via `/repos/{owner}/{name}` (the API follows renames and
+    /// transfers, returning the current name/URL). `None` if it no longer exists.
+    async fn repo(&self, owner: &str, name: &str) -> Result<Option<Repo>, SourceError> {
+        let endpoint = format!("{}/repos/{}/{}", self.base, owner, name);
+        let resp = send_retrying("github repo", MAX_RETRIES, RETRY_DELAY, || {
+            self.http.get(&endpoint)
+        })
+        .await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(SourceError::ReauthRequired(
+                "GitHub returned 401 — the token (GITHUB_TOKEN) is invalid or expired.".to_string(),
+            ));
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("github repo returned {status}: {}", body.trim()).into());
+        }
+        let repo: Repo = resp.json().await.context("parsing github repo response")?;
+        Ok(Some(repo))
+    }
 }
 
 impl Source for GitHubClient {
@@ -178,11 +203,16 @@ pub struct GhCleanupOpts {
     pub verbose: bool,
 }
 
-/// Normalize existing GitHub repo bookmarks: canonicalize each repo-root URL to
-/// `https://github.com/<owner>/<repo>` (updating + deleting the old URL when it
-/// changes), preserving the title, notes, tags, and creation time.
+/// Normalize existing GitHub repo bookmarks. Always canonicalizes the repo-root URL
+/// to `https://github.com/<owner>/<repo>`. When `client` is `Some` (refresh on), it
+/// also looks each repo up via the API: a renamed/moved repo's URL is rewritten to
+/// the current one, the title is set to the current `owner/repo`, and the `lang:`
+/// tag is refreshed. A URL change updates + deletes the old; title, notes (kept),
+/// tags, and creation time are otherwise preserved.
 pub async fn cleanup<P: BookmarkStore>(
     pinboard: &P,
+    client: Option<&GitHubClient>,
+    config: &GithubConfig,
     opts: &GhCleanupOpts,
     bookmarks: &[Bookmark],
 ) -> Result<()> {
@@ -200,14 +230,47 @@ pub async fn cleanup<P: BookmarkStore>(
     let mut changed = 0usize;
     let mut wrote = false;
     for bm in &gh_bms {
-        let Some(new_url) = canonical_repo_url(&bm.url) else {
+        let canonical = canonical_repo_url(&bm.url).unwrap_or_else(|| bm.url.clone());
+
+        // Defaults: just the canonicalization, everything else preserved.
+        let mut url = canonical.clone();
+        let mut description = bm.description.clone();
+        let mut tags = bm.tag_list();
+
+        if let Some(client) = client {
+            if let Some((owner, repo)) = owner_repo(&canonical) {
+                if let Some(info) = client.repo(owner, repo).await.map_err(source_err)? {
+                    url = info.html_url.clone(); // follows renames/transfers
+                    description = info.full_name.clone();
+                    tags = refresh_tags(bm.tag_list(), &info, config);
+                }
+                // A 404 (deleted repo) keeps just the canonicalization above.
+            }
+        }
+
+        let url_changed = url != bm.url;
+        let desc_changed = description != bm.description;
+        let mut old_tags = bm.tag_list();
+        old_tags.sort();
+        let mut new_tags = tags.clone();
+        new_tags.sort();
+        let tags_changed = old_tags != new_tags;
+        if !(url_changed || desc_changed || tags_changed) {
             continue;
-        };
+        }
         changed += 1;
 
         if opts.dry_run {
             println!("[dry-run] {}", bm.url);
-            println!("          url -> {new_url}");
+            if url_changed {
+                println!("          url   -> {url}");
+            }
+            if desc_changed {
+                println!("          title -> {description}");
+            }
+            if tags_changed {
+                println!("          tags  -> [{}]", tags.join(" "));
+            }
             continue;
         }
 
@@ -216,23 +279,25 @@ pub async fn cleanup<P: BookmarkStore>(
         }
         pinboard
             .update(
-                &new_url,
-                &bm.description,
+                &url,
+                &description,
                 &bm.extended,
-                &bm.tag_list(),
+                &tags,
                 bm.is_shared(),
                 bm.is_toread(),
                 &bm.time,
             )
             .await
-            .with_context(|| format!("updating bookmark {new_url}"))?;
-        pinboard
-            .delete(&bm.url)
-            .await
-            .with_context(|| format!("deleting old URL {}", bm.url))?;
+            .with_context(|| format!("updating bookmark {url}"))?;
+        if url_changed {
+            pinboard
+                .delete(&bm.url)
+                .await
+                .with_context(|| format!("deleting old URL {}", bm.url))?;
+        }
         wrote = true;
         if opts.verbose {
-            eprintln!("updated {} -> {new_url}", bm.url);
+            eprintln!("updated {} -> {url}", bm.url);
         }
     }
 
@@ -242,6 +307,42 @@ pub async fn cleanup<P: BookmarkStore>(
         println!("Done. Updated {changed} bookmark(s).");
     }
     Ok(())
+}
+
+/// Flatten a `SourceError` into an `anyhow::Error` for the cleanup path.
+fn source_err(e: SourceError) -> anyhow::Error {
+    match e {
+        SourceError::ReauthRequired(m) => anyhow::anyhow!(m),
+        SourceError::Other(e) => e,
+    }
+}
+
+/// The `(owner, repo)` of a canonical `https://github.com/owner/repo` URL.
+fn owner_repo(url: &str) -> Option<(&str, &str)> {
+    let after = url.split_once("github.com/")?.1;
+    let mut segments = after.split('/');
+    let owner = segments.next().filter(|s| !s.is_empty())?;
+    let repo = segments.next().filter(|s| !s.is_empty())?;
+    Some((owner, repo))
+}
+
+/// Refresh the language tag from the current repo, keeping existing tags and
+/// ensuring the base tags: drop any old `lang_prefix` tag, then re-add the base
+/// tags and the current `lang:` tag.
+fn refresh_tags(existing: Vec<String>, repo: &Repo, cfg: &GithubConfig) -> Vec<String> {
+    let mut tags: Vec<String> = existing
+        .into_iter()
+        .filter(|t| cfg.lang_prefix.is_empty() || !t.starts_with(&cfg.lang_prefix))
+        .collect();
+    for tag in &cfg.tags {
+        if !tags.contains(tag) {
+            tags.push(tag.clone());
+        }
+    }
+    if let Some(lang) = repo.language.clone().filter(|s| !s.is_empty()) {
+        push_prefixed(&mut tags, &cfg.lang_prefix, &lang.to_lowercase());
+    }
+    tags
 }
 
 /// Whether `url`'s host is github.com or a `*.github.com` subdomain.
@@ -410,8 +511,11 @@ mod tests {
             ..Default::default()
         };
         let bookmarks = pinboard.all.clone();
+        // No client → canonicalization only (no API refresh).
         cleanup(
             &pinboard,
+            None,
+            &GithubConfig::default(),
             &GhCleanupOpts {
                 dry_run: false,
                 verbose: false,
@@ -424,7 +528,7 @@ mod tests {
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].url, "https://github.com/Owner/Repo");
-        // Tags are preserved as-is (phase 1 only touches the URL).
+        // Tags are preserved as-is (canonicalization doesn't touch them).
         assert_eq!(updated[0].tags, vec!["github-star", "lang:rust"]);
         assert_eq!(
             pinboard.deleted.borrow().as_slice(),
@@ -517,5 +621,66 @@ mod net_tests {
             client.fetch().await,
             Err(SourceError::ReauthRequired(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
+        use crate::pinboard::Bookmark;
+        use crate::test_support::FakePinboard;
+
+        // The repo was renamed old/name -> new/name, and its language changed.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/old/name"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "full_name": "new/name",
+                "html_url": "https://github.com/new/name",
+                "language": "Rust"
+            })))
+            .mount(&server)
+            .await;
+
+        let pinboard = FakePinboard {
+            all: vec![Bookmark {
+                url: "https://github.com/old/name".into(),
+                description: "old/name".into(),
+                extended: "notes".into(),
+                tags: "github-star lang:python mine".into(),
+                time: "2020-01-01T00:00:00Z".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }],
+            ..Default::default()
+        };
+        let bookmarks = pinboard.all.clone();
+        let client =
+            GitHubClient::with_base_url("tok".into(), GithubConfig::default(), server.uri());
+        cleanup(
+            &pinboard,
+            Some(&client),
+            &GithubConfig::default(),
+            &GhCleanupOpts {
+                dry_run: false,
+                verbose: false,
+            },
+            &bookmarks,
+        )
+        .await
+        .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://github.com/new/name");
+        assert_eq!(updated[0].description, "new/name");
+        // Language tag refreshed (python → rust), base + user tags kept.
+        assert!(updated[0].tags.contains(&"lang:rust".to_string()));
+        assert!(!updated[0].tags.contains(&"lang:python".to_string()));
+        assert!(updated[0].tags.contains(&"github-star".to_string()));
+        assert!(updated[0].tags.contains(&"mine".to_string()));
+        // Old URL deleted after the rewrite.
+        assert_eq!(
+            pinboard.deleted.borrow().as_slice(),
+            &["https://github.com/old/name".to_string()]
+        );
     }
 }

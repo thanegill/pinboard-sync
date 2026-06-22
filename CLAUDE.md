@@ -75,7 +75,17 @@ environment. Don't add a secret that only reads `$VAR`.
 **`sync <source> [account]` / `cleanup <source> [account]` select one account**
 (by name, else the first, else an implicit CLI/env account). `--all` (per-source or
 top-level) runs every configured account, aggregating failures via `AllRun` and
-exiting non-zero if any fail. `cleanup` covers reddit + hackernews (github has none).
+exiting non-zero if any fail. `cleanup --all` runs once per cleanup-capable service
+(reddit + hackernews; github has none), since it normalizes the shared bookmark set.
+
+**`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
+`SyncJob { client: SourceClient, hook, limit }`; `SourceClient` is an enum over the
+three clients implementing `Source`, so `build_jobs` + `run_sync_jobs` handle one
+account and `--all` uniformly. `run_sync_jobs` fetches every job's source
+concurrently via `futures::future::join_all` (reads only, on one task — the client
+futures aren't `Send`, so no `tokio::spawn`), then writes the merged, URL-deduped
+drafts **sequentially** through one rate-limited writer (`sync::write_drafts`).
+Reads parallel, writes serial — `posts/all` is fetched once up front and shared.
 `completions <shell>` and `config example` are utility subcommands the Nix package
 install consumes.
 

@@ -15,6 +15,8 @@ thiserror = "2"
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+# join_all: fetch sources concurrently on one task (no Send bound, no spawn).
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 # native-tls (not rustls): Reddit's anti-bot edge 403s rustls's TLS ClientHello
 # fingerprint on the saved listing, but accepts native-tls's. See CLAUDE.md.
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }

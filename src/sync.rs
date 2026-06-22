@@ -1,6 +1,8 @@
-//! The sync loop: fetch a source's drafts, skip those already on Pinboard, write
-//! the rest. Generic over the [`Source`]/[`BookmarkStore`] ports so it can be
-//! unit-tested with in-memory fakes.
+//! The sync write path: pick the drafts not already on Pinboard, and write them
+//! sequentially (Pinboard rate-limits `posts/add`). Source reads happen in the
+//! caller (so an `--all` run can fetch services concurrently); only the writes are
+//! serialized here. Generic over the [`Source`]/[`BookmarkStore`] ports so it can
+//! be unit-tested with in-memory fakes.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -8,68 +10,37 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::pinboard::{Bookmark, BookmarkStore, RATE_LIMIT_SECS};
-use crate::source::{Source, SourceError};
+use crate::source::{BookmarkDraft, Source};
 
-pub struct SyncConfig {
-    /// Optional cap on bookmarks written per run; 0 = all.
-    pub limit: usize,
-    pub dry_run: bool,
-    pub verbose: bool,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct SyncSummary {
-    pub fetched: usize,
-    pub already_present: usize,
-    pub new: usize,
-    pub written: usize,
-}
-
-/// Run the sync. `existing_bookmarks` is the already-fetched `posts/all` set (the
-/// caller fetches it once and shares it across accounts in an `--all` run). Errors
-/// as `SourceError` so the caller can fire the auth-failure hook on `ReauthRequired`;
-/// Pinboard errors map to `Other`.
-pub async fn run<S: Source, P: BookmarkStore>(
+/// The drafts not already present on Pinboard, matching each existing bookmark URL
+/// through this source's `existing_key`.
+pub fn filter_new<S: Source>(
     source: &S,
-    pinboard: &P,
-    cfg: &SyncConfig,
-    existing_bookmarks: &[Bookmark],
-) -> Result<SyncSummary, SourceError> {
-    let drafts = source.fetch().await?;
-    let fetched = drafts.len();
-
-    // Pinboard is the sync state: skip drafts whose dedup key is already present,
-    // mapping each existing bookmark URL through this source's `existing_key`.
-    let existing: HashSet<String> = existing_bookmarks
+    drafts: Vec<BookmarkDraft>,
+    existing: &[Bookmark],
+) -> Vec<BookmarkDraft> {
+    let keys: HashSet<String> = existing
         .iter()
         .filter_map(|b| source.existing_key(&b.url))
         .collect();
-    let mut new_items: Vec<_> = drafts
+    drafts
         .into_iter()
-        .filter(|d| !existing.contains(&d.dedup_key))
-        .collect();
-    let new = new_items.len();
+        .filter(|d| !keys.contains(&d.dedup_key))
+        .collect()
+}
 
-    let capped = cfg.limit > 0 && new > cfg.limit;
-    if capped {
-        new_items.truncate(cfg.limit);
-    }
-
-    println!(
-        "Fetched {fetched} item(s); {} already on Pinboard; {new} new{}{}.",
-        fetched - new,
-        if capped {
-            format!(", writing {}", cfg.limit)
-        } else {
-            String::new()
-        },
-        if cfg.dry_run { " (dry run)" } else { "" }
-    );
-
+/// Write `drafts` to Pinboard sequentially, pausing [`RATE_LIMIT_SECS`] between
+/// `posts/add` calls. Returns the number written (0 in `dry_run`).
+pub async fn write_drafts<P: BookmarkStore>(
+    pinboard: &P,
+    drafts: &[BookmarkDraft],
+    dry_run: bool,
+    verbose: bool,
+) -> Result<usize> {
     let mut written = 0usize;
     let mut posted = false;
-    for draft in &new_items {
-        if cfg.dry_run {
+    for draft in drafts {
+        if dry_run {
             println!("[dry-run] {}", draft.url);
             println!("          title: {}", draft.description);
             if !draft.extended.is_empty() {
@@ -89,36 +60,19 @@ pub async fn run<S: Source, P: BookmarkStore>(
             .with_context(|| format!("adding bookmark {}", draft.url))?;
         posted = true;
         written += 1;
-        if cfg.verbose {
+        if verbose {
             eprintln!("added {}  [{}]", draft.url, draft.tags.join(" "));
         }
     }
-
-    if !cfg.dry_run {
-        println!("Done. Wrote {written} bookmark(s) to Pinboard.");
-    }
-    Ok(SyncSummary {
-        fetched,
-        already_present: fetched - new,
-        new,
-        written,
-    })
+    Ok(written)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pinboard::Bookmark;
+    use crate::source::Source;
     use crate::test_support::{listing_entry, FakePinboard, FakeReddit};
     use serde_json::json;
-
-    fn config() -> SyncConfig {
-        SyncConfig {
-            limit: 0,
-            dry_run: false,
-            verbose: false,
-        }
-    }
 
     fn post(name: &str, permalink: &str) -> crate::model::ListingEntry {
         listing_entry(
@@ -141,7 +95,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writes_only_items_not_already_present() {
+    async fn filter_new_skips_present_then_write_adds_the_rest() {
         let reddit = FakeReddit {
             saved: vec![
                 post("t3_a", "/r/rust/comments/a/x/"),
@@ -149,24 +103,21 @@ mod tests {
             ],
             ..Default::default()
         };
-        let pinboard = FakePinboard::default();
         // Post a is already on Pinboard (any reddit host/case matches via reddit_key).
         let existing = vec![bookmark("https://www.reddit.com/r/Rust/comments/a/x/")];
 
-        let summary = run(&reddit, &pinboard, &config(), &existing).await.unwrap();
+        let drafts = reddit.fetch().await.unwrap();
+        let new = filter_new(&reddit, drafts, &existing);
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0].url, "https://old.reddit.com/r/rust/comments/b/y/");
+        assert_eq!(new[0].tags, vec!["reddit", "subreddit:rust"]);
 
-        assert_eq!(summary.fetched, 2);
-        assert_eq!(summary.already_present, 1);
-        assert_eq!(summary.new, 1);
-        assert_eq!(summary.written, 1);
-
-        // run() must not fetch posts/all itself — the caller supplies it.
+        let pinboard = FakePinboard::default();
+        let written = write_drafts(&pinboard, &new, false, false).await.unwrap();
+        assert_eq!(written, 1);
+        // The write path never lists posts/all itself.
         assert_eq!(*pinboard.all_calls.borrow(), 0);
-
-        let added = pinboard.added.borrow();
-        assert_eq!(added.len(), 1);
-        assert_eq!(added[0].url, "https://old.reddit.com/r/rust/comments/b/y/");
-        assert_eq!(added[0].tags, vec!["reddit", "subreddit:rust"]);
+        assert_eq!(pinboard.added.borrow().len(), 1);
     }
 
     #[tokio::test]
@@ -175,20 +126,15 @@ mod tests {
             saved: vec![post("t3_a", "/r/rust/comments/a/x/")],
             ..Default::default()
         };
+        let new = filter_new(&reddit, reddit.fetch().await.unwrap(), &[]);
         let pinboard = FakePinboard::default();
-        let cfg = SyncConfig {
-            dry_run: true,
-            ..config()
-        };
-
-        let summary = run(&reddit, &pinboard, &cfg, &[]).await.unwrap();
-        assert_eq!(summary.new, 1);
-        assert_eq!(summary.written, 0);
+        let written = write_drafts(&pinboard, &new, true, false).await.unwrap();
+        assert_eq!(written, 0);
         assert!(pinboard.added.borrow().is_empty());
     }
 
     #[tokio::test]
-    async fn limit_caps_the_number_written() {
+    async fn caller_can_cap_the_number_written() {
         let reddit = FakeReddit {
             saved: vec![
                 post("t3_a", "/r/rust/comments/a/"),
@@ -197,15 +143,12 @@ mod tests {
             ],
             ..Default::default()
         };
+        let mut new = filter_new(&reddit, reddit.fetch().await.unwrap(), &[]);
+        assert_eq!(new.len(), 3);
+        new.truncate(2);
         let pinboard = FakePinboard::default();
-        let cfg = SyncConfig {
-            limit: 2,
-            ..config()
-        };
-
-        let summary = run(&reddit, &pinboard, &cfg, &[]).await.unwrap();
-        assert_eq!(summary.new, 3);
-        assert_eq!(summary.written, 2);
+        let written = write_drafts(&pinboard, &new, false, false).await.unwrap();
+        assert_eq!(written, 2);
         assert_eq!(pinboard.added.borrow().len(), 2);
     }
 }

@@ -24,7 +24,7 @@ use github::GitHubClient;
 use hackernews::{HnCleanupOpts, HnClient};
 use pinboard::{Bookmark, BookmarkStore, PinboardClient};
 use reddit::RedditClient;
-use source::SourceError;
+use source::{BookmarkDraft, Source, SourceError};
 
 #[derive(Parser)]
 #[command(name = "pinboard-sync", version, about, arg_required_else_help = true)]
@@ -280,7 +280,7 @@ fn load_config(flag: Option<String>) -> Result<Config> {
 // --- sync --------------------------------------------------------------------
 
 async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
-    match (cmd.all, cmd.source) {
+    let (jobs, ovr) = match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
             if config.reddit.is_empty() && config.github.is_empty() && config.hackernews.is_empty()
@@ -292,120 +292,94 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
                 verbose: cmd.verbose,
                 ..SyncOverrides::default()
             };
-            let (pinboard, bookmarks) =
-                open_pinboard(ovr.pinboard_token.clone(), config.pinboard.public, config).await?;
-            let mut run = AllRun::default();
+            let mut jobs = Vec::new();
             for acct in &config.reddit {
-                run.record(sync_one_reddit(Some(acct), &ovr, config, &pinboard, &bookmarks).await);
+                jobs.push(build_reddit_job(Some(acct), &ovr, config)?);
             }
             for acct in &config.github {
-                run.record(sync_one_github(Some(acct), &ovr, config, &pinboard, &bookmarks).await);
+                jobs.push(build_github_job(Some(acct), &ovr, config)?);
             }
             for acct in &config.hackernews {
-                run.record(sync_one_hackernews(Some(acct), &ovr, &pinboard, &bookmarks).await);
+                jobs.push(build_hackernews_job(Some(acct), &ovr, config)?);
             }
-            run.finish()
+            (jobs, ovr)
         }
-        (false, Some(SyncSource::Reddit(args))) => run_sync_reddit(args, config).await,
-        (false, Some(SyncSource::Github(args))) => run_sync_github(args, config).await,
-        (false, Some(SyncSource::Hackernews(args))) => run_sync_hackernews(args, config).await,
+        (false, Some(SyncSource::Reddit(args))) => {
+            let ovr = SyncOverrides {
+                reddit_username: args.reddit_username,
+                reddit_cookie: args.reddit_cookie,
+                pinboard_token: args.pinboard_token,
+                on_auth_failure: args.on_auth_failure,
+                limit: args.limit,
+                public: args.public,
+                dry_run: args.dry_run,
+                verbose: args.verbose,
+                ..SyncOverrides::default()
+            };
+            let jobs = build_jobs(&config.reddit, args.account.as_deref(), args.all, |a| {
+                build_reddit_job(a, &ovr, config)
+            })?;
+            (jobs, ovr)
+        }
+        (false, Some(SyncSource::Github(args))) => {
+            let ovr = SyncOverrides {
+                github_token: args.github_token,
+                pinboard_token: args.pinboard_token,
+                on_auth_failure: args.on_auth_failure,
+                limit: args.limit,
+                public: args.public,
+                dry_run: args.dry_run,
+                verbose: args.verbose,
+                ..SyncOverrides::default()
+            };
+            let jobs = build_jobs(&config.github, args.account.as_deref(), args.all, |a| {
+                build_github_job(a, &ovr, config)
+            })?;
+            (jobs, ovr)
+        }
+        (false, Some(SyncSource::Hackernews(args))) => {
+            let ovr = SyncOverrides {
+                hackernews_username: args.username,
+                pinboard_token: args.pinboard_token,
+                limit: args.limit,
+                public: args.public,
+                dry_run: args.dry_run,
+                verbose: args.verbose,
+                ..SyncOverrides::default()
+            };
+            let jobs = build_jobs(&config.hackernews, args.account.as_deref(), args.all, |a| {
+                build_hackernews_job(a, &ovr, config)
+            })?;
+            (jobs, ovr)
+        }
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
-    }
-}
-
-async fn run_sync_reddit(args: RedditSyncArgs, config: &Config) -> Result<()> {
-    let ovr = SyncOverrides {
-        reddit_username: args.reddit_username,
-        reddit_cookie: args.reddit_cookie,
-        pinboard_token: args.pinboard_token,
-        on_auth_failure: args.on_auth_failure,
-        limit: args.limit,
-        public: args.public,
-        dry_run: args.dry_run,
-        verbose: args.verbose,
-        ..SyncOverrides::default()
     };
+
     let (pinboard, bookmarks) = open_pinboard(
         ovr.pinboard_token.clone(),
         ovr.public || config.pinboard.public,
         config,
     )
     .await?;
-    if args.all {
-        if config.reddit.is_empty() {
-            bail!("--all requires a --config with at least one reddit account");
-        }
-        let mut run = AllRun::default();
-        for acct in &config.reddit {
-            run.record(sync_one_reddit(Some(acct), &ovr, config, &pinboard, &bookmarks).await);
-        }
-        run.finish()
-    } else {
-        let account = config::select_account(&config.reddit, args.account.as_deref())?;
-        sync_one_reddit(account, &ovr, config, &pinboard, &bookmarks).await
-    }
+    run_sync_jobs(jobs, &pinboard, &bookmarks, ovr.dry_run, ovr.verbose).await
 }
 
-async fn run_sync_github(args: GithubSyncArgs, config: &Config) -> Result<()> {
-    let ovr = SyncOverrides {
-        github_token: args.github_token,
-        pinboard_token: args.pinboard_token,
-        on_auth_failure: args.on_auth_failure,
-        limit: args.limit,
-        public: args.public,
-        dry_run: args.dry_run,
-        verbose: args.verbose,
-        ..SyncOverrides::default()
-    };
-    let (pinboard, bookmarks) = open_pinboard(
-        ovr.pinboard_token.clone(),
-        ovr.public || config.pinboard.public,
-        config,
-    )
-    .await?;
-    if args.all {
-        if config.github.is_empty() {
-            bail!("--all requires a --config with at least one github account");
+/// Build one job per account: every account when `all`, else the named (or first,
+/// or implicit CLI/env) account.
+fn build_jobs<T: config::Named>(
+    accounts: &[T],
+    name: Option<&str>,
+    all: bool,
+    build: impl Fn(Option<&T>) -> Result<SyncJob>,
+) -> Result<Vec<SyncJob>> {
+    if all {
+        if accounts.is_empty() {
+            bail!("--all requires a --config with at least one configured account");
         }
-        let mut run = AllRun::default();
-        for acct in &config.github {
-            run.record(sync_one_github(Some(acct), &ovr, config, &pinboard, &bookmarks).await);
-        }
-        run.finish()
+        accounts.iter().map(|a| build(Some(a))).collect()
     } else {
-        let account = config::select_account(&config.github, args.account.as_deref())?;
-        sync_one_github(account, &ovr, config, &pinboard, &bookmarks).await
-    }
-}
-
-async fn run_sync_hackernews(args: HackernewsSyncArgs, config: &Config) -> Result<()> {
-    let ovr = SyncOverrides {
-        hackernews_username: args.username,
-        pinboard_token: args.pinboard_token,
-        limit: args.limit,
-        public: args.public,
-        dry_run: args.dry_run,
-        verbose: args.verbose,
-        ..SyncOverrides::default()
-    };
-    let (pinboard, bookmarks) = open_pinboard(
-        ovr.pinboard_token.clone(),
-        ovr.public || config.pinboard.public,
-        config,
-    )
-    .await?;
-    if args.all {
-        if config.hackernews.is_empty() {
-            bail!("--all requires a --config with at least one hackernews account");
-        }
-        let mut run = AllRun::default();
-        for acct in &config.hackernews {
-            run.record(sync_one_hackernews(Some(acct), &ovr, &pinboard, &bookmarks).await);
-        }
-        run.finish()
-    } else {
-        let account = config::select_account(&config.hackernews, args.account.as_deref())?;
-        sync_one_hackernews(account, &ovr, &pinboard, &bookmarks).await
+        let account = config::select_account(accounts, name)?;
+        Ok(vec![build(account)?])
     }
 }
 
@@ -423,13 +397,54 @@ struct SyncOverrides {
     verbose: bool,
 }
 
-async fn sync_one_reddit(
+/// A configured source client ready to fetch, plus its auth-failure hook and the
+/// per-run write cap.
+struct SyncJob {
+    client: SourceClient,
+    hook: Option<String>,
+    limit: usize,
+}
+
+/// One of the concrete source clients, unified behind the `Source` port so `--all`
+/// can fetch them concurrently and the dispatch can treat them uniformly.
+enum SourceClient {
+    Reddit(RedditClient),
+    Github(GitHubClient),
+    Hackernews(HnClient),
+}
+
+impl Source for SourceClient {
+    async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
+        match self {
+            SourceClient::Reddit(c) => c.fetch().await,
+            SourceClient::Github(c) => c.fetch().await,
+            SourceClient::Hackernews(c) => c.fetch().await,
+        }
+    }
+
+    fn existing_key(&self, url: &str) -> Option<String> {
+        match self {
+            SourceClient::Reddit(c) => c.existing_key(url),
+            SourceClient::Github(c) => c.existing_key(url),
+            SourceClient::Hackernews(c) => c.existing_key(url),
+        }
+    }
+}
+
+/// The per-run write cap: the CLI flag if set, else the account's `limit`, else 0.
+fn job_limit(ovr: &SyncOverrides, account_limit: Option<usize>) -> usize {
+    if ovr.limit > 0 {
+        ovr.limit
+    } else {
+        account_limit.unwrap_or(0)
+    }
+}
+
+fn build_reddit_job(
     account: Option<&RedditAccount>,
     ovr: &SyncOverrides,
     config: &Config,
-    pinboard: &PinboardClient,
-    bookmarks: &[Bookmark],
-) -> Result<()> {
+) -> Result<SyncJob> {
     let username = resolve_secret(
         ovr.reddit_username.clone(),
         "REDDIT_USERNAME",
@@ -443,40 +458,26 @@ async fn sync_one_reddit(
         account.and_then(|a| a.cookie.clone()),
         account.and_then(|a| a.cookie_file.as_deref()),
     );
-
     let reddit_config = account
         .map(RedditAccount::reddit_config)
         .unwrap_or_default();
-    let limit = if ovr.limit > 0 {
-        ovr.limit
-    } else {
-        account.and_then(|a| a.limit).unwrap_or(0)
-    };
     let hook = resolve_hook(
         ovr.on_auth_failure.clone(),
         account.and_then(|a| a.on_auth_failure.as_deref()),
         config,
     );
-
-    let cfg = sync::SyncConfig {
-        limit,
-        dry_run: ovr.dry_run,
-        verbose: ovr.verbose,
-    };
-    let reddit = RedditClient::for_user(username, cookie, reddit_config)?;
-    sync::run(&reddit, pinboard, &cfg, bookmarks)
-        .await
-        .map_err(|e| handle_reddit_err(e, hook.as_deref()))?;
-    Ok(())
+    Ok(SyncJob {
+        client: SourceClient::Reddit(RedditClient::for_user(username, cookie, reddit_config)?),
+        hook,
+        limit: job_limit(ovr, account.and_then(|a| a.limit)),
+    })
 }
 
-async fn sync_one_github(
+fn build_github_job(
     account: Option<&GithubAccount>,
     ovr: &SyncOverrides,
     config: &Config,
-    pinboard: &PinboardClient,
-    bookmarks: &[Bookmark],
-) -> Result<()> {
+) -> Result<SyncJob> {
     let token = resolve_secret(
         ovr.github_token.clone(),
         "GITHUB_TOKEN",
@@ -484,39 +485,26 @@ async fn sync_one_github(
         account.and_then(|a| a.token_file.as_deref()),
     )
     .context("missing GitHub token (set --github-token, GITHUB_TOKEN, or `token`/`token_file` in the config)")?;
-
     let github_config = account
         .map(GithubAccount::github_config)
         .unwrap_or_default();
-    let limit = if ovr.limit > 0 {
-        ovr.limit
-    } else {
-        account.and_then(|a| a.limit).unwrap_or(0)
-    };
     let hook = resolve_hook(
         ovr.on_auth_failure.clone(),
         account.and_then(|a| a.on_auth_failure.as_deref()),
         config,
     );
-
-    let cfg = sync::SyncConfig {
-        limit,
-        dry_run: ovr.dry_run,
-        verbose: ovr.verbose,
-    };
-    let github = GitHubClient::new(token, github_config)?;
-    sync::run(&github, pinboard, &cfg, bookmarks)
-        .await
-        .map_err(|e| handle_reddit_err(e, hook.as_deref()))?;
-    Ok(())
+    Ok(SyncJob {
+        client: SourceClient::Github(GitHubClient::new(token, github_config)?),
+        hook,
+        limit: job_limit(ovr, account.and_then(|a| a.limit)),
+    })
 }
 
-async fn sync_one_hackernews(
+fn build_hackernews_job(
     account: Option<&HackernewsAccount>,
     ovr: &SyncOverrides,
-    pinboard: &PinboardClient,
-    bookmarks: &[Bookmark],
-) -> Result<()> {
+    _config: &Config,
+) -> Result<SyncJob> {
     let username = resolve_secret(
         ovr.hackernews_username.clone(),
         "HN_USERNAME",
@@ -526,27 +514,63 @@ async fn sync_one_hackernews(
     .context(
         "missing HackerNews username (set --username, HN_USERNAME, or `username` in the config)",
     )?;
-
     let hn_config = account
         .map(HackernewsAccount::hackernews_config)
         .unwrap_or_default();
-    let limit = if ovr.limit > 0 {
-        ovr.limit
-    } else {
-        account.and_then(|a| a.limit).unwrap_or(0)
-    };
+    Ok(SyncJob {
+        // HackerNews favorites are public, so there is no auth-failure hook.
+        client: SourceClient::Hackernews(HnClient::new(username, hn_config)?),
+        hook: None,
+        limit: job_limit(ovr, account.and_then(|a| a.limit)),
+    })
+}
 
-    let cfg = sync::SyncConfig {
-        limit,
-        dry_run: ovr.dry_run,
-        verbose: ovr.verbose,
-    };
-    let hn = HnClient::new(username, hn_config)?;
-    // HackerNews favorites are public, so there is no auth-failure hook to fire.
-    sync::run(&hn, pinboard, &cfg, bookmarks)
-        .await
-        .map_err(|e| handle_reddit_err(e, None))?;
-    Ok(())
+/// Fetch every job's source concurrently (reads only, on one task), then write the
+/// merged, de-duplicated drafts to Pinboard sequentially (writes are rate-limited).
+async fn run_sync_jobs(
+    jobs: Vec<SyncJob>,
+    pinboard: &PinboardClient,
+    bookmarks: &[Bookmark],
+    dry_run: bool,
+    verbose: bool,
+) -> Result<()> {
+    let fetched = futures::future::join_all(jobs.iter().map(|job| async move {
+        let drafts = job.client.fetch().await?;
+        let mut new = sync::filter_new(&job.client, drafts, bookmarks);
+        if job.limit > 0 {
+            new.truncate(job.limit);
+        }
+        Ok::<_, SourceError>(new)
+    }))
+    .await;
+
+    let mut run = AllRun::default();
+    let mut merged: Vec<BookmarkDraft> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (job, result) in jobs.iter().zip(fetched) {
+        match result {
+            Ok(drafts) => {
+                for draft in drafts {
+                    if seen.insert(draft.url.clone()) {
+                        merged.push(draft);
+                    }
+                }
+            }
+            // Surface the failure (firing the hook on ReauthRequired) but keep going.
+            Err(e) => run.record(Err(handle_reddit_err(e, job.hook.as_deref()))),
+        }
+    }
+
+    println!(
+        "{} new bookmark(s) to write{}.",
+        merged.len(),
+        if dry_run { " (dry run)" } else { "" }
+    );
+    let written = sync::write_drafts(pinboard, &merged, dry_run, verbose).await?;
+    if !dry_run {
+        println!("Done. Wrote {written} bookmark(s) to Pinboard.");
+    }
+    run.finish()
 }
 
 /// Resolve the Pinboard token and fetch `posts/all` once. Returns the client and

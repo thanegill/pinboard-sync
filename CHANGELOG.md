@@ -46,5 +46,29 @@ A multi-source Pinboard sync with per-source cleanup.
 - Tag bundles remain unimplemented pending the Pinboard API v2 (see the README
   Roadmap); the tool runs entirely on the live v1 API.
 
+## [0.1.0] - 2026-06-22
+
+The original Reddit-only release: sync your saved Reddit posts and comments to
+Pinboard, with a cleanup pass over existing bookmarks. Superseded by 0.2.0, which
+generalized the tool to multiple sources.
+
+### Added
+
+- **Reddit → Pinboard sync** of saved posts and comments, read from
+  `old.reddit.com/user/<you>/saved.json` and `api/info.json` and authenticated by a
+  `reddit_session` cookie + username (no OAuth).
+- **Dedup against Pinboard** rather than relying on `--limit`, so runs are idempotent.
+- **`cleanup` subcommand** that normalizes existing Reddit bookmarks (URLs, tags,
+  titles).
+- **Rich tagging**: a base `reddit` tag, `subreddit:<sub>` (lowercased except
+  multi-word camelCase), `reddit-comment`, `nsfw`, and author / flair / media-type
+  tags, plus comment thread links in the notes.
+- **HTTP retry** with backoff for transient Reddit and Pinboard failures.
+- **Ports/fakes architecture** with hermetic unit tests and wiremock integration
+  tests for the Reddit and Pinboard clients.
+- **NixOS module** with an `environmentFile` for secrets, and a secret-resolution
+  ladder (CLI flag → `$VAR` → `$VAR_FILE` → `~/.pinboardrc`).
+
 [Unreleased]: https://github.com/thanegill/pinboard-sync/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.2.0
+[0.1.0]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.1.0

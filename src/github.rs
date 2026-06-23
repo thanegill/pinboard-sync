@@ -7,8 +7,11 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::http::send_retrying;
-use crate::pinboard::{Bookmark, BookmarkStore, RATE_LIMIT_SECS};
-use crate::source::{push_prefixed, push_tag, url_key, BookmarkDraft, Source, SourceError};
+use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
+use crate::source::{
+    extend_unique, host_matches, push_prefixed, push_tags, split_host_path, tags_differ, url_key,
+    BookmarkDraft, Source, SourceError,
+};
 
 const UA: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 const API_BASE: &str = "https://api.github.com";
@@ -60,9 +63,7 @@ impl Repo {
         }
 
         let mut tags = Vec::new();
-        for tag in &cfg.tags {
-            push_tag(&mut tags, tag);
-        }
+        push_tags(&mut tags, &cfg.tags);
         if let Some(lang) = self.language.filter(|s| !s.is_empty()) {
             push_prefixed(&mut tags, &cfg.lang_prefix, &lang.to_lowercase());
         }
@@ -237,7 +238,11 @@ pub async fn cleanup<P: BookmarkStore>(
         let mut description = bm.description.clone();
         let mut tags = bm.tag_list();
         if let Some((owner, repo)) = owner_repo(&canonical) {
-            if let Some(info) = client.repo(owner, repo).await.map_err(source_err)? {
+            if let Some(info) = client
+                .repo(owner, repo)
+                .await
+                .map_err(SourceError::into_anyhow)?
+            {
                 url = info.html_url.clone(); // follows renames/transfers
                 description = info.full_name.clone();
                 tags = refresh_tags(bm.tag_list(), &info, config);
@@ -246,11 +251,7 @@ pub async fn cleanup<P: BookmarkStore>(
 
         let url_changed = url != bm.url;
         let desc_changed = description != bm.description;
-        let mut old_tags = bm.tag_list();
-        old_tags.sort();
-        let mut new_tags = tags.clone();
-        new_tags.sort();
-        let tags_changed = old_tags != new_tags;
+        let tags_changed = tags_differ(&bm.tag_list(), &tags);
         if !(url_changed || desc_changed || tags_changed) {
             continue;
         }
@@ -270,28 +271,21 @@ pub async fn cleanup<P: BookmarkStore>(
             continue;
         }
 
-        if wrote {
-            tokio::time::sleep(Duration::from_secs(RATE_LIMIT_SECS)).await;
-        }
-        pinboard
-            .update(
-                &url,
-                &description,
-                &bm.extended,
-                &tags,
-                bm.is_shared(),
-                bm.is_toread(),
-                &bm.time,
-            )
-            .await
-            .with_context(|| format!("updating bookmark {url}"))?;
-        if url_changed {
-            pinboard
-                .delete(&bm.url)
-                .await
-                .with_context(|| format!("deleting old URL {}", bm.url))?;
-        }
-        wrote = true;
+        apply_update(
+            pinboard,
+            &mut wrote,
+            BookmarkUpdate {
+                url: &url,
+                description: &description,
+                extended: &bm.extended,
+                tags: &tags,
+                shared: bm.is_shared(),
+                toread: bm.is_toread(),
+                dt: &bm.time,
+            },
+            url_changed.then_some(bm.url.as_str()),
+        )
+        .await?;
         if opts.verbose {
             eprintln!("updated {} -> {url}", bm.url);
         }
@@ -303,14 +297,6 @@ pub async fn cleanup<P: BookmarkStore>(
         println!("Done. Updated {changed} bookmark(s).");
     }
     Ok(())
-}
-
-/// Flatten a `SourceError` into an `anyhow::Error` for the cleanup path.
-fn source_err(e: SourceError) -> anyhow::Error {
-    match e {
-        SourceError::ReauthRequired(m) => anyhow::anyhow!(m),
-        SourceError::Other(e) => e,
-    }
 }
 
 /// The `(owner, repo)` of a canonical `https://github.com/owner/repo` URL.
@@ -330,11 +316,7 @@ fn refresh_tags(existing: Vec<String>, repo: &Repo, cfg: &GithubConfig) -> Vec<S
         .into_iter()
         .filter(|t| cfg.lang_prefix.is_empty() || !t.starts_with(&cfg.lang_prefix))
         .collect();
-    for tag in &cfg.tags {
-        if !tags.contains(tag) {
-            tags.push(tag.clone());
-        }
-    }
+    extend_unique(&mut tags, &cfg.tags);
     if let Some(lang) = repo.language.clone().filter(|s| !s.is_empty()) {
         push_prefixed(&mut tags, &cfg.lang_prefix, &lang.to_lowercase());
     }
@@ -343,17 +325,8 @@ fn refresh_tags(existing: Vec<String>, repo: &Repo, cfg: &GithubConfig) -> Vec<S
 
 /// Whether `url`'s host is github.com or a `*.github.com` subdomain.
 fn is_github_url(url: &str) -> bool {
-    let after = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
-    let host = after.split('/').next().unwrap_or(after);
-    let host = host
-        .rsplit('@')
-        .next()
-        .unwrap_or(host)
-        .split(':')
-        .next()
-        .unwrap_or(host)
-        .to_ascii_lowercase();
-    host == "github.com" || host.ends_with(".github.com")
+    let (host, _) = split_host_path(url);
+    host_matches(&host, "github.com")
 }
 
 /// Canonicalize a GitHub *repo-root* URL to `https://github.com/<owner>/<repo>`
@@ -365,9 +338,8 @@ pub fn canonical_repo_url(url: &str) -> Option<String> {
     if !is_github_url(url) {
         return None;
     }
-    let after = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
-    let path = after.split('/').skip(1).collect::<Vec<_>>().join("/");
-    let path = path.split(['?', '#']).next().unwrap_or(&path);
+    let (_host, path) = split_host_path(url);
+    let path = path.split(['?', '#']).next().unwrap_or(path);
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     // Only act on a bare owner/repo (don't mangle deeper links).
     if segments.len() != 2 {

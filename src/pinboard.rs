@@ -62,6 +62,19 @@ pub struct PinboardClient {
     base: String,
 }
 
+/// Fields for [`BookmarkStore::update`]: an existing bookmark re-added with
+/// normalized content (`url`/`description`/`extended`/`tags`) plus the metadata to
+/// preserve (`shared`/`toread`, and `dt` — the original time, empty for none).
+pub struct BookmarkUpdate<'a> {
+    pub url: &'a str,
+    pub description: &'a str,
+    pub extended: &'a str,
+    pub tags: &'a [String],
+    pub shared: bool,
+    pub toread: bool,
+    pub dt: &'a str,
+}
+
 /// The Pinboard operations the sync/cleanup loops depend on. Abstracted from the
 /// concrete client so those loops can be exercised with an in-memory fake.
 /// (Crate-internal, never spawned across threads, so the missing `Send` bound
@@ -79,19 +92,37 @@ pub trait BookmarkStore {
         tags: &[String],
     ) -> Result<()>;
     /// Re-add an existing bookmark with normalized fields, preserving metadata.
-    #[allow(clippy::too_many_arguments)]
-    async fn update(
-        &self,
-        url: &str,
-        description: &str,
-        extended: &str,
-        tags: &[String],
-        shared: bool,
-        toread: bool,
-        dt: &str,
-    ) -> Result<()>;
+    async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()>;
     /// Delete a bookmark by URL.
     async fn delete(&self, url: &str) -> Result<()>;
+}
+
+/// The shared write step of the cleanup loops: rate-limit after the first write (so
+/// successive `posts/add`s are spaced), `update` the bookmark, then `delete` the old
+/// URL when it changed (`old_url`). `wrote` gates the inter-write delay and is set
+/// once any write has happened.
+pub async fn apply_update<P: BookmarkStore>(
+    pinboard: &P,
+    wrote: &mut bool,
+    update: BookmarkUpdate<'_>,
+    old_url: Option<&str>,
+) -> Result<()> {
+    if *wrote {
+        tokio::time::sleep(Duration::from_secs(RATE_LIMIT_SECS)).await;
+    }
+    let target = update.url; // `&str` is Copy, so this outlives the move below
+    pinboard
+        .update(update)
+        .await
+        .with_context(|| format!("updating bookmark {target}"))?;
+    if let Some(old) = old_url {
+        pinboard
+            .delete(old)
+            .await
+            .with_context(|| format!("deleting old URL {old}"))?;
+    }
+    *wrote = true;
+    Ok(())
 }
 
 impl PinboardClient {
@@ -159,54 +190,40 @@ impl BookmarkStore for PinboardClient {
         extended: &str,
         tags: &[String],
     ) -> Result<()> {
-        self.post_add(url, description, extended, tags, self.shared, false, None)
-            .await
+        self.post_add(BookmarkUpdate {
+            url,
+            description,
+            extended,
+            tags,
+            shared: self.shared,
+            toread: false,
+            dt: "",
+        })
+        .await
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn update(
-        &self,
-        url: &str,
-        description: &str,
-        extended: &str,
-        tags: &[String],
-        shared: bool,
-        toread: bool,
-        dt: &str,
-    ) -> Result<()> {
-        let dt = (!dt.is_empty()).then_some(dt);
-        self.post_add(url, description, extended, tags, shared, toread, dt)
-            .await
+    async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()> {
+        self.post_add(b).await
     }
 }
 
 impl PinboardClient {
-    /// `posts/add` with `replace=yes`. `dt` sets the bookmark time when given.
-    #[allow(clippy::too_many_arguments)]
-    async fn post_add(
-        &self,
-        url: &str,
-        description: &str,
-        extended: &str,
-        tags: &[String],
-        shared: bool,
-        toread: bool,
-        dt: Option<&str>,
-    ) -> Result<()> {
-        let tags = tags.join(" ");
+    /// `posts/add` with `replace=yes`. A non-empty `dt` sets the bookmark time.
+    async fn post_add(&self, b: BookmarkUpdate<'_>) -> Result<()> {
+        let tags = b.tags.join(" ");
         let mut params = vec![
-            ("url", url),
-            ("description", description),
-            ("extended", extended),
+            ("url", b.url),
+            ("description", b.description),
+            ("extended", b.extended),
             ("tags", tags.as_str()),
             ("replace", "yes"),
-            ("shared", if shared { "yes" } else { "no" }),
-            ("toread", if toread { "yes" } else { "no" }),
+            ("shared", if b.shared { "yes" } else { "no" }),
+            ("toread", if b.toread { "yes" } else { "no" }),
             ("auth_token", self.auth_token.as_str()),
             ("format", "json"),
         ];
-        if let Some(dt) = dt {
-            params.push(("dt", dt));
+        if !b.dt.is_empty() {
+            params.push(("dt", b.dt));
         }
 
         let resp = self

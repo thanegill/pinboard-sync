@@ -314,8 +314,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     let (jobs, ovr) = match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
-            if config.reddit.is_empty() && config.github.is_empty() && config.hackernews.is_empty()
-            {
+            if !config.has_accounts() {
                 bail!("--all requires a --config with at least one configured account");
             }
             let ovr = SyncOverrides {
@@ -336,49 +335,25 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
             (jobs, ovr)
         }
         (false, Some(SyncSource::Reddit(args))) => {
-            let ovr = SyncOverrides {
-                reddit_username: args.reddit_username,
-                reddit_cookie: args.reddit_cookie,
-                pinboard_token: args.pinboard_token,
-                on_auth_failure: args.on_auth_failure,
-                limit: args.limit,
-                public: args.public,
-                dry_run: args.dry_run,
-                verbose: args.verbose,
-                ..SyncOverrides::default()
-            };
-            let jobs = build_jobs(&config.reddit, args.account.as_deref(), args.all, |a| {
+            let (account, all) = (args.account.clone(), args.all);
+            let ovr = args.into_overrides();
+            let jobs = build_jobs(&config.reddit, account.as_deref(), all, |a| {
                 build_reddit_job(a, &ovr, config)
             })?;
             (jobs, ovr)
         }
         (false, Some(SyncSource::Github(args))) => {
-            let ovr = SyncOverrides {
-                github_token: args.github_token,
-                pinboard_token: args.pinboard_token,
-                on_auth_failure: args.on_auth_failure,
-                limit: args.limit,
-                public: args.public,
-                dry_run: args.dry_run,
-                verbose: args.verbose,
-                ..SyncOverrides::default()
-            };
-            let jobs = build_jobs(&config.github, args.account.as_deref(), args.all, |a| {
+            let (account, all) = (args.account.clone(), args.all);
+            let ovr = args.into_overrides();
+            let jobs = build_jobs(&config.github, account.as_deref(), all, |a| {
                 build_github_job(a, &ovr, config)
             })?;
             (jobs, ovr)
         }
         (false, Some(SyncSource::Hackernews(args))) => {
-            let ovr = SyncOverrides {
-                hackernews_username: args.username,
-                pinboard_token: args.pinboard_token,
-                limit: args.limit,
-                public: args.public,
-                dry_run: args.dry_run,
-                verbose: args.verbose,
-                ..SyncOverrides::default()
-            };
-            let jobs = build_jobs(&config.hackernews, args.account.as_deref(), args.all, |a| {
+            let (account, all) = (args.account.clone(), args.all);
+            let ovr = args.into_overrides();
+            let jobs = build_jobs(&config.hackernews, account.as_deref(), all, |a| {
                 build_hackernews_job(a, &ovr, config)
             })?;
             (jobs, ovr)
@@ -426,6 +401,54 @@ struct SyncOverrides {
     public: bool,
     dry_run: bool,
     verbose: bool,
+}
+
+impl RedditSyncArgs {
+    /// The secret/operational overrides this single-source invocation supplies.
+    fn into_overrides(self) -> SyncOverrides {
+        SyncOverrides {
+            reddit_username: self.reddit_username,
+            reddit_cookie: self.reddit_cookie,
+            pinboard_token: self.pinboard_token,
+            on_auth_failure: self.on_auth_failure,
+            limit: self.limit,
+            public: self.public,
+            dry_run: self.dry_run,
+            verbose: self.verbose,
+            ..SyncOverrides::default()
+        }
+    }
+}
+
+impl GithubSyncArgs {
+    /// The secret/operational overrides this single-source invocation supplies.
+    fn into_overrides(self) -> SyncOverrides {
+        SyncOverrides {
+            github_token: self.github_token,
+            pinboard_token: self.pinboard_token,
+            on_auth_failure: self.on_auth_failure,
+            limit: self.limit,
+            public: self.public,
+            dry_run: self.dry_run,
+            verbose: self.verbose,
+            ..SyncOverrides::default()
+        }
+    }
+}
+
+impl HackernewsSyncArgs {
+    /// The secret/operational overrides this single-source invocation supplies.
+    fn into_overrides(self) -> SyncOverrides {
+        SyncOverrides {
+            hackernews_username: self.username,
+            pinboard_token: self.pinboard_token,
+            limit: self.limit,
+            public: self.public,
+            dry_run: self.dry_run,
+            verbose: self.verbose,
+            ..SyncOverrides::default()
+        }
+    }
 }
 
 /// A configured source client ready to fetch, plus its auth-failure hook and the
@@ -588,7 +611,7 @@ async fn run_sync_jobs(
                 }
             }
             // Surface the failure (firing the hook on ReauthRequired) but keep going.
-            Err(e) => run.record(Err(handle_reddit_err(e, job.hook.as_deref()))),
+            Err(e) => run.record(Err(handle_source_err(e, job.hook.as_deref()))),
         }
     }
 
@@ -628,8 +651,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             // Cleanup normalizes the shared Pinboard bookmark set, so it runs once
             // per cleanup-capable service (reddit, github, hackernews), using the
             // first configured account of each for its cookie/domain/tags.
-            if config.reddit.is_empty() && config.github.is_empty() && config.hackernews.is_empty()
-            {
+            if !config.has_accounts() {
                 bail!("cleanup --all requires a --config with at least one configured account");
             }
             let (pinboard, bookmarks) = open_pinboard(None, false, config).await?;
@@ -830,7 +852,7 @@ impl AllRun {
 
 /// Map a `SourceError` to an `anyhow::Error`, firing the auth-failure hook when
 /// re-authentication is required.
-fn handle_reddit_err(e: SourceError, hook: Option<&str>) -> anyhow::Error {
+fn handle_source_err(e: SourceError, hook: Option<&str>) -> anyhow::Error {
     match e {
         SourceError::ReauthRequired(msg) => {
             run_auth_failure_hook(hook, &msg);

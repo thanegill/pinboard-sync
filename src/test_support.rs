@@ -8,7 +8,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::model::{reddit_key, ListingEntry, RedditConfig};
-use crate::pinboard::{Bookmark, BookmarkStore};
+use crate::pinboard::{Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, Source, SourceError};
 
@@ -87,20 +87,11 @@ impl BookmarkStore for FakePinboard {
         });
         Ok(())
     }
-    async fn update(
-        &self,
-        url: &str,
-        description: &str,
-        _extended: &str,
-        tags: &[String],
-        _shared: bool,
-        _toread: bool,
-        _dt: &str,
-    ) -> Result<()> {
+    async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()> {
         self.updated.borrow_mut().push(UpdateCall {
-            url: url.to_string(),
-            description: description.to_string(),
-            tags: tags.to_vec(),
+            url: b.url.to_string(),
+            description: b.description.to_string(),
+            tags: b.tags.to_vec(),
         });
         Ok(())
     }

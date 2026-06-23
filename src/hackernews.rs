@@ -12,8 +12,11 @@ use scraper::{Html, Selector};
 use serde::Deserialize;
 
 use crate::http::send_retrying;
-use crate::pinboard::{Bookmark, BookmarkStore, RATE_LIMIT_SECS};
-use crate::source::{push_prefixed, push_tag, url_key, BookmarkDraft, Source, SourceError};
+use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
+use crate::source::{
+    extend_unique, push_prefixed, push_tag, push_tags, split_host_path, tags_differ, url_key,
+    BookmarkDraft, Source, SourceError,
+};
 
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0";
@@ -122,9 +125,7 @@ impl Item {
         let is_comment = self.kind == "comment";
 
         let mut tags = Vec::new();
-        for tag in &cfg.tags {
-            push_tag(&mut tags, tag);
-        }
+        push_tags(&mut tags, &cfg.tags);
         if is_comment {
             push_tag(&mut tags, &cfg.comment);
         }
@@ -335,10 +336,9 @@ impl Source for HnClient {
     }
 
     fn existing_key(&self, url: &str) -> Option<String> {
-        match hn_item_id(url) {
-            Some(id) => Some(format!("hn:{id}")),
-            None => url_key(url),
-        }
+        hn_item_id(url)
+            .map(|id| format!("hn:{id}"))
+            .or_else(|| url_key(url))
     }
 }
 
@@ -385,7 +385,10 @@ impl HnClient {
 
         // Batch-fetch every referenced item once.
         let ids: Vec<String> = hn_bms.iter().filter_map(|b| hn_item_id(&b.url)).collect();
-        let items = self.fetch_items(&ids).await.map_err(source_err)?;
+        let items = self
+            .fetch_items(&ids)
+            .await
+            .map_err(SourceError::into_anyhow)?;
 
         let mut changed = 0usize;
         let mut wrote = false;
@@ -398,11 +401,7 @@ impl HnClient {
 
             // Preserve existing tags, appending any freshly-derived ones.
             let mut tags = bm.tag_list();
-            for tag in &draft.tags {
-                if !tags.contains(tag) {
-                    tags.push(tag.clone());
-                }
-            }
+            extend_unique(&mut tags, &draft.tags);
 
             let url_changed = draft.url != bm.url;
             let tags_changed = tags != bm.tag_list();
@@ -427,28 +426,21 @@ impl HnClient {
                 continue;
             }
 
-            if wrote {
-                tokio::time::sleep(Duration::from_secs(RATE_LIMIT_SECS)).await;
-            }
-            pinboard
-                .update(
-                    &draft.url,
-                    &draft.description,
-                    &draft.extended,
-                    &tags,
-                    bm.is_shared(),
-                    bm.is_toread(),
-                    &bm.time,
-                )
-                .await
-                .with_context(|| format!("updating bookmark {}", draft.url))?;
-            if url_changed {
-                pinboard
-                    .delete(&bm.url)
-                    .await
-                    .with_context(|| format!("deleting old URL {}", bm.url))?;
-            }
-            wrote = true;
+            apply_update(
+                pinboard,
+                &mut wrote,
+                BookmarkUpdate {
+                    url: &draft.url,
+                    description: &draft.description,
+                    extended: &draft.extended,
+                    tags: &tags,
+                    shared: bm.is_shared(),
+                    toread: bm.is_toread(),
+                    dt: &bm.time,
+                },
+                url_changed.then_some(bm.url.as_str()),
+            )
+            .await?;
             if opts.verbose {
                 eprintln!("updated {} -> {} [{}]", bm.url, draft.url, tags.join(" "));
             }
@@ -493,7 +485,11 @@ impl HnClient {
         let mut changed = 0usize;
         let mut wrote = false;
         for bm in &candidates {
-            let Some(id) = self.search_by_url(&bm.url).await.map_err(source_err)? else {
+            let Some(id) = self
+                .search_by_url(&bm.url)
+                .await
+                .map_err(SourceError::into_anyhow)?
+            else {
                 continue;
             };
 
@@ -512,17 +508,9 @@ impl HnClient {
                 .into_iter()
                 .filter(|t| *t != self.config.link_tag)
                 .collect();
-            for tag in &self.config.tags {
-                if !tags.contains(tag) {
-                    tags.push(tag.clone());
-                }
-            }
+            extend_unique(&mut tags, &self.config.tags);
 
-            let mut old_sorted = bm.tag_list();
-            old_sorted.sort();
-            let mut new_sorted = tags.clone();
-            new_sorted.sort();
-            if extended == bm.extended && old_sorted == new_sorted {
+            if extended == bm.extended && !tags_differ(&bm.tag_list(), &tags) {
                 continue;
             }
             changed += 1;
@@ -534,22 +522,21 @@ impl HnClient {
                 continue;
             }
 
-            if wrote {
-                tokio::time::sleep(Duration::from_secs(RATE_LIMIT_SECS)).await;
-            }
-            pinboard
-                .update(
-                    &bm.url,
-                    &bm.description,
-                    &extended,
-                    &tags,
-                    bm.is_shared(),
-                    bm.is_toread(),
-                    &bm.time,
-                )
-                .await
-                .with_context(|| format!("updating bookmark {}", bm.url))?;
-            wrote = true;
+            apply_update(
+                pinboard,
+                &mut wrote,
+                BookmarkUpdate {
+                    url: &bm.url,
+                    description: &bm.description,
+                    extended: &extended,
+                    tags: &tags,
+                    shared: bm.is_shared(),
+                    toread: bm.is_toread(),
+                    dt: &bm.time,
+                },
+                None,
+            )
+            .await?;
             if opts.verbose {
                 eprintln!("linked {} -> item?id={id}", bm.url);
             }
@@ -561,14 +548,6 @@ impl HnClient {
             println!("Done. Linked {changed} bookmark(s).");
         }
         Ok(())
-    }
-}
-
-/// Flatten a `SourceError` into an `anyhow::Error` (HN never requires re-auth).
-fn source_err(e: SourceError) -> anyhow::Error {
-    match e {
-        SourceError::ReauthRequired(m) => anyhow::anyhow!(m),
-        SourceError::Other(e) => e,
     }
 }
 
@@ -597,9 +576,8 @@ fn parse_favorite_ids(html: &str) -> (Vec<String>, Option<String>) {
 /// Extract the item id from an HN `item?id=<n>` URL (any reddit-style host check),
 /// or `None` for non-HN-item URLs.
 fn hn_item_id(url: &str) -> Option<String> {
-    let after = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
-    let (host, rest) = after.split_once('/')?;
-    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+    let (host, path) = split_host_path(url);
+    let rest = path.strip_prefix('/').unwrap_or(path);
     if host != "news.ycombinator.com" || !rest.starts_with("item") {
         return None;
     }

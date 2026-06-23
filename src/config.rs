@@ -74,6 +74,11 @@ pub struct RedditAccount {
 }
 
 impl Config {
+    /// Whether any account of any source is configured.
+    pub fn has_accounts(&self) -> bool {
+        !(self.reddit.is_empty() && self.github.is_empty() && self.hackernews.is_empty())
+    }
+
     /// Parse a config from TOML text, validating tag fields.
     pub fn parse(text: &str) -> Result<Self> {
         let config: Config = toml::from_str(text).map_err(|e| anyhow!("parsing config: {e}"))?;
@@ -114,22 +119,27 @@ impl Config {
     }
 }
 
-/// Error if `value` (a tag or tag prefix) contains whitespace.
-fn check_tag(field: &str, value: &Option<String>) -> Result<()> {
-    if let Some(v) = value {
-        if v.chars().any(char::is_whitespace) {
-            bail!("config: `{field}` must not contain whitespace (got {v:?})");
-        }
+/// Error if `value` (a tag or tag prefix) contains whitespace — Pinboard tags can't
+/// contain spaces (its API splits the tag string on them), so a space here silently
+/// corrupts and should fail loudly instead.
+fn reject_whitespace(field: &str, value: &str) -> Result<()> {
+    if value.chars().any(char::is_whitespace) {
+        bail!("config: `{field}` must not contain whitespace (got {value:?})");
     }
     Ok(())
 }
 
+/// Error if an optional tag/prefix contains whitespace.
+fn check_tag(field: &str, value: &Option<String>) -> Result<()> {
+    value
+        .as_deref()
+        .map_or(Ok(()), |v| reject_whitespace(field, v))
+}
+
 /// Error if any tag in the list contains whitespace.
 fn check_tags(field: &str, values: &Option<Vec<String>>) -> Result<()> {
-    if let Some(values) = values {
-        for v in values {
-            check_tag(field, &Some(v.clone()))?;
-        }
+    for v in values.iter().flatten() {
+        reject_whitespace(field, v)?;
     }
     Ok(())
 }
@@ -242,23 +252,16 @@ pub trait Named {
     fn account_name(&self) -> Option<&str>;
 }
 
-impl Named for HackernewsAccount {
-    fn account_name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
+macro_rules! impl_named {
+    ($($t:ty),+ $(,)?) => {
+        $(impl Named for $t {
+            fn account_name(&self) -> Option<&str> {
+                self.name.as_deref()
+            }
+        })+
+    };
 }
-
-impl Named for RedditAccount {
-    fn account_name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-}
-
-impl Named for GithubAccount {
-    fn account_name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-}
+impl_named!(RedditAccount, GithubAccount, HackernewsAccount);
 
 /// Pick the account named `name`, or the first account when `name` is `None`.
 /// Returns `Ok(None)` only when there are no configured accounts and no name was

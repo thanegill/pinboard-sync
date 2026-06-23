@@ -3,7 +3,9 @@
 
 use serde::Deserialize;
 
-use crate::source::{push_prefixed, push_tag, BookmarkDraft};
+use crate::source::{
+    host_matches, push_prefixed, push_tag, push_tags, split_host_path, BookmarkDraft,
+};
 
 /// A Reddit "Listing" envelope (`{ "kind": "Listing", "data": { ... } }`).
 #[derive(Debug, Deserialize)]
@@ -219,9 +221,7 @@ impl SavedItem {
     /// Build the Pinboard tag list for this item from the reddit config.
     pub fn tags(&self, cfg: &RedditConfig) -> Vec<String> {
         let mut tags = Vec::new();
-        for tag in &cfg.tags {
-            push_tag(&mut tags, tag);
-        }
+        push_tags(&mut tags, &cfg.tags);
         push_prefixed(
             &mut tags,
             &cfg.subreddit_prefix,
@@ -294,19 +294,8 @@ pub fn reddit_key(path_or_url: &str) -> Option<String> {
     let path = if path_or_url.starts_with('/') {
         path_or_url
     } else {
-        let after_scheme = path_or_url
-            .split_once("://")
-            .map(|(_, rest)| rest)
-            .unwrap_or(path_or_url);
-        let (host, path) = match after_scheme.find('/') {
-            Some(i) => (&after_scheme[..i], &after_scheme[i..]),
-            None => (after_scheme, "/"),
-        };
-        let host_owned = host.to_ascii_lowercase();
-        // Strip any userinfo and port before checking the host.
-        let host = host_owned.rsplit('@').next().unwrap_or(&host_owned);
-        let host = host.split(':').next().unwrap_or(host);
-        if host != "reddit.com" && !host.ends_with(".reddit.com") {
+        let (host, path) = split_host_path(path_or_url);
+        if !host_matches(&host, "reddit.com") {
             return None;
         }
         path

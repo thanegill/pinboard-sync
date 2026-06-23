@@ -4,14 +4,13 @@
 //! marks NSFW posts and replaces generic placeholder titles.
 
 use std::collections::{BTreeSet, HashMap};
-use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 
 use crate::model::cased_subreddit;
-use crate::pinboard::{Bookmark, BookmarkStore, RATE_LIMIT_SECS};
+use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::reddit::PostInfo;
-use crate::source::SourceError;
+use crate::source::{host_matches, split_host_path, SourceError};
 
 pub struct CleanupOpts {
     pub dry_run: bool,
@@ -52,12 +51,9 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
     let mut changed = 0usize;
     let mut wrote = false;
     for bm in &reddit_bms {
-        let mut new_url = bm.url.clone();
-        let mut url_changed = false;
-        if let Some(n) = normalize_url(&bm.url, &opts.domain) {
-            new_url = n;
-            url_changed = true;
-        }
+        let normalized = normalize_url(&bm.url, &opts.domain);
+        let url_changed = normalized.is_some();
+        let new_url = normalized.unwrap_or_else(|| bm.url.clone());
 
         let mut tags = normalize_tags(
             &new_url,
@@ -67,13 +63,11 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
         );
         let post = post_fullname(&new_url).and_then(|f| info.get(&f));
 
-        if opts.mark_nsfw && !tags.iter().any(|t| t == "nsfw") {
-            if let Some(p) = post {
-                if p.over_18 {
-                    tags.push("nsfw".to_string());
-                    tags.sort();
-                }
-            }
+        let wants_nsfw =
+            opts.mark_nsfw && post.is_some_and(|p| p.over_18) && !tags.iter().any(|t| t == "nsfw");
+        if wants_nsfw {
+            tags.push("nsfw".to_string());
+            tags.sort();
         }
 
         let mut description = bm.description.clone();
@@ -107,28 +101,21 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
             continue;
         }
 
-        if wrote {
-            tokio::time::sleep(Duration::from_secs(RATE_LIMIT_SECS)).await;
-        }
-        pinboard
-            .update(
-                &new_url,
-                &description,
-                &bm.extended,
-                &tags,
-                bm.is_shared(),
-                bm.is_toread(),
-                &bm.time,
-            )
-            .await
-            .with_context(|| format!("updating bookmark {new_url}"))?;
-        if url_changed {
-            pinboard
-                .delete(&bm.url)
-                .await
-                .with_context(|| format!("deleting old URL {}", bm.url))?;
-        }
-        wrote = true;
+        apply_update(
+            pinboard,
+            &mut wrote,
+            BookmarkUpdate {
+                url: &new_url,
+                description: &description,
+                extended: &bm.extended,
+                tags: &tags,
+                shared: bm.is_shared(),
+                toread: bm.is_toread(),
+                dt: &bm.time,
+            },
+            url_changed.then_some(bm.url.as_str()),
+        )
+        .await?;
         if opts.verbose {
             eprintln!("updated {} -> {new_url} [{}]", bm.url, tags.join(" "));
         }
@@ -197,14 +184,8 @@ pub fn is_reddit_url(url: &str) -> bool {
     let Some((_, after)) = url.split_once("://") else {
         return false;
     };
-    let host = host_of(after);
-    host == "reddit.com" || host.ends_with(".reddit.com")
-}
-
-fn host_of(after_scheme: &str) -> String {
-    let host = after_scheme.split('/').next().unwrap_or(after_scheme);
-    let host = host.rsplit('@').next().unwrap_or(host); // strip userinfo
-    host.split(':').next().unwrap_or(host).to_ascii_lowercase() // strip port
+    let (host, _) = split_host_path(after);
+    host_matches(&host, "reddit.com")
 }
 
 /// Normalize a Reddit bookmark URL: unwrap an `over18/?dest=` redirect (recursively
@@ -240,20 +221,8 @@ fn over18_dest(url: &str) -> Option<String> {
 /// non-reddit host or one already equal to `domain`.
 fn to_reddit_domain(url: &str, domain: &str) -> Option<String> {
     let (_scheme, after) = url.split_once("://")?;
-    let (host_port, rest) = match after.find('/') {
-        Some(i) => (&after[..i], &after[i..]),
-        None => (after, "/"),
-    };
-    let host = host_port
-        .rsplit('@')
-        .next()
-        .unwrap_or(host_port)
-        .split(':')
-        .next()
-        .unwrap_or(host_port)
-        .to_ascii_lowercase();
-    let is_reddit = host == "reddit.com" || host.ends_with(".reddit.com");
-    if is_reddit && host != domain {
+    let (host, rest) = split_host_path(after);
+    if host_matches(&host, "reddit.com") && host != domain {
         Some(format!("https://{domain}{rest}"))
     } else {
         None
@@ -262,8 +231,7 @@ fn to_reddit_domain(url: &str, domain: &str) -> Option<String> {
 
 /// Extract the subreddit name from a Reddit URL's `/r/<sub>/` segment.
 pub fn extract_subreddit(url: &str) -> Option<String> {
-    let after = url.split_once("://").map(|x| x.1).unwrap_or(url);
-    let path = after.find('/').map(|i| &after[i..]).unwrap_or("/");
+    let (_host, path) = split_host_path(url);
     let idx = path.find("/r/")?;
     let sub: String = path[idx + 3..]
         .chars()
@@ -275,8 +243,7 @@ pub fn extract_subreddit(url: &str) -> Option<String> {
 /// The post fullname (`t3_<id>`) from a permalink's `/comments/<id>/` segment.
 /// Works for both post and comment permalinks (comments inherit the post id).
 pub fn post_fullname(url: &str) -> Option<String> {
-    let after = url.split_once("://").map(|x| x.1).unwrap_or(url);
-    let path = after.find('/').map(|i| &after[i..]).unwrap_or("/");
+    let (_host, path) = split_host_path(url);
     let idx = path.find("/comments/")?;
     let id: String = path[idx + "/comments/".len()..]
         .chars()

@@ -14,6 +14,18 @@ pub enum SourceError {
     Other(#[from] anyhow::Error),
 }
 
+impl SourceError {
+    /// Flatten into a plain `anyhow::Error`: the re-auth message on its own (without
+    /// the variant's prefix) or the inner error unwrapped. Used by the cleanup paths,
+    /// which surface failures as `anyhow` and don't fire the auth-failure hook.
+    pub fn into_anyhow(self) -> anyhow::Error {
+        match self {
+            SourceError::ReauthRequired(m) => anyhow::anyhow!(m),
+            SourceError::Other(e) => e,
+        }
+    }
+}
+
 /// A bookmark ready to write to Pinboard, plus the key used to tell whether it is
 /// already present there.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +61,14 @@ pub fn push_tag(tags: &mut Vec<String>, key: &str) {
     }
 }
 
+/// Append every non-empty key in `keys` to `tags` (via [`push_tag`]). Used to seed a
+/// draft's tags from a source's configurable base `tags` list.
+pub fn push_tags(tags: &mut Vec<String>, keys: &[String]) {
+    for key in keys {
+        push_tag(tags, key);
+    }
+}
+
 /// Append `prefix + value` to `tags`, collapsing internal whitespace in `value` to
 /// `-` (Pinboard tags can't contain spaces — the API splits on them). Skipped if
 /// `prefix` is empty or `value` is empty/all-whitespace.
@@ -59,11 +79,29 @@ pub fn push_prefixed(tags: &mut Vec<String>, prefix: &str, value: &str) {
     }
 }
 
-/// A host+path dedup key for a URL: scheme dropped, host lowercased (userinfo and
-/// port stripped), path lowercased with any query/fragment and trailing slash
-/// removed — e.g. `https://GitHub.com/Owner/Repo/?tab=x` → `github.com/owner/repo`.
-/// Returns `None` for inputs without a host.
-pub fn url_key(url: &str) -> Option<String> {
+/// Append each tag in `add` that isn't already in `tags` (order-preserving).
+pub fn extend_unique(tags: &mut Vec<String>, add: &[String]) {
+    for tag in add {
+        if !tags.contains(tag) {
+            tags.push(tag.clone());
+        }
+    }
+}
+
+/// Whether two tag lists differ as sets (order- and duplicate-insensitive after sort).
+pub fn tags_differ(a: &[String], b: &[String]) -> bool {
+    let mut a = a.to_vec();
+    let mut b = b.to_vec();
+    a.sort();
+    b.sort();
+    a != b
+}
+
+/// Split `url` into its lowercased host (scheme, userinfo, and port removed) and the
+/// path that follows (from the first `/`, defaulting to `/`) — e.g.
+/// `https://User@GitHub.com:443/Owner/Repo?x` → (`github.com`, `/Owner/Repo?x`). The
+/// host is empty only for an input with no host segment (e.g. a bare `/path`).
+pub fn split_host_path(url: &str) -> (String, &str) {
     let after = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let (host, path) = match after.find('/') {
         Some(i) => (&after[..i], &after[i..]),
@@ -71,7 +109,24 @@ pub fn url_key(url: &str) -> Option<String> {
     };
     let host = host.rsplit('@').next().unwrap_or(host); // strip userinfo
     let host = host.split(':').next().unwrap_or(host); // strip port
-    let host = host.to_ascii_lowercase();
+    (host.to_ascii_lowercase(), path)
+}
+
+/// Whether `host` is `domain` or a subdomain of it (`*.domain`). `host` is assumed
+/// already lowercased (as [`split_host_path`] returns it); `domain` must be too.
+pub fn host_matches(host: &str, domain: &str) -> bool {
+    host == domain
+        || host
+            .strip_suffix(domain)
+            .is_some_and(|rest| rest.ends_with('.'))
+}
+
+/// A host+path dedup key for a URL: scheme dropped, host lowercased (userinfo and
+/// port stripped), path lowercased with any query/fragment and trailing slash
+/// removed — e.g. `https://GitHub.com/Owner/Repo/?tab=x` → `github.com/owner/repo`.
+/// Returns `None` for inputs without a host.
+pub fn url_key(url: &str) -> Option<String> {
+    let (host, path) = split_host_path(url);
     if host.is_empty() {
         return None;
     }
@@ -92,6 +147,30 @@ mod tests {
         push_prefixed(&mut tags, "y:", "   "); // all whitespace → skipped
         push_prefixed(&mut tags, "", "v"); // empty prefix → skipped
         assert_eq!(tags, vec!["lang:Jupyter-Notebook", "x:spaced-out"]);
+    }
+
+    #[test]
+    fn split_host_path_strips_scheme_userinfo_and_port() {
+        assert_eq!(
+            split_host_path("https://User@GitHub.com:443/Owner/Repo?x"),
+            ("github.com".to_string(), "/Owner/Repo?x")
+        );
+        assert_eq!(
+            split_host_path("news.ycombinator.com"),
+            ("news.ycombinator.com".to_string(), "/")
+        );
+        assert_eq!(split_host_path("/just/a/path").0, "");
+    }
+
+    #[test]
+    fn host_matches_domain_and_subdomains_only() {
+        assert!(host_matches("github.com", "github.com"));
+        assert!(host_matches("api.github.com", "github.com"));
+        assert!(host_matches("old.reddit.com", "reddit.com"));
+        // Lookalikes must not match.
+        assert!(!host_matches("evilgithub.com", "github.com"));
+        assert!(!host_matches("github.com.evil.com", "github.com"));
+        assert!(!host_matches("notreddit.com", "reddit.com"));
     }
 
     #[test]

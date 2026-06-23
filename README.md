@@ -174,10 +174,11 @@ special-type prefix) live in the config only — there are no tag CLI flags.
 
 ## Running as a NixOS service
 
-The flake exports `nixosModules.default`, which renders the non-secret config to the
-Nix store and reads secrets from a systemd `environmentFile` (e.g. a sops-nix
-rendered template, read as root — never in the store), running on a timer under a
-hardened `DynamicUser`:
+The flake exports the module as `nixosModules.pinboard-sync` (with
+`nixosModules.default` as an alias). It renders the non-secret config to the Nix
+store and reads secrets from a systemd `environmentFile` (e.g. a sops-nix rendered
+template, read as root — never in the store), running on a timer under a hardened
+`DynamicUser`:
 
 ```nix
 {
@@ -192,10 +193,16 @@ hardened `DynamicUser`:
 
   services.pinboard-sync = {
     enable = true;
-    mode = "all";                            # every configured account; or mode = "source"
-    settings.reddit = [ { name = "main"; } ];
+    # Each account runs by default; set `enable = false` to keep it configured but
+    # skip it (the flag is stripped before the config is rendered).
+    settings.reddit = [
+      { name = "main"; }
+      { enable = false; name = "alt"; }        # configured but not synced
+    ];
     environmentFile = config.sops.templates."pinboard-sync.env".path;
-    schedule = "hourly";
+    # sync.schedule = "*:0/30";               # sync timer; default every 30 minutes
+    cleanup.enable = true;                   # also normalize existing bookmarks…
+    # cleanup.schedule = "weekly";           # …on its own timer; default weekly
   };
 }
 ```

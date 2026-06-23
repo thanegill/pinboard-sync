@@ -6,11 +6,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- Named NixOS module output `nixosModules.pinboard-sync`; `nixosModules.default` now
+  aliases it.
+
 ### Changed
 
 - Account selection falls back to an account's `username` when its `name` is unset,
   for Reddit and HackerNews (an explicit `name` still wins). GitHub has no username
   and is unchanged.
+- The NixOS service groups its timers under `sync` and `cleanup`, each with `enable`
+  and `schedule`. `sync.enable` defaults on and `sync.schedule` to every 30 minutes
+  (`*:0/30`); `cleanup.enable` is opt-in and `cleanup.schedule` defaults to `weekly`.
+- The NixOS service replaces the `mode`/`source`/`account` options with a per-account
+  `enable` flag (default `true`) in `settings`: a disabled account stays in the
+  declarative config but is pruned from the rendered TOML, so `sync --all` /
+  `cleanup --all` skip it.
 
 ### Removed
 

@@ -65,6 +65,7 @@
       }
     )
     // {
-      nixosModules.default = import ./nix/module.nix self;
+      nixosModules.pinboard-sync = import ./nix/module.nix self;
+      nixosModules.default = self.nixosModules.pinboard-sync;
     };
 }

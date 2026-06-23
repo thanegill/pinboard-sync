@@ -3,11 +3,22 @@ self:
 let
   cfg = config.services.pinboard-sync;
 
+  sources = [ "reddit" "github" "hackernews" ];
+
+  # Honor a per-account `enable` (default true) in each source's account array: drop
+  # the disabled accounts and strip the `enable` key — the binary's config rejects
+  # unknown fields — so the plain `sync --all` / `cleanup --all` run covers exactly the
+  # enabled accounts.
+  pruneAccounts = accounts: map (a: removeAttrs a [ "enable" ]) (lib.filter (a: a.enable or true) accounts);
+
   tomlFormat = pkgs.formats.toml { };
   # Non-secret settings rendered to the store and passed via --config. Secrets are
   # NOT placed here (it lands in the world-readable nix store) — they come from the
   # `environmentFile` (a sops-nix rendered template).
-  configFile = tomlFormat.generate "pinboard-sync.toml" cfg.settings;
+  configSettings = cfg.settings // lib.mapAttrs (_: pruneAccounts) (
+    lib.filterAttrs (name: _: lib.elem name sources) cfg.settings
+  );
+  configFile = tomlFormat.generate "pinboard-sync.toml" configSettings;
 
   # The generated config path and the optional hook are the only things put in the
   # unit environment; all credentials (incl. usernames) come from `environmentFile`
@@ -33,12 +44,12 @@ let
     LockPersonality = true;
   };
 
-  # Build a oneshot service + timer running `pinboard-sync <args>`.
-  mkService = description: args: {
+  # Build a oneshot service + timer running `pinboard-sync <args>` on `schedule`.
+  mkService = description: schedule: args: {
     inherit description;
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
-    startAt = cfg.schedule;
+    startAt = schedule;
     inherit environment;
     serviceConfig = {
       Type = "oneshot";
@@ -47,19 +58,6 @@ let
       EnvironmentFile = cfg.environmentFile;
     };
   };
-
-  # `--config` is implied by PINBOARD_SYNC_CONFIG in the environment, so the verb
-  # args are all that's needed. `mode = "all"` runs every configured account.
-  syncArgs =
-    if cfg.mode == "all" then
-      [ "sync" "--all" ]
-    else
-      [ "sync" cfg.source ] ++ lib.optional (cfg.account != null) cfg.account;
-  cleanupArgs =
-    if cfg.mode == "all" then
-      [ "cleanup" "--all" ]
-    else
-      [ "cleanup" cfg.source ] ++ lib.optional (cfg.account != null) cfg.account;
 in
 {
   options.services.pinboard-sync = {
@@ -78,7 +76,10 @@ in
       example = lib.literalExpression ''
         {
           pinboard.public = false;
-          reddit = [ { name = "main"; username = "you"; } ];
+          reddit = [
+            { name = "main"; username = "you"; }
+            { enable = false; name = "alt"; username = "other"; }  # kept here, not synced
+          ];
           hackernews = [ { username = "you"; } ];
         }
       '';
@@ -88,37 +89,34 @@ in
         minus secrets — never put tokens/cookies here, as the file lands in the
         world-readable Nix store. Provide those via the `*File` options below, or as
         sops-nix `*_file` *paths* inside account tables (paths are not secret).
+
+        Each account may carry `enable = false` (default `true`) to keep it in the
+        config but leave it out of the sync/cleanup runs; the flag is stripped before
+        the config is rendered.
       '';
     };
 
-    mode = lib.mkOption {
-      type = lib.types.enum [ "all" "source" ];
-      default = "all";
-      description = ''
-        `all` runs every configured account across every source. `source` runs the
-        single `source` (optionally a named `account`).
-      '';
+    sync = {
+      enable = lib.mkEnableOption "the periodic sync timer" // { default = true; };
+      schedule = lib.mkOption {
+        type = lib.types.str;
+        default = "*:0/30";
+        example = "hourly";
+        description = "systemd OnCalendar schedule for the sync timer (default: every 30 minutes).";
+      };
     };
 
-    source = lib.mkOption {
-      type = lib.types.enum [ "reddit" "github" "hackernews" ];
-      default = "reddit";
-      description = "Source to run when `mode = \"source\"`.";
-    };
-
-    account = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      description = "Account name to select when `mode = \"source\"` (default: the first).";
-    };
-
-    cleanup = lib.mkEnableOption "a second timer running `cleanup` (reddit + hackernews)";
-
-    schedule = lib.mkOption {
-      type = lib.types.str;
-      default = "hourly";
-      example = "*-*-* 03:00:00";
-      description = "systemd OnCalendar schedule for the timer(s).";
+    cleanup = {
+      enable = lib.mkEnableOption "a second timer running `cleanup` over the configured sources";
+      schedule = lib.mkOption {
+        type = lib.types.str;
+        default = "weekly";
+        example = "*-*-* 03:00:00";
+        description = ''
+          systemd OnCalendar schedule for the cleanup timer (default: weekly). Only
+          used when `cleanup.enable = true`.
+        '';
+      };
     };
 
     onAuthFailure = lib.mkOption {
@@ -155,9 +153,17 @@ in
       }
     ];
 
-    systemd.services.pinboard-sync = mkService "Sync saved/favorited items to Pinboard" syncArgs;
+    # `--config` (PINBOARD_SYNC_CONFIG) is in the environment, so the verb is all that's
+    # needed; `--all` runs every account left in the generated config (disabled
+    # accounts were pruned above).
+    systemd.services.pinboard-sync =
+      lib.mkIf cfg.sync.enable (
+        mkService "Sync saved/favorited items to Pinboard" cfg.sync.schedule [ "sync" "--all" ]
+      );
 
     systemd.services.pinboard-sync-cleanup =
-      lib.mkIf cfg.cleanup (mkService "Normalize existing Pinboard bookmarks" cleanupArgs);
+      lib.mkIf cfg.cleanup.enable (
+        mkService "Normalize existing Pinboard bookmarks" cfg.cleanup.schedule [ "cleanup" "--all" ]
+      );
   };
 }

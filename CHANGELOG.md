@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-23
+
 A multi-source Pinboard sync with per-source cleanup.
 
 ### Added
@@ -44,4 +46,5 @@ A multi-source Pinboard sync with per-source cleanup.
 - Tag bundles remain unimplemented pending the Pinboard API v2 (see the README
   Roadmap); the tool runs entirely on the live v1 API.
 
-[Unreleased]: https://github.com/thanegill/pinboard-sync/commits/master
+[Unreleased]: https://github.com/thanegill/pinboard-sync/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.2.0

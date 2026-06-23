@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Removed
+
+- The `~/.pinboardrc` fallback for the Pinboard token. Supply the token via
+  `--pinboard-token`, `PINBOARD_TOKEN` / `PINBOARD_TOKEN_FILE`, or `[pinboard]` in the
+  config instead.
+- The `PINBOARD_SYNC_CONFIG_FILE` indirection. The config is resolved from `--config`
+  or `PINBOARD_SYNC_CONFIG` as a direct file path only.
+
 ## [0.2.0] - 2026-06-23
 
 A multi-source Pinboard sync with per-source cleanup.

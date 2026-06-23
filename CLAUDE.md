@@ -73,8 +73,9 @@ host-agnostic so dedup matches across subdomains.
 arrays (`[[reddit]]`/`[[github]]`/`[[hackernews]]`), each mapping to its tag config.
 Secrets resolve through one ladder in `main.rs` (`resolve_secret`): CLI flag → `$VAR`
 → `$VAR_FILE` (a path whose trimmed contents are the value) → config inline → config
-`*_file`; the Pinboard token also falls back to `~/.pinboardrc`, and the config path
-itself resolves the same way. **The `_FILE` form is load-bearing** — it's how the
+`*_file`. The `--config` path is the exception: it resolves flag → `$PINBOARD_SYNC_CONFIG`
+only (a direct file path, no `_FILE` form — it is already a file). **The `_FILE` form is
+load-bearing** — it's how the
 NixOS service feeds sops-nix secret *paths* without putting values in the unit
 environment. Don't add a secret that only reads `$VAR`.
 

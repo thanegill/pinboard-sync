@@ -383,6 +383,90 @@ mod tests {
         assert_eq!(cfg.hackernews.len(), 1);
     }
 
+    /// True if `key` appears as a TOML key in the template — either active
+    /// (`key = …`) or commented out (`# key = …`).
+    fn documents_key(example: &str, key: &str) -> bool {
+        example.lines().any(|line| {
+            let line = line.trim_start();
+            let line = line.strip_prefix('#').map(str::trim_start).unwrap_or(line);
+            line.strip_prefix(key)
+                .map(str::trim_start)
+                .is_some_and(|rest| rest.starts_with('='))
+        })
+    }
+
+    #[test]
+    fn example_config_documents_every_field() {
+        // The macro destructures each struct with no `..`, so adding a field is a
+        // *compile* error until it's listed here — and `stringify!` then derives the
+        // key list from that same list, so the new key is checked against the
+        // template below. Net effect: a new config field fails the build until it is
+        // documented in config.example.toml (commented-out lines count).
+        macro_rules! documented_fields {
+            ($ty:path { $($field:ident),* $(,)? }) => {{
+                let $ty { $($field: _),* } = <$ty>::default();
+                [$(stringify!($field)),*]
+            }};
+        }
+
+        let example = include_str!("config.example.toml");
+        let hooks = documented_fields!(Hooks { on_auth_failure });
+        let pinboard = documented_fields!(Pinboard {
+            token,
+            token_file,
+            public
+        });
+        let reddit = documented_fields!(RedditAccount {
+            name,
+            username,
+            cookie,
+            cookie_file,
+            on_auth_failure,
+            limit,
+            reddit_domain,
+            tag_subreddit_prefix,
+            tag_comment,
+            tag_nsfw,
+            tag_author_prefix,
+            tag_flair_prefix,
+            tag_media_prefix,
+            tag_media_types,
+            tags,
+        });
+        let github = documented_fields!(GithubAccount {
+            name,
+            token,
+            token_file,
+            on_auth_failure,
+            limit,
+            tag_lang_prefix,
+            tags,
+        });
+        let hackernews = documented_fields!(HackernewsAccount {
+            name,
+            username,
+            limit,
+            tag_comment,
+            tag_author_prefix,
+            tag_special_prefix,
+            tag_link,
+            tags,
+        });
+
+        for &key in hooks
+            .iter()
+            .chain(&pinboard)
+            .chain(&reddit)
+            .chain(&github)
+            .chain(&hackernews)
+        {
+            assert!(
+                documents_key(example, key),
+                "config.example.toml does not document the `{key}` config field"
+            );
+        }
+    }
+
     #[test]
     fn select_account_by_name_or_first_or_error() {
         let accounts = vec![

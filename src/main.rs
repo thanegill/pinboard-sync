@@ -29,7 +29,7 @@ use source::{BookmarkDraft, Source, SourceError};
 #[derive(Parser)]
 #[command(name = "pinboard-sync", version, about, arg_required_else_help = true)]
 struct Cli {
-    /// Path to the TOML config file (env PINBOARD_SYNC_CONFIG, or *_FILE).
+    /// Path to the TOML config file (env PINBOARD_SYNC_CONFIG).
     #[arg(long, global = true)]
     config: Option<String>,
     #[command(subcommand)]
@@ -94,7 +94,7 @@ struct RedditSyncArgs {
     /// Reddit session cookie, e.g. `reddit_session=…` (env REDDIT_COOKIE, or *_FILE).
     #[arg(long)]
     reddit_cookie: Option<String>,
-    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
+    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
     /// Cap on new bookmarks written this run; 0 = all.
@@ -123,7 +123,7 @@ struct GithubSyncArgs {
     /// GitHub personal access token (env GITHUB_TOKEN, or *_FILE).
     #[arg(long)]
     github_token: Option<String>,
-    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
+    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
     /// Cap on new bookmarks written this run; 0 = all.
@@ -152,7 +152,7 @@ struct HackernewsSyncArgs {
     /// HackerNews username whose favorites to sync (env HN_USERNAME, or *_FILE).
     #[arg(long)]
     username: Option<String>,
-    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
+    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
     /// Cap on new bookmarks written this run; 0 = all.
@@ -199,7 +199,7 @@ struct GithubCleanupArgs {
     /// GitHub personal access token (env GITHUB_TOKEN, or *_FILE).
     #[arg(long)]
     github_token: Option<String>,
-    /// Pinboard API token (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
+    /// Pinboard API token (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
     /// Show what would change without writing to Pinboard.
@@ -213,7 +213,7 @@ struct GithubCleanupArgs {
 struct HackernewsCleanupArgs {
     /// Account name whose tag config to use (default: the first hackernews account).
     account: Option<String>,
-    /// Pinboard API token (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
+    /// Pinboard API token (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
     /// Also link article bookmarks tagged with the link tag (default `find-hn`) to
@@ -238,7 +238,7 @@ struct RedditCleanupArgs {
     /// `/api/info` lookups; not required with --no-nsfw --no-titles.
     #[arg(long)]
     reddit_cookie: Option<String>,
-    /// Pinboard API token (env PINBOARD_TOKEN, *_FILE, or ~/.pinboardrc).
+    /// Pinboard API token (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
     /// Skip NSFW tagging (no Reddit /api/info call for over_18).
@@ -291,9 +291,14 @@ fn print_completions(shell: Shell) {
     clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
 }
 
-/// Load the config from `--config`/`$PINBOARD_SYNC_CONFIG`/`_FILE`; absent = defaults.
+/// Load the config from `--config` / `$PINBOARD_SYNC_CONFIG` (a direct path to the
+/// TOML file); absent = defaults. Unlike secrets, the config takes no `_FILE` form —
+/// it is already a file path.
 fn load_config(flag: Option<String>) -> Result<Config> {
-    match resolve_secret(flag, "PINBOARD_SYNC_CONFIG", None, None) {
+    let path = flag
+        .or_else(|| std::env::var("PINBOARD_SYNC_CONFIG").ok())
+        .filter(|s| !s.is_empty());
+    match path {
         Some(path) => {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading config file {path}"))?;
@@ -608,7 +613,7 @@ async fn open_pinboard(
     config: &Config,
 ) -> Result<(PinboardClient, Vec<Bookmark>)> {
     let token = resolve_pinboard_token(token_flag, &config.pinboard)
-        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN, [pinboard] in the config, or ~/.pinboardrc)")?;
+        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or [pinboard] in the config)")?;
     let pinboard = PinboardClient::new(token, public)?;
     let bookmarks = pinboard.all().await.context("listing Pinboard bookmarks")?;
     Ok((pinboard, bookmarks))
@@ -905,29 +910,6 @@ fn resolve_pinboard_token(flag: Option<String>, pb: &config::Pinboard) -> Option
         pb.token.clone(),
         pb.token_file.as_deref(),
     )
-    .or_else(read_pinboardrc)
-}
-
-/// Read `api_token` from `~/.pinboardrc` (`[authentication]` section).
-fn read_pinboardrc() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let contents = std::fs::read_to_string(std::path::Path::new(&home).join(".pinboardrc")).ok()?;
-    parse_pinboardrc(&contents)
-}
-
-/// Extract `api_token` from `~/.pinboardrc` contents. Pure, so it is unit-tested
-/// without a real home directory.
-fn parse_pinboardrc(contents: &str) -> Option<String> {
-    for line in contents.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("api_token") {
-            let value = rest.trim_start().trim_start_matches('=').trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    None
 }
 
 /// A single-line, length-bounded preview of (possibly multi-line) text, for
@@ -958,22 +940,6 @@ mod tests {
             Some("b".into())
         );
         assert_eq!(first_nonempty([None, Some(String::new())]), None);
-    }
-
-    #[test]
-    fn parse_pinboardrc_reads_api_token() {
-        let ini = "[authentication]\napi_token = user:ABC123\n";
-        assert_eq!(parse_pinboardrc(ini), Some("user:ABC123".into()));
-        assert_eq!(
-            parse_pinboardrc("api_token=user:XYZ"),
-            Some("user:XYZ".into())
-        );
-    }
-
-    #[test]
-    fn parse_pinboardrc_returns_none_without_token() {
-        assert_eq!(parse_pinboardrc("[authentication]\n"), None);
-        assert_eq!(parse_pinboardrc(""), None);
     }
 
     #[test]

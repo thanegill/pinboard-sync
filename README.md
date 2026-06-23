@@ -63,10 +63,46 @@ Per source:
   plenty — it only reads `/user/starred`).
 - **HackerNews** needs only your **username**; favorites are public.
 
-Every secret can be supplied three ways, highest precedence first: a CLI flag, an
-environment variable, or `<VAR>_FILE` (a path whose trimmed contents are the value
-— handy for systemd / sops-nix). The Pinboard token also falls back to
-`~/.pinboardrc`. A `--config` file (below) sits just below the environment.
+### Environment variables
+
+Each value resolves through a ladder, highest precedence first: a **CLI flag**, the
+**environment variable**, that variable's **`<VAR>_FILE`** form, then the inline value
+and `*_file` path in the **`--config` file** (below). A blank or missing rung falls
+through to the next; the first non-empty value wins.
+
+`<VAR>_FILE` names a **path whose trimmed contents are the value** — so the secret
+itself never sits in the environment or the Nix store, only a path to it does. Every
+variable in the table accepts this `_FILE` form. For any variable, the inline value and
+the `_FILE` path are equivalent:
+
+```sh
+# value inline in the environment…
+export PINBOARD_TOKEN='user:abcdef0123456789'
+# …or the value read (and trimmed) from a file — how the NixOS service feeds sops-nix:
+export PINBOARD_TOKEN_FILE=/run/secrets/pinboard-token
+
+# the same applies to every variable below
+export REDDIT_USERNAME=alice
+export REDDIT_COOKIE_FILE=/run/secrets/reddit-cookie
+export GITHUB_TOKEN_FILE=/run/secrets/github-token
+export HN_USERNAME_FILE=/run/secrets/hn-username
+```
+
+| Variable | Sets | Secret |
+| --- | --- | --- |
+| `PINBOARD_TOKEN` | Pinboard API token (`user:TOKEN`), shared by every source | yes |
+| `REDDIT_USERNAME` | Reddit user whose saved items to read | no |
+| `REDDIT_COOKIE` | Reddit `reddit_session=…` cookie | yes |
+| `GITHUB_TOKEN` | GitHub personal access token | yes |
+| `HN_USERNAME` | HackerNews user whose favorites to read | no |
+
+Two variables are **direct values, not `_FILE`-capable**:
+
+- **`PINBOARD_SYNC_CONFIG`** — a direct path to the `--config` TOML file (equivalent to
+  passing `--config`). The config is already a file, so it takes no `_FILE` indirection.
+- **`PINBOARD_SYNC_ON_AUTH_FAILURE`** — a shell command run when a source needs
+  re-authentication. It can also be set per-account or as `[hooks] on_auth_failure` in
+  the config (flag/env → per-account → `[hooks]`).
 
 ## Usage
 
@@ -97,7 +133,7 @@ pinboard-sync cleanup hackernews      # rewrite HN item URLs to the linked artic
 ## Config file and multiple accounts
 
 For multiple accounts of a source, or to keep settings out of flags, use a TOML
-config passed via `--config <path>` (or `$PINBOARD_SYNC_CONFIG` / `_FILE`). It holds
+config passed via `--config <path>` (or `$PINBOARD_SYNC_CONFIG`). It holds
 one `[pinboard]` destination, an optional `[hooks]` block, and arrays of accounts
 per source. Print the annotated template with `pinboard-sync config example`; in
 brief:

@@ -1,7 +1,6 @@
 # pinboard-sync configuration.
 #
-# Pass with `--config <path>`, or set PINBOARD_SYNC_CONFIG (or
-# PINBOARD_SYNC_CONFIG_FILE, a path whose contents are the path). Every field is
+# Pass with `--config <path>`, or set PINBOARD_SYNC_CONFIG to the path. Every field is
 # optional; an absent config means all built-in defaults. Secret fields accept an
 # inline value OR a `<field>_file` sibling holding a path whose trimmed contents
 # are the value (handy for sops-nix / systemd credentials).

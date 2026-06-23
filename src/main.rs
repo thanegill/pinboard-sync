@@ -381,12 +381,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
     };
 
-    let (pinboard, bookmarks) = open_pinboard(
-        ovr.pinboard_token.clone(),
-        ovr.public || config.pinboard.public,
-        config,
-    )
-    .await?;
+    let (pinboard, bookmarks) = open_pinboard(ovr.pinboard_token.clone(), config).await?;
     // `--dry-run`/`--verbose` are accepted both before the source subcommand (on
     // `SyncCmd`) and after it (per-source); honor either placement.
     run_sync_jobs(
@@ -488,11 +483,19 @@ struct SyncJob {
     limit: usize,
     /// Resolved to-read flag for this account's new bookmarks.
     toread: bool,
+    /// Resolved public/shared flag for this account's new bookmarks.
+    shared: bool,
 }
 
 /// This account's to-read flag: its override, else the `[pinboard]` default.
 fn job_toread(account_toread: Option<bool>, config: &Config) -> bool {
     account_toread.unwrap_or(config.pinboard.toread)
+}
+
+/// This account's public flag: forced by `--public`, else its override, else the
+/// `[pinboard]` default.
+fn job_shared(ovr: &SyncOverrides, account_public: Option<bool>, config: &Config) -> bool {
+    ovr.public || account_public.unwrap_or(config.pinboard.public)
 }
 
 /// One of the concrete source clients, unified behind the `Source` port so `--all`
@@ -561,6 +564,7 @@ fn build_reddit_job(
         hook,
         limit: job_limit(ovr, account.and_then(|a| a.limit)),
         toread: job_toread(account.and_then(|a| a.toread), config),
+        shared: job_shared(ovr, account.and_then(|a| a.public), config),
     })
 }
 
@@ -589,6 +593,7 @@ fn build_github_job(
         hook,
         limit: job_limit(ovr, account.and_then(|a| a.limit)),
         toread: job_toread(account.and_then(|a| a.toread), config),
+        shared: job_shared(ovr, account.and_then(|a| a.public), config),
     })
 }
 
@@ -615,6 +620,7 @@ fn build_hackernews_job(
         hook: None,
         limit: job_limit(ovr, account.and_then(|a| a.limit)),
         toread: job_toread(account.and_then(|a| a.toread), config),
+        shared: job_shared(ovr, account.and_then(|a| a.public), config),
     })
 }
 
@@ -632,6 +638,7 @@ async fn run_sync_jobs(
         let mut new = sync::filter_new(&job.client, drafts, bookmarks);
         for d in &mut new {
             d.toread = job.toread;
+            d.shared = job.shared;
         }
         if job.limit > 0 {
             new.truncate(job.limit);
@@ -674,13 +681,12 @@ async fn run_sync_jobs(
 /// most rate-limited endpoint — is hit once, not once per account).
 async fn open_pinboard(
     token_flag: Option<String>,
-    public: bool,
     config: &Config,
 ) -> Result<(PinboardClient, Vec<Bookmark>)> {
     let token = resolve_pinboard_token(token_flag, &config.pinboard)
         .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or [pinboard] in the config)")?;
     let rate_limit = config.pinboard.rate_limit_secs.unwrap_or(RATE_LIMIT_SECS);
-    let pinboard = PinboardClient::new(token, public, rate_limit)?;
+    let pinboard = PinboardClient::new(token, rate_limit)?;
     let bookmarks = pinboard.all().await.context("listing Pinboard bookmarks")?;
     Ok((pinboard, bookmarks))
 }
@@ -692,7 +698,7 @@ async fn open_pinboard(
 async fn run_doctor(config: &Config) -> Result<()> {
     let mut failed = 0usize;
 
-    match open_pinboard(None, false, config).await {
+    match open_pinboard(None, config).await {
         Ok((_, bms)) => println!("✓ pinboard — {} bookmark(s)", bms.len()),
         Err(e) => {
             println!("✗ pinboard — {e:#}");
@@ -762,7 +768,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             if !config.has_accounts() {
                 bail!("cleanup --all requires a --config with at least one configured account");
             }
-            let (pinboard, bookmarks) = open_pinboard(None, false, config).await?;
+            let (pinboard, bookmarks) = open_pinboard(None, config).await?;
             let mut run = AllRun::default();
             if let Some(acct) = config.github.first() {
                 let opts = github::GhCleanupOpts {
@@ -811,7 +817,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
 }
 
 async fn run_cleanup_github(args: GithubCleanupArgs, config: &Config) -> Result<()> {
-    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, false, config).await?;
+    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let account = config::select_account(&config.github, args.account.as_deref())?;
     let opts = github::GhCleanupOpts {
         dry_run: args.dry_run,
@@ -846,7 +852,7 @@ async fn cleanup_github_for(
 async fn run_cleanup_reddit(args: RedditCleanupArgs, config: &Config) -> Result<()> {
     // One pass over the Pinboard account's reddit bookmarks, using the selected (or
     // first, or implicit CLI/env) account's cookie + domain/tags.
-    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), false, config).await?;
+    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let account = config::select_account(&config.reddit, args.account.as_deref())?;
     cleanup_one_reddit(account, &args, &pinboard, &bookmarks).await
 }
@@ -890,7 +896,7 @@ async fn cleanup_one_reddit(
 async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) -> Result<()> {
     // One pass over the Pinboard account's HN bookmarks, using the selected (or
     // first, or implicit) account's tag config.
-    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), false, config).await?;
+    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let account = config::select_account(&config.hackernews, args.account.as_deref())?;
     cleanup_one_hackernews(
         account,

@@ -259,6 +259,7 @@ impl SavedItem {
             tags,
             dedup_key,
             toread: false,
+            shared: false,
         }
     }
 }

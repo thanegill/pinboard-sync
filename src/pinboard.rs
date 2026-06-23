@@ -57,7 +57,6 @@ pub struct PinboardClient {
     http: reqwest::Client,
     /// `username:TOKEN`.
     auth_token: String,
-    shared: bool,
     /// Seconds to pause between successive `posts/add` writes.
     rate_limit_secs: u64,
     /// API base, e.g. `https://api.pinboard.in/v1`.
@@ -93,6 +92,7 @@ pub trait BookmarkStore {
         extended: &str,
         tags: &[String],
         toread: bool,
+        shared: bool,
     ) -> Result<()>;
     /// Re-add an existing bookmark with normalized fields, preserving metadata.
     async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()>;
@@ -133,16 +133,11 @@ pub async fn apply_update<P: BookmarkStore>(
 }
 
 impl PinboardClient {
-    pub fn new(auth_token: String, shared: bool, rate_limit_secs: u64) -> Result<Self> {
-        Self::build(
-            auth_token,
-            shared,
-            rate_limit_secs,
-            DEFAULT_BASE.to_string(),
-        )
+    pub fn new(auth_token: String, rate_limit_secs: u64) -> Result<Self> {
+        Self::build(auth_token, rate_limit_secs, DEFAULT_BASE.to_string())
     }
 
-    fn build(auth_token: String, shared: bool, rate_limit_secs: u64, base: String) -> Result<Self> {
+    fn build(auth_token: String, rate_limit_secs: u64, base: String) -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .build()
@@ -150,7 +145,6 @@ impl PinboardClient {
         Ok(Self {
             http,
             auth_token,
-            shared,
             rate_limit_secs,
             base,
         })
@@ -207,13 +201,14 @@ impl BookmarkStore for PinboardClient {
         extended: &str,
         tags: &[String],
         toread: bool,
+        shared: bool,
     ) -> Result<()> {
         self.post_add(BookmarkUpdate {
             url,
             description,
             extended,
             tags,
-            shared: self.shared,
+            shared,
             toread,
             dt: "",
         })
@@ -282,8 +277,8 @@ impl PinboardClient {
     /// Construct a client pointed at an arbitrary API base, for tests. No inter-write
     /// pacing so `net_tests` don't sleep.
     #[cfg(test)]
-    pub fn with_base_url(auth_token: String, shared: bool, base: String) -> Result<Self> {
-        Self::build(auth_token, shared, 0, base)
+    pub fn with_base_url(auth_token: String, base: String) -> Result<Self> {
+        Self::build(auth_token, 0, base)
     }
 }
 
@@ -297,7 +292,7 @@ mod net_tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client(server: &MockServer) -> PinboardClient {
-        PinboardClient::with_base_url("user:tok".into(), false, server.uri()).unwrap()
+        PinboardClient::with_base_url("user:tok".into(), server.uri()).unwrap()
     }
 
     #[tokio::test]
@@ -316,6 +311,7 @@ mod net_tests {
                 "Title",
                 "",
                 &["reddit".into()],
+                false,
                 false,
             )
             .await
@@ -339,6 +335,7 @@ mod net_tests {
                 "Title",
                 "",
                 &["reddit".into()],
+                false,
                 false,
             )
             .await

@@ -15,6 +15,11 @@ All notable changes to this project are documented here. The format is based on
 - A `doctor` subcommand that checks the Pinboard token and every configured account's
   credentials, exiting non-zero if any fail.
 
+### Changed
+
+- `[pinboard].public` is now overridable per account (like `toread`); the resolved
+  value travels on each bookmark rather than the shared client.
+
 ## [0.2.1] - 2026-06-23
 
 ### Added

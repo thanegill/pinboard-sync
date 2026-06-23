@@ -42,6 +42,9 @@ pub struct BookmarkDraft {
     /// Whether to write the bookmark to-read/unread. Sources build this `false`; the
     /// sync loop stamps the per-account resolved value before writing.
     pub toread: bool,
+    /// Whether to write the bookmark public/shared. Sources build this `false`; the
+    /// sync loop stamps the per-account resolved value before writing.
+    pub shared: bool,
 }
 
 /// A service that yields saveable items as [`BookmarkDraft`]s. Abstracted from the

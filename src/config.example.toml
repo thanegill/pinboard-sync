@@ -33,6 +33,7 @@ name = "main"                            # optional selector; defaults to `usern
 # on_auth_failure = "…"                  # per-account override of [hooks].on_auth_failure
 # limit = 0                              # cap new bookmarks per run (0 = all)
 # toread = true                          # override [pinboard].toread for this account
+# public = true                          # override [pinboard].public for this account
 
 # Tags (config-only). Each line shows the built-in default; set "" to disable a
 # prefixed/conditional tag. `tags` are applied to every bookmark and fully replace
@@ -56,6 +57,7 @@ name = "personal"                        # selector; GitHub has no username to d
 # on_auth_failure = "…"                  # per-account override of [hooks].on_auth_failure
 # limit = 0                              # cap new bookmarks per run (0 = all)
 # toread = true                          # override [pinboard].toread for this account
+# public = true                          # override [pinboard].public for this account
 tags = ["github-star"]                   # applied to every bookmark (default ["github-star"])
 tag_lang_prefix = "lang:"                # lang:<language>
 
@@ -67,6 +69,7 @@ name = "me"                              # optional selector; defaults to `usern
 # username = "your-hn-username"          # public; whose favorites to read (env HN_USERNAME)
 # limit = 0                              # cap new bookmarks per run (0 = all)
 # toread = true                          # override [pinboard].toread for this account
+# public = true                          # override [pinboard].public for this account
 tags = ["hackernews"]                    # applied to every bookmark (default ["hackernews"])
 tag_comment = "hackernews-comment"       # added to favorited comments
 tag_author_prefix = "author:hackernews:" # author:hackernews:<name>

@@ -75,6 +75,7 @@ impl Repo {
             tags,
             dedup_key,
             toread: false,
+            shared: false,
         }
     }
 }

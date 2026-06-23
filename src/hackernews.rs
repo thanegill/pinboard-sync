@@ -142,6 +142,7 @@ impl Item {
                 tags,
                 dedup_key: format!("hn:{}", self.id),
                 toread: false,
+                shared: false,
             };
         }
 
@@ -165,6 +166,7 @@ impl Item {
             tags,
             dedup_key,
             toread: false,
+            shared: false,
         }
     }
 }

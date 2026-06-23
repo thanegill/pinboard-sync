@@ -61,6 +61,7 @@ pub async fn write_drafts<P: BookmarkStore>(
                 &draft.extended,
                 &draft.tags,
                 draft.toread,
+                draft.shared,
             )
             .await
             .with_context(|| format!("adding bookmark {}", draft.url))?;
@@ -140,18 +141,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_drafts_passes_each_drafts_toread() {
-        let draft = |url: &str, toread: bool| BookmarkDraft {
+    async fn write_drafts_passes_each_drafts_toread_and_shared() {
+        let draft = |url: &str, toread: bool, shared: bool| BookmarkDraft {
             url: url.into(),
             description: "T".into(),
             extended: String::new(),
             tags: vec![],
             dedup_key: url.into(),
             toread,
+            shared,
         };
         let drafts = vec![
-            draft("https://a.test/", true),
-            draft("https://b.test/", false),
+            draft("https://a.test/", true, true),
+            draft("https://b.test/", false, false),
         ];
         let pinboard = FakePinboard::default();
         write_drafts(&pinboard, &drafts, false, false)
@@ -159,8 +161,8 @@ mod tests {
             .unwrap();
         let added = pinboard.added.borrow();
         assert_eq!(added.len(), 2);
-        assert!(added[0].toread);
-        assert!(!added[1].toread);
+        assert!(added[0].toread && added[0].shared);
+        assert!(!added[1].toread && !added[1].shared);
     }
 
     #[tokio::test]

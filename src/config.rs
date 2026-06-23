@@ -67,6 +67,8 @@ pub struct RedditAccount {
     pub limit: Option<usize>,
     /// Override `[pinboard].toread` for this account's new bookmarks.
     pub toread: Option<bool>,
+    /// Override `[pinboard].public` for this account's new bookmarks.
+    pub public: Option<bool>,
     // Non-secret tag/domain config (`tag_*`), each defaulting in `reddit_config`.
     pub reddit_domain: Option<String>,
     pub tag_subreddit_prefix: Option<String>,
@@ -209,6 +211,8 @@ pub struct GithubAccount {
     pub limit: Option<usize>,
     /// Override `[pinboard].toread` for this account's new bookmarks.
     pub toread: Option<bool>,
+    /// Override `[pinboard].public` for this account's new bookmarks.
+    pub public: Option<bool>,
     pub tag_lang_prefix: Option<String>,
     /// Tags applied to every bookmark (default `["github-star"]`); a full override.
     pub tags: Option<Vec<String>>,
@@ -235,6 +239,8 @@ pub struct HackernewsAccount {
     pub limit: Option<usize>,
     /// Override `[pinboard].toread` for this account's new bookmarks.
     pub toread: Option<bool>,
+    /// Override `[pinboard].public` for this account's new bookmarks.
+    pub public: Option<bool>,
     pub tag_comment: Option<String>,
     pub tag_author_prefix: Option<String>,
     pub tag_special_prefix: Option<String>,
@@ -444,6 +450,7 @@ mod tests {
             on_auth_failure,
             limit,
             toread,
+            public,
             reddit_domain,
             tag_subreddit_prefix,
             tag_comment,
@@ -461,6 +468,7 @@ mod tests {
             on_auth_failure,
             limit,
             toread,
+            public,
             tag_lang_prefix,
             tags,
         });
@@ -469,6 +477,7 @@ mod tests {
             username,
             limit,
             toread,
+            public,
             tag_comment,
             tag_author_prefix,
             tag_special_prefix,

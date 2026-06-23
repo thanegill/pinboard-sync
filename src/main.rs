@@ -44,6 +44,8 @@ enum Command {
     Cleanup(CleanupCmd),
     /// Print a shell completion script (bash, zsh, fish, …) to stdout.
     Completions { shell: Shell },
+    /// Print a man page (roff) to stdout.
+    Man,
     /// Config helpers.
     Config {
         #[command(subcommand)]
@@ -267,6 +269,7 @@ async fn main() -> ExitCode {
                 print_completions(shell);
                 Ok(())
             }
+            Command::Man => print_man(),
             Command::Config {
                 action: ConfigAction::Example,
             } => {
@@ -289,6 +292,20 @@ fn print_completions(shell: Shell) {
     let mut cmd = Cli::command();
     let name = cmd.get_name().to_string();
     clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+}
+
+/// Write a roff man page for the CLI to stdout.
+fn print_man() -> Result<()> {
+    use std::io::Write;
+    let mut buf = Vec::new();
+    clap_mangen::Man::new(Cli::command())
+        .render(&mut buf)
+        .context("rendering man page")?;
+    // A closed pipe (e.g. `pinboard-sync man | head`) is not an error.
+    match std::io::stdout().write_all(&buf) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        r => r.context("writing man page"),
+    }
 }
 
 /// Load the config from `--config` / `$PINBOARD_SYNC_CONFIG` (a direct path to the

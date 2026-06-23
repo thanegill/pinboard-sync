@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- A `man` subcommand that prints a roff man page; the Nix package installs it.
+
 ## [0.2.1] - 2026-06-23
 
 ### Added

@@ -254,13 +254,17 @@ Completions cover the subcommands, flags, and `<shell>`/source values; re-run af
 upgrading so they track the installed version. Reload your shell (or `compinit` for
 zsh) to pick them up.
 
+`pinboard-sync man` prints a roff man page to stdout (`pinboard-sync man | man -l -`
+to read it).
+
 ### Installed by the Nix package
 
-`nix build` already generates and installs both, so you don't run the commands by
+`nix build` already generates and installs these, so you don't run the commands by
 hand:
 
 - bash/zsh/fish completions under the usual
-  `share/{bash-completion,zsh/site-functions,fish/vendor_completions.d}` paths, and
+  `share/{bash-completion,zsh/site-functions,fish/vendor_completions.d}` paths,
+- the man page at `share/man/man1/pinboard-sync.1`, and
 - the template at `share/pinboard-sync/config.example.toml`.
 
 ## Running as a NixOS service

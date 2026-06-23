@@ -29,12 +29,17 @@
           # can't bind a socket in the build sandbox. They run under `cargo test`
           # in the dev shell / CI; the sandboxed build runs everything else.
           checkFlags = [ "--skip=net_tests" ];
-          # Generate shell completions and the example config from the built binary.
+          # Generate shell completions, a man page, and the example config from the
+          # built binary.
           postInstall = ''
             installShellCompletion --cmd pinboard-sync \
               --bash <($out/bin/pinboard-sync completions bash) \
               --zsh <($out/bin/pinboard-sync completions zsh) \
               --fish <($out/bin/pinboard-sync completions fish)
+            # installManPage reads the section from the filename suffix, so write to
+            # a `.1` file rather than a process substitution.
+            $out/bin/pinboard-sync man > pinboard-sync.1
+            installManPage pinboard-sync.1
             mkdir -p $out/share/pinboard-sync
             $out/bin/pinboard-sync config example > $out/share/pinboard-sync/config.example.toml
           '';

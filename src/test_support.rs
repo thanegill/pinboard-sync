@@ -56,7 +56,11 @@ pub struct AddCall {
 pub struct UpdateCall {
     pub url: String,
     pub description: String,
+    pub extended: String,
     pub tags: Vec<String>,
+    pub shared: bool,
+    pub toread: bool,
+    pub dt: String,
 }
 
 #[derive(Default)]
@@ -91,7 +95,11 @@ impl BookmarkStore for FakePinboard {
         self.updated.borrow_mut().push(UpdateCall {
             url: b.url.to_string(),
             description: b.description.to_string(),
+            extended: b.extended.to_string(),
             tags: b.tags.to_vec(),
+            shared: b.shared,
+            toread: b.toread,
+            dt: b.dt.to_string(),
         });
         Ok(())
     }

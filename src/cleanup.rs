@@ -485,11 +485,16 @@ mod loop_tests {
     #[tokio::test]
     async fn normalizes_url_tags_nsfw_and_title() {
         let pinboard = FakePinboard {
-            all: vec![bookmark(
-                "https://www.reddit.com/r/NEWS/comments/abc/x/",
-                "Reddit - Dive into anything",
-                "",
-            )],
+            // Carries notes + metadata that cleanup must preserve across the re-add.
+            all: vec![Bookmark {
+                url: "https://www.reddit.com/r/NEWS/comments/abc/x/".into(),
+                description: "Reddit - Dive into anything".into(),
+                extended: "original notes".into(),
+                tags: String::new(),
+                time: "1700000000".into(),
+                shared: "yes".into(),
+                toread: "yes".into(),
+            }],
             ..Default::default()
         };
         let reddit = FakeReddit {
@@ -516,6 +521,11 @@ mod loop_tests {
         assert!(updated[0].tags.contains(&"reddit".to_string()));
         assert!(updated[0].tags.contains(&"subreddit:news".to_string()));
         assert!(updated[0].tags.contains(&"nsfw".to_string()));
+        // Notes, privacy, to-read, and the original creation time are preserved.
+        assert_eq!(updated[0].extended, "original notes");
+        assert!(updated[0].shared);
+        assert!(updated[0].toread);
+        assert_eq!(updated[0].dt, "1700000000");
         // URL changed, so the old one is deleted.
         assert_eq!(
             *pinboard.deleted.borrow(),

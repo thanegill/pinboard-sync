@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- Account selection falls back to an account's `username` when its `name` is unset,
+  for Reddit and HackerNews (an explicit `name` still wins). GitHub has no username
+  and is unchanged.
+
 ### Removed
 
 - The `~/.pinboardrc` fallback for the Pinboard token. Supply the token via

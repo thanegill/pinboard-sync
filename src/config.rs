@@ -247,21 +247,25 @@ impl HackernewsAccount {
     }
 }
 
-/// An account that can be selected by `name`.
+/// An account that can be selected by name (`sync <source> <name>`). The selector is
+/// the explicit `name`, falling back to the account's `username` where it has one.
 pub trait Named {
     fn account_name(&self) -> Option<&str>;
 }
 
+/// Implement [`Named`] as `self.name`, optionally falling back to another field
+/// (`=> username`) when `name` is unset.
 macro_rules! impl_named {
-    ($($t:ty),+ $(,)?) => {
+    ($($t:ty $(=> $fallback:ident)?),+ $(,)?) => {
         $(impl Named for $t {
             fn account_name(&self) -> Option<&str> {
                 self.name.as_deref()
+                $(.or(self.$fallback.as_deref()))?
             }
         })+
     };
 }
-impl_named!(RedditAccount, GithubAccount, HackernewsAccount);
+impl_named!(RedditAccount => username, GithubAccount, HackernewsAccount => username);
 
 /// Pick the account named `name`, or the first account when `name` is `None`.
 /// Returns `Ok(None)` only when there are no configured accounts and no name was
@@ -502,5 +506,31 @@ mod tests {
         // No accounts + no name → None (caller uses flags/env).
         let empty: Vec<RedditAccount> = vec![];
         assert!(select_account(&empty, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn account_name_falls_back_to_username() {
+        // Reddit/HN: an unnamed account is selectable by its username; an explicit
+        // name still wins.
+        let by_username = RedditAccount {
+            username: Some("alice".into()),
+            ..Default::default()
+        };
+        assert_eq!(by_username.account_name(), Some("alice"));
+        let named = RedditAccount {
+            name: Some("main".into()),
+            username: Some("alice".into()),
+            ..Default::default()
+        };
+        assert_eq!(named.account_name(), Some("main"));
+        // GitHub has no username, so only an explicit name selects it.
+        assert_eq!(
+            GithubAccount {
+                token: Some("ghp_x".into()),
+                ..Default::default()
+            }
+            .account_name(),
+            None
+        );
     }
 }

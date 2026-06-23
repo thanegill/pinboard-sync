@@ -24,7 +24,7 @@ public = false                           # write bookmarks public (default: priv
 # A reddit account. Repeat the [[reddit]] table for multiple accounts; select one
 # with `sync reddit <name>`, or run them all with `sync reddit --all`.
 [[reddit]]
-name = "main"                            # used to select this account and in logs
+name = "main"                            # optional selector; defaults to `username`
 # username = "your-reddit-username"      # non-secret; whose saved.json to read
 # cookie = "reddit_session=…"            # or:
 # cookie_file = "/run/secrets/reddit-cookie"
@@ -47,7 +47,7 @@ tag_media_types = ["image", "video"]     # which media types get a type:<x> tag 
 # A GitHub account (starred repos). Repeat [[github]] for multiple accounts; select
 # one with `sync github <name>`, or run them all with `sync github --all`.
 [[github]]
-name = "personal"
+name = "personal"                        # selector; GitHub has no username to default to
 # token = "ghp_…"                        # a personal access token, or:
 # token_file = "/run/secrets/github-token"
 # on_auth_failure = "…"                  # per-account override of [hooks].on_auth_failure
@@ -59,7 +59,7 @@ tag_lang_prefix = "lang:"                # lang:<language>
 # multiple accounts; select one with `sync hackernews <name>`, or run them all with
 # `sync hackernews --all`.
 [[hackernews]]
-name = "me"
+name = "me"                              # optional selector; defaults to `username`
 # username = "your-hn-username"          # public; whose favorites to read (env HN_USERNAME)
 # limit = 0                              # cap new bookmarks per run (0 = all)
 tags = ["hackernews"]                    # applied to every bookmark (default ["hackernews"])

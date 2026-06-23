@@ -58,6 +58,8 @@ pub struct PinboardClient {
     /// `username:TOKEN`.
     auth_token: String,
     shared: bool,
+    /// Seconds to pause between successive `posts/add` writes.
+    rate_limit_secs: u64,
     /// API base, e.g. `https://api.pinboard.in/v1`.
     base: String,
 }
@@ -95,6 +97,10 @@ pub trait BookmarkStore {
     async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()>;
     /// Delete a bookmark by URL.
     async fn delete(&self, url: &str) -> Result<()>;
+    /// Seconds to pause between successive writes (Pinboard asks for ~3s).
+    fn rate_limit_secs(&self) -> u64 {
+        RATE_LIMIT_SECS
+    }
 }
 
 /// The shared write step of the cleanup loops: rate-limit after the first write (so
@@ -108,7 +114,7 @@ pub async fn apply_update<P: BookmarkStore>(
     old_url: Option<&str>,
 ) -> Result<()> {
     if *wrote {
-        tokio::time::sleep(Duration::from_secs(RATE_LIMIT_SECS)).await;
+        tokio::time::sleep(Duration::from_secs(pinboard.rate_limit_secs())).await;
     }
     let target = update.url; // `&str` is Copy, so this outlives the move below
     pinboard
@@ -126,11 +132,16 @@ pub async fn apply_update<P: BookmarkStore>(
 }
 
 impl PinboardClient {
-    pub fn new(auth_token: String, shared: bool) -> Result<Self> {
-        Self::build(auth_token, shared, DEFAULT_BASE.to_string())
+    pub fn new(auth_token: String, shared: bool, rate_limit_secs: u64) -> Result<Self> {
+        Self::build(
+            auth_token,
+            shared,
+            rate_limit_secs,
+            DEFAULT_BASE.to_string(),
+        )
     }
 
-    fn build(auth_token: String, shared: bool, base: String) -> Result<Self> {
+    fn build(auth_token: String, shared: bool, rate_limit_secs: u64, base: String) -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .build()
@@ -139,6 +150,7 @@ impl PinboardClient {
             http,
             auth_token,
             shared,
+            rate_limit_secs,
             base,
         })
     }
@@ -181,6 +193,10 @@ impl BookmarkStore for PinboardClient {
             ));
         }
         Ok(())
+    }
+
+    fn rate_limit_secs(&self) -> u64 {
+        self.rate_limit_secs
     }
 
     async fn add(
@@ -261,10 +277,11 @@ impl PinboardClient {
         Ok(resp)
     }
 
-    /// Construct a client pointed at an arbitrary API base, for tests.
+    /// Construct a client pointed at an arbitrary API base, for tests. No inter-write
+    /// pacing so `net_tests` don't sleep.
     #[cfg(test)]
     pub fn with_base_url(auth_token: String, shared: bool, base: String) -> Result<Self> {
-        Self::build(auth_token, shared, base)
+        Self::build(auth_token, shared, 0, base)
     }
 }
 

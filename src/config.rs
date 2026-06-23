@@ -47,6 +47,8 @@ pub struct Pinboard {
     /// Write bookmarks public (default private).
     #[serde(default)]
     pub public: bool,
+    /// Seconds to pause between `posts/add` writes (default 3, what Pinboard asks for).
+    pub rate_limit_secs: Option<u64>,
 }
 
 /// One reddit account: whose saves to read, the session cookie, and the
@@ -421,7 +423,8 @@ mod tests {
         let pinboard = documented_fields!(Pinboard {
             token,
             token_file,
-            public
+            public,
+            rate_limit_secs
         });
         let reddit = documented_fields!(RedditAccount {
             name,

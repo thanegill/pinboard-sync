@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format is based on
 ### Added
 
 - A `man` subcommand that prints a roff man page; the Nix package installs it.
+- `[pinboard].rate_limit_secs` to tune the pause between Pinboard writes (default 3).
 
 ## [0.2.1] - 2026-06-23
 

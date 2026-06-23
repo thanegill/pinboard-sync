@@ -22,7 +22,7 @@ use clap_complete::Shell;
 use config::{Config, GithubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
 use hackernews::{HnCleanupOpts, HnClient};
-use pinboard::{Bookmark, BookmarkStore, PinboardClient};
+use pinboard::{Bookmark, BookmarkStore, PinboardClient, RATE_LIMIT_SECS};
 use reddit::RedditClient;
 use source::{BookmarkDraft, Source, SourceError};
 
@@ -663,7 +663,8 @@ async fn open_pinboard(
 ) -> Result<(PinboardClient, Vec<Bookmark>)> {
     let token = resolve_pinboard_token(token_flag, &config.pinboard)
         .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or [pinboard] in the config)")?;
-    let pinboard = PinboardClient::new(token, public)?;
+    let rate_limit = config.pinboard.rate_limit_secs.unwrap_or(RATE_LIMIT_SECS);
+    let pinboard = PinboardClient::new(token, public, rate_limit)?;
     let bookmarks = pinboard.all().await.context("listing Pinboard bookmarks")?;
     Ok((pinboard, bookmarks))
 }

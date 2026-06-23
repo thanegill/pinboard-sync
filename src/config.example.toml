@@ -20,6 +20,7 @@
 # token = "user:0123456789ABCDEF"        # or:
 # token_file = "/run/secrets/pinboard-token"
 public = false                           # write bookmarks public (default: private)
+rate_limit_secs = 3                      # seconds between posts/add writes (default: 3)
 
 # A reddit account. Repeat the [[reddit]] table for multiple accounts; select one
 # with `sync reddit <name>`, or run them all with `sync reddit --all`.

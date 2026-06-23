@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::pinboard::{Bookmark, BookmarkStore, RATE_LIMIT_SECS};
+use crate::pinboard::{Bookmark, BookmarkStore};
 use crate::source::{BookmarkDraft, Source};
 
 /// The drafts not already present on Pinboard, matching each existing bookmark URL
@@ -29,8 +29,8 @@ pub fn filter_new<S: Source>(
         .collect()
 }
 
-/// Write `drafts` to Pinboard sequentially, pausing [`RATE_LIMIT_SECS`] between
-/// `posts/add` calls. Returns the number written (0 in `dry_run`).
+/// Write `drafts` to Pinboard sequentially, pausing `pinboard.rate_limit_secs()`
+/// between `posts/add` calls. Returns the number written (0 in `dry_run`).
 pub async fn write_drafts<P: BookmarkStore>(
     pinboard: &P,
     drafts: &[BookmarkDraft],
@@ -50,9 +50,9 @@ pub async fn write_drafts<P: BookmarkStore>(
             continue;
         }
 
-        // Pinboard asks for ~3s between posts/add calls.
+        // Pinboard asks for ~3s between posts/add calls (configurable).
         if posted {
-            tokio::time::sleep(Duration::from_secs(RATE_LIMIT_SECS)).await;
+            tokio::time::sleep(Duration::from_secs(pinboard.rate_limit_secs())).await;
         }
         pinboard
             .add(&draft.url, &draft.description, &draft.extended, &draft.tags)

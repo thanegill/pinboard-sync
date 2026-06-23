@@ -141,6 +141,7 @@ impl Item {
                 extended: self.text.unwrap_or_default(),
                 tags,
                 dedup_key: format!("hn:{}", self.id),
+                toread: false,
             };
         }
 
@@ -163,6 +164,7 @@ impl Item {
             extended,
             tags,
             dedup_key,
+            toread: false,
         }
     }
 }

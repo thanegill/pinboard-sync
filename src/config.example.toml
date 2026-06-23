@@ -20,6 +20,7 @@
 # token = "user:0123456789ABCDEF"        # or:
 # token_file = "/run/secrets/pinboard-token"
 public = false                           # write bookmarks public (default: private)
+toread = false                           # mark new bookmarks unread (default: false)
 rate_limit_secs = 3                      # seconds between posts/add writes (default: 3)
 
 # A reddit account. Repeat the [[reddit]] table for multiple accounts; select one
@@ -31,6 +32,7 @@ name = "main"                            # optional selector; defaults to `usern
 # cookie_file = "/run/secrets/reddit-cookie"
 # on_auth_failure = "…"                  # per-account override of [hooks].on_auth_failure
 # limit = 0                              # cap new bookmarks per run (0 = all)
+# toread = true                          # override [pinboard].toread for this account
 
 # Tags (config-only). Each line shows the built-in default; set "" to disable a
 # prefixed/conditional tag. `tags` are applied to every bookmark and fully replace
@@ -53,6 +55,7 @@ name = "personal"                        # selector; GitHub has no username to d
 # token_file = "/run/secrets/github-token"
 # on_auth_failure = "…"                  # per-account override of [hooks].on_auth_failure
 # limit = 0                              # cap new bookmarks per run (0 = all)
+# toread = true                          # override [pinboard].toread for this account
 tags = ["github-star"]                   # applied to every bookmark (default ["github-star"])
 tag_lang_prefix = "lang:"                # lang:<language>
 
@@ -63,6 +66,7 @@ tag_lang_prefix = "lang:"                # lang:<language>
 name = "me"                              # optional selector; defaults to `username`
 # username = "your-hn-username"          # public; whose favorites to read (env HN_USERNAME)
 # limit = 0                              # cap new bookmarks per run (0 = all)
+# toread = true                          # override [pinboard].toread for this account
 tags = ["hackernews"]                    # applied to every bookmark (default ["hackernews"])
 tag_comment = "hackernews-comment"       # added to favorited comments
 tag_author_prefix = "author:hackernews:" # author:hackernews:<name>

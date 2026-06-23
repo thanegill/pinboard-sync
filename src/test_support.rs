@@ -50,6 +50,7 @@ impl PostInfo for FakeReddit {
 pub struct AddCall {
     pub url: String,
     pub tags: Vec<String>,
+    pub toread: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,10 +85,12 @@ impl BookmarkStore for FakePinboard {
         _description: &str,
         _extended: &str,
         tags: &[String],
+        toread: bool,
     ) -> Result<()> {
         self.added.borrow_mut().push(AddCall {
             url: url.to_string(),
             tags: tags.to_vec(),
+            toread,
         });
         Ok(())
     }

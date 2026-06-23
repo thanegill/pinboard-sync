@@ -39,6 +39,9 @@ pub struct BookmarkDraft {
     pub tags: Vec<String>,
     /// Key matched against existing Pinboard bookmarks via [`Source::existing_key`].
     pub dedup_key: String,
+    /// Whether to write the bookmark to-read/unread. Sources build this `false`; the
+    /// sync loop stamps the per-account resolved value before writing.
+    pub toread: bool,
 }
 
 /// A service that yields saveable items as [`BookmarkDraft`]s. Abstracted from the

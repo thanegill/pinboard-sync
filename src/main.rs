@@ -483,6 +483,13 @@ struct SyncJob {
     client: SourceClient,
     hook: Option<String>,
     limit: usize,
+    /// Resolved to-read flag for this account's new bookmarks.
+    toread: bool,
+}
+
+/// This account's to-read flag: its override, else the `[pinboard]` default.
+fn job_toread(account_toread: Option<bool>, config: &Config) -> bool {
+    account_toread.unwrap_or(config.pinboard.toread)
 }
 
 /// One of the concrete source clients, unified behind the `Source` port so `--all`
@@ -550,6 +557,7 @@ fn build_reddit_job(
         client: SourceClient::Reddit(RedditClient::for_user(username, cookie, reddit_config)?),
         hook,
         limit: job_limit(ovr, account.and_then(|a| a.limit)),
+        toread: job_toread(account.and_then(|a| a.toread), config),
     })
 }
 
@@ -577,13 +585,14 @@ fn build_github_job(
         client: SourceClient::Github(GitHubClient::new(token, github_config)?),
         hook,
         limit: job_limit(ovr, account.and_then(|a| a.limit)),
+        toread: job_toread(account.and_then(|a| a.toread), config),
     })
 }
 
 fn build_hackernews_job(
     account: Option<&HackernewsAccount>,
     ovr: &SyncOverrides,
-    _config: &Config,
+    config: &Config,
 ) -> Result<SyncJob> {
     let username = resolve_secret(
         ovr.hackernews_username.clone(),
@@ -602,6 +611,7 @@ fn build_hackernews_job(
         client: SourceClient::Hackernews(HnClient::new(username, hn_config)?),
         hook: None,
         limit: job_limit(ovr, account.and_then(|a| a.limit)),
+        toread: job_toread(account.and_then(|a| a.toread), config),
     })
 }
 
@@ -617,6 +627,9 @@ async fn run_sync_jobs(
     let fetched = futures::future::join_all(jobs.iter().map(|job| async move {
         let drafts = job.client.fetch().await?;
         let mut new = sync::filter_new(&job.client, drafts, bookmarks);
+        for d in &mut new {
+            d.toread = job.toread;
+        }
         if job.limit > 0 {
             new.truncate(job.limit);
         }

@@ -74,6 +74,7 @@ impl Repo {
             extended,
             tags,
             dedup_key,
+            toread: false,
         }
     }
 }

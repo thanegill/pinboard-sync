@@ -92,6 +92,7 @@ pub trait BookmarkStore {
         description: &str,
         extended: &str,
         tags: &[String],
+        toread: bool,
     ) -> Result<()>;
     /// Re-add an existing bookmark with normalized fields, preserving metadata.
     async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()>;
@@ -205,6 +206,7 @@ impl BookmarkStore for PinboardClient {
         description: &str,
         extended: &str,
         tags: &[String],
+        toread: bool,
     ) -> Result<()> {
         self.post_add(BookmarkUpdate {
             url,
@@ -212,7 +214,7 @@ impl BookmarkStore for PinboardClient {
             extended,
             tags,
             shared: self.shared,
-            toread: false,
+            toread,
             dt: "",
         })
         .await
@@ -314,6 +316,7 @@ mod net_tests {
                 "Title",
                 "",
                 &["reddit".into()],
+                false,
             )
             .await
             .unwrap();
@@ -336,6 +339,7 @@ mod net_tests {
                 "Title",
                 "",
                 &["reddit".into()],
+                false,
             )
             .await
             .unwrap_err();

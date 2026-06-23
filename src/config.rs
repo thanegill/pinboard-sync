@@ -47,6 +47,9 @@ pub struct Pinboard {
     /// Write bookmarks public (default private).
     #[serde(default)]
     pub public: bool,
+    /// Mark new bookmarks to-read/unread (default false). Per-account overridable.
+    #[serde(default)]
+    pub toread: bool,
     /// Seconds to pause between `posts/add` writes (default 3, what Pinboard asks for).
     pub rate_limit_secs: Option<u64>,
 }
@@ -62,6 +65,8 @@ pub struct RedditAccount {
     pub cookie_file: Option<String>,
     pub on_auth_failure: Option<String>,
     pub limit: Option<usize>,
+    /// Override `[pinboard].toread` for this account's new bookmarks.
+    pub toread: Option<bool>,
     // Non-secret tag/domain config (`tag_*`), each defaulting in `reddit_config`.
     pub reddit_domain: Option<String>,
     pub tag_subreddit_prefix: Option<String>,
@@ -202,6 +207,8 @@ pub struct GithubAccount {
     pub token_file: Option<String>,
     pub on_auth_failure: Option<String>,
     pub limit: Option<usize>,
+    /// Override `[pinboard].toread` for this account's new bookmarks.
+    pub toread: Option<bool>,
     pub tag_lang_prefix: Option<String>,
     /// Tags applied to every bookmark (default `["github-star"]`); a full override.
     pub tags: Option<Vec<String>>,
@@ -226,6 +233,8 @@ pub struct HackernewsAccount {
     pub name: Option<String>,
     pub username: Option<String>,
     pub limit: Option<usize>,
+    /// Override `[pinboard].toread` for this account's new bookmarks.
+    pub toread: Option<bool>,
     pub tag_comment: Option<String>,
     pub tag_author_prefix: Option<String>,
     pub tag_special_prefix: Option<String>,
@@ -424,6 +433,7 @@ mod tests {
             token,
             token_file,
             public,
+            toread,
             rate_limit_secs
         });
         let reddit = documented_fields!(RedditAccount {
@@ -433,6 +443,7 @@ mod tests {
             cookie_file,
             on_auth_failure,
             limit,
+            toread,
             reddit_domain,
             tag_subreddit_prefix,
             tag_comment,
@@ -449,6 +460,7 @@ mod tests {
             token_file,
             on_auth_failure,
             limit,
+            toread,
             tag_lang_prefix,
             tags,
         });
@@ -456,6 +468,7 @@ mod tests {
             name,
             username,
             limit,
+            toread,
             tag_comment,
             tag_author_prefix,
             tag_special_prefix,

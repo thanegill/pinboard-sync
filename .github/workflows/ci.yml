@@ -1,0 +1,38 @@
+name: CI
+
+# Runs the same gate as the local dev shell on every branch push and PR:
+# fmt + clippy + the full test suite (incl. net_tests), plus `nix flake check`
+# (the sandboxed package build and both NixOS module evaluations).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: cargo fmt --check
+        run: nix develop --command cargo fmt --check
+
+      - name: cargo clippy -D warnings
+        run: nix develop --command cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: nix develop --command cargo test
+
+      - name: nix flake check
+        run: nix flake check --print-build-logs

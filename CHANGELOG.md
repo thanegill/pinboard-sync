@@ -12,6 +12,8 @@ All notable changes to this project are documented here. The format is based on
 - `[pinboard].rate_limit_secs` to tune the pause between Pinboard writes (default 3).
 - A `toread` option to mark new bookmarks unread — `[pinboard].toread` as the default,
   overridable per account.
+- A `doctor` subcommand that checks the Pinboard token and every configured account's
+  credentials, exiting non-zero if any fail.
 
 ## [0.2.1] - 2026-06-23
 

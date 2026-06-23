@@ -42,6 +42,8 @@ enum Command {
     Sync(SyncCmd),
     /// Normalize existing bookmarks for a source.
     Cleanup(CleanupCmd),
+    /// Check the Pinboard token and every configured account's credentials.
+    Doctor,
     /// Print a shell completion script (bash, zsh, fish, …) to stdout.
     Completions { shell: Shell },
     /// Print a man page (roff) to stdout.
@@ -265,6 +267,7 @@ async fn main() -> ExitCode {
         match cli.command {
             Command::Sync(cmd) => run_sync(cmd, &load_config(cli.config.clone())?).await,
             Command::Cleanup(cmd) => run_cleanup(cmd, &load_config(cli.config.clone())?).await,
+            Command::Doctor => run_doctor(&load_config(cli.config.clone())?).await,
             Command::Completions { shell } => {
                 print_completions(shell);
                 Ok(())
@@ -680,6 +683,71 @@ async fn open_pinboard(
     let pinboard = PinboardClient::new(token, public, rate_limit)?;
     let bookmarks = pinboard.all().await.context("listing Pinboard bookmarks")?;
     Ok((pinboard, bookmarks))
+}
+
+// --- doctor ------------------------------------------------------------------
+
+/// Validate the Pinboard token and every configured account's credentials by
+/// fetching each source. Prints a ✓/✗ line per check; exits non-zero if any failed.
+async fn run_doctor(config: &Config) -> Result<()> {
+    let mut failed = 0usize;
+
+    match open_pinboard(None, false, config).await {
+        Ok((_, bms)) => println!("✓ pinboard — {} bookmark(s)", bms.len()),
+        Err(e) => {
+            println!("✗ pinboard — {e:#}");
+            failed += 1;
+        }
+    }
+
+    let ovr = SyncOverrides::default();
+    failed += check_accounts("reddit", &config.reddit, |a| {
+        build_reddit_job(Some(a), &ovr, config)
+    })
+    .await;
+    failed += check_accounts("github", &config.github, |a| {
+        build_github_job(Some(a), &ovr, config)
+    })
+    .await;
+    failed += check_accounts("hackernews", &config.hackernews, |a| {
+        build_hackernews_job(Some(a), &ovr, config)
+    })
+    .await;
+
+    if failed > 0 {
+        bail!("{failed} check(s) failed");
+    }
+    println!("All checks passed.");
+    Ok(())
+}
+
+/// Probe each configured account by fetching its source; returns the count that
+/// failed. Reuses the normal job builders, so it exercises the real auth path.
+async fn check_accounts<T: config::Named>(
+    source: &str,
+    accounts: &[T],
+    build: impl Fn(&T) -> Result<SyncJob>,
+) -> usize {
+    if accounts.is_empty() {
+        println!("- {source} — no accounts configured");
+        return 0;
+    }
+    let mut failed = 0;
+    for account in accounts {
+        let name = account.account_name().unwrap_or("(unnamed)");
+        let result = match build(account) {
+            Ok(job) => job.client.fetch().await.map_err(SourceError::into_anyhow),
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(items) => println!("✓ {source} [{name}] — {} item(s)", items.len()),
+            Err(e) => {
+                println!("✗ {source} [{name}] — {e:#}");
+                failed += 1;
+            }
+        }
+    }
+    failed
 }
 
 // --- cleanup -----------------------------------------------------------------

@@ -127,6 +127,9 @@ pinboard-sync sync reddit --dry-run
 pinboard-sync cleanup reddit          # URLs → configured domain, tags, NSFW, titles
 pinboard-sync cleanup github          # canonicalize repo URLs + refresh renamed repos
 pinboard-sync cleanup hackernews      # rewrite HN item URLs to the linked article
+
+# Validate the Pinboard token + every configured account's credentials
+pinboard-sync doctor
 ```
 
 `cleanup reddit` only contacts Reddit when marking NSFW or fixing placeholder titles

@@ -1,0 +1,125 @@
+name: Release
+
+# Cutting a release is a single action: push a semver tag from master.
+#
+#   git tag v0.3.0 && git push origin v0.3.0
+#
+# This workflow then does the bookkeeping a release needs: it stamps the tag's
+# version into Cargo.toml / Cargo.lock / flake.nix, rolls the changelog's
+# [Unreleased] section over to that version, commits the result back to master,
+# builds the binary through the flake (which also runs the test suite), and
+# publishes a GitHub release with the changelog section as its notes. You never
+# hand-edit a version number.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # Check out the branch, not the detached tag, so we can commit the bump back.
+      - name: Check out master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Compute version and date
+        id: meta
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp the version into every manifest
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          # Cargo.toml: the package version is the first `version = "..."` line.
+          sed -i -E "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
+          # Cargo.lock: the version line directly under this crate's package entry.
+          sed -i "/^name = \"pinboard-sync\"/{n;s/^version = .*/version = \"$VERSION\"/}" Cargo.lock
+          # flake.nix: the first `version = "...";` (the buildRustPackage attr).
+          sed -i -E "0,/version = \".*\";/s//version = \"$VERSION\";/" flake.nix
+
+      - name: Roll over the changelog
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          DATE: ${{ steps.meta.outputs.date }}
+        run: |
+          # Promote [Unreleased] to the new version and open a fresh, empty one.
+          sed -i "s/^## \[Unreleased\]$/## [Unreleased]\n\n## [$VERSION] - $DATE/" CHANGELOG.md
+          # Point the Unreleased compare link at the new tag, and add the release link.
+          sed -i -E "s|^\[Unreleased\]: .*|[Unreleased]: https://github.com/${GITHUB_REPOSITORY}/compare/v$VERSION...HEAD|" CHANGELOG.md
+          sed -i "/^\[Unreleased\]: /a [$VERSION]: https://github.com/${GITHUB_REPOSITORY}/releases/tag/v$VERSION" CHANGELOG.md
+
+      - name: Extract release notes for this version
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          # Everything between this version's heading and the next section: either
+          # the following `## [` heading or the link-reference block at the bottom
+          # (`[Unreleased]: ...`), whichever comes first.
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { grab = 1; next }
+            grab && (/^## \[/ || /^\[[^][]+\]: /) { exit }
+            grab { print }
+          ' CHANGELOG.md | sed -e '1{/^$/d}' -e ':a' -e '/^\n*$/{$d;N;ba}' > RELEASE_NOTES.md
+          echo "----- release notes -----"
+          cat RELEASE_NOTES.md
+
+      # Commit before building: the flake's `src = ./.` only sees git-tracked
+      # files, so the bump has to be committed for `nix build` to pick it up.
+      - name: Commit the version bump and changelog
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock flake.nix CHANGELOG.md
+          git commit -m "chore: release v$VERSION"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      # Builds the binary and runs the (sandbox-safe) test suite via doCheck.
+      - name: Build the release binary
+        run: nix build .#default --print-build-logs
+
+      - name: Stage the binary artifact
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          mkdir -p dist
+          cp result/bin/pinboard-sync "dist/pinboard-sync-v$VERSION-x86_64-linux"
+
+      # Only after a green build do we publish anything externally.
+      - name: Push the bump to master
+        run: git push origin HEAD:master
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file RELEASE_NOTES.md \
+            dist/*
+
+      # A rolling tag that always points at the most recently released commit, so
+      # `latest` is a stable ref for the newest version. Force-moved each release;
+      # it doesn't match the trigger pattern, so moving it can't re-run this workflow.
+      - name: Move the rolling `latest` tag to this release
+        run: |
+          git tag -f latest
+          git push --force origin latest

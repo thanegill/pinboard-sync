@@ -367,7 +367,16 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
         config,
     )
     .await?;
-    run_sync_jobs(jobs, &pinboard, &bookmarks, ovr.dry_run, ovr.verbose).await
+    // `--dry-run`/`--verbose` are accepted both before the source subcommand (on
+    // `SyncCmd`) and after it (per-source); honor either placement.
+    run_sync_jobs(
+        jobs,
+        &pinboard,
+        &bookmarks,
+        ovr.dry_run || cmd.dry_run,
+        ovr.verbose || cmd.verbose,
+    )
+    .await
 }
 
 /// Build one job per account: every account when `all`, else the named (or first,
@@ -909,10 +918,18 @@ fn first_nonempty(candidates: impl IntoIterator<Item = Option<String>>) -> Optio
 
 /// Read a file's trimmed contents, or `None` if missing or empty.
 fn read_file_secret(path: &str) -> Option<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    match std::fs::read_to_string(path) {
+        Ok(s) => {
+            let s = s.trim().to_string();
+            (!s.is_empty()).then_some(s)
+        }
+        // A `*_FILE` path was given but can't be read — surface it rather than
+        // silently falling through to a confusing "missing X" downstream.
+        Err(e) => {
+            eprintln!("warning: could not read secret file {path}: {e}");
+            None
+        }
+    }
 }
 
 /// The auth-failure hook: CLI flag (with its env) → per-account override → `[hooks]`.

@@ -313,6 +313,17 @@ Planned but not yet implemented:
   Pinboard **API v2** — the v1 API has no bundle support, and v2 (which does) is a
   documented 2021 draft that hasn't been deployed, so this is on hold until v2
   ships.
+- **Incremental / early-stop fetch.** Stop paginating the page-based sources (Reddit,
+  GitHub) once already-synced items are reached, to cut API calls on large accounts.
+  Deferred: it needs an existing-keys parameter on the source `fetch`, and HackerNews
+  can't fully participate (article dedup keys aren't known until after the Algolia
+  lookup). Runs are already idempotent, so this is purely an efficiency win.
+- **Prune / reconcile mode.** Optionally remove Pinboard bookmarks a source no longer
+  has (opt-in, dry-run-first) — sync is additive-only today.
+- **More sources.** Generic RSS/Atom, Mastodon bookmarks, Lobsters; and extending the
+  existing ones (GitHub gists).
+- **Machine-readable output and a post-run hook.** A `--format json` run summary, and
+  a general post-run hook (not just the auth-failure one).
 
 ## Development
 

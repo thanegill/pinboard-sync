@@ -39,7 +39,7 @@ nix run . -- --help
 ```
 
 Or build with Cargo (needs OpenSSL + pkg-config on Linux — the HTTP client uses
-native-tls; see [Why native-tls](#why-native-tls)):
+native-tls, explained on the `reqwest` dependency in `Cargo.toml`):
 
 ```sh
 cargo build --release
@@ -106,14 +106,18 @@ Two variables are **direct values, not `_FILE`-capable**:
 
 ## Usage
 
+**Every command needs your Pinboard token** (the destination), via `--pinboard-token`,
+`$PINBOARD_TOKEN`, or `[pinboard]` in the config — the examples below assume it's in
+the environment. Each source then adds its own auth on top.
+
 ```sh
-# Reddit (flags or env: REDDIT_USERNAME, REDDIT_COOKIE, PINBOARD_TOKEN)
+# Reddit (PINBOARD_TOKEN + REDDIT_USERNAME, REDDIT_COOKIE)
 pinboard-sync sync reddit --reddit-username you --reddit-cookie 'reddit_session=…'
 
-# GitHub (GITHUB_TOKEN)
+# GitHub (PINBOARD_TOKEN + GITHUB_TOKEN)
 pinboard-sync sync github
 
-# HackerNews (HN_USERNAME)
+# HackerNews (PINBOARD_TOKEN + HN_USERNAME; favorites are public)
 pinboard-sync sync hackernews --username you
 
 # Preview without writing
@@ -126,9 +130,45 @@ pinboard-sync cleanup hackernews      # rewrite HN item URLs to the linked artic
 ```
 
 `cleanup reddit` only contacts Reddit when marking NSFW or fixing placeholder titles
-(`--no-nsfw --no-titles` skip both, and the cookie). Run
-`pinboard-sync completions <bash|zsh|fish>` to print a completion script, and
-`pinboard-sync config example` to print a fully-commented config template.
+(`--no-nsfw --no-titles` skip both, and the cookie). Two utility subcommands —
+`completions` and `config example` — are covered in
+[Shell completions and example config](#shell-completions-and-example-config).
+
+## What `cleanup` does
+
+Where `sync` *adds* new bookmarks, `cleanup` *repairs the ones already on Pinboard* —
+normalizing URLs, tags, and titles that drift over time or were saved in a messier
+form. It only touches bookmarks it recognizes as belonging to that source, is
+idempotent (safe to re-run), and supports `--dry-run` to preview every change first.
+`cleanup --all` runs all three once over the shared bookmark set.
+
+- **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your
+  configured `reddit_domain` (default `old.reddit.com`), unwrapping `over18`
+  interstitial redirects to the real post. It normalizes tags (ensures the base
+  `reddit` tag and a correctly-cased `subreddit:<sub>` tag, dropping bare/legacy
+  duplicates), and — using Reddit's `/api/info` — marks `over_18` posts `nsfw` and
+  replaces generic placeholder titles with the real ones. The NSFW and title passes
+  are the only ones that contact Reddit, so they need the `reddit_session` cookie;
+  `--no-nsfw` / `--no-titles` skip them (and the cookie requirement).
+
+- **GitHub** (`cleanup github`) — canonicalizes repo bookmark URLs to
+  `https://github.com/<owner>/<repo>` (forcing https, lowercasing the host, dropping a
+  `.git` suffix, trailing slash, and any query/fragment); deeper links like
+  `/tree/...` or `/issues` are left alone. It then looks each repo up via the GitHub
+  API, which follows **renames and transfers** — rewriting a moved repo's URL to its
+  current location, refreshing the title to the current `owner/repo`, and refreshing
+  the `lang:` tag. A repo that no longer exists (404) keeps just the URL
+  canonicalization. Needs the GitHub token; existing notes and the bookmark's creation
+  time are preserved.
+
+- **HackerNews** (`cleanup hackernews`) — rewrites favorited *story* bookmarks whose
+  URL is the HN item page (`news.ycombinator.com/item?id=…`) to the linked **article**,
+  re-deriving the title, the `HN Link:` notes, and tags; favorited *comments* keep
+  their HN permalink. Favorites are public, so no auth beyond the Pinboard token is
+  needed. Optionally, `--link-discussions` (off by default) goes the other way: for
+  article bookmarks carrying the marker tag (`find-hn` by default, override with
+  `--link-tag`), it looks each up on HN by URL and adds the discussion link to the
+  notes.
 
 ## Config file and multiple accounts
 
@@ -171,6 +211,57 @@ HackerNews — so an account with `username = "alice"` and no `name` is reachabl
 only. With no selector, a command uses the first account of that source. All tag
 settings (prefixes, the base `tags` list, the Reddit media-type allowlist, the HN
 special-type prefix) live in the config only — there are no tag CLI flags.
+
+## Shell completions and example config
+
+Two utility subcommands print to **stdout** so you can pipe or redirect them
+wherever you like. (The Nix package runs both at build time and installs the results
+for you — see below — so these are mainly for non-Nix installs.)
+
+### `config example`
+
+`pinboard-sync config example` prints a fully-commented config template: every key
+with its built-in default and a short note on what it does. It's the canonical
+reference for the config schema — start here rather than copying snippets. Pipe it to
+a file and edit:
+
+```sh
+pinboard-sync config example > pinboard-sync.toml
+$EDITOR pinboard-sync.toml
+pinboard-sync --config pinboard-sync.toml sync --all --dry-run
+```
+
+The template is embedded in the binary, so it always matches that build's schema.
+
+### `completions`
+
+`pinboard-sync completions <shell>` prints a completion script for `<shell>` —
+`bash`, `zsh`, and `fish` (plus `elvish` and `powershell`). Install it where your
+shell looks for completions, for example:
+
+```sh
+# bash (current user)
+pinboard-sync completions bash > ~/.local/share/bash-completion/completions/pinboard-sync
+
+# zsh — anywhere on your $fpath, e.g.
+pinboard-sync completions zsh > ~/.zfunc/_pinboard-sync
+
+# fish
+pinboard-sync completions fish > ~/.config/fish/completions/pinboard-sync.fish
+```
+
+Completions cover the subcommands, flags, and `<shell>`/source values; re-run after
+upgrading so they track the installed version. Reload your shell (or `compinit` for
+zsh) to pick them up.
+
+### Installed by the Nix package
+
+`nix build` already generates and installs both, so you don't run the commands by
+hand:
+
+- bash/zsh/fish completions under the usual
+  `share/{bash-completion,zsh/site-functions,fish/vendor_completions.d}` paths, and
+- the template at `share/pinboard-sync/config.example.toml`.
 
 ## Running as a NixOS service
 
@@ -215,13 +306,6 @@ Planned but not yet implemented:
   Pinboard **API v2** — the v1 API has no bundle support, and v2 (which does) is a
   documented 2021 draft that hasn't been deployed, so this is on hold until v2
   ships.
-
-## Why native-tls
-
-Reddit's anti-bot edge rejects rustls's TLS ClientHello fingerprint but accepts
-native-tls's, so the HTTP client is built with native-tls. On Linux that pulls in
-OpenSSL (hence pkg-config + openssl at build time); on macOS it uses the Security
-framework.
 
 ## Development
 

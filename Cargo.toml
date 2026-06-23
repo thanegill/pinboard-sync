@@ -17,8 +17,10 @@ clap_complete = "4"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # join_all: fetch sources concurrently on one task (no Send bound, no spawn).
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
-# native-tls (not rustls): Reddit's anti-bot edge 403s rustls's TLS ClientHello
-# fingerprint on the saved listing, but accepts native-tls's. See CLAUDE.md.
+# Why native-tls, not rustls: Reddit's anti-bot edge rejects rustls's TLS ClientHello
+# fingerprint (403 on the saved listing) but accepts native-tls's, so the HTTP client
+# is built with native-tls. On Linux that pulls in OpenSSL (hence pkg-config + openssl
+# at build time); on macOS it uses the Security framework. See CLAUDE.md.
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

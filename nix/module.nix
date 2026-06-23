@@ -165,5 +165,14 @@ in
       lib.mkIf cfg.cleanup.enable (
         mkService "Normalize existing Pinboard bookmarks" cfg.cleanup.schedule [ "cleanup" "--all" ]
       );
+
+    # Fire a missed run on next boot (the machine may be asleep/off at the scheduled
+    # instant — especially for the weekly cleanup).
+    systemd.timers.pinboard-sync = lib.mkIf cfg.sync.enable {
+      timerConfig.Persistent = true;
+    };
+    systemd.timers.pinboard-sync-cleanup = lib.mkIf cfg.cleanup.enable {
+      timerConfig.Persistent = true;
+    };
   };
 }

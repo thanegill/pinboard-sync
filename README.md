@@ -161,6 +161,15 @@ hardened `DynamicUser`:
 }
 ```
 
+## Roadmap
+
+Planned but not yet implemented:
+
+- **Tag bundles.** Setting and updating Pinboard tag bundles. This depends on the
+  Pinboard **API v2** — the v1 API has no bundle support, and v2 (which does) is a
+  documented 2021 draft that hasn't been deployed, so this is on hold until v2
+  ships.
+
 ## Why native-tls
 
 Reddit's anti-bot edge rejects rustls's TLS ClientHello fingerprint but accepts

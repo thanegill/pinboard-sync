@@ -32,6 +32,13 @@ All notable changes to this project are documented here. The format is based on
 - The `PINBOARD_SYNC_CONFIG_FILE` indirection. The config is resolved from `--config`
   or `PINBOARD_SYNC_CONFIG` as a direct file path only.
 
+### Fixed
+
+- `--dry-run` / `--verbose` placed before the source subcommand (e.g.
+  `sync --dry-run reddit`) are now honored instead of silently performing a real run.
+- The NixOS timers now set `Persistent`, so a sync or cleanup run missed while the
+  machine was off fires on next boot.
+
 ## [0.2.0] - 2026-06-23
 
 A multi-source Pinboard sync with per-source cleanup.

@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-23
+
 ### Added
 
 - Named NixOS module output `nixosModules.pinboard-sync`; `nixosModules.default` now
@@ -102,6 +104,7 @@ generalized the tool to multiple sources.
 - **NixOS module** with an `environmentFile` for secrets, and a secret-resolution
   ladder (CLI flag → `$VAR` → `$VAR_FILE` → `~/.pinboardrc`).
 
-[Unreleased]: https://github.com/thanegill/pinboard-sync/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/thanegill/pinboard-sync/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.2.1
 [0.2.0]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.2.0
 [0.1.0]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.1.0

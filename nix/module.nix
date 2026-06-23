@@ -20,41 +20,37 @@ let
   );
   configFile = tomlFormat.generate "pinboard-sync.toml" configSettings;
 
-  # The generated config path and the optional hook are the only things put in the
-  # unit environment; all credentials (incl. usernames) come from `environmentFile`
-  # (a sops-nix rendered template, read by systemd as root), never the nix store.
-  environment =
-    { PINBOARD_SYNC_CONFIG = toString configFile; }
-    // lib.optionalAttrs (cfg.onAuthFailure != null) {
-      PINBOARD_SYNC_ON_AUTH_FAILURE = cfg.onAuthFailure;
-    };
-
-  hardening = {
-    DynamicUser = true;
-    NoNewPrivileges = true;
-    ProtectSystem = "strict";
-    ProtectHome = true;
-    PrivateTmp = true;
-    PrivateDevices = true;
-    ProtectKernelTunables = true;
-    ProtectKernelModules = true;
-    ProtectControlGroups = true;
-    RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
-    RestrictNamespaces = true;
-    LockPersonality = true;
-  };
-
-  # Build a oneshot service + timer running `pinboard-sync <args>` on `schedule`.
+  # Build a oneshot service + timer running `pinboard-sync <args>` on `schedule`. The
+  # generated config path and the optional hook are the only things in the unit
+  # environment; all credentials (incl. usernames) come from `environmentFile` (a
+  # sops-nix rendered template, read by systemd as root), never the nix store. The
+  # service is hardened under a transient `DynamicUser`.
   mkService = description: schedule: args: {
     inherit description;
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
     startAt = schedule;
-    inherit environment;
+    environment =
+      { PINBOARD_SYNC_CONFIG = toString configFile; }
+      // lib.optionalAttrs (cfg.onAuthFailure != null) {
+        PINBOARD_SYNC_ON_AUTH_FAILURE = cfg.onAuthFailure;
+      };
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${lib.getExe cfg.package} ${lib.escapeShellArgs args}";
-    } // hardening // lib.optionalAttrs (cfg.environmentFile != null) {
+      DynamicUser = true;
+      NoNewPrivileges = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      PrivateDevices = true;
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectControlGroups = true;
+      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
+      RestrictNamespaces = true;
+      LockPersonality = true;
+    } // lib.optionalAttrs (cfg.environmentFile != null) {
       EnvironmentFile = cfg.environmentFile;
     };
   };

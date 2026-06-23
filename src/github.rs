@@ -194,7 +194,8 @@ impl Source for GitHubClient {
 
     fn existing_key(&self, url: &str) -> Option<String> {
         let key = url_key(url)?;
-        (key == "github.com" || key.starts_with("github.com/")).then_some(key)
+        let (host, _) = split_host_path(url);
+        host_matches(&host, "github.com").then_some(key)
     }
 }
 
@@ -481,6 +482,11 @@ mod tests {
             Some("github.com/o/r")
         );
         assert!(c.existing_key("https://example.com/o/r").is_none());
+        // Subdomains of github.com are recognized too (consistent with is_github_url).
+        assert_eq!(
+            c.existing_key("https://www.github.com/o/r").as_deref(),
+            Some("www.github.com/o/r")
+        );
     }
 }
 

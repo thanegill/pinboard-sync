@@ -573,8 +573,8 @@ fn parse_favorite_ids(html: &str) -> (Vec<String>, Option<String>) {
     (ids, next)
 }
 
-/// Extract the item id from an HN `item?id=<n>` URL (any reddit-style host check),
-/// or `None` for non-HN-item URLs.
+/// Extract the item id from an HN `item?id=<n>` URL (host must be exactly
+/// `news.ycombinator.com`), or `None` for non-HN-item URLs.
 fn hn_item_id(url: &str) -> Option<String> {
     let (host, path) = split_host_path(url);
     let rest = path.strip_prefix('/').unwrap_or(path);

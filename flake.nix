@@ -16,7 +16,7 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "pinboard-sync";
-          version = "0.3.2";
+          version = "0.3.3";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           # reqwest uses native-tls (see Cargo.toml): on Linux that's OpenSSL via

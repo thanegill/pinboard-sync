@@ -669,11 +669,23 @@ async fn run_sync_jobs(
         merged.len(),
         if dry_run { " (dry run)" } else { "" }
     );
-    let written = sync::write_drafts(pinboard, &merged, dry_run, verbose).await?;
+    let outcome = sync::write_drafts(pinboard, &merged, dry_run, verbose).await;
     if !dry_run {
-        println!("Done. Wrote {written} bookmark(s) to Pinboard.");
+        println!("Done. Wrote {} bookmark(s) to Pinboard.", outcome.written);
+        if outcome.failed > 0 {
+            eprintln!(
+                "{} bookmark(s) failed to write (logged above).",
+                outcome.failed
+            );
+        }
     }
-    run.finish()
+    // Non-zero exit if any source failed to fetch or any bookmark failed to write,
+    // but only after attempting every source and every bookmark we could.
+    run.finish()?;
+    if outcome.failed > 0 {
+        bail!("{} bookmark(s) failed to write", outcome.failed);
+    }
+    Ok(())
 }
 
 /// Resolve the Pinboard token and fetch `posts/all` once. Returns the client and

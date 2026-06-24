@@ -3,8 +3,9 @@
 //! any network. Compiled only under `#[cfg(test)]`.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde_json::Value;
 
 use crate::model::{reddit_key, ListingEntry, RedditConfig};
@@ -73,6 +74,8 @@ pub struct FakePinboard {
     pub added: RefCell<Vec<AddCall>>,
     pub updated: RefCell<Vec<UpdateCall>>,
     pub deleted: RefCell<Vec<String>>,
+    /// URLs whose `add` should fail, to exercise log-and-skip behavior.
+    pub fail_add_urls: HashSet<String>,
 }
 
 impl BookmarkStore for FakePinboard {
@@ -89,6 +92,9 @@ impl BookmarkStore for FakePinboard {
         toread: bool,
         shared: bool,
     ) -> Result<()> {
+        if self.fail_add_urls.contains(url) {
+            return Err(anyhow!("simulated add failure for {url}"));
+        }
         self.added.borrow_mut().push(AddCall {
             url: url.to_string(),
             tags: tags.to_vec(),

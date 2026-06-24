@@ -7,8 +7,6 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
-
 use crate::pinboard::{Bookmark, BookmarkStore};
 use crate::source::{BookmarkDraft, Source};
 
@@ -29,15 +27,25 @@ pub fn filter_new<S: Source>(
         .collect()
 }
 
+/// Tally of a write pass: how many drafts were written vs. failed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct WriteOutcome {
+    pub written: usize,
+    pub failed: usize,
+}
+
 /// Write `drafts` to Pinboard sequentially, pausing `pinboard.rate_limit_secs()`
-/// between `posts/add` calls. Returns the number written (0 in `dry_run`).
+/// between `posts/add` calls. A single bookmark that fails to write (e.g. a
+/// rejected URL) is logged and skipped so the rest still go through; the failure is
+/// reflected in the returned [`WriteOutcome`] for a non-zero exit. Writes nothing in
+/// `dry_run`.
 pub async fn write_drafts<P: BookmarkStore>(
     pinboard: &P,
     drafts: &[BookmarkDraft],
     dry_run: bool,
     verbose: bool,
-) -> Result<usize> {
-    let mut written = 0usize;
+) -> WriteOutcome {
+    let mut outcome = WriteOutcome::default();
     let mut posted = false;
     for draft in drafts {
         if dry_run {
@@ -50,11 +58,13 @@ pub async fn write_drafts<P: BookmarkStore>(
             continue;
         }
 
-        // Pinboard asks for ~3s between posts/add calls (configurable).
+        // Pinboard asks for ~3s between posts/add calls (configurable). Pace after the
+        // first attempt regardless of its outcome — a failed attempt still hit the API.
         if posted {
             tokio::time::sleep(Duration::from_secs(pinboard.rate_limit_secs())).await;
         }
-        pinboard
+        posted = true;
+        match pinboard
             .add(
                 &draft.url,
                 &draft.description,
@@ -64,14 +74,21 @@ pub async fn write_drafts<P: BookmarkStore>(
                 draft.shared,
             )
             .await
-            .with_context(|| format!("adding bookmark {}", draft.url))?;
-        posted = true;
-        written += 1;
-        if verbose {
-            eprintln!("added {}  [{}]", draft.url, draft.tags.join(" "));
+        {
+            Ok(()) => {
+                outcome.written += 1;
+                if verbose {
+                    eprintln!("added {}  [{}]", draft.url, draft.tags.join(" "));
+                }
+            }
+            // Log and skip — one bad bookmark shouldn't abort the rest of the run.
+            Err(e) => {
+                outcome.failed += 1;
+                eprintln!("error: adding bookmark {}: {e:#}", draft.url);
+            }
         }
     }
-    Ok(written)
+    outcome
 }
 
 #[cfg(test)]
@@ -120,8 +137,9 @@ mod tests {
         assert_eq!(new[0].tags, vec!["reddit", "subreddit:rust"]);
 
         let pinboard = FakePinboard::default();
-        let written = write_drafts(&pinboard, &new, false, false).await.unwrap();
-        assert_eq!(written, 1);
+        let outcome = write_drafts(&pinboard, &new, false, false).await;
+        assert_eq!(outcome.written, 1);
+        assert_eq!(outcome.failed, 0);
         // The write path never lists posts/all itself.
         assert_eq!(*pinboard.all_calls.borrow(), 0);
         assert_eq!(pinboard.added.borrow().len(), 1);
@@ -135,8 +153,8 @@ mod tests {
         };
         let new = filter_new(&reddit, reddit.fetch().await.unwrap(), &[]);
         let pinboard = FakePinboard::default();
-        let written = write_drafts(&pinboard, &new, true, false).await.unwrap();
-        assert_eq!(written, 0);
+        let outcome = write_drafts(&pinboard, &new, true, false).await;
+        assert_eq!(outcome.written, 0);
         assert!(pinboard.added.borrow().is_empty());
     }
 
@@ -156,9 +174,7 @@ mod tests {
             draft("https://b.test/", false, false),
         ];
         let pinboard = FakePinboard::default();
-        write_drafts(&pinboard, &drafts, false, false)
-            .await
-            .unwrap();
+        write_drafts(&pinboard, &drafts, false, false).await;
         let added = pinboard.added.borrow();
         assert_eq!(added.len(), 2);
         assert!(added[0].toread && added[0].shared);
@@ -179,8 +195,36 @@ mod tests {
         assert_eq!(new.len(), 3);
         new.truncate(2);
         let pinboard = FakePinboard::default();
-        let written = write_drafts(&pinboard, &new, false, false).await.unwrap();
-        assert_eq!(written, 2);
+        let outcome = write_drafts(&pinboard, &new, false, false).await;
+        assert_eq!(outcome.written, 2);
         assert_eq!(pinboard.added.borrow().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn write_drafts_logs_and_skips_a_failing_bookmark() {
+        let draft = |url: &str| BookmarkDraft {
+            url: url.into(),
+            description: "T".into(),
+            extended: String::new(),
+            tags: vec![],
+            dedup_key: url.into(),
+            toread: false,
+            shared: false,
+        };
+        let drafts = vec![
+            draft("https://a.test/"),
+            draft("https://bad.test/"),
+            draft("https://c.test/"),
+        ];
+        let mut pinboard = FakePinboard::default();
+        pinboard.fail_add_urls.insert("https://bad.test/".into());
+
+        let outcome = write_drafts(&pinboard, &drafts, false, false).await;
+        // The bad one is skipped; the ones on either side still go through.
+        assert_eq!(outcome.written, 2);
+        assert_eq!(outcome.failed, 1);
+        let added = pinboard.added.borrow();
+        let urls: Vec<&str> = added.iter().map(|a| a.url.as_str()).collect();
+        assert_eq!(urls, vec!["https://a.test/", "https://c.test/"]);
     }
 }

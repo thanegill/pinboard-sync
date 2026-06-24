@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-24
+
 ### Fixed
 
 - `posts/add` no longer fails with `414 URI Too Long` on long Reddit self-posts: since
@@ -126,7 +128,8 @@ generalized the tool to multiple sources.
 - **NixOS module** with an `environmentFile` for secrets, and a secret-resolution
   ladder (CLI flag → `$VAR` → `$VAR_FILE` → `~/.pinboardrc`).
 
-[Unreleased]: https://github.com/thanegill/pinboard-sync/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/thanegill/pinboard-sync/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.3.1
 [0.3.0]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.3.0
 [0.2.1]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.2.1
 [0.2.0]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.2.0

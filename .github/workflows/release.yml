@@ -123,3 +123,16 @@ jobs:
         run: |
           git tag -f latest
           git push --force origin latest
+
+      # Tell nixos-config to bump its pinboard-sync flake input, which tracks the
+      # `latest` tag. Done here (not a standalone `push: tags: [latest]` workflow)
+      # because the force-move above is a GITHUB_TOKEN push, which can't trigger
+      # another workflow — and this runs after the move, so the dispatched
+      # `nix flake update pinboard-sync` sees the new `latest`.
+      - name: Notify nixos-config to bump the pinboard-sync input
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.NIXOS_CONFIG_DISPATCH_TOKEN }}
+          repository: thanegill/nixos-config
+          event-type: update-input
+          client-payload: '{"input": "pinboard-sync"}'

@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- Release automation now points the rolling `latest` tag and the matching `vX.Y.Z`
+  tag at the same stamped release commit, so consumers tracking `latest` resolve to a
+  tagged version.
+
 ## [0.3.1] - 2026-06-24
 
 ### Fixed

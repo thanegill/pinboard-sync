@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- Diagnostic logging via `log`/`env_logger`: the version on startup, configured
+  account counts, the existing-bookmark count, per-source fetched/new counts, and a
+  per-run summary. Logs go to stderr (stdout stays clean for generated output);
+  `--verbose`/`-v` is now repeatable (`-v` debug, `-vv` trace, `-vvv` includes
+  dependency logs) and `RUST_LOG` overrides the level filter.
+
 ### Fixed
 
 - `414 URI Too Long` could still occur on long Reddit self-posts: the previous

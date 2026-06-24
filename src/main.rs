@@ -18,6 +18,7 @@ use std::process::ExitCode;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
+use log::{debug, error, info, warn};
 
 use config::{Config, GithubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
@@ -32,6 +33,10 @@ struct Cli {
     /// Path to the TOML config file (env PINBOARD_SYNC_CONFIG).
     #[arg(long, global = true)]
     config: Option<String>,
+    /// Increase log verbosity: `-v` for debug, `-vv` for trace, `-vvv` to also include
+    /// dependency logs. Overridden by `RUST_LOG`.
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
     #[command(subcommand)]
     command: Command,
 }
@@ -69,8 +74,6 @@ struct SyncCmd {
     /// Show what would be written without touching Pinboard (with --all).
     #[arg(long)]
     dry_run: bool,
-    #[arg(short, long)]
-    verbose: bool,
     #[command(subcommand)]
     source: Option<SyncSource>,
 }
@@ -113,8 +116,6 @@ struct RedditSyncArgs {
     /// Fetch and print what would be posted, without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
-    #[arg(short, long)]
-    verbose: bool,
 }
 
 #[derive(Args, Clone)]
@@ -142,8 +143,6 @@ struct GithubSyncArgs {
     /// Fetch and print what would be posted, without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
-    #[arg(short, long)]
-    verbose: bool,
 }
 
 #[derive(Args, Clone)]
@@ -168,8 +167,6 @@ struct HackernewsSyncArgs {
     /// Fetch and print what would be posted, without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
-    #[arg(short, long)]
-    verbose: bool,
 }
 
 #[derive(Args)]
@@ -180,8 +177,6 @@ struct CleanupCmd {
     /// Show what would change without writing to Pinboard (with --all).
     #[arg(long)]
     dry_run: bool,
-    #[arg(short, long)]
-    verbose: bool,
     #[command(subcommand)]
     source: Option<CleanupSource>,
 }
@@ -209,8 +204,6 @@ struct GithubCleanupArgs {
     /// Show what would change without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
-    #[arg(short, long)]
-    verbose: bool,
 }
 
 #[derive(Args, Clone)]
@@ -230,8 +223,6 @@ struct HackernewsCleanupArgs {
     /// Show what would change without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
-    #[arg(short, long)]
-    verbose: bool,
 }
 
 #[derive(Args, Clone)]
@@ -254,20 +245,28 @@ struct RedditCleanupArgs {
     /// Show what would change without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
-    #[arg(short, long)]
-    verbose: bool,
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let _ = dotenvy::dotenv();
     let cli = Cli::parse();
+    init_logging(cli.verbose);
 
     let result = async {
         match cli.command {
-            Command::Sync(cmd) => run_sync(cmd, &load_config(cli.config.clone())?).await,
-            Command::Cleanup(cmd) => run_cleanup(cmd, &load_config(cli.config.clone())?).await,
-            Command::Doctor => run_doctor(&load_config(cli.config.clone())?).await,
+            Command::Sync(cmd) => {
+                log_start("sync");
+                run_sync(cmd, &load_config(cli.config.clone())?).await
+            }
+            Command::Cleanup(cmd) => {
+                log_start("cleanup");
+                run_cleanup(cmd, &load_config(cli.config.clone())?).await
+            }
+            Command::Doctor => {
+                log_start("doctor");
+                run_doctor(&load_config(cli.config.clone())?).await
+            }
             Command::Completions { shell } => {
                 print_completions(shell);
                 Ok(())
@@ -284,10 +283,35 @@ async fn main() -> ExitCode {
     .await;
 
     if let Err(e) = result {
-        eprintln!("error: {e:#}");
+        error!("{e:#}");
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+/// Initialize logging, written to stderr with a short `LEVEL message` format so stdout
+/// stays clean for generated output (dry-run listings, completions, man, config).
+/// Verbosity escalates with repeated `-v`: info → debug (`-v`) → trace (`-vv`) → trace
+/// for every crate, including dependencies (`-vvv`). `RUST_LOG` overrides the filter.
+fn init_logging(verbose: u8) {
+    use std::io::Write;
+    let default = match verbose {
+        0 => concat!(env!("CARGO_CRATE_NAME"), "=info"),
+        1 => concat!(env!("CARGO_CRATE_NAME"), "=debug"),
+        2 => concat!(env!("CARGO_CRATE_NAME"), "=trace"),
+        _ => "trace",
+    };
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default))
+        .format(|buf, record| writeln!(buf, "{:5} {}", record.level(), record.args()))
+        .init();
+}
+
+/// Log the startup banner (version + subcommand) for an operational run.
+fn log_start(command: &str) {
+    info!(
+        "pinboard-sync {} starting ({command})",
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 /// Write a shell completion script for `shell` to stdout.
@@ -322,9 +346,19 @@ fn load_config(flag: Option<String>) -> Result<Config> {
         Some(path) => {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading config file {path}"))?;
-            Config::parse(&text)
+            let config = Config::parse(&text)?;
+            info!(
+                "loaded config {path}: {} reddit, {} github, {} hackernews account(s)",
+                config.reddit.len(),
+                config.github.len(),
+                config.hackernews.len()
+            );
+            Ok(config)
         }
-        None => Ok(Config::default()),
+        None => {
+            debug!("no --config / PINBOARD_SYNC_CONFIG; using built-in defaults");
+            Ok(Config::default())
+        }
     }
 }
 
@@ -339,7 +373,6 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
             }
             let ovr = SyncOverrides {
                 dry_run: cmd.dry_run,
-                verbose: cmd.verbose,
                 ..SyncOverrides::default()
             };
             let mut jobs = Vec::new();
@@ -382,16 +415,9 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     };
 
     let (pinboard, bookmarks) = open_pinboard(ovr.pinboard_token.clone(), config).await?;
-    // `--dry-run`/`--verbose` are accepted both before the source subcommand (on
-    // `SyncCmd`) and after it (per-source); honor either placement.
-    run_sync_jobs(
-        jobs,
-        &pinboard,
-        &bookmarks,
-        ovr.dry_run || cmd.dry_run,
-        ovr.verbose || cmd.verbose,
-    )
-    .await
+    // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
+    // after it (per-source); honor either placement. (`--verbose` is global.)
+    run_sync_jobs(jobs, &pinboard, &bookmarks, ovr.dry_run || cmd.dry_run).await
 }
 
 /// Build one job per account: every account when `all`, else the named (or first,
@@ -424,7 +450,6 @@ struct SyncOverrides {
     limit: usize,
     public: bool,
     dry_run: bool,
-    verbose: bool,
 }
 
 impl RedditSyncArgs {
@@ -438,7 +463,6 @@ impl RedditSyncArgs {
             limit: self.limit,
             public: self.public,
             dry_run: self.dry_run,
-            verbose: self.verbose,
             ..SyncOverrides::default()
         }
     }
@@ -454,7 +478,6 @@ impl GithubSyncArgs {
             limit: self.limit,
             public: self.public,
             dry_run: self.dry_run,
-            verbose: self.verbose,
             ..SyncOverrides::default()
         }
     }
@@ -469,7 +492,6 @@ impl HackernewsSyncArgs {
             limit: self.limit,
             public: self.public,
             dry_run: self.dry_run,
-            verbose: self.verbose,
             ..SyncOverrides::default()
         }
     }
@@ -479,12 +501,23 @@ impl HackernewsSyncArgs {
 /// per-run write cap.
 struct SyncJob {
     client: SourceClient,
+    /// Human label for logs, e.g. `reddit[alice]`.
+    label: String,
     hook: Option<String>,
     limit: usize,
     /// Resolved to-read flag for this account's new bookmarks.
     toread: bool,
     /// Resolved public/shared flag for this account's new bookmarks.
     shared: bool,
+}
+
+/// A log/display label for a job: `source[account]`, or `source[default]` when no
+/// named account (an implicit CLI/env invocation).
+fn job_label<T: config::Named>(source: &str, account: Option<&T>) -> String {
+    format!(
+        "{source}[{}]",
+        account.and_then(|a| a.account_name()).unwrap_or("default")
+    )
 }
 
 /// This account's to-read flag: its override, else the `[pinboard]` default.
@@ -561,6 +594,7 @@ fn build_reddit_job(
     );
     Ok(SyncJob {
         client: SourceClient::Reddit(RedditClient::for_user(username, cookie, reddit_config)?),
+        label: job_label("reddit", account),
         hook,
         limit: job_limit(ovr, account.and_then(|a| a.limit)),
         toread: job_toread(account.and_then(|a| a.toread), config),
@@ -590,6 +624,7 @@ fn build_github_job(
     );
     Ok(SyncJob {
         client: SourceClient::Github(GitHubClient::new(token, github_config)?),
+        label: job_label("github", account),
         hook,
         limit: job_limit(ovr, account.and_then(|a| a.limit)),
         toread: job_toread(account.and_then(|a| a.toread), config),
@@ -617,6 +652,7 @@ fn build_hackernews_job(
     Ok(SyncJob {
         // HackerNews favorites are public, so there is no auth-failure hook.
         client: SourceClient::Hackernews(HnClient::new(username, hn_config)?),
+        label: job_label("hackernews", account),
         hook: None,
         limit: job_limit(ovr, account.and_then(|a| a.limit)),
         toread: job_toread(account.and_then(|a| a.toread), config),
@@ -631,18 +667,34 @@ async fn run_sync_jobs(
     pinboard: &PinboardClient,
     bookmarks: &[Bookmark],
     dry_run: bool,
-    verbose: bool,
 ) -> Result<()> {
+    info!(
+        "syncing {} account(s) against {} existing bookmark(s)",
+        jobs.len(),
+        bookmarks.len()
+    );
     let fetched = futures::future::join_all(jobs.iter().map(|job| async move {
         let drafts = job.client.fetch().await?;
+        let fetched = drafts.len();
         let mut new = sync::filter_new(&job.client, drafts, bookmarks);
         for d in &mut new {
             d.toread = job.toread;
             d.shared = job.shared;
         }
-        if job.limit > 0 {
+        if job.limit > 0 && new.len() > job.limit {
+            debug!(
+                "{}: capping {} new at limit {}",
+                job.label,
+                new.len(),
+                job.limit
+            );
             new.truncate(job.limit);
         }
+        info!(
+            "{}: fetched {fetched}, {} new after dedup",
+            job.label,
+            new.len()
+        );
         Ok::<_, SourceError>(new)
     }))
     .await;
@@ -660,24 +712,21 @@ async fn run_sync_jobs(
                 }
             }
             // Surface the failure (firing the hook on ReauthRequired) but keep going.
-            Err(e) => run.record(Err(handle_source_err(e, job.hook.as_deref()))),
+            Err(e) => {
+                warn!("{}: fetch failed", job.label);
+                run.record(Err(handle_source_err(e, job.hook.as_deref())));
+            }
         }
     }
 
-    println!(
-        "{} new bookmark(s) to write{}.",
+    info!(
+        "{} new bookmark(s) to write{}",
         merged.len(),
         if dry_run { " (dry run)" } else { "" }
     );
-    let outcome = sync::write_drafts(pinboard, &merged, dry_run, verbose).await;
+    let outcome = sync::write_drafts(pinboard, &merged, dry_run).await;
     if !dry_run {
-        println!("Done. Wrote {} bookmark(s) to Pinboard.", outcome.written);
-        if outcome.failed > 0 {
-            eprintln!(
-                "{} bookmark(s) failed to write (logged above).",
-                outcome.failed
-            );
-        }
+        info!("done: wrote {}, failed {}", outcome.written, outcome.failed);
     }
     // Non-zero exit if any source failed to fetch or any bookmark failed to write,
     // but only after attempting every source and every bookmark we could.
@@ -699,7 +748,9 @@ async fn open_pinboard(
         .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or [pinboard] in the config)")?;
     let rate_limit = config.pinboard.rate_limit_secs.unwrap_or(RATE_LIMIT_SECS);
     let pinboard = PinboardClient::new(token, rate_limit)?;
+    debug!("fetching existing bookmarks from Pinboard (posts/all)");
     let bookmarks = pinboard.all().await.context("listing Pinboard bookmarks")?;
+    info!("pinboard: {} existing bookmark(s)", bookmarks.len());
     Ok((pinboard, bookmarks))
 }
 
@@ -785,7 +836,6 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             if let Some(acct) = config.github.first() {
                 let opts = github::GhCleanupOpts {
                     dry_run: cmd.dry_run,
-                    verbose: cmd.verbose,
                 };
                 run.record(
                     cleanup_github_for(&pinboard, &bookmarks, Some(acct), None, &opts).await,
@@ -799,7 +849,6 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                     no_nsfw: false,
                     no_titles: false,
                     dry_run: cmd.dry_run,
-                    verbose: cmd.verbose,
                 };
                 run.record(cleanup_one_reddit(Some(acct), &args, &pinboard, &bookmarks).await);
             }
@@ -808,7 +857,6 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                     cleanup_one_hackernews(
                         Some(acct),
                         cmd.dry_run,
-                        cmd.verbose,
                         false, // linking is opt-in via `cleanup hackernews --link-discussions`
                         None,
                         &pinboard,
@@ -833,7 +881,6 @@ async fn run_cleanup_github(args: GithubCleanupArgs, config: &Config) -> Result<
     let account = config::select_account(&config.github, args.account.as_deref())?;
     let opts = github::GhCleanupOpts {
         dry_run: args.dry_run,
-        verbose: args.verbose,
     };
     cleanup_github_for(&pinboard, &bookmarks, account, args.github_token, &opts).await
 }
@@ -880,7 +927,6 @@ async fn cleanup_one_reddit(
         .unwrap_or_default();
     let opts = cleanup::CleanupOpts {
         dry_run: args.dry_run,
-        verbose: args.verbose,
         mark_nsfw: !args.no_nsfw,
         fix_titles: !args.no_titles,
         base_tag: reddit_config.tags.first().cloned().unwrap_or_default(),
@@ -913,7 +959,6 @@ async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) ->
     cleanup_one_hackernews(
         account,
         args.dry_run,
-        args.verbose,
         args.link_discussions,
         args.link_tag,
         &pinboard,
@@ -925,7 +970,6 @@ async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) ->
 async fn cleanup_one_hackernews(
     account: Option<&HackernewsAccount>,
     dry_run: bool,
-    verbose: bool,
     link_discussions: bool,
     link_tag: Option<String>,
     pinboard: &PinboardClient,
@@ -943,7 +987,6 @@ async fn cleanup_one_hackernews(
         pinboard,
         &HnCleanupOpts {
             dry_run,
-            verbose,
             link_discussions,
         },
         bookmarks,

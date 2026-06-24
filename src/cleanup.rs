@@ -6,6 +6,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{anyhow, bail, Result};
+use log::{debug, error, info};
 
 use crate::model::cased_subreddit;
 use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
@@ -14,7 +15,6 @@ use crate::source::{host_matches, split_host_path, SourceError};
 
 pub struct CleanupOpts {
     pub dry_run: bool,
-    pub verbose: bool,
     pub mark_nsfw: bool,
     pub fix_titles: bool,
     pub base_tag: String,
@@ -40,8 +40,8 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
         .filter(|b| is_reddit_url(&b.url))
         .cloned()
         .collect();
-    println!(
-        "Scanning {} reddit bookmark(s){}...",
+    info!(
+        "scanning {} reddit bookmark(s){}",
         reddit_bms.len(),
         if opts.dry_run { " (dry run)" } else { "" }
     );
@@ -121,13 +121,11 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
         {
             Ok(()) => {
                 changed += 1;
-                if opts.verbose {
-                    eprintln!("updated {} -> {new_url} [{}]", bm.url, tags.join(" "));
-                }
+                debug!("updated {} -> {new_url} [{}]", bm.url, tags.join(" "));
             }
             Err(e) => {
                 failed += 1;
-                eprintln!("error: updating bookmark {}: {e:#}", bm.url);
+                error!("updating bookmark {}: {e:#}", bm.url);
             }
         }
     }
@@ -135,7 +133,7 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
     if opts.dry_run {
         println!("{changed} bookmark(s) would change.");
     } else {
-        println!("Done. Updated {changed} bookmark(s).");
+        info!("done: updated {changed} bookmark(s)");
     }
     if failed > 0 {
         bail!("{failed} bookmark(s) failed to update");
@@ -475,7 +473,6 @@ mod loop_tests {
     fn opts() -> CleanupOpts {
         CleanupOpts {
             dry_run: false,
-            verbose: false,
             mark_nsfw: true,
             fix_titles: true,
             base_tag: "reddit".into(),

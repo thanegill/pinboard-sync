@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use log::{debug, error, info};
 use serde::Deserialize;
 
 use crate::http::send_retrying;
@@ -204,7 +205,6 @@ impl Source for GitHubClient {
 /// Options for `cleanup github`.
 pub struct GhCleanupOpts {
     pub dry_run: bool,
-    pub verbose: bool,
 }
 
 /// Normalize existing GitHub repo bookmarks: look each repo up via the API (which
@@ -224,8 +224,8 @@ pub async fn cleanup<P: BookmarkStore>(
         .filter(|b| is_github_url(&b.url))
         .cloned()
         .collect();
-    println!(
-        "Scanning {} github bookmark(s){}...",
+    info!(
+        "scanning {} github bookmark(s){}",
         gh_bms.len(),
         if opts.dry_run { " (dry run)" } else { "" }
     );
@@ -252,11 +252,7 @@ pub async fn cleanup<P: BookmarkStore>(
                 Ok(None) => {}
                 Err(e) => {
                     failed += 1;
-                    eprintln!(
-                        "error: looking up {}: {:#}",
-                        bm.url,
-                        SourceError::into_anyhow(e)
-                    );
+                    error!("looking up {}: {:#}", bm.url, SourceError::into_anyhow(e));
                     continue;
                 }
             }
@@ -303,13 +299,11 @@ pub async fn cleanup<P: BookmarkStore>(
         {
             Ok(()) => {
                 changed += 1;
-                if opts.verbose {
-                    eprintln!("updated {} -> {url}", bm.url);
-                }
+                debug!("updated {} -> {url}", bm.url);
             }
             Err(e) => {
                 failed += 1;
-                eprintln!("error: updating bookmark {}: {e:#}", bm.url);
+                error!("updating bookmark {}: {e:#}", bm.url);
             }
         }
     }
@@ -317,7 +311,7 @@ pub async fn cleanup<P: BookmarkStore>(
     if opts.dry_run {
         println!("{changed} bookmark(s) would change.");
     } else {
-        println!("Done. Updated {changed} bookmark(s).");
+        info!("done: updated {changed} bookmark(s)");
     }
     if failed > 0 {
         bail!("{failed} bookmark(s) failed to update");
@@ -615,10 +609,7 @@ mod net_tests {
             &pinboard,
             &client,
             &GithubConfig::default(),
-            &GhCleanupOpts {
-                dry_run: false,
-                verbose: false,
-            },
+            &GhCleanupOpts { dry_run: false },
             &bookmarks,
         )
         .await

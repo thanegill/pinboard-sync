@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use log::{debug, error, info};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
@@ -349,7 +350,6 @@ impl Source for HnClient {
 /// Options for `cleanup hackernews`.
 pub struct HnCleanupOpts {
     pub dry_run: bool,
-    pub verbose: bool,
     /// Also link `link_tag`-tagged article bookmarks to their HN discussion.
     pub link_discussions: bool,
 }
@@ -381,8 +381,8 @@ impl HnClient {
             .filter(|b| hn_item_id(&b.url).is_some())
             .cloned()
             .collect();
-        println!(
-            "Scanning {} HN bookmark(s){}...",
+        info!(
+            "scanning {} HN bookmark(s){}",
             hn_bms.len(),
             if opts.dry_run { " (dry run)" } else { "" }
         );
@@ -450,13 +450,11 @@ impl HnClient {
             {
                 Ok(()) => {
                     changed += 1;
-                    if opts.verbose {
-                        eprintln!("updated {} -> {} [{}]", bm.url, draft.url, tags.join(" "));
-                    }
+                    debug!("updated {} -> {} [{}]", bm.url, draft.url, tags.join(" "));
                 }
                 Err(e) => {
                     failed += 1;
-                    eprintln!("error: updating bookmark {}: {e:#}", bm.url);
+                    error!("updating bookmark {}: {e:#}", bm.url);
                 }
             }
         }
@@ -464,7 +462,7 @@ impl HnClient {
         if opts.dry_run {
             println!("{changed} bookmark(s) would change.");
         } else {
-            println!("Done. Updated {changed} bookmark(s).");
+            info!("done: updated {changed} bookmark(s)");
         }
 
         if opts.link_discussions {
@@ -494,8 +492,8 @@ impl HnClient {
             })
             .cloned()
             .collect();
-        println!(
-            "Linking {} '{}'-tagged bookmark(s) to HN discussions{}...",
+        info!(
+            "linking {} '{}'-tagged bookmark(s) to HN discussions{}",
             candidates.len(),
             self.config.link_tag,
             if opts.dry_run { " (dry run)" } else { "" }
@@ -511,11 +509,7 @@ impl HnClient {
                 Ok(None) => continue,
                 Err(e) => {
                     failed += 1;
-                    eprintln!(
-                        "error: looking up {}: {:#}",
-                        bm.url,
-                        SourceError::into_anyhow(e)
-                    );
+                    error!("looking up {}: {:#}", bm.url, SourceError::into_anyhow(e));
                     continue;
                 }
             };
@@ -568,13 +562,11 @@ impl HnClient {
             {
                 Ok(()) => {
                     changed += 1;
-                    if opts.verbose {
-                        eprintln!("linked {} -> item?id={id}", bm.url);
-                    }
+                    debug!("linked {} -> item?id={id}", bm.url);
                 }
                 Err(e) => {
                     failed += 1;
-                    eprintln!("error: linking bookmark {}: {e:#}", bm.url);
+                    error!("linking bookmark {}: {e:#}", bm.url);
                 }
             }
         }
@@ -582,7 +574,7 @@ impl HnClient {
         if opts.dry_run {
             println!("{changed} bookmark(s) would be linked.");
         } else {
-            println!("Done. Linked {changed} bookmark(s).");
+            info!("done: linked {changed} bookmark(s)");
         }
         Ok(failed)
     }
@@ -868,7 +860,6 @@ mod net_tests {
                 &pinboard,
                 &HnCleanupOpts {
                     dry_run: false,
-                    verbose: false,
                     link_discussions: false,
                 },
                 &bookmarks,
@@ -934,7 +925,6 @@ mod net_tests {
                 &pinboard,
                 &HnCleanupOpts {
                     dry_run: false,
-                    verbose: false,
                     link_discussions: true,
                 },
                 &bookmarks,

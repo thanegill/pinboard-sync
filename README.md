@@ -137,6 +137,16 @@ pinboard-sync doctor
 `completions` and `config example` — are covered in
 [Shell completions and example config](#shell-completions-and-example-config).
 
+### Logging
+
+Progress is logged to **stderr** at `info` level by default (the version on startup,
+account and bookmark counts, per-source fetched/new counts, and a per-run summary), so
+**stdout stays clean** for generated output like `--dry-run` listings. Raise the
+verbosity with a repeatable `-v` (`-v` = debug, `-vv` = trace, `-vvv` also includes
+dependency logs), or set `RUST_LOG` for full control (e.g. `RUST_LOG=pinboard_sync=debug`),
+which overrides `-v`. Under the NixOS service these lines land in the journal
+(`journalctl -u pinboard-sync`).
+
 ## What `cleanup` does
 
 Where `sync` *adds* new bookmarks, `cleanup` *repairs the ones already on Pinboard* —

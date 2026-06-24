@@ -7,6 +7,8 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use log::{debug, error};
+
 use crate::pinboard::{Bookmark, BookmarkStore};
 use crate::source::{BookmarkDraft, Source};
 
@@ -43,7 +45,6 @@ pub async fn write_drafts<P: BookmarkStore>(
     pinboard: &P,
     drafts: &[BookmarkDraft],
     dry_run: bool,
-    verbose: bool,
 ) -> WriteOutcome {
     let mut outcome = WriteOutcome::default();
     let mut posted = false;
@@ -77,14 +78,12 @@ pub async fn write_drafts<P: BookmarkStore>(
         {
             Ok(()) => {
                 outcome.written += 1;
-                if verbose {
-                    eprintln!("added {}  [{}]", draft.url, draft.tags.join(" "));
-                }
+                debug!("added {}  [{}]", draft.url, draft.tags.join(" "));
             }
             // Log and skip — one bad bookmark shouldn't abort the rest of the run.
             Err(e) => {
                 outcome.failed += 1;
-                eprintln!("error: adding bookmark {}: {e:#}", draft.url);
+                error!("adding bookmark {}: {e:#}", draft.url);
             }
         }
     }
@@ -137,7 +136,7 @@ mod tests {
         assert_eq!(new[0].tags, vec!["reddit", "subreddit:rust"]);
 
         let pinboard = FakePinboard::default();
-        let outcome = write_drafts(&pinboard, &new, false, false).await;
+        let outcome = write_drafts(&pinboard, &new, false).await;
         assert_eq!(outcome.written, 1);
         assert_eq!(outcome.failed, 0);
         // The write path never lists posts/all itself.
@@ -153,7 +152,7 @@ mod tests {
         };
         let new = filter_new(&reddit, reddit.fetch().await.unwrap(), &[]);
         let pinboard = FakePinboard::default();
-        let outcome = write_drafts(&pinboard, &new, true, false).await;
+        let outcome = write_drafts(&pinboard, &new, true).await;
         assert_eq!(outcome.written, 0);
         assert!(pinboard.added.borrow().is_empty());
     }
@@ -174,7 +173,7 @@ mod tests {
             draft("https://b.test/", false, false),
         ];
         let pinboard = FakePinboard::default();
-        write_drafts(&pinboard, &drafts, false, false).await;
+        write_drafts(&pinboard, &drafts, false).await;
         let added = pinboard.added.borrow();
         assert_eq!(added.len(), 2);
         assert!(added[0].toread && added[0].shared);
@@ -195,7 +194,7 @@ mod tests {
         assert_eq!(new.len(), 3);
         new.truncate(2);
         let pinboard = FakePinboard::default();
-        let outcome = write_drafts(&pinboard, &new, false, false).await;
+        let outcome = write_drafts(&pinboard, &new, false).await;
         assert_eq!(outcome.written, 2);
         assert_eq!(pinboard.added.borrow().len(), 2);
     }
@@ -219,7 +218,7 @@ mod tests {
         let mut pinboard = FakePinboard::default();
         pinboard.fail_add_urls.insert("https://bad.test/".into());
 
-        let outcome = write_drafts(&pinboard, &drafts, false, false).await;
+        let outcome = write_drafts(&pinboard, &drafts, false).await;
         // The bad one is skipped; the ones on either side still go through.
         assert_eq!(outcome.written, 2);
         assert_eq!(outcome.failed, 1);

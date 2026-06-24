@@ -15,6 +15,15 @@ const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VE
 pub const RATE_LIMIT_SECS: u64 = 3;
 const MAX_RETRIES: u32 = 5;
 
+/// `posts/add` is a GET, so every field — notably `extended` (the notes) — rides in
+/// the request URL. Servers cap the request line (Pinboard answers a long one with
+/// `414 URI Too Long`), so we trim `extended` to keep the encoded URL within this
+/// many bytes. Conservative: well under the common ~8 KB request-line limit, leaving
+/// headroom for the host/auth/tag params. Other fields are never trimmed.
+const MAX_URL_BYTES: usize = 7000;
+/// Appended to a trimmed `extended` so the truncation is visible in the bookmark.
+const TRUNCATION_MARKER: &str = "… [truncated]";
+
 #[derive(Deserialize)]
 struct AddResponse {
     result_code: String,
@@ -222,12 +231,16 @@ impl BookmarkStore for PinboardClient {
 
 impl PinboardClient {
     /// `posts/add` with `replace=yes`. A non-empty `dt` sets the bookmark time.
+    /// `extended` is trimmed if needed to keep the GET URL under [`MAX_URL_BYTES`].
     async fn post_add(&self, b: BookmarkUpdate<'_>) -> Result<()> {
         let tags = b.tags.join(" ");
-        let mut params = vec![
+        let endpoint = self.url("posts/add");
+
+        // Every param except `extended` — these are fixed (never trimmed) and set the
+        // budget that `extended` has to fit within.
+        let mut fixed = vec![
             ("url", b.url),
             ("description", b.description),
-            ("extended", b.extended),
             ("tags", tags.as_str()),
             ("replace", "yes"),
             ("shared", if b.shared { "yes" } else { "no" }),
@@ -236,12 +249,14 @@ impl PinboardClient {
             ("format", "json"),
         ];
         if !b.dt.is_empty() {
-            params.push(("dt", b.dt));
+            fixed.push(("dt", b.dt));
         }
 
-        let resp = self
-            .get_with_backoff(&self.url("posts/add"), &params)
-            .await?;
+        let extended = self.fit_extended(&endpoint, &fixed, b.extended);
+        let mut params = fixed;
+        params.push(("extended", extended.as_str()));
+
+        let resp = self.get_with_backoff(&endpoint, &params).await?;
         let parsed: AddResponse = resp
             .json()
             .await
@@ -250,6 +265,51 @@ impl PinboardClient {
             return Err(anyhow!("Pinboard posts/add failed: {}", parsed.result_code));
         }
         Ok(())
+    }
+
+    /// Trim `extended` so the encoded `posts/add` URL stays within [`MAX_URL_BYTES`].
+    /// Returns `extended` unchanged when the full request already fits; otherwise the
+    /// largest char-boundary prefix that fits, with [`TRUNCATION_MARKER`] appended.
+    /// `fixed` is every other param (measured alongside, but never trimmed).
+    fn fit_extended(&self, endpoint: &str, fixed: &[(&str, &str)], extended: &str) -> String {
+        // Byte length of the URL reqwest would build with this `extended` value.
+        let url_len = |ext: &str| -> usize {
+            let mut params = fixed.to_vec();
+            params.push(("extended", ext));
+            self.http
+                .get(endpoint)
+                .query(&params)
+                .build()
+                .map(|r| r.url().as_str().len())
+                .unwrap_or(usize::MAX)
+        };
+
+        if url_len(extended) <= MAX_URL_BYTES {
+            return extended.to_string();
+        }
+
+        // Binary-search the char-boundary offsets for the longest prefix that, with
+        // the marker appended, still fits. (URL-encoding expands bytes unevenly, so we
+        // measure rather than compute a byte budget.)
+        let boundaries: Vec<usize> = extended
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(extended.len()))
+            .collect();
+        let fits = |cut: usize| url_len(&format!("{}{}", &extended[..cut], TRUNCATION_MARKER));
+        let (mut lo, mut hi, mut best) = (0usize, boundaries.len() - 1, 0usize);
+        while lo <= hi {
+            let mid = (lo + hi) / 2;
+            if fits(boundaries[mid]) <= MAX_URL_BYTES {
+                best = boundaries[mid];
+                lo = mid + 1;
+            } else if mid == 0 {
+                break;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        format!("{}{}", &extended[..best], TRUNCATION_MARKER)
     }
 
     /// GET a Pinboard endpoint, retrying transient failures (network errors,
@@ -279,6 +339,71 @@ impl PinboardClient {
     #[cfg(test)]
     pub fn with_base_url(auth_token: String, base: String) -> Result<Self> {
         Self::build(auth_token, 0, base)
+    }
+}
+
+/// Hermetic tests (no socket): `fit_extended` only builds URLs, never sends them.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_client() -> PinboardClient {
+        PinboardClient::with_base_url("user:tok".into(), DEFAULT_BASE.to_string()).unwrap()
+    }
+
+    /// A realistic set of fixed params (URL, title, tags, auth, …).
+    const FIXED: &[(&str, &str)] = &[
+        (
+            "url",
+            "https://old.reddit.com/r/AutisticWithADHD/comments/1pmdzte/x/",
+        ),
+        ("description", "A representative post title"),
+        ("tags", "reddit subreddit:autisticwithadhd"),
+        ("replace", "yes"),
+        ("shared", "no"),
+        ("toread", "no"),
+        ("auth_token", "user:tok"),
+        ("format", "json"),
+    ];
+
+    /// Length of the URL reqwest builds for `extended` alongside `FIXED`.
+    fn url_len(c: &PinboardClient, extended: &str) -> usize {
+        let mut params = FIXED.to_vec();
+        params.push(("extended", extended));
+        c.http
+            .get(c.url("posts/add"))
+            .query(&params)
+            .build()
+            .unwrap()
+            .url()
+            .as_str()
+            .len()
+    }
+
+    #[test]
+    fn short_notes_pass_through_unchanged() {
+        let c = test_client();
+        let notes = "Thread: https://old.reddit.com/r/x/\n\nA few sentences of body text.";
+        assert_eq!(c.fit_extended(&c.url("posts/add"), FIXED, notes), notes);
+    }
+
+    #[test]
+    fn oversized_notes_are_trimmed_within_budget() {
+        let c = test_client();
+        let huge = "word ".repeat(20_000); // ~100 KB of notes
+        let fitted = c.fit_extended(&c.url("posts/add"), FIXED, &huge);
+        assert!(fitted.len() < huge.len());
+        assert!(fitted.ends_with(TRUNCATION_MARKER));
+        assert!(url_len(&c, &fitted) <= MAX_URL_BYTES);
+    }
+
+    #[test]
+    fn trims_on_a_char_boundary_for_multibyte_notes() {
+        let c = test_client();
+        let huge = "é".repeat(20_000); // 2 bytes each — a naive byte cut would panic
+        let fitted = c.fit_extended(&c.url("posts/add"), FIXED, &huge);
+        assert!(fitted.ends_with(TRUNCATION_MARKER));
+        assert!(url_len(&c, &fitted) <= MAX_URL_BYTES);
     }
 }
 

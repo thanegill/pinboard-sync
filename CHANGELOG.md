@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- `posts/add` no longer fails with `414 URI Too Long` on long Reddit self-posts: since
+  the Pinboard API is GET-only, the `extended` (notes) field is now trimmed to keep the
+  request URL within a safe byte budget, appending a truncation marker.
+
 ## [0.3.0] - 2026-06-24
 
 ### Added

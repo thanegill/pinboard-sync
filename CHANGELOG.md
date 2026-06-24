@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- `414 URI Too Long` could still occur on long Reddit self-posts: the previous
+  truncation budget (7000 bytes) was above Pinboard's actual, undocumented request-URL
+  limit. The starting budget is now lower (4000 bytes) and, crucially, `posts/add`
+  retries with a halved budget whenever Pinboard answers 414 — so it self-calibrates to
+  the real limit instead of relying on a guessed constant.
+
 ## [0.3.3] - 2026-06-24
 
 ### Changed

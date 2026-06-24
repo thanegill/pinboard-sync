@@ -17,10 +17,14 @@ const MAX_RETRIES: u32 = 5;
 
 /// `posts/add` is a GET, so every field — notably `extended` (the notes) — rides in
 /// the request URL. Servers cap the request line (Pinboard answers a long one with
-/// `414 URI Too Long`), so we trim `extended` to keep the encoded URL within this
-/// many bytes. Conservative: well under the common ~8 KB request-line limit, leaving
-/// headroom for the host/auth/tag params. Other fields are never trimmed.
-const MAX_URL_BYTES: usize = 7000;
+/// `414 URI Too Long`), so we trim `extended` to keep the encoded URL within a byte
+/// budget. This is the *starting* budget; Pinboard's exact limit is undocumented and
+/// is lower than the common ~8 KB, so [`PinboardClient::post_add`] halves the budget
+/// and retries if a 414 still comes back. Other fields are never trimmed.
+const MAX_URL_BYTES: usize = 4000;
+/// Floor for the adaptive 414 retry: below this we stop shrinking and surface the
+/// error rather than writing a bookmark with essentially no notes in an endless loop.
+const MIN_URL_BYTES: usize = 500;
 /// Appended to a trimmed `extended` so the truncation is visible in the bookmark.
 const TRUNCATION_MARKER: &str = "… [truncated]";
 
@@ -252,26 +256,54 @@ impl PinboardClient {
             fixed.push(("dt", b.dt));
         }
 
-        let extended = self.fit_extended(&endpoint, &fixed, b.extended);
-        let mut params = fixed;
-        params.push(("extended", extended.as_str()));
+        // Trim the notes to the budget; if Pinboard still rejects the URL as too long
+        // (its limit is undocumented), halve the budget and retry rather than dropping
+        // the bookmark. Transient errors (network/429/5xx) are handled by send_retrying.
+        let mut budget = MAX_URL_BYTES;
+        loop {
+            let extended = self.fit_extended(&endpoint, &fixed, b.extended, budget);
+            let mut params = fixed.clone();
+            params.push(("extended", extended.as_str()));
 
-        let resp = self.get_with_backoff(&endpoint, &params).await?;
-        let parsed: AddResponse = resp
-            .json()
-            .await
-            .context("parsing Pinboard posts/add response")?;
-        if parsed.result_code != "done" {
-            return Err(anyhow!("Pinboard posts/add failed: {}", parsed.result_code));
+            let resp = send_retrying(
+                &endpoint,
+                MAX_RETRIES,
+                Duration::from_secs(RATE_LIMIT_SECS),
+                || self.http.get(&endpoint).query(&params),
+            )
+            .await?;
+
+            if resp.status() == reqwest::StatusCode::URI_TOO_LONG && budget > MIN_URL_BYTES {
+                budget /= 2;
+                continue;
+            }
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                bail!("Pinboard {endpoint} returned {status}: {}", body.trim());
+            }
+            let parsed: AddResponse = resp
+                .json()
+                .await
+                .context("parsing Pinboard posts/add response")?;
+            if parsed.result_code != "done" {
+                return Err(anyhow!("Pinboard posts/add failed: {}", parsed.result_code));
+            }
+            return Ok(());
         }
-        Ok(())
     }
 
-    /// Trim `extended` so the encoded `posts/add` URL stays within [`MAX_URL_BYTES`].
+    /// Trim `extended` so the encoded `posts/add` URL stays within `budget` bytes.
     /// Returns `extended` unchanged when the full request already fits; otherwise the
     /// largest char-boundary prefix that fits, with [`TRUNCATION_MARKER`] appended.
     /// `fixed` is every other param (measured alongside, but never trimmed).
-    fn fit_extended(&self, endpoint: &str, fixed: &[(&str, &str)], extended: &str) -> String {
+    fn fit_extended(
+        &self,
+        endpoint: &str,
+        fixed: &[(&str, &str)],
+        extended: &str,
+        budget: usize,
+    ) -> String {
         // Byte length of the URL reqwest would build with this `extended` value.
         let url_len = |ext: &str| -> usize {
             let mut params = fixed.to_vec();
@@ -284,7 +316,7 @@ impl PinboardClient {
                 .unwrap_or(usize::MAX)
         };
 
-        if url_len(extended) <= MAX_URL_BYTES {
+        if url_len(extended) <= budget {
             return extended.to_string();
         }
 
@@ -300,7 +332,7 @@ impl PinboardClient {
         let (mut lo, mut hi, mut best) = (0usize, boundaries.len() - 1, 0usize);
         while lo <= hi {
             let mid = (lo + hi) / 2;
-            if fits(boundaries[mid]) <= MAX_URL_BYTES {
+            if fits(boundaries[mid]) <= budget {
                 best = boundaries[mid];
                 lo = mid + 1;
             } else if mid == 0 {
@@ -384,14 +416,17 @@ mod tests {
     fn short_notes_pass_through_unchanged() {
         let c = test_client();
         let notes = "Thread: https://old.reddit.com/r/x/\n\nA few sentences of body text.";
-        assert_eq!(c.fit_extended(&c.url("posts/add"), FIXED, notes), notes);
+        assert_eq!(
+            c.fit_extended(&c.url("posts/add"), FIXED, notes, MAX_URL_BYTES),
+            notes
+        );
     }
 
     #[test]
     fn oversized_notes_are_trimmed_within_budget() {
         let c = test_client();
         let huge = "word ".repeat(20_000); // ~100 KB of notes
-        let fitted = c.fit_extended(&c.url("posts/add"), FIXED, &huge);
+        let fitted = c.fit_extended(&c.url("posts/add"), FIXED, &huge, MAX_URL_BYTES);
         assert!(fitted.len() < huge.len());
         assert!(fitted.ends_with(TRUNCATION_MARKER));
         assert!(url_len(&c, &fitted) <= MAX_URL_BYTES);
@@ -401,9 +436,19 @@ mod tests {
     fn trims_on_a_char_boundary_for_multibyte_notes() {
         let c = test_client();
         let huge = "é".repeat(20_000); // 2 bytes each — a naive byte cut would panic
-        let fitted = c.fit_extended(&c.url("posts/add"), FIXED, &huge);
+        let fitted = c.fit_extended(&c.url("posts/add"), FIXED, &huge, MAX_URL_BYTES);
         assert!(fitted.ends_with(TRUNCATION_MARKER));
         assert!(url_len(&c, &fitted) <= MAX_URL_BYTES);
+    }
+
+    #[test]
+    fn a_smaller_budget_trims_more() {
+        let c = test_client();
+        let huge = "word ".repeat(20_000);
+        let big = c.fit_extended(&c.url("posts/add"), FIXED, &huge, MAX_URL_BYTES);
+        let small = c.fit_extended(&c.url("posts/add"), FIXED, &huge, MIN_URL_BYTES);
+        assert!(small.len() < big.len());
+        assert!(url_len(&c, &small) <= MIN_URL_BYTES);
     }
 }
 
@@ -435,6 +480,46 @@ mod net_tests {
                 "https://old.reddit.com/r/x/",
                 "Title",
                 "",
+                &["reddit".into()],
+                false,
+                false,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn add_retries_after_414_then_succeeds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use wiremock::{Request, Respond};
+
+        // 414 on the first hit (URL too long), then `done` — the client should shrink
+        // the notes and retry rather than failing. A stateful responder makes the
+        // sequence deterministic (two ambiguous mocks don't reliably order).
+        struct FailFirst(AtomicUsize);
+        impl Respond for FailFirst {
+            fn respond(&self, _: &Request) -> ResponseTemplate {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(414).set_body_string("Request URI is too long")
+                } else {
+                    ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"}))
+                }
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/posts/add"))
+            .respond_with(FailFirst(AtomicUsize::new(0)))
+            .expect(2) // exactly one retry after the 414
+            .mount(&server)
+            .await;
+
+        client(&server)
+            .add(
+                "https://old.reddit.com/r/x/",
+                "Title",
+                &"long notes ".repeat(2000),
                 &["reddit".into()],
                 false,
                 false,

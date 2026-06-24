@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
@@ -395,6 +395,7 @@ impl HnClient {
             .map_err(SourceError::into_anyhow)?;
 
         let mut changed = 0usize;
+        let mut failed = 0usize;
         let mut wrote = false;
         for bm in &hn_bms {
             let id = hn_item_id(&bm.url).expect("filtered to HN item URLs");
@@ -414,9 +415,9 @@ impl HnClient {
             if !(url_changed || tags_changed || desc_changed || ext_changed) {
                 continue;
             }
-            changed += 1;
 
             if opts.dry_run {
+                changed += 1;
                 println!("[dry-run] {}", bm.url);
                 if url_changed {
                     println!("          url   -> {}", draft.url);
@@ -430,7 +431,8 @@ impl HnClient {
                 continue;
             }
 
-            apply_update(
+            // Log and skip a single failed update so the rest of the pass still runs.
+            match apply_update(
                 pinboard,
                 &mut wrote,
                 BookmarkUpdate {
@@ -444,9 +446,18 @@ impl HnClient {
                 },
                 url_changed.then_some(bm.url.as_str()),
             )
-            .await?;
-            if opts.verbose {
-                eprintln!("updated {} -> {} [{}]", bm.url, draft.url, tags.join(" "));
+            .await
+            {
+                Ok(()) => {
+                    changed += 1;
+                    if opts.verbose {
+                        eprintln!("updated {} -> {} [{}]", bm.url, draft.url, tags.join(" "));
+                    }
+                }
+                Err(e) => {
+                    failed += 1;
+                    eprintln!("error: updating bookmark {}: {e:#}", bm.url);
+                }
             }
         }
 
@@ -457,7 +468,10 @@ impl HnClient {
         }
 
         if opts.link_discussions {
-            self.link_discussions(pinboard, opts, bookmarks).await?;
+            failed += self.link_discussions(pinboard, opts, bookmarks).await?;
+        }
+        if failed > 0 {
+            bail!("{failed} bookmark(s) failed to update");
         }
         Ok(())
     }
@@ -466,12 +480,13 @@ impl HnClient {
     /// it has a discussion, add `HN Link: <discussion>` to the notes, swap the
     /// marker tag for the base HN tags, and update in place. Default-off (opt-in via
     /// `--link-discussions`) because it issues one Algolia query per tagged bookmark.
+    /// Returns the number of bookmarks that failed to link (logged and skipped).
     async fn link_discussions<P: BookmarkStore>(
         &self,
         pinboard: &P,
         opts: &HnCleanupOpts,
         bookmarks: &[Bookmark],
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let candidates: Vec<_> = bookmarks
             .iter()
             .filter(|b| {
@@ -487,14 +502,22 @@ impl HnClient {
         );
 
         let mut changed = 0usize;
+        let mut failed = 0usize;
         let mut wrote = false;
         for bm in &candidates {
-            let Some(id) = self
-                .search_by_url(&bm.url)
-                .await
-                .map_err(SourceError::into_anyhow)?
-            else {
-                continue;
+            // Log and skip a single bookmark whose HN lookup fails.
+            let id = match self.search_by_url(&bm.url).await {
+                Ok(Some(id)) => id,
+                Ok(None) => continue,
+                Err(e) => {
+                    failed += 1;
+                    eprintln!(
+                        "error: looking up {}: {:#}",
+                        bm.url,
+                        SourceError::into_anyhow(e)
+                    );
+                    continue;
+                }
             };
 
             let hn_link = format!("HN Link: https://news.ycombinator.com/item?id={id}");
@@ -517,16 +540,17 @@ impl HnClient {
             if extended == bm.extended && !tags_differ(&bm.tag_list(), &tags) {
                 continue;
             }
-            changed += 1;
 
             if opts.dry_run {
+                changed += 1;
                 println!("[dry-run] {}", bm.url);
                 println!("          notes -> {hn_link}");
                 println!("          tags  -> [{}]", tags.join(" "));
                 continue;
             }
 
-            apply_update(
+            // Log and skip a single failed update so the rest of the pass still runs.
+            match apply_update(
                 pinboard,
                 &mut wrote,
                 BookmarkUpdate {
@@ -540,9 +564,18 @@ impl HnClient {
                 },
                 None,
             )
-            .await?;
-            if opts.verbose {
-                eprintln!("linked {} -> item?id={id}", bm.url);
+            .await
+            {
+                Ok(()) => {
+                    changed += 1;
+                    if opts.verbose {
+                        eprintln!("linked {} -> item?id={id}", bm.url);
+                    }
+                }
+                Err(e) => {
+                    failed += 1;
+                    eprintln!("error: linking bookmark {}: {e:#}", bm.url);
+                }
             }
         }
 
@@ -551,7 +584,7 @@ impl HnClient {
         } else {
             println!("Done. Linked {changed} bookmark(s).");
         }
-        Ok(())
+        Ok(failed)
     }
 }
 

@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 
 use crate::model::cased_subreddit;
 use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
@@ -49,6 +49,7 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
     let info = fetch_post_info(reddit, opts, &reddit_bms).await?;
 
     let mut changed = 0usize;
+    let mut failed = 0usize;
     let mut wrote = false;
     for bm in &reddit_bms {
         let normalized = normalize_url(&bm.url, &opts.domain);
@@ -85,9 +86,9 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
         if !(url_changed || tags_changed || desc_changed) {
             continue;
         }
-        changed += 1;
 
         if opts.dry_run {
+            changed += 1;
             println!("[dry-run] {}", bm.url);
             if url_changed {
                 println!("          url   -> {new_url}");
@@ -101,7 +102,8 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
             continue;
         }
 
-        apply_update(
+        // Log and skip a single failed update so the rest of the pass still runs.
+        match apply_update(
             pinboard,
             &mut wrote,
             BookmarkUpdate {
@@ -115,9 +117,18 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
             },
             url_changed.then_some(bm.url.as_str()),
         )
-        .await?;
-        if opts.verbose {
-            eprintln!("updated {} -> {new_url} [{}]", bm.url, tags.join(" "));
+        .await
+        {
+            Ok(()) => {
+                changed += 1;
+                if opts.verbose {
+                    eprintln!("updated {} -> {new_url} [{}]", bm.url, tags.join(" "));
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("error: updating bookmark {}: {e:#}", bm.url);
+            }
         }
     }
 
@@ -125,6 +136,9 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
         println!("{changed} bookmark(s) would change.");
     } else {
         println!("Done. Updated {changed} bookmark(s).");
+    }
+    if failed > 0 {
+        bail!("{failed} bookmark(s) failed to update");
     }
     Ok(())
 }
@@ -585,5 +599,39 @@ mod loop_tests {
             .unwrap();
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn logs_and_skips_a_failing_update_then_continues() {
+        // Two bookmarks that both need a URL rewrite; the first one's update fails.
+        let pinboard = FakePinboard {
+            all: vec![
+                bookmark("https://www.reddit.com/r/rust/comments/a/x/", "T", "reddit"),
+                bookmark("https://www.reddit.com/r/rust/comments/b/y/", "T", "reddit"),
+            ],
+            fail_update_urls: ["https://old.reddit.com/r/rust/comments/a/x/".to_string()]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let reddit = FakeReddit::default();
+        let opts = CleanupOpts {
+            mark_nsfw: false,
+            fix_titles: false,
+            ..opts()
+        };
+
+        // The run reports failure (non-zero exit)...
+        let err = run(&pinboard, Some(&reddit), &opts, &pinboard.all)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("1 bookmark(s) failed"));
+        // ...but the second bookmark was still updated despite the first failing.
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(
+            updated[0].url,
+            "https://old.reddit.com/r/rust/comments/b/y/"
+        );
     }
 }

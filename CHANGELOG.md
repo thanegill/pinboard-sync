@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- `sync` no longer aborts the whole run when a single bookmark fails to write (e.g. a
+  URL Pinboard rejects): the failure is logged and skipped, the rest are still added,
+  and the run exits non-zero if any failed. Source/account fetch failures already
+  behaved this way.
+- `cleanup` (all sources) is likewise resilient: a single bookmark that fails to look
+  up or update is logged and skipped so the rest of the pass still runs, with a
+  non-zero exit if any failed.
+
 ## [0.3.2] - 2026-06-24
 
 ### Changed
@@ -13,10 +23,6 @@ All notable changes to this project are documented here. The format is based on
 - Release automation now points the rolling `latest` tag and the matching `vX.Y.Z`
   tag at the same stamped release commit, so consumers tracking `latest` resolve to a
   tagged version.
-- `sync` no longer aborts the whole run when a single bookmark fails to write (e.g. a
-  URL Pinboard rejects): the failure is logged and skipped, the rest are still added,
-  and the run exits non-zero if any failed. Source/account fetch failures already
-  behaved this way.
 
 ## [0.3.1] - 2026-06-24
 

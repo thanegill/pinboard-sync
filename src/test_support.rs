@@ -76,6 +76,8 @@ pub struct FakePinboard {
     pub deleted: RefCell<Vec<String>>,
     /// URLs whose `add` should fail, to exercise log-and-skip behavior.
     pub fail_add_urls: HashSet<String>,
+    /// URLs whose `update` should fail, to exercise cleanup log-and-skip behavior.
+    pub fail_update_urls: HashSet<String>,
 }
 
 impl BookmarkStore for FakePinboard {
@@ -104,6 +106,9 @@ impl BookmarkStore for FakePinboard {
         Ok(())
     }
     async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()> {
+        if self.fail_update_urls.contains(b.url) {
+            return Err(anyhow!("simulated update failure for {}", b.url));
+        }
         self.updated.borrow_mut().push(UpdateCall {
             url: b.url.to_string(),
             description: b.description.to_string(),

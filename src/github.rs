@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::http::send_retrying;
@@ -231,6 +231,7 @@ pub async fn cleanup<P: BookmarkStore>(
     );
 
     let mut changed = 0usize;
+    let mut failed = 0usize;
     let mut wrote = false;
     for bm in &gh_bms {
         let canonical = canonical_repo_url(&bm.url).unwrap_or_else(|| bm.url.clone());
@@ -241,14 +242,23 @@ pub async fn cleanup<P: BookmarkStore>(
         let mut description = bm.description.clone();
         let mut tags = bm.tag_list();
         if let Some((owner, repo)) = owner_repo(&canonical) {
-            if let Some(info) = client
-                .repo(owner, repo)
-                .await
-                .map_err(SourceError::into_anyhow)?
-            {
-                url = info.html_url.clone(); // follows renames/transfers
-                description = info.full_name.clone();
-                tags = refresh_tags(bm.tag_list(), &info, config);
+            // Log and skip a single repo whose lookup fails so the rest still run.
+            match client.repo(owner, repo).await {
+                Ok(Some(info)) => {
+                    url = info.html_url.clone(); // follows renames/transfers
+                    description = info.full_name.clone();
+                    tags = refresh_tags(bm.tag_list(), &info, config);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    failed += 1;
+                    eprintln!(
+                        "error: looking up {}: {:#}",
+                        bm.url,
+                        SourceError::into_anyhow(e)
+                    );
+                    continue;
+                }
             }
         }
 
@@ -258,9 +268,9 @@ pub async fn cleanup<P: BookmarkStore>(
         if !(url_changed || desc_changed || tags_changed) {
             continue;
         }
-        changed += 1;
 
         if opts.dry_run {
+            changed += 1;
             println!("[dry-run] {}", bm.url);
             if url_changed {
                 println!("          url   -> {url}");
@@ -274,7 +284,8 @@ pub async fn cleanup<P: BookmarkStore>(
             continue;
         }
 
-        apply_update(
+        // Log and skip a single failed update so the rest of the pass still runs.
+        match apply_update(
             pinboard,
             &mut wrote,
             BookmarkUpdate {
@@ -288,9 +299,18 @@ pub async fn cleanup<P: BookmarkStore>(
             },
             url_changed.then_some(bm.url.as_str()),
         )
-        .await?;
-        if opts.verbose {
-            eprintln!("updated {} -> {url}", bm.url);
+        .await
+        {
+            Ok(()) => {
+                changed += 1;
+                if opts.verbose {
+                    eprintln!("updated {} -> {url}", bm.url);
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("error: updating bookmark {}: {e:#}", bm.url);
+            }
         }
     }
 
@@ -298,6 +318,9 @@ pub async fn cleanup<P: BookmarkStore>(
         println!("{changed} bookmark(s) would change.");
     } else {
         println!("Done. Updated {changed} bookmark(s).");
+    }
+    if failed > 0 {
+        bail!("{failed} bookmark(s) failed to update");
     }
     Ok(())
 }

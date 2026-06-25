@@ -570,6 +570,10 @@ impl HnClient {
                 format!("{}\n\n{hn_link}", bm.extended)
             };
 
+            // Clean the title for consistency with the rest of cleanup (these are arbitrary
+            // article bookmarks, so they may carry HTML entities).
+            let description = html_to_plain(&bm.description);
+
             // Drop the marker tag, add the base HN tags.
             let mut tags: Vec<String> = bm
                 .tag_list()
@@ -578,7 +582,10 @@ impl HnClient {
                 .collect();
             extend_unique(&mut tags, &self.config.tags);
 
-            if extended == bm.extended && !tags_differ(&bm.tag_list(), &tags) {
+            if extended == bm.extended
+                && description == bm.description
+                && !tags_differ(&bm.tag_list(), &tags)
+            {
                 continue;
             }
 
@@ -586,6 +593,9 @@ impl HnClient {
                 changed += 1;
                 println!("[dry-run] {}", bm.url);
                 println!("          notes -> {hn_link}");
+                if description != bm.description {
+                    println!("          title -> {description}");
+                }
                 println!("          tags  -> [{}]", tags.join(" "));
                 continue;
             }
@@ -596,7 +606,7 @@ impl HnClient {
                 &mut wrote,
                 BookmarkUpdate {
                     url: &bm.url,
-                    description: &bm.description,
+                    description: &description,
                     extended: &extended,
                     tags: &tags,
                     shared: bm.is_shared(),

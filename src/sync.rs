@@ -49,6 +49,12 @@ pub async fn write_drafts<P: BookmarkStore>(
     let mut outcome = WriteOutcome::default();
     let mut posted = false;
     for draft in drafts {
+        // The source post date as RFC3339, when set (the sync loop has already applied
+        // the use_post_date flag + age cap); empty = let Pinboard default to now.
+        let dt = draft
+            .post_date
+            .and_then(crate::timefmt::unix_to_rfc3339)
+            .unwrap_or_default();
         if dry_run {
             println!("[dry-run] {}", draft.url);
             println!("          title: {}", draft.description);
@@ -56,6 +62,9 @@ pub async fn write_drafts<P: BookmarkStore>(
                 println!("          notes: {}", crate::preview(&draft.extended));
             }
             println!("          tags:  [{}]", draft.tags.join(" "));
+            if !dt.is_empty() {
+                println!("          date:  {dt}");
+            }
             continue;
         }
 
@@ -73,6 +82,7 @@ pub async fn write_drafts<P: BookmarkStore>(
                 &draft.tags,
                 draft.toread,
                 draft.shared,
+                &dt,
             )
             .await
         {
@@ -167,6 +177,7 @@ mod tests {
             dedup_key: url.into(),
             toread,
             shared,
+            post_date: None,
         };
         let drafts = vec![
             draft("https://a.test/", true, true),
@@ -178,6 +189,29 @@ mod tests {
         assert_eq!(added.len(), 2);
         assert!(added[0].toread && added[0].shared);
         assert!(!added[1].toread && !added[1].shared);
+    }
+
+    #[tokio::test]
+    async fn write_drafts_sends_post_date_as_dt_when_set() {
+        let draft = |url: &str, post_date: Option<i64>| BookmarkDraft {
+            url: url.into(),
+            description: "T".into(),
+            extended: String::new(),
+            tags: vec![],
+            dedup_key: url.into(),
+            toread: false,
+            shared: false,
+            post_date,
+        };
+        let drafts = vec![
+            draft("https://a.test/", Some(1_292_096_882)),
+            draft("https://b.test/", None),
+        ];
+        let pinboard = FakePinboard::default();
+        write_drafts(&pinboard, &drafts, false).await;
+        let added = pinboard.added.borrow();
+        assert_eq!(added[0].dt, "2010-12-11T19:48:02Z");
+        assert_eq!(added[1].dt, "");
     }
 
     #[tokio::test]
@@ -209,6 +243,7 @@ mod tests {
             dedup_key: url.into(),
             toread: false,
             shared: false,
+            post_date: None,
         };
         let drafts = vec![
             draft("https://a.test/"),

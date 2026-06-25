@@ -97,7 +97,9 @@ pub struct BookmarkUpdate<'a> {
 pub trait BookmarkStore {
     /// Every bookmark in the account (`posts/all`).
     async fn all(&self) -> Result<Vec<Bookmark>>;
-    /// Add a new bookmark.
+    /// Add a new bookmark. `dt` is the creation time (RFC3339); empty = let Pinboard
+    /// default to now.
+    #[allow(clippy::too_many_arguments)]
     async fn add(
         &self,
         url: &str,
@@ -106,6 +108,7 @@ pub trait BookmarkStore {
         tags: &[String],
         toread: bool,
         shared: bool,
+        dt: &str,
     ) -> Result<()>;
     /// Re-add an existing bookmark with normalized fields, preserving metadata.
     async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()>;
@@ -207,6 +210,7 @@ impl BookmarkStore for PinboardClient {
         self.rate_limit_secs
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn add(
         &self,
         url: &str,
@@ -215,6 +219,7 @@ impl BookmarkStore for PinboardClient {
         tags: &[String],
         toread: bool,
         shared: bool,
+        dt: &str,
     ) -> Result<()> {
         self.post_add(BookmarkUpdate {
             url,
@@ -223,7 +228,7 @@ impl BookmarkStore for PinboardClient {
             tags,
             shared,
             toread,
-            dt: "",
+            dt,
         })
         .await
     }
@@ -483,6 +488,7 @@ mod net_tests {
                 &["reddit".into()],
                 false,
                 false,
+                "",
             )
             .await
             .unwrap();
@@ -523,6 +529,7 @@ mod net_tests {
                 &["reddit".into()],
                 false,
                 false,
+                "",
             )
             .await
             .unwrap();
@@ -547,6 +554,7 @@ mod net_tests {
                 &["reddit".into()],
                 false,
                 false,
+                "",
             )
             .await
             .unwrap_err();

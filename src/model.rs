@@ -45,6 +45,9 @@ pub struct EntryFields {
     pub permalink: Option<String>,
     #[serde(default)]
     pub over_18: bool,
+    /// Post/comment creation time (unix epoch seconds, as a float).
+    #[serde(default)]
+    pub created_utc: Option<f64>,
     #[serde(default)]
     pub author: Option<String>,
     #[serde(default)]
@@ -70,7 +73,7 @@ pub struct EntryFields {
 }
 
 /// A normalized saved item ready to become a Pinboard bookmark.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SavedItem {
     pub fullname: String,
     pub is_comment: bool,
@@ -80,6 +83,8 @@ pub struct SavedItem {
     pub over_18: bool,
     pub description: String,
     pub extended: String,
+    /// Post/comment creation time (unix epoch seconds), when present.
+    pub created_utc: Option<f64>,
     /// Reddit author (`author:<name>` tag).
     pub author: Option<String>,
     /// Post flair text (`flair:<slug>` tag).
@@ -147,6 +152,7 @@ impl ListingEntry {
             over_18: fields.over_18,
             description,
             extended,
+            created_utc: fields.created_utc,
             author: fields.author.filter(|s| !s.is_empty()),
             flair: fields.link_flair_text.filter(|s| !s.is_empty()),
             media_type,
@@ -251,6 +257,7 @@ impl SavedItem {
     pub fn into_draft(self, cfg: &RedditConfig) -> BookmarkDraft {
         let url = self.bookmark_url(&cfg.domain);
         let dedup_key = reddit_key(&self.permalink).unwrap_or_else(|| url.clone());
+        let post_date = self.created_utc.map(|s| s as i64);
         let tags = self.tags(cfg);
         BookmarkDraft {
             url,
@@ -260,6 +267,7 @@ impl SavedItem {
             dedup_key,
             toread: false,
             shared: false,
+            post_date,
         }
     }
 }

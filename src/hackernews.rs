@@ -70,6 +70,9 @@ struct Item {
     title: Option<String>,
     #[serde(default)]
     text: Option<String>,
+    /// Item creation time (unix epoch seconds), when known.
+    #[serde(default)]
+    created_at: Option<i64>,
 }
 
 /// An Algolia HN search response.
@@ -96,6 +99,9 @@ struct AlgoliaHit {
     comment_text: Option<String>,
     #[serde(rename = "_tags", default)]
     tags: Vec<String>,
+    /// Item creation time (unix epoch seconds).
+    #[serde(default)]
+    created_at_i: Option<i64>,
 }
 
 impl From<AlgoliaHit> for Item {
@@ -113,6 +119,7 @@ impl From<AlgoliaHit> for Item {
             url: h.url,
             title: h.title,
             text: h.comment_text.or(h.story_text),
+            created_at: h.created_at_i,
         }
     }
 }
@@ -144,6 +151,7 @@ impl Item {
                 dedup_key: format!("hn:{}", self.id),
                 toread: false,
                 shared: false,
+                post_date: self.created_at,
             };
         }
 
@@ -168,6 +176,7 @@ impl Item {
             dedup_key,
             toread: false,
             shared: false,
+            post_date: self.created_at,
         }
     }
 }
@@ -352,6 +361,12 @@ pub struct HnCleanupOpts {
     pub dry_run: bool,
     /// Also link `link_tag`-tagged article bookmarks to their HN discussion.
     pub link_discussions: bool,
+    /// Re-date bookmarks to the source item's creation time (within the age cap).
+    pub use_post_date: bool,
+    /// Backdate age cap, in days.
+    pub max_age_days: u64,
+    /// Re-date items older than the cap to "now" instead of leaving them.
+    pub cleanup_stale_to_now: bool,
 }
 
 impl HnClient {
@@ -394,6 +409,7 @@ impl HnClient {
             .await
             .map_err(SourceError::into_anyhow)?;
 
+        let now = crate::timefmt::now_unix();
         let mut changed = 0usize;
         let mut failed = 0usize;
         let mut wrote = false;
@@ -402,17 +418,28 @@ impl HnClient {
             let Some(item) = items.get(&id) else {
                 continue;
             };
+            let src_ts = item.created_at;
             let draft = item.clone().into_draft(&self.config);
 
             // Preserve existing tags, appending any freshly-derived ones.
             let mut tags = bm.tag_list();
             extend_unique(&mut tags, &draft.tags);
 
+            let dt = crate::timefmt::cleanup_dt(
+                opts.use_post_date,
+                opts.max_age_days,
+                opts.cleanup_stale_to_now,
+                src_ts,
+                now,
+                &bm.time,
+            );
+
             let url_changed = draft.url != bm.url;
             let tags_changed = tags != bm.tag_list();
             let desc_changed = draft.description != bm.description;
             let ext_changed = draft.extended != bm.extended;
-            if !(url_changed || tags_changed || desc_changed || ext_changed) {
+            let date_changed = dt != bm.time;
+            if !(url_changed || tags_changed || desc_changed || ext_changed || date_changed) {
                 continue;
             }
 
@@ -428,6 +455,9 @@ impl HnClient {
                 if tags_changed {
                     println!("          tags  -> [{}]", tags.join(" "));
                 }
+                if date_changed {
+                    println!("          date  -> {dt}");
+                }
                 continue;
             }
 
@@ -442,7 +472,7 @@ impl HnClient {
                     tags: &tags,
                     shared: bm.is_shared(),
                     toread: bm.is_toread(),
-                    dt: &bm.time,
+                    dt: &dt,
                 },
                 url_changed.then_some(bm.url.as_str()),
             )
@@ -861,6 +891,9 @@ mod net_tests {
                 &HnCleanupOpts {
                     dry_run: false,
                     link_discussions: false,
+                    use_post_date: false,
+                    max_age_days: 30,
+                    cleanup_stale_to_now: false,
                 },
                 &bookmarks,
             )
@@ -926,6 +959,9 @@ mod net_tests {
                 &HnCleanupOpts {
                     dry_run: false,
                     link_discussions: true,
+                    use_post_date: false,
+                    max_age_days: 30,
+                    cleanup_stale_to_now: false,
                 },
                 &bookmarks,
             )

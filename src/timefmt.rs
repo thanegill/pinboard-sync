@@ -3,10 +3,6 @@
 //! compare) and the RFC 3339 string Pinboard's `dt` expects (e.g.
 //! `2010-12-11T19:48:02Z`).
 
-// These helpers are wired into the sync/cleanup/github paths in the following
-// commits; allow them to be unused until then.
-#![allow(dead_code)]
-
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
@@ -30,6 +26,30 @@ pub fn rfc3339_to_unix(s: &str) -> Option<i64> {
 /// logic (the age cap) takes the value as a parameter so it stays testable.
 pub fn now_unix() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
+}
+
+/// The Pinboard `dt` for a `cleanup` re-write of one bookmark, honoring `use_post_date`,
+/// the age cap (`max_age_days`), and the stale fallback (`stale_to_now`). `src_ts` is the
+/// source post time (epoch, if known) and `existing` the bookmark's current `dt`. Returns
+/// the source date (RFC3339) when dating is on and the post is within the cap; otherwise
+/// `now` when the post is stale and `stale_to_now`; otherwise `existing` (unchanged).
+pub fn cleanup_dt(
+    use_post_date: bool,
+    max_age_days: u64,
+    stale_to_now: bool,
+    src_ts: Option<i64>,
+    now: i64,
+    existing: &str,
+) -> String {
+    if !use_post_date {
+        return existing.to_string();
+    }
+    let within_cap = |t: i64| now - t <= max_age_days as i64 * 86_400;
+    match src_ts {
+        Some(t) if within_cap(t) => unix_to_rfc3339(t).unwrap_or_else(|| existing.to_string()),
+        Some(_) if stale_to_now => unix_to_rfc3339(now).unwrap_or_else(|| existing.to_string()),
+        _ => existing.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -64,5 +84,36 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         assert_eq!(rfc3339_to_unix("not a date"), None);
+    }
+
+    #[test]
+    fn cleanup_dt_honors_flag_cap_and_stale_fallback() {
+        let now = 1_700_000_000;
+        let recent = now - 5 * 86_400; // 5 days old
+        let old = now - 60 * 86_400; // 60 days old
+        let existing = "2019-01-01T00:00:00Z";
+
+        // Dating off → keep existing.
+        assert_eq!(
+            cleanup_dt(false, 30, true, Some(recent), now, existing),
+            existing
+        );
+        // Within cap → source date.
+        assert_eq!(
+            cleanup_dt(true, 30, false, Some(recent), now, existing),
+            unix_to_rfc3339(recent).unwrap()
+        );
+        // Stale + default (no stale_to_now) → keep existing.
+        assert_eq!(
+            cleanup_dt(true, 30, false, Some(old), now, existing),
+            existing
+        );
+        // Stale + stale_to_now → now.
+        assert_eq!(
+            cleanup_dt(true, 30, true, Some(old), now, existing),
+            unix_to_rfc3339(now).unwrap()
+        );
+        // No source date → keep existing.
+        assert_eq!(cleanup_dt(true, 30, true, None, now, existing), existing);
     }
 }

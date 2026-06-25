@@ -23,16 +23,21 @@ public = false                           # write bookmarks public (default: priv
 toread = false                           # mark new bookmarks unread (default: false)
 rate_limit_secs = 3                      # seconds between posts/add writes (default: 3)
 # limit = 0                              # global cap on new bookmarks per run (0/unset = none)
+use_post_date = false                    # date bookmarks by the source post date (default: false)
+post_date_max_age_days = 30              # only backdate posts this recent; older use "now" (default: 30)
+cleanup_stale_to_now = false             # on cleanup, re-date too-old posts to now (default: false → keep existing)
 
 # Per-source defaults: the middle override tier between the globals above and a
-# per-account value. Resolution: CLI > account > [defaults.<source>] > global.
-# Any of toread, public, limit, on_auth_failure may be set per source.
+# per-account value. Resolution: CLI > account > [defaults.<source>] > global. Any of
+# toread, public, limit, on_auth_failure, use_post_date, post_date_max_age_days,
+# cleanup_stale_to_now may be set per source. (github's source date is the star date;
+# cleanup re-dates github from the star list.)
 [defaults.reddit]
-# toread = true
+# use_post_date = true
 [defaults.github]
-# toread = true
+# use_post_date = true
 [defaults.hackernews]
-# toread = true
+# use_post_date = true
 
 # A reddit account. Repeat the [[reddit]] table for multiple accounts; select one
 # with `sync reddit <name>`, or run them all with `sync reddit --all`.
@@ -45,6 +50,9 @@ name = "main"                            # optional selector; defaults to `usern
 # limit = 0                              # cap new bookmarks per run (0 = all)
 # toread = true                          # override [pinboard].toread for this account
 # public = true                          # override [pinboard].public for this account
+# use_post_date = true                   # override use_post_date for this account
+# post_date_max_age_days = 7             # override the backdate window (days)
+# cleanup_stale_to_now = true            # override stale-to-now on cleanup
 
 # Tags (config-only). Each line shows the built-in default; set "" to disable a
 # prefixed/conditional tag. `tags` are applied to every bookmark and fully replace
@@ -69,6 +77,9 @@ name = "personal"                        # selector; GitHub has no username to d
 # limit = 0                              # cap new bookmarks per run (0 = all)
 # toread = true                          # override [pinboard].toread for this account
 # public = true                          # override [pinboard].public for this account
+# use_post_date = true                   # override use_post_date for this account
+# post_date_max_age_days = 7             # override the backdate window (days)
+# cleanup_stale_to_now = true            # override stale-to-now on cleanup
 tags = ["github-star"]                   # applied to every bookmark (default ["github-star"])
 tag_lang_prefix = "lang:"                # lang:<language>
 
@@ -81,6 +92,9 @@ name = "me"                              # optional selector; defaults to `usern
 # limit = 0                              # cap new bookmarks per run (0 = all)
 # toread = true                          # override [pinboard].toread for this account
 # public = true                          # override [pinboard].public for this account
+# use_post_date = true                   # override use_post_date for this account
+# post_date_max_age_days = 7             # override the backdate window (days)
+# cleanup_stale_to_now = true            # override stale-to-now on cleanup
 tags = ["hackernews"]                    # applied to every bookmark (default ["hackernews"])
 tag_comment = "hackernews-comment"       # added to favorited comments
 tag_author_prefix = "author:hackernews:" # author:hackernews:<name>

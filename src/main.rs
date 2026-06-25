@@ -510,6 +510,10 @@ struct SyncJob {
     toread: bool,
     /// Resolved public/shared flag for this account's new bookmarks.
     shared: bool,
+    /// Resolved: date new bookmarks by the source post date.
+    use_post_date: bool,
+    /// Resolved backdate age cap, in days (posts older than this use "now").
+    max_age_days: u64,
 }
 
 /// A log/display label for a job: `source[account]`, or `source[default]` when no
@@ -536,6 +540,29 @@ fn job_shared(
     config: &Config,
 ) -> bool {
     ovr.public || account.or(source).unwrap_or(config.pinboard.public)
+}
+
+/// Whether to date this account's bookmarks by the source post date: its override,
+/// else the per-source default, else the `[pinboard]` global.
+fn job_use_post_date(account: Option<bool>, source: Option<bool>, config: &Config) -> bool {
+    account.or(source).unwrap_or(config.pinboard.use_post_date)
+}
+
+/// This account's backdate age cap (days): its override, else the per-source default,
+/// else the `[pinboard]` global, else [`config::DEFAULT_MAX_AGE_DAYS`].
+fn job_max_age_days(account: Option<u64>, source: Option<u64>, config: &Config) -> u64 {
+    account
+        .or(source)
+        .or(config.pinboard.post_date_max_age_days)
+        .unwrap_or(config::DEFAULT_MAX_AGE_DAYS)
+}
+
+/// Whether `cleanup` re-dates stale (older-than-cap) posts to "now": account override,
+/// else per-source default, else the `[pinboard]` global.
+fn job_stale_to_now(account: Option<bool>, source: Option<bool>, config: &Config) -> bool {
+    account
+        .or(source)
+        .unwrap_or(config.pinboard.cleanup_stale_to_now)
 }
 
 /// One of the concrete source clients, unified behind the `Source` port so `--all`
@@ -614,6 +641,16 @@ fn build_reddit_job(
         limit: job_limit(ovr, account.and_then(|a| a.limit), src.limit, config),
         toread: job_toread(account.and_then(|a| a.toread), src.toread, config),
         shared: job_shared(ovr, account.and_then(|a| a.public), src.public, config),
+        use_post_date: job_use_post_date(
+            account.and_then(|a| a.use_post_date),
+            src.use_post_date,
+            config,
+        ),
+        max_age_days: job_max_age_days(
+            account.and_then(|a| a.post_date_max_age_days),
+            src.post_date_max_age_days,
+            config,
+        ),
     })
 }
 
@@ -646,6 +683,16 @@ fn build_github_job(
         limit: job_limit(ovr, account.and_then(|a| a.limit), src.limit, config),
         toread: job_toread(account.and_then(|a| a.toread), src.toread, config),
         shared: job_shared(ovr, account.and_then(|a| a.public), src.public, config),
+        use_post_date: job_use_post_date(
+            account.and_then(|a| a.use_post_date),
+            src.use_post_date,
+            config,
+        ),
+        max_age_days: job_max_age_days(
+            account.and_then(|a| a.post_date_max_age_days),
+            src.post_date_max_age_days,
+            config,
+        ),
     })
 }
 
@@ -675,6 +722,16 @@ fn build_hackernews_job(
         limit: job_limit(ovr, account.and_then(|a| a.limit), src.limit, config),
         toread: job_toread(account.and_then(|a| a.toread), src.toread, config),
         shared: job_shared(ovr, account.and_then(|a| a.public), src.public, config),
+        use_post_date: job_use_post_date(
+            account.and_then(|a| a.use_post_date),
+            src.use_post_date,
+            config,
+        ),
+        max_age_days: job_max_age_days(
+            account.and_then(|a| a.post_date_max_age_days),
+            src.post_date_max_age_days,
+            config,
+        ),
     })
 }
 
@@ -691,6 +748,7 @@ async fn run_sync_jobs(
         jobs.len(),
         bookmarks.len()
     );
+    let now = timefmt::now_unix();
     let fetched = futures::future::join_all(jobs.iter().map(|job| async move {
         let drafts = job.client.fetch().await?;
         let fetched = drafts.len();
@@ -698,6 +756,14 @@ async fn run_sync_jobs(
         for d in &mut new {
             d.toread = job.toread;
             d.shared = job.shared;
+            // Keep the source date only when dating is enabled and the post is within
+            // the age cap; otherwise clear it so the writer lets Pinboard use "now".
+            d.post_date = if job.use_post_date {
+                d.post_date
+                    .filter(|&t| now - t <= job.max_age_days as i64 * 86_400)
+            } else {
+                None
+            };
         }
         if job.limit > 0 && new.len() > job.limit {
             debug!(
@@ -852,9 +918,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             let (pinboard, bookmarks) = open_pinboard(None, config).await?;
             let mut run = AllRun::default();
             if let Some(acct) = config.github.first() {
-                let opts = github::GhCleanupOpts {
-                    dry_run: cmd.dry_run,
-                };
+                let opts = gh_cleanup_opts(cmd.dry_run, Some(acct), config);
                 run.record(
                     cleanup_github_for(&pinboard, &bookmarks, Some(acct), None, &opts).await,
                 );
@@ -868,7 +932,9 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                     no_titles: false,
                     dry_run: cmd.dry_run,
                 };
-                run.record(cleanup_one_reddit(Some(acct), &args, &pinboard, &bookmarks).await);
+                run.record(
+                    cleanup_one_reddit(Some(acct), &args, &pinboard, &bookmarks, config).await,
+                );
             }
             if let Some(acct) = config.hackernews.first() {
                 run.record(
@@ -879,6 +945,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                         None,
                         &pinboard,
                         &bookmarks,
+                        config,
                     )
                     .await,
                 );
@@ -894,12 +961,37 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
     }
 }
 
+/// Resolve the date settings (3-tier) for a github cleanup pass.
+fn gh_cleanup_opts(
+    dry_run: bool,
+    account: Option<&GithubAccount>,
+    config: &Config,
+) -> github::GhCleanupOpts {
+    let src = &config.defaults.github;
+    github::GhCleanupOpts {
+        dry_run,
+        use_post_date: job_use_post_date(
+            account.and_then(|a| a.use_post_date),
+            src.use_post_date,
+            config,
+        ),
+        max_age_days: job_max_age_days(
+            account.and_then(|a| a.post_date_max_age_days),
+            src.post_date_max_age_days,
+            config,
+        ),
+        cleanup_stale_to_now: job_stale_to_now(
+            account.and_then(|a| a.cleanup_stale_to_now),
+            src.cleanup_stale_to_now,
+            config,
+        ),
+    }
+}
+
 async fn run_cleanup_github(args: GithubCleanupArgs, config: &Config) -> Result<()> {
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let account = config::select_account(&config.github, args.account.as_deref())?;
-    let opts = github::GhCleanupOpts {
-        dry_run: args.dry_run,
-    };
+    let opts = gh_cleanup_opts(args.dry_run, account, config);
     cleanup_github_for(&pinboard, &bookmarks, account, args.github_token, &opts).await
 }
 
@@ -931,7 +1023,7 @@ async fn run_cleanup_reddit(args: RedditCleanupArgs, config: &Config) -> Result<
     // first, or implicit CLI/env) account's cookie + domain/tags.
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let account = config::select_account(&config.reddit, args.account.as_deref())?;
-    cleanup_one_reddit(account, &args, &pinboard, &bookmarks).await
+    cleanup_one_reddit(account, &args, &pinboard, &bookmarks, config).await
 }
 
 async fn cleanup_one_reddit(
@@ -939,10 +1031,12 @@ async fn cleanup_one_reddit(
     args: &RedditCleanupArgs,
     pinboard: &PinboardClient,
     bookmarks: &[Bookmark],
+    config: &Config,
 ) -> Result<()> {
     let reddit_config = account
         .map(RedditAccount::reddit_config)
         .unwrap_or_default();
+    let src = &config.defaults.reddit;
     let opts = cleanup::CleanupOpts {
         dry_run: args.dry_run,
         mark_nsfw: !args.no_nsfw,
@@ -950,17 +1044,33 @@ async fn cleanup_one_reddit(
         base_tag: reddit_config.tags.first().cloned().unwrap_or_default(),
         subreddit_tag_prefix: reddit_config.subreddit_prefix.clone(),
         domain: reddit_config.domain.clone(),
+        use_post_date: job_use_post_date(
+            account.and_then(|a| a.use_post_date),
+            src.use_post_date,
+            config,
+        ),
+        max_age_days: job_max_age_days(
+            account.and_then(|a| a.post_date_max_age_days),
+            src.post_date_max_age_days,
+            config,
+        ),
+        cleanup_stale_to_now: job_stale_to_now(
+            account.and_then(|a| a.cleanup_stale_to_now),
+            src.cleanup_stale_to_now,
+            config,
+        ),
     };
 
-    // Reddit (for /api/info) is only needed when marking NSFW or fixing titles.
-    let reddit = if opts.mark_nsfw || opts.fix_titles {
+    // Reddit (for /api/info) is needed when marking NSFW, fixing titles, or dating by
+    // the source post (the post's created_utc comes from /api/info too).
+    let reddit = if opts.mark_nsfw || opts.fix_titles || opts.use_post_date {
         let cookie = resolve_secret(
             args.reddit_cookie.clone(),
             "REDDIT_COOKIE",
             account.and_then(|a| a.cookie.clone()),
             account.and_then(|a| a.cookie_file.as_deref()),
         )
-        .context("missing Reddit cookie (set --reddit-cookie, REDDIT_COOKIE, or pass --no-nsfw --no-titles)")?;
+        .context("missing Reddit cookie (set --reddit-cookie, REDDIT_COOKIE, or pass --no-nsfw --no-titles and disable use_post_date)")?;
         Some(RedditClient::for_info(Some(cookie))?)
     } else {
         None
@@ -981,10 +1091,12 @@ async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) ->
         args.link_tag,
         &pinboard,
         &bookmarks,
+        config,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cleanup_one_hackernews(
     account: Option<&HackernewsAccount>,
     dry_run: bool,
@@ -992,6 +1104,7 @@ async fn cleanup_one_hackernews(
     link_tag: Option<String>,
     pinboard: &PinboardClient,
     bookmarks: &[Bookmark],
+    config: &Config,
 ) -> Result<()> {
     let mut hn_config = account
         .map(HackernewsAccount::hackernews_config)
@@ -1000,12 +1113,28 @@ async fn cleanup_one_hackernews(
     if let Some(tag) = link_tag {
         hn_config.link_tag = tag;
     }
+    let src = &config.defaults.hackernews;
     let hn = HnClient::for_cleanup(hn_config)?;
     hn.cleanup(
         pinboard,
         &HnCleanupOpts {
             dry_run,
             link_discussions,
+            use_post_date: job_use_post_date(
+                account.and_then(|a| a.use_post_date),
+                src.use_post_date,
+                config,
+            ),
+            max_age_days: job_max_age_days(
+                account.and_then(|a| a.post_date_max_age_days),
+                src.post_date_max_age_days,
+                config,
+            ),
+            cleanup_stale_to_now: job_stale_to_now(
+                account.and_then(|a| a.cleanup_stale_to_now),
+                src.cleanup_stale_to_now,
+                config,
+            ),
         },
         bookmarks,
     )

@@ -1,6 +1,7 @@
 //! The GitHub source: reads the authenticated user's starred repositories
 //! (`/user/starred`, token-authenticated) and shapes each into a Pinboard draft.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -50,9 +51,32 @@ struct Repo {
     language: Option<String>,
 }
 
-impl Repo {
-    /// Shape the repo into a Pinboard draft.
+/// A `/user/starred` element when requested with the star+json media type: the repo
+/// plus the time the user starred it.
+#[derive(Debug, Clone, Deserialize)]
+struct StarredRepo {
+    starred_at: String,
+    repo: Repo,
+}
+
+impl StarredRepo {
+    /// Shape into a draft, dating it by the (RFC3339) star time.
     fn into_draft(self, cfg: &GithubConfig) -> BookmarkDraft {
+        let post_date = crate::timefmt::rfc3339_to_unix(&self.starred_at);
+        self.repo.into_draft_with_date(cfg, post_date)
+    }
+}
+
+impl Repo {
+    /// Shape the repo into a Pinboard draft (no source date). Test-only convenience;
+    /// the production path dates each draft via [`StarredRepo::into_draft`].
+    #[cfg(test)]
+    fn into_draft(self, cfg: &GithubConfig) -> BookmarkDraft {
+        self.into_draft_with_date(cfg, None)
+    }
+
+    /// Shape the repo into a Pinboard draft, carrying `post_date` (the star time).
+    fn into_draft_with_date(self, cfg: &GithubConfig, post_date: Option<i64>) -> BookmarkDraft {
         let dedup_key = url_key(&self.html_url).unwrap_or_else(|| self.html_url.clone());
 
         let mut extended = self
@@ -77,6 +101,7 @@ impl Repo {
             dedup_key,
             toread: false,
             shared: false,
+            post_date,
         }
     }
 }
@@ -155,8 +180,11 @@ impl Source for GitHubClient {
 
         loop {
             let resp = send_retrying("github starred", MAX_RETRIES, RETRY_DELAY, || {
+                // The star+json media type makes each element `{ starred_at, repo }`, so
+                // we can date each bookmark by when it was starred.
                 self.http
                     .get(&endpoint)
+                    .header(reqwest::header::ACCEPT, "application/vnd.github.star+json")
                     .query(&[("sort", "created")])
                     .query(&[("page", page)])
             })
@@ -181,11 +209,11 @@ impl Source for GitHubClient {
                 );
             }
 
-            let repos: Vec<Repo> = resp
+            let starred: Vec<StarredRepo> = resp
                 .json()
                 .await
                 .context("parsing github starred response")?;
-            out.extend(repos.into_iter().map(|r| r.into_draft(&self.config)));
+            out.extend(starred.into_iter().map(|s| s.into_draft(&self.config)));
 
             match next {
                 Some(p) => page = p,
@@ -205,6 +233,13 @@ impl Source for GitHubClient {
 /// Options for `cleanup github`.
 pub struct GhCleanupOpts {
     pub dry_run: bool,
+    /// Re-date bookmarks to when the repo was starred (within the age cap). Since the
+    /// per-repo lookup doesn't carry `starred_at`, this fetches the star list to map it.
+    pub use_post_date: bool,
+    /// Backdate age cap, in days.
+    pub max_age_days: u64,
+    /// Re-date repos starred longer ago than the cap to "now" instead of leaving them.
+    pub cleanup_stale_to_now: bool,
 }
 
 /// Normalize existing GitHub repo bookmarks: look each repo up via the API (which
@@ -230,6 +265,22 @@ pub async fn cleanup<P: BookmarkStore>(
         if opts.dry_run { " (dry run)" } else { "" }
     );
 
+    // `starred_at` isn't on the per-repo lookup, so for use_post_date fetch the star
+    // list once and map url_key -> star epoch. A repo no longer starred won't be here
+    // (it keeps its existing time).
+    let star_dates: HashMap<String, i64> = if opts.use_post_date {
+        client
+            .fetch()
+            .await
+            .map_err(SourceError::into_anyhow)?
+            .into_iter()
+            .filter_map(|d| Some((url_key(&d.url)?, d.post_date?)))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let now = crate::timefmt::now_unix();
     let mut changed = 0usize;
     let mut failed = 0usize;
     let mut wrote = false;
@@ -258,10 +309,20 @@ pub async fn cleanup<P: BookmarkStore>(
             }
         }
 
+        let dt = crate::timefmt::cleanup_dt(
+            opts.use_post_date,
+            opts.max_age_days,
+            opts.cleanup_stale_to_now,
+            url_key(&url).and_then(|k| star_dates.get(&k).copied()),
+            now,
+            &bm.time,
+        );
+
         let url_changed = url != bm.url;
         let desc_changed = description != bm.description;
         let tags_changed = tags_differ(&bm.tag_list(), &tags);
-        if !(url_changed || desc_changed || tags_changed) {
+        let date_changed = dt != bm.time;
+        if !(url_changed || desc_changed || tags_changed || date_changed) {
             continue;
         }
 
@@ -277,6 +338,9 @@ pub async fn cleanup<P: BookmarkStore>(
             if tags_changed {
                 println!("          tags  -> [{}]", tags.join(" "));
             }
+            if date_changed {
+                println!("          date  -> {dt}");
+            }
             continue;
         }
 
@@ -291,7 +355,7 @@ pub async fn cleanup<P: BookmarkStore>(
                 tags: &tags,
                 shared: bm.is_shared(),
                 toread: bm.is_toread(),
-                dt: &bm.time,
+                dt: &dt,
             },
             url_changed.then_some(bm.url.as_str()),
         )
@@ -526,6 +590,8 @@ mod net_tests {
             .and(path("/user/starred"))
             .and(query_param("page", "1"))
             .and(header("authorization", "Bearer tok"))
+            // The client requests the star+json media type to get `starred_at`.
+            .and(header("accept", "application/vnd.github.star+json"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header(
@@ -533,8 +599,9 @@ mod net_tests {
                         format!("<{}/user/starred?page=2>; rel=\"next\"", server.uri()).as_str(),
                     )
                     .set_body_json(json!([
-                        { "full_name": "a/one", "html_url": "https://github.com/a/one",
-                          "language": "Rust" }
+                        { "starred_at": "2023-01-02T03:04:05Z",
+                          "repo": { "full_name": "a/one", "html_url": "https://github.com/a/one",
+                                    "language": "Rust" } }
                     ])),
             )
             .mount(&server)
@@ -544,7 +611,8 @@ mod net_tests {
             .and(path("/user/starred"))
             .and(query_param("page", "2"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-                { "full_name": "b/two", "html_url": "https://github.com/b/two" }
+                { "starred_at": "2020-06-07T08:09:10Z",
+                  "repo": { "full_name": "b/two", "html_url": "https://github.com/b/two" } }
             ])))
             .mount(&server)
             .await;
@@ -555,6 +623,11 @@ mod net_tests {
         assert_eq!(drafts.len(), 2);
         assert_eq!(drafts[0].description, "a/one");
         assert_eq!(drafts[0].tags, vec!["github-star", "lang:rust"]);
+        // The star time becomes the draft's post_date (RFC3339 → epoch).
+        assert_eq!(
+            drafts[0].post_date,
+            crate::timefmt::rfc3339_to_unix("2023-01-02T03:04:05Z")
+        );
         assert_eq!(drafts[1].description, "b/two");
     }
 
@@ -609,7 +682,12 @@ mod net_tests {
             &pinboard,
             &client,
             &GithubConfig::default(),
-            &GhCleanupOpts { dry_run: false },
+            &GhCleanupOpts {
+                dry_run: false,
+                use_post_date: false,
+                max_age_days: 30,
+                cleanup_stale_to_now: false,
+            },
             &bookmarks,
         )
         .await

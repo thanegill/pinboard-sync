@@ -53,6 +53,7 @@ pub struct AddCall {
     pub tags: Vec<String>,
     pub toread: bool,
     pub shared: bool,
+    pub dt: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +86,7 @@ impl BookmarkStore for FakePinboard {
         *self.all_calls.borrow_mut() += 1;
         Ok(self.all.clone())
     }
+    #[allow(clippy::too_many_arguments)]
     async fn add(
         &self,
         url: &str,
@@ -93,6 +95,7 @@ impl BookmarkStore for FakePinboard {
         tags: &[String],
         toread: bool,
         shared: bool,
+        dt: &str,
     ) -> Result<()> {
         if self.fail_add_urls.contains(url) {
             return Err(anyhow!("simulated add failure for {url}"));
@@ -102,6 +105,7 @@ impl BookmarkStore for FakePinboard {
             tags: tags.to_vec(),
             toread,
             shared,
+            dt: dt.to_string(),
         });
         Ok(())
     }

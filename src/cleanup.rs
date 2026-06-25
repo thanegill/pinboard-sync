@@ -21,12 +21,20 @@ pub struct CleanupOpts {
     pub subreddit_tag_prefix: String,
     /// Reddit host that URLs are rewritten to (default `old.reddit.com`).
     pub domain: String,
+    /// Re-date bookmarks to the source post date (within the age cap).
+    pub use_post_date: bool,
+    /// Backdate age cap, in days.
+    pub max_age_days: u64,
+    /// Re-date posts older than the cap to "now" instead of leaving them.
+    pub cleanup_stale_to_now: bool,
 }
 
 /// Authoritative per-post data from `/api/info`.
 struct PostMeta {
     over_18: bool,
     title: Option<String>,
+    /// Post creation time (unix epoch seconds), for `use_post_date`.
+    created_utc: Option<f64>,
 }
 
 pub async fn run<P: BookmarkStore, R: PostInfo>(
@@ -48,6 +56,7 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
 
     let info = fetch_post_info(reddit, opts, &reddit_bms).await?;
 
+    let now = crate::timefmt::now_unix();
     let mut changed = 0usize;
     let mut failed = 0usize;
     let mut wrote = false;
@@ -78,12 +87,25 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
             }
         }
 
+        // The creation date to write: source post date within the cap, else preserve
+        // (or "now" when stale and cleanup_stale_to_now). Bound to a `String` here so it
+        // outlives the borrow in `BookmarkUpdate` below.
+        let dt = crate::timefmt::cleanup_dt(
+            opts.use_post_date,
+            opts.max_age_days,
+            opts.cleanup_stale_to_now,
+            post.and_then(|p| p.created_utc).map(|s| s as i64),
+            now,
+            &bm.time,
+        );
+
         let old_tags: BTreeSet<String> = bm.tag_list().into_iter().collect();
         let new_tags: BTreeSet<String> = tags.iter().cloned().collect();
         let tags_changed = old_tags != new_tags;
         let desc_changed = description != bm.description;
+        let date_changed = dt != bm.time;
 
-        if !(url_changed || tags_changed || desc_changed) {
+        if !(url_changed || tags_changed || desc_changed || date_changed) {
             continue;
         }
 
@@ -99,6 +121,9 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
             if desc_changed {
                 println!("          title -> {description}");
             }
+            if date_changed {
+                println!("          date  -> {dt}");
+            }
             continue;
         }
 
@@ -113,7 +138,7 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
                 tags: &tags,
                 shared: bm.is_shared(),
                 toread: bm.is_toread(),
-                dt: &bm.time,
+                dt: &dt,
             },
             url_changed.then_some(bm.url.as_str()),
         )
@@ -141,15 +166,16 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
     Ok(())
 }
 
-/// Batch-fetch `over_18` + `title` for every post referenced by the bookmarks,
-/// keyed by fullname. Empty when neither NSFW nor title fixing is requested.
+/// Batch-fetch `over_18` + `title` + `created_utc` for every post referenced by the
+/// bookmarks, keyed by fullname. Empty when none of NSFW tagging, title fixing, or
+/// `use_post_date` is requested (all that the `/api/info` call feeds).
 async fn fetch_post_info<R: PostInfo>(
     reddit: Option<&R>,
     opts: &CleanupOpts,
     bookmarks: &[Bookmark],
 ) -> Result<HashMap<String, PostMeta>> {
     let mut map = HashMap::new();
-    if !(opts.mark_nsfw || opts.fix_titles) {
+    if !(opts.mark_nsfw || opts.fix_titles || opts.use_post_date) {
         return Ok(map);
     }
     let Some(reddit) = reddit else {
@@ -182,6 +208,7 @@ async fn fetch_post_info<R: PostInfo>(
                 PostMeta {
                     over_18: entry.fields.over_18,
                     title: entry.fields.title.filter(|s| !s.is_empty()),
+                    created_utc: entry.fields.created_utc,
                 },
             );
         }
@@ -478,6 +505,9 @@ mod loop_tests {
             base_tag: "reddit".into(),
             subreddit_tag_prefix: "subreddit:".into(),
             domain: "old.reddit.com".into(),
+            use_post_date: false,
+            max_age_days: 30,
+            cleanup_stale_to_now: false,
         }
     }
 
@@ -542,6 +572,48 @@ mod loop_tests {
             *pinboard.deleted.borrow(),
             vec!["https://www.reddit.com/r/NEWS/comments/abc/x/".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn dates_bookmark_by_created_utc_when_use_post_date() {
+        // An already-normalized bookmark: only the date should change.
+        let pinboard = FakePinboard {
+            all: vec![bookmark(
+                "https://old.reddit.com/r/rust/comments/a/x/",
+                "A real title",
+                "reddit subreddit:rust",
+            )],
+            ..Default::default()
+        };
+        let reddit = FakeReddit {
+            info: vec![listing_entry(
+                "t3",
+                json!({ "name": "t3_a", "subreddit": "rust",
+                        "permalink": "/r/rust/comments/a/x/", "title": "A real title",
+                        "over_18": false, "created_utc": 1_700_000_000 }),
+            )],
+            ..Default::default()
+        };
+        // A huge cap so the (old) post is always "within" it; nsfw/titles off.
+        let opts = CleanupOpts {
+            use_post_date: true,
+            max_age_days: 1_000_000,
+            mark_nsfw: false,
+            fix_titles: false,
+            ..opts()
+        };
+
+        run(&pinboard, Some(&reddit), &opts, &pinboard.all)
+            .await
+            .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(
+            updated.len(),
+            1,
+            "a date-only change should still be written"
+        );
+        assert_eq!(updated[0].dt, "2023-11-14T22:13:20Z");
     }
 
     #[tokio::test]

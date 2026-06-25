@@ -57,6 +57,9 @@ pub struct SourceDefaults {
     pub public: Option<bool>,
     pub limit: Option<usize>,
     pub on_auth_failure: Option<String>,
+    pub use_post_date: Option<bool>,
+    pub post_date_max_age_days: Option<u64>,
+    pub cleanup_stale_to_now: Option<bool>,
 }
 
 /// Cross-cutting hooks.
@@ -84,7 +87,22 @@ pub struct Pinboard {
     /// Global cap on new bookmarks written per run (per-source/per-account overridable;
     /// 0 / unset = no cap). The CLI `--limit` still wins.
     pub limit: Option<usize>,
+    /// Set a bookmark's creation date to the source post date (default false).
+    /// Per-source/per-account overridable.
+    #[serde(default)]
+    pub use_post_date: bool,
+    /// With `use_post_date`, only backdate posts at most this many days old (unset =
+    /// [`DEFAULT_MAX_AGE_DAYS`]); older posts use "now" (sync) / keep their existing
+    /// time (cleanup).
+    pub post_date_max_age_days: Option<u64>,
+    /// With `use_post_date`, whether `cleanup` re-dates posts older than the cap to "now"
+    /// instead of leaving their existing date (default false — keeps cleanup idempotent).
+    #[serde(default)]
+    pub cleanup_stale_to_now: bool,
 }
+
+/// Built-in default backdate window (days) when no config sets `post_date_max_age_days`.
+pub const DEFAULT_MAX_AGE_DAYS: u64 = 30;
 
 /// One reddit account: whose saves to read, the session cookie, and the
 /// (non-secret) tag/domain vocabulary.
@@ -101,6 +119,12 @@ pub struct RedditAccount {
     pub toread: Option<bool>,
     /// Override `[pinboard].public` for this account's new bookmarks.
     pub public: Option<bool>,
+    /// Override `use_post_date` for this account.
+    pub use_post_date: Option<bool>,
+    /// Override `post_date_max_age_days` for this account.
+    pub post_date_max_age_days: Option<u64>,
+    /// Override `cleanup_stale_to_now` for this account.
+    pub cleanup_stale_to_now: Option<bool>,
     // Non-secret tag/domain config (`tag_*`), each defaulting in `reddit_config`.
     pub reddit_domain: Option<String>,
     pub tag_subreddit_prefix: Option<String>,
@@ -245,6 +269,12 @@ pub struct GithubAccount {
     pub toread: Option<bool>,
     /// Override `[pinboard].public` for this account's new bookmarks.
     pub public: Option<bool>,
+    /// Override `use_post_date` for this account.
+    pub use_post_date: Option<bool>,
+    /// Override `post_date_max_age_days` for this account.
+    pub post_date_max_age_days: Option<u64>,
+    /// Override `cleanup_stale_to_now` for this account.
+    pub cleanup_stale_to_now: Option<bool>,
     pub tag_lang_prefix: Option<String>,
     /// Tags applied to every bookmark (default `["github-star"]`); a full override.
     pub tags: Option<Vec<String>>,
@@ -273,6 +303,12 @@ pub struct HackernewsAccount {
     pub toread: Option<bool>,
     /// Override `[pinboard].public` for this account's new bookmarks.
     pub public: Option<bool>,
+    /// Override `use_post_date` for this account.
+    pub use_post_date: Option<bool>,
+    /// Override `post_date_max_age_days` for this account.
+    pub post_date_max_age_days: Option<u64>,
+    /// Override `cleanup_stale_to_now` for this account.
+    pub cleanup_stale_to_now: Option<bool>,
     pub tag_comment: Option<String>,
     pub tag_author_prefix: Option<String>,
     pub tag_special_prefix: Option<String>,
@@ -506,6 +542,9 @@ mod tests {
             toread,
             rate_limit_secs,
             limit,
+            use_post_date,
+            post_date_max_age_days,
+            cleanup_stale_to_now,
         });
         // The per-source defaults tier (`[defaults.<source>]`).
         let source_defaults = documented_fields!(SourceDefaults {
@@ -513,6 +552,9 @@ mod tests {
             public,
             limit,
             on_auth_failure,
+            use_post_date,
+            post_date_max_age_days,
+            cleanup_stale_to_now,
         });
         let reddit = documented_fields!(RedditAccount {
             name,
@@ -523,6 +565,9 @@ mod tests {
             limit,
             toread,
             public,
+            use_post_date,
+            post_date_max_age_days,
+            cleanup_stale_to_now,
             reddit_domain,
             tag_subreddit_prefix,
             tag_comment,
@@ -541,6 +586,9 @@ mod tests {
             limit,
             toread,
             public,
+            use_post_date,
+            post_date_max_age_days,
+            cleanup_stale_to_now,
             tag_lang_prefix,
             tags,
         });
@@ -550,6 +598,9 @@ mod tests {
             limit,
             toread,
             public,
+            use_post_date,
+            post_date_max_age_days,
+            cleanup_stale_to_now,
             tag_comment,
             tag_author_prefix,
             tag_special_prefix,

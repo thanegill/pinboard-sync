@@ -12,7 +12,7 @@ use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::send_retrying;
 use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::source::{
-    extend_unique, host_matches, push_prefixed, push_tags, split_host_path, tags_differ, url_key,
+    extend_unique, host_is, push_prefixed, push_tags, split_host_path, tags_differ, url_key,
     BookmarkDraft, Source, SourceError,
 };
 
@@ -238,9 +238,7 @@ impl Source for GitHubClient {
     }
 
     fn existing_key(&self, url: &str) -> Option<String> {
-        let key = url_key(url)?;
-        let (host, _) = split_host_path(url);
-        host_matches(&host, "github.com").then_some(key)
+        url_key(url).filter(|_| host_is(url, "github.com"))
     }
 }
 
@@ -435,8 +433,7 @@ fn refresh_tags(existing: Vec<String>, repo: &Repo, cfg: &GithubConfig) -> Vec<S
 
 /// Whether `url`'s host is github.com or a `*.github.com` subdomain.
 fn is_github_url(url: &str) -> bool {
-    let (host, _) = split_host_path(url);
-    host_matches(&host, "github.com")
+    host_is(url, "github.com")
 }
 
 /// Canonicalize a GitHub *repo-root* URL to `https://github.com/<owner>/<repo>`

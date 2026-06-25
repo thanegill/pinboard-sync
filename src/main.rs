@@ -761,7 +761,7 @@ async fn run_sync_jobs(
             // the age cap; otherwise clear it so the writer lets Pinboard use "now".
             d.post_date = if job.use_post_date {
                 d.post_date
-                    .filter(|&t| now - t <= job.max_age_days as i64 * 86_400)
+                    .filter(|&t| timefmt::within_age_cap(now, t, job.max_age_days))
             } else {
                 None
             };

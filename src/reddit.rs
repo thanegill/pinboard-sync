@@ -27,16 +27,6 @@ const REDDIT_BASE: &str = "https://old.reddit.com";
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 
-/// A source of a user's saved items (used by `sync`). Abstracted from the
-/// concrete client so the loop can be tested with a fake. (Crate-internal, never
-/// spawned across threads, so the missing `Send` bound from `async fn` in a trait
-/// is irrelevant here.)
-#[allow(async_fn_in_trait)]
-pub trait SavedSource {
-    /// All saved items, newest first.
-    async fn fetch_saved(&self) -> Result<Vec<ListingEntry>, SourceError>;
-}
-
 /// Reddit `/api/info` lookups by fullname (used by `cleanup` for over_18/title).
 #[allow(async_fn_in_trait)]
 pub trait PostInfo {
@@ -109,9 +99,10 @@ impl RedditClient {
     }
 }
 
-impl SavedSource for RedditClient {
+impl RedditClient {
     /// Fetch all saved items, newest first, following `after` pagination (Reddit
-    /// caps any listing at ~1000).
+    /// caps any listing at ~1000). Inherent (no longer a port): only `sync`'s
+    /// `Source::fetch` and the net tests call it, both within this crate.
     async fn fetch_saved(&self) -> Result<Vec<ListingEntry>, SourceError> {
         let username = self
             .username

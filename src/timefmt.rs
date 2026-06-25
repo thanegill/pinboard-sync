@@ -28,6 +28,13 @@ pub fn now_unix() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
 }
 
+/// Whether a post created at `t` (epoch) is at most `max_age_days` old relative to
+/// `now` (epoch) — the `use_post_date` backdate cap. Shared by `sync` (which clears
+/// out-of-cap dates) and `cleanup` ([`cleanup_dt`]).
+pub fn within_age_cap(now: i64, t: i64, max_age_days: u64) -> bool {
+    now - t <= max_age_days as i64 * 86_400
+}
+
 /// The Pinboard `dt` for a `cleanup` re-write of one bookmark, honoring `use_post_date`,
 /// the age cap (`max_age_days`), and the stale fallback (`stale_to_now`). `src_ts` is the
 /// source post time (epoch, if known) and `existing` the bookmark's current `dt`. Returns
@@ -44,7 +51,7 @@ pub fn cleanup_dt(
     if !use_post_date {
         return existing.to_string();
     }
-    let within_cap = |t: i64| now - t <= max_age_days as i64 * 86_400;
+    let within_cap = |t: i64| within_age_cap(now, t, max_age_days);
     match src_ts {
         Some(t) if within_cap(t) => unix_to_rfc3339(t).unwrap_or_else(|| existing.to_string()),
         Some(_) if stale_to_now => unix_to_rfc3339(now).unwrap_or_else(|| existing.to_string()),

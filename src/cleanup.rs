@@ -50,7 +50,7 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
 ) -> Result<()> {
     let reddit_bms: Vec<_> = bookmarks
         .iter()
-        .filter(|b| is_reddit_url(&b.url))
+        .filter(|b| host_is(&b.url, "reddit.com"))
         .cloned()
         .collect();
 
@@ -202,11 +202,6 @@ async fn fetch_post_info<R: PostInfo>(
 }
 
 // --- pure transforms ---------------------------------------------------------
-
-/// Whether `url`'s host is reddit.com or a `*.reddit.com` subdomain.
-pub fn is_reddit_url(url: &str) -> bool {
-    host_is(url, "reddit.com")
-}
 
 /// Normalize a Reddit bookmark URL: unwrap an `over18/?dest=` redirect (recursively
 /// URL-decoding the destination), then rewrite any reddit host to the configured
@@ -372,10 +367,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_reddit_url_checks_host_only() {
-        assert!(is_reddit_url("https://old.reddit.com/r/rust/"));
-        assert!(is_reddit_url("http://reddit.com/r/x/"));
-        assert!(!is_reddit_url("https://example.com/reddit.com/x"));
+    fn host_is_matches_reddit_hosts_only() {
+        assert!(host_is("https://old.reddit.com/r/rust/", "reddit.com"));
+        assert!(host_is("http://reddit.com/r/x/", "reddit.com"));
+        assert!(!host_is("https://example.com/reddit.com/x", "reddit.com"));
     }
 
     #[test]

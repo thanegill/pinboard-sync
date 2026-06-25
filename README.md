@@ -225,6 +225,33 @@ only. With no selector, a command uses the first account of that source. All tag
 settings (prefixes, the base `tags` list, the Reddit media-type allowlist, the HN
 special-type prefix) live in the config only — there are no tag CLI flags.
 
+### Per-source defaults and dating by the source post date
+
+A `[defaults.<source>]` table is a middle override tier between the `[pinboard]` /
+`[hooks]` globals and a per-account value. `use_post_date`, `toread`, `public`,
+`limit`, `on_auth_failure`, `post_date_max_age_days`, and `cleanup_stale_to_now`
+resolve **CLI → account → `[defaults.<source>]` → global**:
+
+```toml
+[pinboard]
+use_post_date = true        # global default
+post_date_max_age_days = 30 # only backdate posts this recent (older use "now")
+
+[defaults.reddit]
+use_post_date = false       # ...but not for reddit accounts
+
+[[reddit]]
+name = "main"
+use_post_date = true        # ...except this one
+```
+
+With `use_post_date`, a bookmark's creation date is set to the **source post date** —
+Reddit/HN by when the item was posted, GitHub by when you starred it — rather than the
+time of the sync. Posts older than `post_date_max_age_days` (default 30) fall back to
+"now" on `sync`; on `cleanup` they keep their existing date unless
+`cleanup_stale_to_now = true`. (`cleanup reddit` needs the cookie when `use_post_date`
+is on, since the date comes from `/api/info`.)
+
 ## Shell completions and example config
 
 Two utility subcommands print to **stdout** so you can pipe or redirect them

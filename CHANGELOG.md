@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- `use_post_date`: date bookmarks by the **source post date** (Pinboard `dt`) instead
+  of "now", for both `sync` and `cleanup`. Reddit uses the post's `created_utc`, HN the
+  item's `created_at`, GitHub the **star date** (`starred_at`, via the `star+json`
+  `/user/starred` response; `cleanup github` fetches the star list to map it, since the
+  per-repo lookup omits it). An age cap `post_date_max_age_days` (default 30) bounds
+  backdating: older posts use "now" on `sync` and keep their existing date on `cleanup`
+  unless `cleanup_stale_to_now` is set. `cleanup reddit` now needs the cookie when
+  `use_post_date` is on (the date comes from `/api/info`).
+- A per-source default tier via a `[defaults.<source>]` config table: `use_post_date`,
+  `toread`, `public`, `limit`, `on_auth_failure`, `post_date_max_age_days`, and
+  `cleanup_stale_to_now` now resolve **CLI → account → `[defaults.<source>]` → global**.
+  A new global `[pinboard].limit` is the bottom tier for the write cap.
+
 ## [0.4.0] - 2026-06-24
 
 ### Added

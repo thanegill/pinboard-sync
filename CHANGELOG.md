@@ -21,6 +21,27 @@ All notable changes to this project are documented here. The format is based on
   `cleanup_stale_to_now` now resolve **CLI → account → `[defaults.<source>]` → global**.
   A new global `[pinboard].limit` is the bottom tier for the write cap.
 
+### Changed
+
+- Bookmark **titles and notes are cleaned of raw HTML** before reaching Pinboard. Titles
+  run through an HTML-strip + entity-decode pass for all three sources (so `&#x27;`/`&amp;`
+  decode and stray markup is removed). Note bodies are wrapped in a literal `<blockquote>`,
+  which Pinboard renders: HackerNews' raw Algolia HTML is converted to Markdown first,
+  while Reddit text (already Markdown via `raw_json=1`) and GitHub repo descriptions are
+  wrapped as-is. `cleanup` retrofits this shape onto existing bookmarks for every source —
+  rebuilding titles and notes through the shared builders — since `cleanup` is the only
+  path that reshapes already-saved bookmarks. Reddit *comment* bookmarks are left untouched
+  (their bodies aren't refetched, so the parent post's text can't be misapplied).
+
+### Fixed
+
+- Text posts no longer carry a **duplicated link in their notes**. A HackerNews text post
+  (Ask HN, etc.) and a bodyless Reddit self-post both bookmark their own permalink, yet
+  `sync` repeated that same URL in the notes (`HN Link: …` / the post's `url`). `sync` now
+  omits it, and `cleanup` removes it from existing bookmarks (HackerNews by reshaping;
+  Reddit self-posts whose notes are just a link back to their own permalink). Link posts
+  keep their external URL.
+
 ## [0.4.0] - 2026-06-24
 
 ### Added

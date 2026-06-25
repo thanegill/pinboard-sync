@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 
-use crate::github::GithubConfig;
+use crate::github::GitHubConfig;
 use crate::hackernews::HackernewsConfig;
 use crate::model::RedditConfig;
 
@@ -21,7 +21,7 @@ pub struct Config {
     #[serde(default)]
     pub hooks: Hooks,
     #[serde(default)]
-    pub pinboard: Pinboard,
+    pub pinboard: PinboardConfig,
     /// Per-source default overrides (the middle tier between `[pinboard]`/`[hooks]`
     /// globals and a per-account override).
     #[serde(default)]
@@ -29,7 +29,7 @@ pub struct Config {
     #[serde(default)]
     pub reddit: Vec<RedditAccount>,
     #[serde(default)]
-    pub github: Vec<GithubAccount>,
+    pub github: Vec<GitHubAccount>,
     #[serde(default)]
     pub hackernews: Vec<HackernewsAccount>,
 }
@@ -73,7 +73,7 @@ pub struct Hooks {
 /// The shared Pinboard destination.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Pinboard {
+pub struct PinboardConfig {
     pub token: Option<String>,
     pub token_file: Option<String>,
     /// Write bookmarks public (default private).
@@ -259,7 +259,7 @@ impl RedditAccount {
 /// One GitHub account: a personal access token plus the (non-secret) tag config.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct GithubAccount {
+pub struct GitHubAccount {
     pub name: Option<String>,
     pub token: Option<String>,
     pub token_file: Option<String>,
@@ -280,12 +280,12 @@ pub struct GithubAccount {
     pub tags: Option<Vec<String>>,
 }
 
-impl GithubAccount {
-    /// Build the non-secret [`GithubConfig`] (tag vocabulary), each field falling
+impl GitHubAccount {
+    /// Build the non-secret [`GitHubConfig`] (tag vocabulary), each field falling
     /// back to its built-in default.
-    pub fn github_config(&self) -> GithubConfig {
-        let d = GithubConfig::default();
-        GithubConfig {
+    pub fn github_config(&self) -> GitHubConfig {
+        let d = GitHubConfig::default();
+        GitHubConfig {
             tags: self.tags.clone().unwrap_or(d.tags),
             lang_prefix: self.tag_lang_prefix.clone().unwrap_or(d.lang_prefix),
         }
@@ -350,7 +350,7 @@ macro_rules! impl_named {
         })+
     };
 }
-impl_named!(RedditAccount => username, GithubAccount, HackernewsAccount => username);
+impl_named!(RedditAccount => username, GitHubAccount, HackernewsAccount => username);
 
 /// The per-account settings shared across every source. Each returns the
 /// account-level override, or `None` to fall through to the per-source default and
@@ -380,7 +380,7 @@ macro_rules! impl_account {
         })+
     };
 }
-impl_account!(RedditAccount, GithubAccount, HackernewsAccount);
+impl_account!(RedditAccount, GitHubAccount, HackernewsAccount);
 
 /// Pick the account named `name`, or the first account when `name` is `None`.
 /// Returns `Ok(None)` only when there are no configured accounts and no name was
@@ -565,7 +565,7 @@ mod tests {
 
         let example = include_str!("config.example.toml");
         let hooks = documented_fields!(Hooks { on_auth_failure });
-        let pinboard = documented_fields!(Pinboard {
+        let pinboard = documented_fields!(PinboardConfig {
             token,
             token_file,
             public,
@@ -608,7 +608,7 @@ mod tests {
             tag_media_types,
             tags,
         });
-        let github = documented_fields!(GithubAccount {
+        let github = documented_fields!(GitHubAccount {
             name,
             token,
             token_file,
@@ -704,7 +704,7 @@ mod tests {
         assert_eq!(named.account_name(), Some("main"));
         // GitHub has no username, so only an explicit name selects it.
         assert_eq!(
-            GithubAccount {
+            GitHubAccount {
                 token: Some("ghp_x".into()),
                 ..Default::default()
             }

@@ -60,7 +60,7 @@ impl Default for HackernewsConfig {
 
 /// A normalized HackerNews item (built from an Algolia hit).
 #[derive(Debug, Clone, Deserialize)]
-struct Item {
+struct HackerNewsItem {
     id: u64,
     #[serde(rename = "type", default)]
     kind: String,
@@ -79,7 +79,7 @@ struct Item {
 
 /// An Algolia HN search response.
 #[derive(Debug, Deserialize)]
-struct SearchResponse {
+struct AlgoliaSearchResponse {
     #[serde(default)]
     hits: Vec<AlgoliaHit>,
 }
@@ -106,7 +106,7 @@ struct AlgoliaHit {
     created_at_i: Option<i64>,
 }
 
-impl From<AlgoliaHit> for Item {
+impl From<AlgoliaHit> for HackerNewsItem {
     fn from(h: AlgoliaHit) -> Self {
         // The item type is carried in `_tags` (e.g. "story"/"comment"/"poll"/"job").
         let kind = ["comment", "poll", "job", "story"]
@@ -114,7 +114,7 @@ impl From<AlgoliaHit> for Item {
             .find(|k| h.tags.iter().any(|t| t == k))
             .unwrap_or("story")
             .to_string();
-        Item {
+        HackerNewsItem {
             id: h.object_id.parse().unwrap_or(0),
             kind,
             by: h.author.unwrap_or_default(),
@@ -126,7 +126,7 @@ impl From<AlgoliaHit> for Item {
     }
 }
 
-impl Item {
+impl HackerNewsItem {
     /// Shape the item into a Pinboard draft. Comments keep the HN permalink; stories
     /// bookmark the linked article (HN discussion in the notes), falling back to the
     /// HN permalink for text posts (Ask HN, etc.).
@@ -291,7 +291,10 @@ impl HackerNewsClient {
     /// Batch-fetch item details by ID from the Algolia HN search API, keyed by ID.
     /// IDs are queried in chunks of [`ITEM_BATCH`] via `objectID:… OR …`; items that
     /// no longer exist are simply absent from the map.
-    async fn fetch_items(&self, ids: &[String]) -> Result<HashMap<String, Item>, SourceError> {
+    async fn fetch_items(
+        &self,
+        ids: &[String],
+    ) -> Result<HashMap<String, HackerNewsItem>, SourceError> {
         let endpoint = format!("{}/api/v1/search", self.algolia);
         let mut out = HashMap::new();
         for chunk in ids.chunks(ITEM_BATCH) {
@@ -315,10 +318,10 @@ impl HackerNewsClient {
                     anyhow::anyhow!("hn algolia returned {status}: {}", body.trim()).into(),
                 );
             }
-            let search: SearchResponse =
+            let search: AlgoliaSearchResponse =
                 resp.json().await.context("parsing hn algolia response")?;
             for hit in search.hits {
-                let item = Item::from(hit);
+                let item = HackerNewsItem::from(hit);
                 out.insert(item.id.to_string(), item);
             }
             // Be gentle between chunk queries.
@@ -348,7 +351,8 @@ impl HackerNewsClient {
             )
             .into());
         }
-        let search: SearchResponse = resp.json().await.context("parsing hn algolia response")?;
+        let search: AlgoliaSearchResponse =
+            resp.json().await.context("parsing hn algolia response")?;
         let want = url_key(url);
         Ok(search.hits.into_iter().find_map(|h| {
             let hit_key = h
@@ -518,7 +522,7 @@ impl HackerNewsClient {
 /// draft (stories rewrite to the article URL; comments/text posts update in place),
 /// preserving existing tags.
 struct HackerNewsCleanupPass<'a> {
-    items: HashMap<String, Item>,
+    items: HashMap<String, HackerNewsItem>,
     config: &'a HackernewsConfig,
 }
 
@@ -662,7 +666,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn item(value: serde_json::Value) -> Item {
+    fn item(value: serde_json::Value) -> HackerNewsItem {
         serde_json::from_value(value).unwrap()
     }
 

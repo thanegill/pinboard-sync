@@ -26,12 +26,12 @@ const RETRY_DELAY: Duration = Duration::from_secs(2);
 /// (defaulting to `["github-star"]`); `lang_prefix` defaults to its built-in value,
 /// and an empty string disables that tag.
 #[derive(Debug, Clone)]
-pub struct GithubConfig {
+pub struct GitHubConfig {
     pub tags: Vec<String>,
     pub lang_prefix: String,
 }
 
-impl Default for GithubConfig {
+impl Default for GitHubConfig {
     fn default() -> Self {
         Self {
             tags: vec!["github-star".into()],
@@ -42,7 +42,7 @@ impl Default for GithubConfig {
 
 /// A starred repository, as returned by `/user/starred`.
 #[derive(Debug, Clone, Deserialize)]
-struct Repo {
+struct GitHubRepo {
     full_name: String,
     html_url: String,
     #[serde(default)]
@@ -58,12 +58,12 @@ struct Repo {
 #[derive(Debug, Clone, Deserialize)]
 struct StarredRepo {
     starred_at: String,
-    repo: Repo,
+    repo: GitHubRepo,
 }
 
 impl StarredRepo {
     /// Shape into a draft, dating it by the (RFC3339) star time.
-    fn into_draft(self, cfg: &GithubConfig) -> BookmarkDraft {
+    fn into_draft(self, cfg: &GitHubConfig) -> BookmarkDraft {
         let post_date = crate::timefmt::rfc3339_to_unix(&self.starred_at);
         self.repo.into_draft_with_date(cfg, post_date)
     }
@@ -84,16 +84,16 @@ fn github_extended(description: Option<&str>, homepage: Option<&str>, html_url: 
     extended
 }
 
-impl Repo {
+impl GitHubRepo {
     /// Shape the repo into a Pinboard draft (no source date). Test-only convenience;
     /// the production path dates each draft via [`StarredRepo::into_draft`].
     #[cfg(test)]
-    fn into_draft(self, cfg: &GithubConfig) -> BookmarkDraft {
+    fn into_draft(self, cfg: &GitHubConfig) -> BookmarkDraft {
         self.into_draft_with_date(cfg, None)
     }
 
     /// Shape the repo into a Pinboard draft, carrying `post_date` (the star time).
-    fn into_draft_with_date(self, cfg: &GithubConfig, post_date: Option<i64>) -> BookmarkDraft {
+    fn into_draft_with_date(self, cfg: &GitHubConfig, post_date: Option<i64>) -> BookmarkDraft {
         let dedup_key = Url::parse(&self.html_url)
             .ok()
             .as_ref()
@@ -130,17 +130,17 @@ impl Repo {
 /// Reads a user's starred repos via a personal access token.
 pub struct GitHubClient {
     http: reqwest::Client,
-    config: GithubConfig,
+    config: GitHubConfig,
     /// API base (overridden in tests).
     base: String,
 }
 
 impl GitHubClient {
-    pub fn new(token: String, config: GithubConfig) -> anyhow::Result<Self> {
+    pub fn new(token: String, config: GitHubConfig) -> anyhow::Result<Self> {
         Self::build(token, config, API_BASE.to_string())
     }
 
-    fn build(token: String, config: GithubConfig, base: String) -> anyhow::Result<Self> {
+    fn build(token: String, config: GitHubConfig, base: String) -> anyhow::Result<Self> {
         use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
 
         // The auth/accept/version headers are constant for the client's lifetime, so
@@ -169,7 +169,7 @@ impl GitHubClient {
 
     /// Look up a repo via `/repos/{owner}/{name}` (the API follows renames and
     /// transfers, returning the current name/URL). `None` if it no longer exists.
-    async fn repo(&self, owner: &str, name: &str) -> Result<Option<Repo>, SourceError> {
+    async fn repo(&self, owner: &str, name: &str) -> Result<Option<GitHubRepo>, SourceError> {
         let endpoint = format!("{}/repos/{}/{}", self.base, owner, name);
         let resp = send_retrying("github repo", MAX_RETRIES, RETRY_DELAY, || {
             self.http.get(&endpoint)
@@ -188,7 +188,7 @@ impl GitHubClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!("github repo returned {status}: {}", body.trim()).into());
         }
-        let repo: Repo = resp.json().await.context("parsing github repo response")?;
+        let repo: GitHubRepo = resp.json().await.context("parsing github repo response")?;
         Ok(Some(repo))
     }
 }
@@ -283,7 +283,7 @@ impl GitHubCleanupOpts {
 pub async fn cleanup<P: BookmarkStore>(
     pinboard: &P,
     client: &GitHubClient,
-    config: &GithubConfig,
+    config: &GitHubConfig,
     opts: &GitHubCleanupOpts,
     bookmarks: &[Bookmark],
 ) -> Result<()> {
@@ -339,7 +339,7 @@ pub async fn cleanup<P: BookmarkStore>(
 /// and language tag. A 404 keeps just the canonicalization.
 struct GitHubCleanupPass<'a> {
     client: &'a GitHubClient,
-    config: &'a GithubConfig,
+    config: &'a GitHubConfig,
     star_dates: HashMap<String, i64>,
 }
 
@@ -403,7 +403,7 @@ fn owner_repo(url: &Url) -> Option<(String, String)> {
 /// Refresh the language tag from the current repo, keeping existing tags and
 /// ensuring the base tags: drop any old `lang_prefix` tag, then re-add the base
 /// tags and the current `lang:` tag.
-fn refresh_tags(existing: Vec<String>, repo: &Repo, cfg: &GithubConfig) -> Vec<String> {
+fn refresh_tags(existing: Vec<String>, repo: &GitHubRepo, cfg: &GitHubConfig) -> Vec<String> {
     let mut tags: Vec<String> = existing
         .into_iter()
         .filter(|t| cfg.lang_prefix.is_empty() || !t.starts_with(&cfg.lang_prefix))
@@ -452,7 +452,7 @@ fn parse_link_next(link: &str) -> Option<u32> {
 
 #[cfg(test)]
 impl GitHubClient {
-    fn with_base_url(token: String, config: GithubConfig, base: String) -> Self {
+    fn with_base_url(token: String, config: GitHubConfig, base: String) -> Self {
         Self::build(token, config, base).unwrap()
     }
 }
@@ -462,7 +462,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn repo(value: serde_json::Value) -> Repo {
+    fn repo(value: serde_json::Value) -> GitHubRepo {
         serde_json::from_value(value).unwrap()
     }
 
@@ -479,7 +479,7 @@ mod tests {
             "homepage": "https://example.com",
             "language": "Rust",
         }))
-        .into_draft(&GithubConfig::default());
+        .into_draft(&GitHubConfig::default());
 
         assert_eq!(d.bookmark.url, "https://github.com/owner/Repo");
         assert_eq!(d.bookmark.title, "owner/Repo");
@@ -516,7 +516,7 @@ mod tests {
             "full_name": "o/r", "html_url": "https://github.com/o/r",
             "language": "Jupyter Notebook"
         }))
-        .into_draft(&GithubConfig::default());
+        .into_draft(&GitHubConfig::default());
         assert_eq!(
             d.bookmark.tags,
             vec!["github-star", "lang:jupyter-notebook"]
@@ -529,7 +529,7 @@ mod tests {
             "full_name": "o/r",
             "html_url": "https://github.com/o/r",
         }))
-        .into_draft(&GithubConfig::default());
+        .into_draft(&GitHubConfig::default());
         // Missing description falls back to the URL; no language → no lang tag.
         assert_eq!(d.bookmark.note, "https://github.com/o/r");
         assert_eq!(d.bookmark.tags, vec!["github-star"]);
@@ -537,9 +537,9 @@ mod tests {
 
     #[test]
     fn tags_list_replaces_the_default_base() {
-        let cfg = GithubConfig {
+        let cfg = GitHubConfig {
             tags: vec!["github-star".into(), "account:work".into()],
-            ..GithubConfig::default()
+            ..GitHubConfig::default()
         };
         let d = repo(json!({ "full_name": "o/r", "html_url": "https://github.com/o/r" }))
             .into_draft(&cfg);
@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn dedup_key_only_matches_github() {
-        let c = GitHubClient::new("t".into(), GithubConfig::default()).unwrap();
+        let c = GitHubClient::new("t".into(), GitHubConfig::default()).unwrap();
         assert_eq!(
             c.dedup_key(&url("https://github.com/o/r")).as_deref(),
             Some("github.com/o/r")
@@ -645,7 +645,7 @@ mod net_tests {
             .await;
 
         let client =
-            GitHubClient::with_base_url("tok".into(), GithubConfig::default(), server.uri());
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
         let drafts = client.fetch().await.unwrap();
         assert_eq!(drafts.len(), 2);
         assert_eq!(drafts[0].bookmark.title, "a/one");
@@ -666,7 +666,7 @@ mod net_tests {
             .mount(&server)
             .await;
         let client =
-            GitHubClient::with_base_url("tok".into(), GithubConfig::default(), server.uri());
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
         assert!(matches!(
             client.fetch().await,
             Err(SourceError::ReauthRequired(_))
@@ -706,11 +706,11 @@ mod net_tests {
         };
         let bookmarks = pinboard.all.clone();
         let client =
-            GitHubClient::with_base_url("tok".into(), GithubConfig::default(), server.uri());
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
         cleanup(
             &pinboard,
             &client,
-            &GithubConfig::default(),
+            &GitHubConfig::default(),
             &GitHubCleanupOpts {
                 dry_run: false,
                 use_post_date: false,
@@ -776,11 +776,11 @@ mod net_tests {
         };
         let bookmarks = pinboard.all.clone();
         let client =
-            GitHubClient::with_base_url("tok".into(), GithubConfig::default(), server.uri());
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
         cleanup(
             &pinboard,
             &client,
-            &GithubConfig::default(),
+            &GitHubConfig::default(),
             &GitHubCleanupOpts {
                 dry_run: false,
                 use_post_date: false,

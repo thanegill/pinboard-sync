@@ -32,6 +32,9 @@ log = "0.4"
 env_logger = { version = "0.11", default-features = false }
 # Source-post-date → Pinboard `dt`: epoch↔RFC3339 conversion + `now`.
 time = { version = "0.3", default-features = false, features = ["std", "formatting", "parsing"] }
+# HN note bodies are raw HTML (Algolia story_text/comment_text); htmd converts them to
+# Markdown. Pure-Rust, depends only on html5ever (already pulled in by scraper).
+htmd = "0.5"
 
 [dev-dependencies]
 http = "1"

@@ -4,6 +4,7 @@ mod cleanup;
 mod config;
 mod github;
 mod hackernews;
+mod htmltext;
 mod http;
 mod model;
 mod pinboard;

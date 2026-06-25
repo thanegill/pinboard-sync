@@ -22,7 +22,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use log::{debug, error, info, warn};
 
-use config::{Config, GithubAccount, HackernewsAccount, RedditAccount};
+use config::{Account, Config, GithubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
 use hackernews::{HnCleanupOpts, HnClient};
 use pinboard::{Bookmark, BookmarkStore, PinboardClient, RATE_LIMIT_SECS};
@@ -526,44 +526,59 @@ fn job_label<T: config::Named>(source: &str, account: Option<&T>) -> String {
     )
 }
 
-/// This account's to-read flag: its override, else the per-source default, else the
-/// `[pinboard]` global.
-fn job_toread(account: Option<bool>, source: Option<bool>, config: &Config) -> bool {
-    account.or(source).unwrap_or(config.pinboard.toread)
+/// Three-tier setting resolution: the account override, else the per-source default,
+/// else the resolved `[pinboard]` global. (The fuller flag → `$VAR` → … ladder is a
+/// TODO; see `TODO.md`.)
+fn tier<T>(account: Option<T>, source: Option<T>, global: T) -> T {
+    account.or(source).unwrap_or(global)
 }
 
-/// This account's public flag: forced by `--public`, else its override, else the
-/// per-source default, else the `[pinboard]` global.
+/// This account's public flag: forced on by `--public`, else 3-tier resolved.
 fn job_shared(
     ovr: &SyncOverrides,
     account: Option<bool>,
     source: Option<bool>,
     config: &Config,
 ) -> bool {
-    ovr.public || account.or(source).unwrap_or(config.pinboard.public)
+    ovr.public || tier(account, source, config.pinboard.public)
 }
 
-/// Whether to date this account's bookmarks by the source post date: its override,
-/// else the per-source default, else the `[pinboard]` global.
-fn job_use_post_date(account: Option<bool>, source: Option<bool>, config: &Config) -> bool {
-    account.or(source).unwrap_or(config.pinboard.use_post_date)
+/// The resolved `use_post_date` trio for an account, each 3-tier (account override →
+/// per-source default → `[pinboard]` global, with `max_age_days` defaulting to
+/// [`config::DEFAULT_MAX_AGE_DAYS`]). Shared by every `sync`/`cleanup` builder.
+struct DateSettings {
+    use_post_date: bool,
+    max_age_days: u64,
+    stale_to_now: bool,
 }
 
-/// This account's backdate age cap (days): its override, else the per-source default,
-/// else the `[pinboard]` global, else [`config::DEFAULT_MAX_AGE_DAYS`].
-fn job_max_age_days(account: Option<u64>, source: Option<u64>, config: &Config) -> u64 {
-    account
-        .or(source)
-        .or(config.pinboard.post_date_max_age_days)
-        .unwrap_or(config::DEFAULT_MAX_AGE_DAYS)
-}
-
-/// Whether `cleanup` re-dates stale (older-than-cap) posts to "now": account override,
-/// else per-source default, else the `[pinboard]` global.
-fn job_stale_to_now(account: Option<bool>, source: Option<bool>, config: &Config) -> bool {
-    account
-        .or(source)
-        .unwrap_or(config.pinboard.cleanup_stale_to_now)
+impl DateSettings {
+    fn resolve(
+        account: Option<&impl config::Account>,
+        src: &config::SourceDefaults,
+        config: &Config,
+    ) -> Self {
+        Self {
+            use_post_date: tier(
+                account.and_then(|a| a.use_post_date()),
+                src.use_post_date,
+                config.pinboard.use_post_date,
+            ),
+            max_age_days: tier(
+                account.and_then(|a| a.max_age_days()),
+                src.post_date_max_age_days,
+                config
+                    .pinboard
+                    .post_date_max_age_days
+                    .unwrap_or(config::DEFAULT_MAX_AGE_DAYS),
+            ),
+            stale_to_now: tier(
+                account.and_then(|a| a.stale_to_now()),
+                src.cleanup_stale_to_now,
+                config.pinboard.cleanup_stale_to_now,
+            ),
+        }
+    }
 }
 
 /// One of the concrete source clients, unified behind the `Source` port so `--all`
@@ -603,7 +618,7 @@ fn job_limit(
     if ovr.limit > 0 {
         ovr.limit
     } else {
-        account.or(source).or(config.pinboard.limit).unwrap_or(0)
+        tier(account, source, config.pinboard.limit.unwrap_or(0))
     }
 }
 
@@ -635,23 +650,20 @@ fn build_reddit_job(
         src.on_auth_failure.as_deref(),
         config,
     );
+    let dates = DateSettings::resolve(account, src, config);
     Ok(SyncJob {
         client: SourceClient::Reddit(RedditClient::for_user(username, cookie, reddit_config)?),
         label: job_label("reddit", account),
         hook,
-        limit: job_limit(ovr, account.and_then(|a| a.limit), src.limit, config),
-        toread: job_toread(account.and_then(|a| a.toread), src.toread, config),
-        shared: job_shared(ovr, account.and_then(|a| a.public), src.public, config),
-        use_post_date: job_use_post_date(
-            account.and_then(|a| a.use_post_date),
-            src.use_post_date,
-            config,
+        limit: job_limit(ovr, account.and_then(|a| a.limit()), src.limit, config),
+        toread: tier(
+            account.and_then(|a| a.toread()),
+            src.toread,
+            config.pinboard.toread,
         ),
-        max_age_days: job_max_age_days(
-            account.and_then(|a| a.post_date_max_age_days),
-            src.post_date_max_age_days,
-            config,
-        ),
+        shared: job_shared(ovr, account.and_then(|a| a.public()), src.public, config),
+        use_post_date: dates.use_post_date,
+        max_age_days: dates.max_age_days,
     })
 }
 
@@ -677,23 +689,20 @@ fn build_github_job(
         src.on_auth_failure.as_deref(),
         config,
     );
+    let dates = DateSettings::resolve(account, src, config);
     Ok(SyncJob {
         client: SourceClient::Github(GitHubClient::new(token, github_config)?),
         label: job_label("github", account),
         hook,
-        limit: job_limit(ovr, account.and_then(|a| a.limit), src.limit, config),
-        toread: job_toread(account.and_then(|a| a.toread), src.toread, config),
-        shared: job_shared(ovr, account.and_then(|a| a.public), src.public, config),
-        use_post_date: job_use_post_date(
-            account.and_then(|a| a.use_post_date),
-            src.use_post_date,
-            config,
+        limit: job_limit(ovr, account.and_then(|a| a.limit()), src.limit, config),
+        toread: tier(
+            account.and_then(|a| a.toread()),
+            src.toread,
+            config.pinboard.toread,
         ),
-        max_age_days: job_max_age_days(
-            account.and_then(|a| a.post_date_max_age_days),
-            src.post_date_max_age_days,
-            config,
-        ),
+        shared: job_shared(ovr, account.and_then(|a| a.public()), src.public, config),
+        use_post_date: dates.use_post_date,
+        max_age_days: dates.max_age_days,
     })
 }
 
@@ -715,24 +724,21 @@ fn build_hackernews_job(
         .map(HackernewsAccount::hackernews_config)
         .unwrap_or_default();
     let src = &config.defaults.hackernews;
+    let dates = DateSettings::resolve(account, src, config);
     Ok(SyncJob {
         // HackerNews favorites are public, so there is no auth-failure hook.
         client: SourceClient::Hackernews(HnClient::new(username, hn_config)?),
         label: job_label("hackernews", account),
         hook: None,
-        limit: job_limit(ovr, account.and_then(|a| a.limit), src.limit, config),
-        toread: job_toread(account.and_then(|a| a.toread), src.toread, config),
-        shared: job_shared(ovr, account.and_then(|a| a.public), src.public, config),
-        use_post_date: job_use_post_date(
-            account.and_then(|a| a.use_post_date),
-            src.use_post_date,
-            config,
+        limit: job_limit(ovr, account.and_then(|a| a.limit()), src.limit, config),
+        toread: tier(
+            account.and_then(|a| a.toread()),
+            src.toread,
+            config.pinboard.toread,
         ),
-        max_age_days: job_max_age_days(
-            account.and_then(|a| a.post_date_max_age_days),
-            src.post_date_max_age_days,
-            config,
-        ),
+        shared: job_shared(ovr, account.and_then(|a| a.public()), src.public, config),
+        use_post_date: dates.use_post_date,
+        max_age_days: dates.max_age_days,
     })
 }
 
@@ -968,24 +974,12 @@ fn gh_cleanup_opts(
     account: Option<&GithubAccount>,
     config: &Config,
 ) -> github::GhCleanupOpts {
-    let src = &config.defaults.github;
+    let dates = DateSettings::resolve(account, &config.defaults.github, config);
     github::GhCleanupOpts {
         dry_run,
-        use_post_date: job_use_post_date(
-            account.and_then(|a| a.use_post_date),
-            src.use_post_date,
-            config,
-        ),
-        max_age_days: job_max_age_days(
-            account.and_then(|a| a.post_date_max_age_days),
-            src.post_date_max_age_days,
-            config,
-        ),
-        cleanup_stale_to_now: job_stale_to_now(
-            account.and_then(|a| a.cleanup_stale_to_now),
-            src.cleanup_stale_to_now,
-            config,
-        ),
+        use_post_date: dates.use_post_date,
+        max_age_days: dates.max_age_days,
+        cleanup_stale_to_now: dates.stale_to_now,
     }
 }
 
@@ -1037,7 +1031,7 @@ async fn cleanup_one_reddit(
     let reddit_config = account
         .map(RedditAccount::reddit_config)
         .unwrap_or_default();
-    let src = &config.defaults.reddit;
+    let dates = DateSettings::resolve(account, &config.defaults.reddit, config);
     let opts = cleanup::CleanupOpts {
         dry_run: args.dry_run,
         mark_nsfw: !args.no_nsfw,
@@ -1045,21 +1039,9 @@ async fn cleanup_one_reddit(
         base_tag: reddit_config.tags.first().cloned().unwrap_or_default(),
         subreddit_tag_prefix: reddit_config.subreddit_prefix.clone(),
         domain: reddit_config.domain.clone(),
-        use_post_date: job_use_post_date(
-            account.and_then(|a| a.use_post_date),
-            src.use_post_date,
-            config,
-        ),
-        max_age_days: job_max_age_days(
-            account.and_then(|a| a.post_date_max_age_days),
-            src.post_date_max_age_days,
-            config,
-        ),
-        cleanup_stale_to_now: job_stale_to_now(
-            account.and_then(|a| a.cleanup_stale_to_now),
-            src.cleanup_stale_to_now,
-            config,
-        ),
+        use_post_date: dates.use_post_date,
+        max_age_days: dates.max_age_days,
+        cleanup_stale_to_now: dates.stale_to_now,
     };
 
     // Reddit (for /api/info) is needed when marking NSFW, fixing titles, or dating by
@@ -1114,28 +1096,16 @@ async fn cleanup_one_hackernews(
     if let Some(tag) = link_tag {
         hn_config.link_tag = tag;
     }
-    let src = &config.defaults.hackernews;
+    let dates = DateSettings::resolve(account, &config.defaults.hackernews, config);
     let hn = HnClient::for_cleanup(hn_config)?;
     hn.cleanup(
         pinboard,
         &HnCleanupOpts {
             dry_run,
             link_discussions,
-            use_post_date: job_use_post_date(
-                account.and_then(|a| a.use_post_date),
-                src.use_post_date,
-                config,
-            ),
-            max_age_days: job_max_age_days(
-                account.and_then(|a| a.post_date_max_age_days),
-                src.post_date_max_age_days,
-                config,
-            ),
-            cleanup_stale_to_now: job_stale_to_now(
-                account.and_then(|a| a.cleanup_stale_to_now),
-                src.cleanup_stale_to_now,
-                config,
-            ),
+            use_post_date: dates.use_post_date,
+            max_age_days: dates.max_age_days,
+            cleanup_stale_to_now: dates.stale_to_now,
         },
         bookmarks,
     )

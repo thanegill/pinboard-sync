@@ -10,7 +10,6 @@ use log::{debug, error, info};
 use time::OffsetDateTime;
 
 use crate::bookmark::{apply_update, Bookmark, BookmarkStore};
-use crate::source::tags_differ;
 
 /// The `use_post_date` policy applied uniformly across a pass: whether to re-date by
 /// the source date, the backdate age cap, and whether to push stale (older-than-cap)
@@ -83,14 +82,19 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             bookmark.timestamp,
         );
 
-        let url_changed = planned.url != bookmark.url;
-        if !changed_at_all(bookmark, &planned) {
+        // The written fields that differ; empty means nothing a write would change.
+        let changes = bookmark.diff(&planned);
+        if changes.is_empty() {
             continue;
         }
+        let url_changed = planned.url != bookmark.url;
 
         if dry_run {
             changed += 1;
-            print_diff(bookmark, &planned);
+            println!("[dry-run] {}", bookmark.url);
+            for (label, value) in &changes {
+                println!("          {label:<6}-> {value}");
+            }
             continue;
         }
 
@@ -129,50 +133,6 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     failed
 }
 
-/// Whether the plan (with its driver-resolved `timestamp`) differs from the stored
-/// bookmark in any written field. `public`/`read_later` are always carried over, so they
-/// aren't compared. `OffsetDateTime` equality is by instant, so a re-formatted but
-/// equivalent timestamp isn't a change.
-fn changed_at_all(bookmark: &Bookmark, p: &Bookmark) -> bool {
-    p.url != bookmark.url
-        || p.description != bookmark.description
-        || p.extended != bookmark.extended
-        || p.timestamp != bookmark.timestamp
-        || tags_differ(&bookmark.tags, &p.tags)
-}
-
-/// Print the changed fields of a planned update (dry-run output): one aligned
-/// `label -> value` line per field that differs.
-fn print_diff(bookmark: &Bookmark, p: &Bookmark) {
-    println!("[dry-run] {}", bookmark.url);
-    let field = |label: &str, value: &str| println!("          {label:<6}-> {value}");
-
-    if p.url != bookmark.url {
-        field("url", &p.url);
-    }
-    if p.description != bookmark.description {
-        field("title", &p.description);
-    }
-    if p.extended != bookmark.extended {
-        let notes = if p.extended.is_empty() {
-            "(removed)"
-        } else {
-            p.extended.as_str()
-        };
-        field("notes", notes);
-    }
-    if tags_differ(&bookmark.tags, &p.tags) {
-        field("tags", &format!("[{}]", p.tags.join(" ")));
-    }
-    if p.timestamp != bookmark.timestamp {
-        let date = p
-            .timestamp
-            .and_then(crate::timefmt::to_rfc3339)
-            .unwrap_or_default();
-        field("date", &date);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,8 +150,8 @@ mod tests {
     fn bookmark(url: &str) -> Bookmark {
         Bookmark {
             url: url.into(),
-            description: "Title".into(),
-            extended: "notes".into(),
+            title: "Title".into(),
+            note: "notes".into(),
             tags: vec!["a".into(), "b".into()],
             timestamp: crate::timefmt::from_unix(1_577_836_800), // 2020-01-01T00:00:00Z
             public: false,
@@ -221,7 +181,7 @@ mod tests {
                 Err(anyhow!("boom"))
             } else {
                 Ok(Some(Bookmark {
-                    description: "New".into(),
+                    title: "New".into(),
                     ..unchanged_plan(bookmark)
                 }))
             }
@@ -265,7 +225,7 @@ mod tests {
         let pass = FakePass(|bookmark: &Bookmark| {
             Ok(Some(Bookmark {
                 url: "https://new/".into(),
-                description: "New".into(),
+                title: "New".into(),
                 tags: vec!["x".into()],
                 ..unchanged_plan(bookmark)
             }))
@@ -289,7 +249,7 @@ mod tests {
         // A desc-only change (URL unchanged, so no delete); the update itself fails.
         let pass = FakePass(|bookmark: &Bookmark| {
             Ok(Some(Bookmark {
-                description: "New".into(),
+                title: "New".into(),
                 ..unchanged_plan(bookmark)
             }))
         });
@@ -307,15 +267,15 @@ mod tests {
         // empties the notes ("(removed)"), the second sets new non-empty notes.
         let books = vec![bookmark("https://empty/"), bookmark("https://full/")];
         let pass = FakePass(|bookmark: &Bookmark| {
-            let extended = if bookmark.url.contains("empty") {
+            let note = if bookmark.url.contains("empty") {
                 String::new()
             } else {
                 "new notes".into()
             };
             Ok(Some(Bookmark {
                 url: format!("{}new", bookmark.url),
-                description: "New".into(),
-                extended,
+                title: "New".into(),
+                note,
                 tags: vec!["x".into()],
                 // A datable candidate source time, so the driver re-dates and the
                 // `date ->` line renders.

@@ -115,8 +115,8 @@ impl BookmarkStore for FakePinboard {
         }
         self.updated.borrow_mut().push(UpdateCall {
             url: b.url.clone(),
-            description: b.description.clone(),
-            extended: b.extended.clone(),
+            description: b.title.clone(),
+            extended: b.note.clone(),
             tags: b.tags.clone(),
             shared: b.public,
             toread: b.read_later,

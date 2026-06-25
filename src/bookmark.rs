@@ -8,17 +8,19 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-use crate::pinboard::{PinboardBookmark, RATE_LIMIT_SECS};
+use crate::pinboard::PinboardBookmark;
+use crate::source::tags_differ;
 
-/// A bookmark in service-agnostic domain form.
-#[derive(Debug, Clone)]
+/// A bookmark in service-agnostic domain form. The field names are the domain's
+/// (`title`/`note`/`public`/`read_later`), not Pinboard's wire names
+/// (`description`/`extended`/`shared`/`toread` — those stay on [`PinboardBookmark`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bookmark {
     pub url: String,
-    pub description: String,
-    pub extended: String,
+    pub title: String,
+    pub note: String,
     pub tags: Vec<String>,
     /// Creation time, or `None` when none was set / it didn't parse.
     pub timestamp: Option<OffsetDateTime>,
@@ -32,13 +34,49 @@ impl From<PinboardBookmark> for Bookmark {
     fn from(b: PinboardBookmark) -> Self {
         Bookmark {
             url: b.url,
-            description: b.description,
-            extended: b.extended,
+            title: b.description,
+            note: b.extended,
             tags: b.tags.split_whitespace().map(String::from).collect(),
-            timestamp: OffsetDateTime::parse(&b.time, &Rfc3339).ok(),
+            timestamp: crate::timefmt::parse_rfc3339(&b.time),
             public: b.shared == "yes",
             read_later: b.toread == "yes",
         }
+    }
+}
+
+impl Bookmark {
+    /// The written fields where `new` differs from `self` (the stored bookmark), each as
+    /// a `(label, rendered new value)` pair for the cleanup dry-run. Empty when nothing a
+    /// write would change differs — so `cleanup` skips the bookmark. `public`/`read_later`
+    /// are carried over on a re-write, so they aren't compared; `timestamp` compares by
+    /// instant (a re-formatted but equivalent time isn't a change).
+    pub fn diff(&self, new: &Bookmark) -> Vec<(&'static str, String)> {
+        let mut changes = Vec::new();
+        if new.url != self.url {
+            changes.push(("url", new.url.clone()));
+        }
+        if new.title != self.title {
+            changes.push(("title", new.title.clone()));
+        }
+        if new.note != self.note {
+            let value = if new.note.is_empty() {
+                "(removed)".to_string()
+            } else {
+                new.note.clone()
+            };
+            changes.push(("notes", value));
+        }
+        if tags_differ(&self.tags, &new.tags) {
+            changes.push(("tags", format!("[{}]", new.tags.join(" "))));
+        }
+        if new.timestamp != self.timestamp {
+            let value = new
+                .timestamp
+                .and_then(crate::timefmt::to_rfc3339)
+                .unwrap_or_default();
+            changes.push(("date", value));
+        }
+        changes
     }
 }
 
@@ -58,10 +96,9 @@ pub trait BookmarkStore {
     async fn update(&self, b: &Bookmark) -> Result<()>;
     /// Delete a bookmark by URL.
     async fn delete(&self, url: &str) -> Result<()>;
-    /// Seconds to pause between successive writes (Pinboard asks for ~3s).
-    fn rate_limit_secs(&self) -> u64 {
-        RATE_LIMIT_SECS
-    }
+    /// Seconds to pause between successive writes. The store decides its own pacing
+    /// (Pinboard asks for ~3s) — there's no sensible default for an arbitrary store.
+    fn rate_limit_secs(&self) -> u64;
 }
 
 /// The shared write step of the cleanup loops: rate-limit after the first write (so

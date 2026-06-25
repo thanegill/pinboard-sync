@@ -147,14 +147,16 @@ impl Item {
         if is_comment {
             let md = html_to_markdown(&self.text.unwrap_or_default());
             return BookmarkDraft {
-                url: hn_url.clone(),
-                description: html_to_plain(&format!("HN: Comment by {}", self.by)),
-                extended: if md.is_empty() { md } else { blockquote(&md) },
-                tags,
+                bookmark: Bookmark {
+                    url: hn_url.clone(),
+                    title: html_to_plain(&format!("HN: Comment by {}", self.by)),
+                    note: if md.is_empty() { md } else { blockquote(&md) },
+                    tags,
+                    timestamp: self.created_at.and_then(crate::timefmt::from_unix),
+                    public: false,
+                    read_later: false,
+                },
                 dedup_key: format!("hn:{}", self.id),
-                read_later: false,
-                public: false,
-                post_date: self.created_at,
             };
         }
 
@@ -166,7 +168,7 @@ impl Item {
             }
             None => (hn_url.clone(), format!("hn:{}", self.id)),
         };
-        let description = html_to_plain(
+        let title = html_to_plain(
             &self
                 .title
                 .filter(|s| !s.is_empty())
@@ -175,7 +177,7 @@ impl Item {
         // The `HN Link:` line points at the discussion. For a text post the bookmark
         // URL already *is* that permalink, so including it would duplicate the URL —
         // skip it and let the notes carry just the post text.
-        let mut extended = if article.is_some() {
+        let mut note = if article.is_some() {
             format!("HN Link: {hn_url}")
         } else {
             String::new()
@@ -183,21 +185,23 @@ impl Item {
         if let Some(text) = self.text.filter(|s| !s.is_empty()) {
             // Convert the raw Algolia HTML to Markdown, wrapped in a <blockquote>.
             let block = blockquote(&html_to_markdown(&text));
-            extended = if extended.is_empty() {
+            note = if note.is_empty() {
                 block
             } else {
-                format!("{extended}\n\n{block}")
+                format!("{note}\n\n{block}")
             };
         }
         BookmarkDraft {
-            url,
-            description,
-            extended,
-            tags,
+            bookmark: Bookmark {
+                url,
+                title,
+                note,
+                tags,
+                timestamp: self.created_at.and_then(crate::timefmt::from_unix),
+                public: false,
+                read_later: false,
+            },
             dedup_key,
-            read_later: false,
-            public: false,
-            post_date: self.created_at,
         }
     }
 }
@@ -525,22 +529,15 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         let Some(item) = id.and_then(|id| self.items.get(&id)) else {
             return Ok(None);
         };
-        let timestamp = item.created_at.and_then(crate::timefmt::from_unix);
-        let draft = item.clone().into_draft(self.config);
-
-        // Preserve existing tags, appending any freshly-derived ones.
+        // Re-derive the bookmark from the fresh item (url/title/note/date), then preserve
+        // the stored bookmark's existing tags and privacy on the re-write.
+        let mut new = item.clone().into_draft(self.config).bookmark;
         let mut tags = bookmark.tags.clone();
-        extend_unique(&mut tags, &draft.tags);
-
-        Ok(Some(Bookmark {
-            url: draft.url,
-            description: draft.description,
-            extended: draft.extended,
-            tags,
-            timestamp,
-            public: bookmark.public,
-            read_later: bookmark.read_later,
-        }))
+        extend_unique(&mut tags, &new.tags);
+        new.tags = tags;
+        new.public = bookmark.public;
+        new.read_later = bookmark.read_later;
+        Ok(Some(new))
     }
 }
 
@@ -564,16 +561,16 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
         };
 
         let hn_link = format!("HN Link: https://news.ycombinator.com/item?id={id}");
-        let extended = if bookmark.extended.contains("HN Link:") {
-            bookmark.extended.clone()
-        } else if bookmark.extended.is_empty() {
+        let note = if bookmark.note.contains("HN Link:") {
+            bookmark.note.clone()
+        } else if bookmark.note.is_empty() {
             hn_link
         } else {
-            format!("{}\n\n{hn_link}", bookmark.extended)
+            format!("{}\n\n{hn_link}", bookmark.note)
         };
 
         // Clean the title (arbitrary article bookmarks may carry HTML entities).
-        let description = html_to_plain(&bookmark.description);
+        let title = html_to_plain(&bookmark.title);
 
         // Drop the marker tag, add the base HN tags.
         let mut tags: Vec<String> = bookmark
@@ -586,8 +583,8 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
 
         Ok(Some(Bookmark {
             url: bookmark.url.clone(),
-            description,
-            extended,
+            title,
+            note,
             tags,
             // No candidate source time — the driver preserves the stored time.
             timestamp: None,
@@ -680,14 +677,17 @@ mod tests {
             "title": "Cool thing", "url": "https://example.com/x"
         }))
         .into_draft(&HackernewsConfig::default());
-        assert_eq!(d.url, "https://example.com/x");
-        assert_eq!(d.description, "Cool thing");
+        assert_eq!(d.bookmark.url, "https://example.com/x");
+        assert_eq!(d.bookmark.title, "Cool thing");
         assert_eq!(
-            d.extended,
+            d.bookmark.note,
             "HN Link: https://news.ycombinator.com/item?id=42"
         );
         assert_eq!(d.dedup_key, "example.com/x");
-        assert_eq!(d.tags, vec!["hackernews", "author:hackernews:alice"]);
+        assert_eq!(
+            d.bookmark.tags,
+            vec!["hackernews", "author:hackernews:alice"]
+        );
     }
 
     #[test]
@@ -697,13 +697,13 @@ mod tests {
             "title": "Ask HN: How?", "text": "<p>details</p>"
         }))
         .into_draft(&HackernewsConfig::default());
-        assert_eq!(d.url, "https://news.ycombinator.com/item?id=7");
+        assert_eq!(d.bookmark.url, "https://news.ycombinator.com/item?id=7");
         assert_eq!(d.dedup_key, "hn:7");
         // The bookmark URL is already the HN permalink, so the notes carry only the post
         // text (no redundant `HN Link:`), with the inner HTML converted to Markdown.
-        assert_eq!(d.extended, "<blockquote>details</blockquote>");
+        assert_eq!(d.bookmark.note, "<blockquote>details</blockquote>");
         // Ask HN: → special-type tag.
-        assert!(d.tags.contains(&"hackernews:ask-hn".to_string()));
+        assert!(d.bookmark.tags.contains(&"hackernews:ask-hn".to_string()));
     }
 
     #[test]
@@ -712,9 +712,9 @@ mod tests {
             "id": 8, "type": "story", "by": "bob", "title": "Ask HN: empty?"
         }))
         .into_draft(&HackernewsConfig::default());
-        assert_eq!(d.url, "https://news.ycombinator.com/item?id=8");
+        assert_eq!(d.bookmark.url, "https://news.ycombinator.com/item?id=8");
         // No text and no redundant HN link: nothing to put in the notes.
-        assert_eq!(d.extended, "");
+        assert_eq!(d.bookmark.note, "");
     }
 
     #[test]
@@ -727,10 +727,10 @@ mod tests {
         }))
         .into_draft(&HackernewsConfig::default());
         // Title: entities decoded, tags stripped, single line.
-        assert_eq!(d.description, "Rust's & more");
+        assert_eq!(d.bookmark.title, "Rust's & more");
         // Body: HTML converted to Markdown, wrapped in a literal <blockquote>.
         assert_eq!(
-            d.extended,
+            d.bookmark.note,
             "HN Link: https://news.ycombinator.com/item?id=11\n\n<blockquote>see [x](https://x.com) > y</blockquote>"
         );
     }
@@ -741,12 +741,12 @@ mod tests {
             "id": 9, "type": "comment", "by": "carol", "text": "my reply"
         }))
         .into_draft(&HackernewsConfig::default());
-        assert_eq!(d.url, "https://news.ycombinator.com/item?id=9");
-        assert_eq!(d.description, "HN: Comment by carol");
-        assert_eq!(d.extended, "<blockquote>my reply</blockquote>");
+        assert_eq!(d.bookmark.url, "https://news.ycombinator.com/item?id=9");
+        assert_eq!(d.bookmark.title, "HN: Comment by carol");
+        assert_eq!(d.bookmark.note, "<blockquote>my reply</blockquote>");
         assert_eq!(d.dedup_key, "hn:9");
         assert_eq!(
-            d.tags,
+            d.bookmark.tags,
             vec![
                 "hackernews",
                 "hackernews-comment",
@@ -862,9 +862,15 @@ mod net_tests {
         );
         let drafts = client.fetch().await.unwrap();
         assert_eq!(drafts.len(), 2);
-        assert_eq!(drafts[0].url, "https://example.com/x");
-        assert_eq!(drafts[1].url, "https://news.ycombinator.com/item?id=9");
-        assert!(drafts[1].tags.contains(&"hackernews-comment".to_string()));
+        assert_eq!(drafts[0].bookmark.url, "https://example.com/x");
+        assert_eq!(
+            drafts[1].bookmark.url,
+            "https://news.ycombinator.com/item?id=9"
+        );
+        assert!(drafts[1]
+            .bookmark
+            .tags
+            .contains(&"hackernews-comment".to_string()));
     }
 
     #[tokio::test]

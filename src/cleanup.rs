@@ -112,10 +112,10 @@ impl CleanupPass for RedditCleanupPass<'_> {
             tags.sort();
         }
 
-        let mut description = html_to_plain(&bookmark.description);
-        if opts.fix_titles && is_placeholder_title(&description) {
-            if let Some(title) = post.and_then(|p| p.title.clone()) {
-                description = html_to_plain(&title);
+        let mut title = html_to_plain(&bookmark.title);
+        if opts.fix_titles && is_placeholder_title(&title) {
+            if let Some(real_title) = post.and_then(|p| p.title.clone()) {
+                title = html_to_plain(&real_title);
             }
         }
 
@@ -125,20 +125,20 @@ impl CleanupPass for RedditCleanupPass<'_> {
         // <blockquote>, or a link post's external URL) replaces the stored notes. Otherwise
         // (empty rebuild, or no entry this run) only drop a bare self-link an older sync
         // wrote — never wipe genuine notes.
-        let extended = if is_comment_url(&new_url) {
-            bookmark.extended.clone()
+        let note = if is_comment_url(&new_url) {
+            bookmark.note.clone()
         } else if let Some(rebuilt) = post.map(|p| p.extended.clone()).filter(|e| !e.is_empty()) {
             rebuilt
-        } else if is_self_link_notes(&bookmark.extended, &new_url) {
+        } else if is_self_link_notes(&bookmark.note, &new_url) {
             String::new()
         } else {
-            bookmark.extended.clone()
+            bookmark.note.clone()
         };
 
         Ok(Some(Bookmark {
             url: new_url.into(),
-            description,
-            extended,
+            title,
+            note,
             tags,
             timestamp: post
                 .and_then(|p| p.created_utc)

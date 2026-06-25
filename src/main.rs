@@ -765,13 +765,14 @@ async fn run_sync_jobs(
         let fetched = drafts.len();
         let mut new = sync::filter_new(&job.client, drafts, bookmarks);
         for d in &mut new {
-            d.read_later = job.toread;
-            d.public = job.shared;
+            d.bookmark.read_later = job.toread;
+            d.bookmark.public = job.shared;
             // Keep the source date only when dating is enabled and the post is within
             // the age cap; otherwise clear it so the writer lets Pinboard use "now".
-            d.post_date = if job.use_post_date {
-                d.post_date
-                    .filter(|&t| timefmt::within_age_cap(now, t, job.max_age_days))
+            d.bookmark.timestamp = if job.use_post_date {
+                d.bookmark
+                    .timestamp
+                    .filter(|t| timefmt::within_age_cap(now, t.unix_timestamp(), job.max_age_days))
             } else {
                 None
             };
@@ -801,7 +802,7 @@ async fn run_sync_jobs(
         match result {
             Ok(drafts) => {
                 for draft in drafts {
-                    if seen.insert(draft.url.clone()) {
+                    if seen.insert(draft.bookmark.url.clone()) {
                         merged.push(draft);
                     }
                 }

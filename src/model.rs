@@ -4,6 +4,7 @@
 use serde::Deserialize;
 use url::Url;
 
+use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::source::{host_matches, push_prefixed, push_tag, push_tags, BookmarkDraft};
 
@@ -295,17 +296,21 @@ impl SavedItem {
             .as_ref()
             .and_then(reddit_key)
             .unwrap_or_else(|| url.clone());
-        let post_date = self.created_utc.map(|s| s as i64);
+        let timestamp = self
+            .created_utc
+            .and_then(|s| crate::timefmt::from_unix(s as i64));
         let tags = self.tags(cfg);
         BookmarkDraft {
-            url,
-            description: html_to_plain(&self.description),
-            extended: self.extended,
-            tags,
+            bookmark: Bookmark {
+                url,
+                title: html_to_plain(&self.description),
+                note: self.extended,
+                tags,
+                timestamp,
+                public: false,
+                read_later: false,
+            },
             dedup_key,
-            read_later: false,
-            public: false,
-            post_date,
         }
     }
 }

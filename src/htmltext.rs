@@ -3,9 +3,6 @@
 //! (raw Algolia HTML) become Markdown; quoted bodies are wrapped in a literal
 //! `<blockquote>`, which Pinboard renders in the notes field.
 
-// Unused until the source/cleanup paths are wired in the following commits.
-#![allow(dead_code)]
-
 /// Clean a title (`description`): strip HTML tags, decode entities, and collapse all
 /// internal whitespace to single spaces (trimmed). Plain text passes through unchanged
 /// apart from whitespace normalization.

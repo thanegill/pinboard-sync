@@ -12,6 +12,7 @@ use log::{debug, error, info};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
+use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::send_retrying;
 use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::source::{
@@ -143,10 +144,11 @@ impl Item {
         }
 
         if is_comment {
+            let md = html_to_markdown(&self.text.unwrap_or_default());
             return BookmarkDraft {
                 url: hn_url.clone(),
-                description: format!("HN: Comment by {}", self.by),
-                extended: self.text.unwrap_or_default(),
+                description: html_to_plain(&format!("HN: Comment by {}", self.by)),
+                extended: if md.is_empty() { md } else { blockquote(&md) },
                 tags,
                 dedup_key: format!("hn:{}", self.id),
                 toread: false,
@@ -160,10 +162,12 @@ impl Item {
             Some(u) => (u.clone(), url_key(u).unwrap_or_else(|| u.clone())),
             None => (hn_url.clone(), format!("hn:{}", self.id)),
         };
-        let description = self
-            .title
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| format!("HN: {} by {}", self.kind, self.by));
+        let description = html_to_plain(
+            &self
+                .title
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("HN: {} by {}", self.kind, self.by)),
+        );
         // The `HN Link:` line points at the discussion. For a text post the bookmark
         // URL already *is* that permalink, so including it would duplicate the URL —
         // skip it and let the notes carry just the post text.
@@ -173,7 +177,8 @@ impl Item {
             String::new()
         };
         if let Some(text) = self.text.filter(|s| !s.is_empty()) {
-            let block = format!("<blockquote>{text}</blockquote>");
+            // Convert the raw Algolia HTML to Markdown, wrapped in a <blockquote>.
+            let block = blockquote(&html_to_markdown(&text));
             extended = if extended.is_empty() {
                 block
             } else {
@@ -720,9 +725,9 @@ mod tests {
         .into_draft(&HackernewsConfig::default());
         assert_eq!(d.url, "https://news.ycombinator.com/item?id=7");
         assert_eq!(d.dedup_key, "hn:7");
-        // The bookmark URL is already the HN permalink, so the notes carry only the
-        // post text — no redundant `HN Link:` pointing back at the same URL.
-        assert_eq!(d.extended, "<blockquote><p>details</p></blockquote>");
+        // The bookmark URL is already the HN permalink, so the notes carry only the post
+        // text (no redundant `HN Link:`), with the inner HTML converted to Markdown.
+        assert_eq!(d.extended, "<blockquote>details</blockquote>");
         // Ask HN: → special-type tag.
         assert!(d.tags.contains(&"hackernews:ask-hn".to_string()));
     }
@@ -739,6 +744,24 @@ mod tests {
     }
 
     #[test]
+    fn html_title_is_plain_and_html_body_becomes_markdown_blockquote() {
+        // An article story (has a url), so the notes keep the `HN Link:` discussion line.
+        let d = item(json!({
+            "id": 11, "type": "story", "by": "dave",
+            "title": "Rust&#x27;s &amp; more", "url": "https://example.com/a",
+            "text": "<p>see <a href=\"https://x.com\">x</a> &gt; y</p>"
+        }))
+        .into_draft(&HackernewsConfig::default());
+        // Title: entities decoded, tags stripped, single line.
+        assert_eq!(d.description, "Rust's & more");
+        // Body: HTML converted to Markdown, wrapped in a literal <blockquote>.
+        assert_eq!(
+            d.extended,
+            "HN Link: https://news.ycombinator.com/item?id=11\n\n<blockquote>see [x](https://x.com) > y</blockquote>"
+        );
+    }
+
+    #[test]
     fn comment_bookmarks_permalink_with_comment_tag() {
         let d = item(json!({
             "id": 9, "type": "comment", "by": "carol", "text": "my reply"
@@ -746,7 +769,7 @@ mod tests {
         .into_draft(&HackernewsConfig::default());
         assert_eq!(d.url, "https://news.ycombinator.com/item?id=9");
         assert_eq!(d.description, "HN: Comment by carol");
-        assert_eq!(d.extended, "my reply");
+        assert_eq!(d.extended, "<blockquote>my reply</blockquote>");
         assert_eq!(d.dedup_key, "hn:9");
         assert_eq!(
             d.tags,
@@ -991,12 +1014,10 @@ mod net_tests {
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
-        // URL unchanged (in-place); the redundant HN Link line is gone, leaving the text.
+        // URL unchanged (in-place); the redundant HN Link line is gone, leaving the text
+        // with its inner HTML converted to Markdown.
         assert_eq!(updated[0].url, "https://news.ycombinator.com/item?id=7");
-        assert_eq!(
-            updated[0].extended,
-            "<blockquote><p>details</p></blockquote>"
-        );
+        assert_eq!(updated[0].extended, "<blockquote>details</blockquote>");
         assert!(pinboard.deleted.borrow().is_empty());
     }
 

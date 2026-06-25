@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 
-use crate::bookmark::{Bookmark, BookmarkStore, BookmarkUpdate};
+use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::http::send_retrying;
 
 const DEFAULT_BASE: &str = "https://api.pinboard.in/v1";
@@ -60,8 +60,9 @@ pub struct PinboardBookmark {
 
 // The service-agnostic domain form, `crate::bookmark::Bookmark`, is what the rest of the
 // crate works with; `posts/all` parses into `PinboardBookmark` and converts via its
-// `From` impl. The `BookmarkStore` port + `BookmarkUpdate` write-view also live in
-// `bookmark`; this module is just the Pinboard client behind that port.
+// `From` impl, and a write takes a whole `Bookmark` (mapped to the API params in
+// `post_add`). The `BookmarkStore` port also lives in `bookmark`; this module is just the
+// Pinboard client behind that port.
 
 pub struct PinboardClient {
     http: reqwest::Client,
@@ -137,36 +138,42 @@ impl BookmarkStore for PinboardClient {
         self.rate_limit_secs
     }
 
-    async fn add(&self, b: BookmarkUpdate<'_>) -> Result<()> {
+    async fn add(&self, b: &Bookmark) -> Result<()> {
         self.post_add(b).await
     }
 
-    async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()> {
+    async fn update(&self, b: &Bookmark) -> Result<()> {
         self.post_add(b).await
     }
 }
 
 impl PinboardClient {
-    /// `posts/add` with `replace=yes`. A non-empty `dt` sets the bookmark time.
-    /// `extended` is trimmed if needed to keep the GET URL under [`MAX_URL_BYTES`].
-    async fn post_add(&self, b: BookmarkUpdate<'_>) -> Result<()> {
+    /// `posts/add` with `replace=yes`, mapping a domain [`Bookmark`] to the Pinboard
+    /// parameters (`public`/`read_later` → `shared`/`toread`, `timestamp` → `dt`). A set
+    /// `timestamp` sets the bookmark time. `extended` is trimmed if needed to keep the GET
+    /// URL under [`MAX_URL_BYTES`].
+    async fn post_add(&self, b: &Bookmark) -> Result<()> {
         let tags = b.tags.join(" ");
+        let dt = b
+            .timestamp
+            .and_then(crate::timefmt::to_rfc3339)
+            .unwrap_or_default();
         let endpoint = self.url("posts/add");
 
         // Every param except `extended` — these are fixed (never trimmed) and set the
         // budget that `extended` has to fit within.
         let mut fixed = vec![
-            ("url", b.url),
-            ("description", b.description),
+            ("url", b.url.as_str()),
+            ("description", b.description.as_str()),
             ("tags", tags.as_str()),
             ("replace", "yes"),
-            ("shared", if b.shared { "yes" } else { "no" }),
-            ("toread", if b.toread { "yes" } else { "no" }),
+            ("shared", if b.public { "yes" } else { "no" }),
+            ("toread", if b.read_later { "yes" } else { "no" }),
             ("auth_token", self.auth_token.as_str()),
             ("format", "json"),
         ];
-        if !b.dt.is_empty() {
-            fixed.push(("dt", b.dt));
+        if !dt.is_empty() {
+            fixed.push(("dt", dt.as_str()));
         }
 
         // Trim the notes to the budget; if Pinboard still rejects the URL as too long
@@ -174,7 +181,7 @@ impl PinboardClient {
         // the bookmark. Transient errors (network/429/5xx) are handled by send_retrying.
         let mut budget = MAX_URL_BYTES;
         loop {
-            let extended = self.fit_extended(&endpoint, &fixed, b.extended, budget);
+            let extended = self.fit_extended(&endpoint, &fixed, &b.extended, budget);
             let mut params = fixed.clone();
             params.push(("extended", extended.as_str()));
 
@@ -389,14 +396,14 @@ mod net_tests {
             .await;
 
         client(&server)
-            .add(BookmarkUpdate {
-                url: "https://old.reddit.com/r/x/",
-                description: "Title",
-                extended: "",
-                tags: &["reddit".into()],
-                shared: false,
-                toread: false,
-                dt: "",
+            .add(&Bookmark {
+                url: "https://old.reddit.com/r/x/".into(),
+                description: "Title".into(),
+                extended: String::new(),
+                tags: vec!["reddit".into()],
+                timestamp: None,
+                public: false,
+                read_later: false,
             })
             .await
             .unwrap();
@@ -430,14 +437,14 @@ mod net_tests {
             .await;
 
         client(&server)
-            .add(BookmarkUpdate {
-                url: "https://old.reddit.com/r/x/",
-                description: "Title",
-                extended: &"long notes ".repeat(2000),
-                tags: &["reddit".into()],
-                shared: false,
-                toread: false,
-                dt: "",
+            .add(&Bookmark {
+                url: "https://old.reddit.com/r/x/".into(),
+                description: "Title".into(),
+                extended: "long notes ".repeat(2000),
+                tags: vec!["reddit".into()],
+                timestamp: None,
+                public: false,
+                read_later: false,
             })
             .await
             .unwrap();
@@ -455,14 +462,14 @@ mod net_tests {
             .await;
 
         let err = client(&server)
-            .add(BookmarkUpdate {
-                url: "https://old.reddit.com/r/x/",
-                description: "Title",
-                extended: "",
-                tags: &["reddit".into()],
-                shared: false,
-                toread: false,
-                dt: "",
+            .add(&Bookmark {
+                url: "https://old.reddit.com/r/x/".into(),
+                description: "Title".into(),
+                extended: String::new(),
+                tags: vec!["reddit".into()],
+                timestamp: None,
+                public: false,
+                read_later: false,
             })
             .await
             .unwrap_err();

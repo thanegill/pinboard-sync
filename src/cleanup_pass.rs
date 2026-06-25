@@ -148,3 +148,157 @@ fn print_diff(bm: &Bookmark, p: &Planned) {
         println!("          date  -> {}", p.dt);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::FakePinboard;
+    use anyhow::anyhow;
+
+    /// A `CleanupPass` whose `plan` is a closure, so each test scripts its own outcome.
+    struct FakePass<F>(F);
+    impl<F: Fn(&Bookmark) -> Result<Option<Planned>>> CleanupPass for FakePass<F> {
+        async fn plan(&self, bm: &Bookmark) -> Result<Option<Planned>> {
+            (self.0)(bm)
+        }
+    }
+
+    fn bm(url: &str) -> Bookmark {
+        Bookmark {
+            url: url.into(),
+            description: "Title".into(),
+            extended: "notes".into(),
+            tags: "a b".into(),
+            time: "2020-01-01T00:00:00Z".into(),
+            shared: "no".into(),
+            toread: "no".into(),
+        }
+    }
+
+    /// A plan identical to `b` (the driver should treat it as unchanged).
+    fn unchanged_plan(b: &Bookmark) -> Planned {
+        Planned {
+            url: b.url.clone(),
+            description: b.description.clone(),
+            extended: b.extended.clone(),
+            tags: b.tag_list(),
+            dt: b.time.clone(),
+        }
+    }
+
+    #[tokio::test]
+    async fn err_plan_counts_failed_and_continues() {
+        // The first bookmark's plan fails; the second still gets written.
+        let books = vec![bm("https://x/bad"), bm("https://x/good")];
+        let pass = FakePass(|b: &Bookmark| {
+            if b.url.contains("bad") {
+                Err(anyhow!("boom"))
+            } else {
+                Ok(Some(Planned {
+                    description: "New".into(),
+                    ..unchanged_plan(b)
+                }))
+            }
+        });
+        let pinboard = FakePinboard::default();
+
+        let failed = run_pass(&pinboard, &books, false, "test", &pass).await;
+        assert_eq!(failed, 1);
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://x/good");
+        assert_eq!(updated[0].description, "New");
+    }
+
+    #[tokio::test]
+    async fn none_plan_is_skipped() {
+        let books = vec![bm("https://x/")];
+        let pass = FakePass(|_: &Bookmark| Ok(None));
+        let pinboard = FakePinboard::default();
+
+        let failed = run_pass(&pinboard, &books, false, "test", &pass).await;
+        assert_eq!(failed, 0);
+        assert!(pinboard.updated.borrow().is_empty());
+        assert!(pinboard.deleted.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unchanged_plan_is_skipped() {
+        let books = vec![bm("https://x/")];
+        let pass = FakePass(|b: &Bookmark| Ok(Some(unchanged_plan(b))));
+        let pinboard = FakePinboard::default();
+
+        let failed = run_pass(&pinboard, &books, false, "test", &pass).await;
+        assert_eq!(failed, 0);
+        assert!(pinboard.updated.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn url_change_updates_and_deletes_old_preserving_privacy() {
+        let books = vec![bm("https://old/")];
+        let pass = FakePass(|b: &Bookmark| {
+            Ok(Some(Planned {
+                url: "https://new/".into(),
+                description: "New".into(),
+                tags: vec!["x".into()],
+                ..unchanged_plan(b)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let failed = run_pass(&pinboard, &books, false, "test", &pass).await;
+        assert_eq!(failed, 0);
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://new/");
+        // shared/toread are carried over from the stored bookmark (both "no").
+        assert!(!updated[0].shared && !updated[0].toread);
+        // The old URL is deleted after the rewrite.
+        assert_eq!(*pinboard.deleted.borrow(), vec!["https://old/".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn apply_update_failure_is_logged_and_counted() {
+        let books = vec![bm("https://x/")];
+        // A desc-only change (URL unchanged, so no delete); the update itself fails.
+        let pass = FakePass(|b: &Bookmark| {
+            Ok(Some(Planned {
+                description: "New".into(),
+                ..unchanged_plan(b)
+            }))
+        });
+        let mut pinboard = FakePinboard::default();
+        pinboard.fail_update_urls.insert("https://x/".into());
+
+        let failed = run_pass(&pinboard, &books, false, "test", &pass).await;
+        assert_eq!(failed, 1);
+        assert!(pinboard.updated.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dry_run_renders_every_field_and_writes_nothing() {
+        // Two bookmarks so the dry-run renderer hits both notes branches: the first
+        // empties the notes ("(removed)"), the second sets new non-empty notes.
+        let books = vec![bm("https://empty/"), bm("https://full/")];
+        let pass = FakePass(|b: &Bookmark| {
+            let extended = if b.url.contains("empty") {
+                String::new()
+            } else {
+                "new notes".into()
+            };
+            Ok(Some(Planned {
+                url: format!("{}new", b.url),
+                description: "New".into(),
+                extended,
+                tags: vec!["x".into()],
+                dt: "2024-01-01T00:00:00Z".into(),
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let failed = run_pass(&pinboard, &books, true, "test", &pass).await;
+        assert_eq!(failed, 0);
+        assert!(pinboard.updated.borrow().is_empty());
+        assert!(pinboard.deleted.borrow().is_empty());
+    }
+}

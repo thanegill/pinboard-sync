@@ -1,6 +1,7 @@
 //! Minimal Pinboard API client: `posts/add`, `posts/all`, and `posts/delete`,
 //! with rate limiting and transient-failure retries (see [`crate::http`]).
 
+use std::cell::Cell;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -70,6 +71,10 @@ pub struct PinboardClient {
     auth_token: String,
     /// Seconds to pause between successive `posts/add` writes.
     rate_limit_secs: u64,
+    /// Set once the first write has happened, so [`Self::pace`] spaces only *successive*
+    /// writes. Pacing is the client's own concern, not the generic `BookmarkStore` port's.
+    /// (`Cell` is fine: the client is never used across threads — the futures aren't `Send`.)
+    wrote: Cell<bool>,
     /// API base, e.g. `https://api.pinboard.in/v1`.
     base: String,
 }
@@ -88,12 +93,22 @@ impl PinboardClient {
             http,
             auth_token,
             rate_limit_secs,
+            wrote: Cell::new(false),
             base,
         })
     }
 
     fn url(&self, path: &str) -> String {
         format!("{}/{path}", self.base)
+    }
+
+    /// Pinboard asks for ~3s between `posts/add` calls. Pause before each write *after*
+    /// the first (a failed attempt still hit the API, so it counts).
+    async fn pace(&self) {
+        if self.wrote.get() {
+            tokio::time::sleep(Duration::from_secs(self.rate_limit_secs)).await;
+        }
+        self.wrote.set(true);
     }
 }
 
@@ -134,10 +149,6 @@ impl BookmarkStore for PinboardClient {
         Ok(())
     }
 
-    fn rate_limit_secs(&self) -> u64 {
-        self.rate_limit_secs
-    }
-
     async fn add(&self, b: &Bookmark) -> Result<()> {
         self.post_add(b).await
     }
@@ -153,6 +164,9 @@ impl PinboardClient {
     /// `timestamp` sets the bookmark time. `extended` is trimmed if needed to keep the GET
     /// URL under [`MAX_URL_BYTES`].
     async fn post_add(&self, b: &Bookmark) -> Result<()> {
+        // Space successive writes (Pinboard's rate limit) — internal to the client, so
+        // the generic write loops don't manage pacing.
+        self.pace().await;
         let tags = b.tags.join(" ");
         let dt = b
             .timestamp

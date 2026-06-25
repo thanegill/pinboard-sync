@@ -5,8 +5,6 @@
 //! the client in [`crate::pinboard::PinboardBookmark`]; the formatting back to Pinboard
 //! fields happens at the write boundary in `pinboard::post_add`.
 
-use std::time::Duration;
-
 use anyhow::{Context, Result};
 use time::OffsetDateTime;
 
@@ -96,24 +94,16 @@ pub trait BookmarkStore {
     async fn update(&self, b: &Bookmark) -> Result<()>;
     /// Delete a bookmark by URL.
     async fn delete(&self, url: &str) -> Result<()>;
-    /// Seconds to pause between successive writes. The store decides its own pacing
-    /// (Pinboard asks for ~3s) — there's no sensible default for an arbitrary store.
-    fn rate_limit_secs(&self) -> u64;
 }
 
-/// The shared write step of the cleanup loops: rate-limit after the first write (so
-/// successive `posts/add`s are spaced), `update` the bookmark, then `delete` the old
-/// URL when it changed (`old_url`). `wrote` gates the inter-write delay and is set
-/// once any write has happened.
+/// The shared write step of the cleanup loops: `update` the bookmark, then `delete` the
+/// old URL when it changed (`old_url`). Any inter-write pacing is the store's own
+/// concern (the Pinboard client spaces its `posts/add` calls internally).
 pub async fn apply_update<P: BookmarkStore>(
     pinboard: &P,
-    wrote: &mut bool,
     update: &Bookmark,
     old_url: Option<&str>,
 ) -> Result<()> {
-    if *wrote {
-        tokio::time::sleep(Duration::from_secs(pinboard.rate_limit_secs())).await;
-    }
     pinboard
         .update(update)
         .await
@@ -124,6 +114,5 @@ pub async fn apply_update<P: BookmarkStore>(
             .await
             .with_context(|| format!("deleting old URL {old}"))?;
     }
-    *wrote = true;
     Ok(())
 }

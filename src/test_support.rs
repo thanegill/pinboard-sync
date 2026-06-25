@@ -128,8 +128,4 @@ impl BookmarkStore for FakePinboard {
         self.deleted.borrow_mut().push(url.to_string());
         Ok(())
     }
-    // No inter-write pacing in tests (skip the real sleep).
-    fn rate_limit_secs(&self) -> u64 {
-        0
-    }
 }

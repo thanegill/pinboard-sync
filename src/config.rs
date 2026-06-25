@@ -22,12 +22,41 @@ pub struct Config {
     pub hooks: Hooks,
     #[serde(default)]
     pub pinboard: Pinboard,
+    /// Per-source default overrides (the middle tier between `[pinboard]`/`[hooks]`
+    /// globals and a per-account override).
+    #[serde(default)]
+    pub defaults: Defaults,
     #[serde(default)]
     pub reddit: Vec<RedditAccount>,
     #[serde(default)]
     pub github: Vec<GithubAccount>,
     #[serde(default)]
     pub hackernews: Vec<HackernewsAccount>,
+}
+
+/// Per-source default overrides, keyed by source (`[defaults.reddit]` etc.). Each
+/// field, when set, overrides the corresponding global default and is in turn
+/// overridden by a per-account value of the same name.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Defaults {
+    #[serde(default)]
+    pub reddit: SourceDefaults,
+    #[serde(default)]
+    pub github: SourceDefaults,
+    #[serde(default)]
+    pub hackernews: SourceDefaults,
+}
+
+/// The overridable settings, as a per-source default tier. All `Option` — `None`
+/// falls through to the global default.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceDefaults {
+    pub toread: Option<bool>,
+    pub public: Option<bool>,
+    pub limit: Option<usize>,
+    pub on_auth_failure: Option<String>,
 }
 
 /// Cross-cutting hooks.
@@ -52,6 +81,9 @@ pub struct Pinboard {
     pub toread: bool,
     /// Seconds to pause between `posts/add` writes (default 3, what Pinboard asks for).
     pub rate_limit_secs: Option<u64>,
+    /// Global cap on new bookmarks written per run (per-source/per-account overridable;
+    /// 0 / unset = no cap). The CLI `--limit` still wins.
+    pub limit: Option<usize>,
 }
 
 /// One reddit account: whose saves to read, the session cookie, and the
@@ -312,6 +344,38 @@ mod tests {
         assert!(cfg.pinboard.token.is_none());
         assert!(!cfg.pinboard.public);
         assert!(cfg.hooks.on_auth_failure.is_none());
+        assert!(cfg.pinboard.limit.is_none());
+        assert!(cfg.defaults.reddit.toread.is_none());
+    }
+
+    #[test]
+    fn parses_per_source_defaults_and_account_overrides() {
+        let cfg = Config::parse(
+            r#"
+            [pinboard]
+            toread = true
+
+            [defaults.reddit]
+            toread = false
+            limit = 7
+
+            [[reddit]]
+            name = "main"
+            toread = true
+
+            [[reddit]]
+            name = "alt"
+            "#,
+        )
+        .unwrap();
+
+        assert!(cfg.pinboard.toread);
+        assert_eq!(cfg.defaults.reddit.toread, Some(false));
+        assert_eq!(cfg.defaults.reddit.limit, Some(7));
+        assert_eq!(cfg.reddit[0].toread, Some(true));
+        assert_eq!(cfg.reddit[1].toread, None);
+        // An unknown key inside the per-source table is still rejected.
+        assert!(Config::parse("[defaults.reddit]\nnonsense = 1").is_err());
     }
 
     #[test]
@@ -440,7 +504,15 @@ mod tests {
             token_file,
             public,
             toread,
-            rate_limit_secs
+            rate_limit_secs,
+            limit,
+        });
+        // The per-source defaults tier (`[defaults.<source>]`).
+        let source_defaults = documented_fields!(SourceDefaults {
+            toread,
+            public,
+            limit,
+            on_auth_failure,
         });
         let reddit = documented_fields!(RedditAccount {
             name,
@@ -488,6 +560,7 @@ mod tests {
         for &key in hooks
             .iter()
             .chain(&pinboard)
+            .chain(&source_defaults)
             .chain(&reddit)
             .chain(&github)
             .chain(&hackernews)

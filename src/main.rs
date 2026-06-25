@@ -521,15 +521,21 @@ fn job_label<T: config::Named>(source: &str, account: Option<&T>) -> String {
     )
 }
 
-/// This account's to-read flag: its override, else the `[pinboard]` default.
-fn job_toread(account_toread: Option<bool>, config: &Config) -> bool {
-    account_toread.unwrap_or(config.pinboard.toread)
+/// This account's to-read flag: its override, else the per-source default, else the
+/// `[pinboard]` global.
+fn job_toread(account: Option<bool>, source: Option<bool>, config: &Config) -> bool {
+    account.or(source).unwrap_or(config.pinboard.toread)
 }
 
 /// This account's public flag: forced by `--public`, else its override, else the
-/// `[pinboard]` default.
-fn job_shared(ovr: &SyncOverrides, account_public: Option<bool>, config: &Config) -> bool {
-    ovr.public || account_public.unwrap_or(config.pinboard.public)
+/// per-source default, else the `[pinboard]` global.
+fn job_shared(
+    ovr: &SyncOverrides,
+    account: Option<bool>,
+    source: Option<bool>,
+    config: &Config,
+) -> bool {
+    ovr.public || account.or(source).unwrap_or(config.pinboard.public)
 }
 
 /// One of the concrete source clients, unified behind the `Source` port so `--all`
@@ -558,12 +564,18 @@ impl Source for SourceClient {
     }
 }
 
-/// The per-run write cap: the CLI flag if set, else the account's `limit`, else 0.
-fn job_limit(ovr: &SyncOverrides, account_limit: Option<usize>) -> usize {
+/// The per-run write cap: the CLI flag if set, else the account's `limit`, else the
+/// per-source default, else the `[pinboard]` global, else 0 (no cap).
+fn job_limit(
+    ovr: &SyncOverrides,
+    account: Option<usize>,
+    source: Option<usize>,
+    config: &Config,
+) -> usize {
     if ovr.limit > 0 {
         ovr.limit
     } else {
-        account_limit.unwrap_or(0)
+        account.or(source).or(config.pinboard.limit).unwrap_or(0)
     }
 }
 
@@ -588,18 +600,20 @@ fn build_reddit_job(
     let reddit_config = account
         .map(RedditAccount::reddit_config)
         .unwrap_or_default();
+    let src = &config.defaults.reddit;
     let hook = resolve_hook(
         ovr.on_auth_failure.clone(),
         account.and_then(|a| a.on_auth_failure.as_deref()),
+        src.on_auth_failure.as_deref(),
         config,
     );
     Ok(SyncJob {
         client: SourceClient::Reddit(RedditClient::for_user(username, cookie, reddit_config)?),
         label: job_label("reddit", account),
         hook,
-        limit: job_limit(ovr, account.and_then(|a| a.limit)),
-        toread: job_toread(account.and_then(|a| a.toread), config),
-        shared: job_shared(ovr, account.and_then(|a| a.public), config),
+        limit: job_limit(ovr, account.and_then(|a| a.limit), src.limit, config),
+        toread: job_toread(account.and_then(|a| a.toread), src.toread, config),
+        shared: job_shared(ovr, account.and_then(|a| a.public), src.public, config),
     })
 }
 
@@ -618,18 +632,20 @@ fn build_github_job(
     let github_config = account
         .map(GithubAccount::github_config)
         .unwrap_or_default();
+    let src = &config.defaults.github;
     let hook = resolve_hook(
         ovr.on_auth_failure.clone(),
         account.and_then(|a| a.on_auth_failure.as_deref()),
+        src.on_auth_failure.as_deref(),
         config,
     );
     Ok(SyncJob {
         client: SourceClient::Github(GitHubClient::new(token, github_config)?),
         label: job_label("github", account),
         hook,
-        limit: job_limit(ovr, account.and_then(|a| a.limit)),
-        toread: job_toread(account.and_then(|a| a.toread), config),
-        shared: job_shared(ovr, account.and_then(|a| a.public), config),
+        limit: job_limit(ovr, account.and_then(|a| a.limit), src.limit, config),
+        toread: job_toread(account.and_then(|a| a.toread), src.toread, config),
+        shared: job_shared(ovr, account.and_then(|a| a.public), src.public, config),
     })
 }
 
@@ -650,14 +666,15 @@ fn build_hackernews_job(
     let hn_config = account
         .map(HackernewsAccount::hackernews_config)
         .unwrap_or_default();
+    let src = &config.defaults.hackernews;
     Ok(SyncJob {
         // HackerNews favorites are public, so there is no auth-failure hook.
         client: SourceClient::Hackernews(HnClient::new(username, hn_config)?),
         label: job_label("hackernews", account),
         hook: None,
-        limit: job_limit(ovr, account.and_then(|a| a.limit)),
-        toread: job_toread(account.and_then(|a| a.toread), config),
-        shared: job_shared(ovr, account.and_then(|a| a.public), config),
+        limit: job_limit(ovr, account.and_then(|a| a.limit), src.limit, config),
+        toread: job_toread(account.and_then(|a| a.toread), src.toread, config),
+        shared: job_shared(ovr, account.and_then(|a| a.public), src.public, config),
     })
 }
 
@@ -1093,13 +1110,16 @@ fn read_file_secret(path: &str) -> Option<String> {
     }
 }
 
-/// The auth-failure hook: CLI flag (with its env) → per-account override → `[hooks]`.
+/// The auth-failure hook: CLI flag (with its env) → per-account override → per-source
+/// default → `[hooks]` global.
 fn resolve_hook(
     flag: Option<String>,
     account_override: Option<&str>,
+    source_override: Option<&str>,
     config: &Config,
 ) -> Option<String> {
     flag.or_else(|| account_override.map(str::to_string))
+        .or_else(|| source_override.map(str::to_string))
         .or_else(|| config.hooks.on_auth_failure.clone())
 }
 

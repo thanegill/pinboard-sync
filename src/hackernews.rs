@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
-use crate::cleanup_pass::{run_pass, CleanupPass, Planned};
+use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Planned};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::send_retrying;
 use crate::pinboard::{Bookmark, BookmarkStore};
@@ -386,6 +386,16 @@ pub struct HnCleanupOpts {
     pub cleanup_stale_to_now: bool,
 }
 
+impl HnCleanupOpts {
+    fn date_opts(&self) -> DateOpts {
+        DateOpts {
+            use_post_date: self.use_post_date,
+            max_age_days: self.max_age_days,
+            stale_to_now: self.cleanup_stale_to_now,
+        }
+    }
+}
+
 impl HnClient {
     /// Client for `cleanup hackernews`: only the Algolia API is used (no favorites
     /// scraping), so no username is needed.
@@ -424,10 +434,16 @@ impl HnClient {
         let pass = HnCleanupPass {
             items,
             config: &self.config,
-            opts,
-            now: crate::timefmt::now_unix(),
         };
-        let mut failed = run_pass(pinboard, &hn_bms, opts.dry_run, "HN", &pass).await;
+        let mut failed = run_pass(
+            pinboard,
+            &hn_bms,
+            opts.dry_run,
+            "HN",
+            opts.date_opts(),
+            &pass,
+        )
+        .await;
 
         if opts.link_discussions {
             failed += self.link_discussions(pinboard, opts, bookmarks).await;
@@ -461,6 +477,7 @@ impl HnClient {
             &candidates,
             opts.dry_run,
             "HN discussion",
+            opts.date_opts(),
             &LinkPass { client: self },
         )
         .await
@@ -469,12 +486,10 @@ impl HnClient {
 
 /// Re-shapes one favorited HN item bookmark: re-fetch via Algolia and re-derive the
 /// draft (stories rewrite to the article URL; comments/text posts update in place),
-/// preserving existing tags and the creation time.
+/// preserving existing tags.
 struct HnCleanupPass<'a> {
     items: HashMap<String, Item>,
     config: &'a HackernewsConfig,
-    opts: &'a HnCleanupOpts,
-    now: i64,
 }
 
 impl CleanupPass for HnCleanupPass<'_> {
@@ -483,34 +498,27 @@ impl CleanupPass for HnCleanupPass<'_> {
         let Some(item) = self.items.get(&id) else {
             return Ok(None);
         };
+        let src_date = item.created_at;
         let draft = item.clone().into_draft(self.config);
 
         // Preserve existing tags, appending any freshly-derived ones.
         let mut tags = bm.tag_list();
         extend_unique(&mut tags, &draft.tags);
 
-        let dt = crate::timefmt::cleanup_dt(
-            self.opts.use_post_date,
-            self.opts.max_age_days,
-            self.opts.cleanup_stale_to_now,
-            item.created_at,
-            self.now,
-            &bm.time,
-        );
-
         Ok(Some(Planned {
             url: draft.url,
             description: draft.description,
             extended: draft.extended,
             tags,
-            dt,
+            src_date,
         }))
     }
 }
 
 /// Links one `link_tag`-tagged article bookmark to its HN discussion: look it up by
 /// URL, add an `HN Link:` line to the notes, and swap the marker tag for the base HN
-/// tags. Always in-place (the bookmark URL and date are unchanged).
+/// tags. Always in-place — the URL is unchanged and `src_date` is `None`, so the
+/// driver preserves the stored date regardless of the dating policy.
 struct LinkPass<'a> {
     client: &'a HnClient,
 }
@@ -548,7 +556,7 @@ impl CleanupPass for LinkPass<'_> {
             description,
             extended,
             tags,
-            dt: bm.time.clone(),
+            src_date: None,
         }))
     }
 }

@@ -11,15 +11,28 @@ use log::{debug, error, info};
 use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::source::tags_differ;
 
-/// The desired end-state for one bookmark. `shared`/`toread` are always preserved
-/// from the stored bookmark, so a pass only supplies the mutable fields.
+/// The desired end-state for one bookmark's content. `shared`/`toread` are preserved
+/// from the stored bookmark, and the Pinboard `dt` is resolved by the driver from
+/// `src_date` + the pass's [`DateOpts`] — so a pass supplies only the content fields
+/// plus the raw source date.
 pub struct Planned {
     pub url: String,
     pub description: String,
     pub extended: String,
     pub tags: Vec<String>,
-    /// Pinboard `dt` (RFC3339), empty to leave Pinboard's default.
-    pub dt: String,
+    /// The source item's creation time (unix epoch), or `None` when unknown / not
+    /// datable. The driver turns this into the Pinboard `dt` via [`crate::timefmt::cleanup_dt`].
+    pub src_date: Option<i64>,
+}
+
+/// The `use_post_date` policy applied uniformly across a pass: whether to re-date by
+/// the source date, the backdate age cap, and whether to push stale (older-than-cap)
+/// items to "now". Resolved once by the caller from its source's cleanup options.
+#[derive(Clone, Copy)]
+pub struct DateOpts {
+    pub use_post_date: bool,
+    pub max_age_days: u64,
+    pub stale_to_now: bool,
 }
 
 /// How a source re-shapes one bookmark during `cleanup`.
@@ -41,6 +54,7 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     bookmarks: &[Bookmark],
     dry_run: bool,
     noun: &str,
+    dates: DateOpts,
     pass: &C,
 ) -> usize {
     info!(
@@ -49,6 +63,7 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
         if dry_run { " (dry run)" } else { "" }
     );
 
+    let now = crate::timefmt::now_unix();
     let mut changed = 0usize;
     let mut failed = 0usize;
     let mut wrote = false;
@@ -64,14 +79,25 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             }
         };
 
+        // Resolve the Pinboard `dt` here, at the write boundary: the source date when
+        // dating is on and within the cap, else "now"/preserve per the policy.
+        let dt = crate::timefmt::cleanup_dt(
+            dates.use_post_date,
+            dates.max_age_days,
+            dates.stale_to_now,
+            planned.src_date,
+            now,
+            &bm.time,
+        );
+
         let url_changed = planned.url != bm.url;
-        if !changed_at_all(bm, &planned) {
+        if !changed_at_all(bm, &planned, &dt) {
             continue;
         }
 
         if dry_run {
             changed += 1;
-            print_diff(bm, &planned);
+            print_diff(bm, &planned, &dt);
             continue;
         }
 
@@ -86,7 +112,7 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
                 tags: &planned.tags,
                 shared: bm.is_shared(),
                 toread: bm.is_toread(),
-                dt: &planned.dt,
+                dt: &dt,
             },
             url_changed.then_some(bm.url.as_str()),
         )
@@ -116,17 +142,18 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     failed
 }
 
-/// Whether the plan differs from the stored bookmark in any written field.
-fn changed_at_all(bm: &Bookmark, p: &Planned) -> bool {
+/// Whether the plan (with its driver-resolved `dt`) differs from the stored bookmark
+/// in any written field.
+fn changed_at_all(bm: &Bookmark, p: &Planned, dt: &str) -> bool {
     p.url != bm.url
         || p.description != bm.description
         || p.extended != bm.extended
-        || p.dt != bm.time
+        || dt != bm.time
         || tags_differ(&bm.tag_list(), &p.tags)
 }
 
 /// Print the changed fields of a planned update (dry-run output).
-fn print_diff(bm: &Bookmark, p: &Planned) {
+fn print_diff(bm: &Bookmark, p: &Planned, dt: &str) {
     println!("[dry-run] {}", bm.url);
     if p.url != bm.url {
         println!("          url   -> {}", p.url);
@@ -144,8 +171,8 @@ fn print_diff(bm: &Bookmark, p: &Planned) {
     if tags_differ(&bm.tag_list(), &p.tags) {
         println!("          tags  -> [{}]", p.tags.join(" "));
     }
-    if p.dt != bm.time {
-        println!("          date  -> {}", p.dt);
+    if dt != bm.time {
+        println!("          date  -> {}", dt);
     }
 }
 
@@ -175,16 +202,24 @@ mod tests {
         }
     }
 
-    /// A plan identical to `b` (the driver should treat it as unchanged).
+    /// A plan identical to `b` (the driver should treat it as unchanged under
+    /// [`NO_DATING`], which leaves the stored time intact).
     fn unchanged_plan(b: &Bookmark) -> Planned {
         Planned {
             url: b.url.clone(),
             description: b.description.clone(),
             extended: b.extended.clone(),
             tags: b.tag_list(),
-            dt: b.time.clone(),
+            src_date: None,
         }
     }
+
+    /// Dating off: the driver preserves each bookmark's existing `dt`.
+    const NO_DATING: DateOpts = DateOpts {
+        use_post_date: false,
+        max_age_days: 0,
+        stale_to_now: false,
+    };
 
     #[tokio::test]
     async fn err_plan_counts_failed_and_continues() {
@@ -202,7 +237,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let failed = run_pass(&pinboard, &books, false, "test", &pass).await;
+        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(failed, 1);
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -216,7 +251,7 @@ mod tests {
         let pass = FakePass(|_: &Bookmark| Ok(None));
         let pinboard = FakePinboard::default();
 
-        let failed = run_pass(&pinboard, &books, false, "test", &pass).await;
+        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(failed, 0);
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());
@@ -228,7 +263,7 @@ mod tests {
         let pass = FakePass(|b: &Bookmark| Ok(Some(unchanged_plan(b))));
         let pinboard = FakePinboard::default();
 
-        let failed = run_pass(&pinboard, &books, false, "test", &pass).await;
+        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(failed, 0);
         assert!(pinboard.updated.borrow().is_empty());
     }
@@ -246,7 +281,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let failed = run_pass(&pinboard, &books, false, "test", &pass).await;
+        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(failed, 0);
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -270,7 +305,7 @@ mod tests {
         let mut pinboard = FakePinboard::default();
         pinboard.fail_update_urls.insert("https://x/".into());
 
-        let failed = run_pass(&pinboard, &books, false, "test", &pass).await;
+        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(failed, 1);
         assert!(pinboard.updated.borrow().is_empty());
     }
@@ -291,12 +326,19 @@ mod tests {
                 description: "New".into(),
                 extended,
                 tags: vec!["x".into()],
-                dt: "2024-01-01T00:00:00Z".into(),
+                // A datable source time, so the driver re-dates and the `date ->` line renders.
+                src_date: Some(1_700_000_000),
             }))
         });
         let pinboard = FakePinboard::default();
 
-        let failed = run_pass(&pinboard, &books, true, "test", &pass).await;
+        // Dating on with a huge cap, so the source date is always applied.
+        let dates = DateOpts {
+            use_post_date: true,
+            max_age_days: 1_000_000,
+            stale_to_now: false,
+        };
+        let failed = run_pass(&pinboard, &books, true, "test", dates, &pass).await;
         assert_eq!(failed, 0);
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());

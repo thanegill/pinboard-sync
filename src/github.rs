@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::cleanup_pass::{run_pass, CleanupPass, Planned};
+use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Planned};
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::send_retrying;
 use crate::pinboard::{Bookmark, BookmarkStore};
@@ -254,6 +254,16 @@ pub struct GhCleanupOpts {
     pub cleanup_stale_to_now: bool,
 }
 
+impl GhCleanupOpts {
+    fn date_opts(&self) -> DateOpts {
+        DateOpts {
+            use_post_date: self.use_post_date,
+            max_age_days: self.max_age_days,
+            stale_to_now: self.cleanup_stale_to_now,
+        }
+    }
+}
+
 /// Normalize existing GitHub repo bookmarks: look each repo up via the API (which
 /// follows renames/transfers), rewriting a moved repo's URL to the current one,
 /// setting the title to the current `owner/repo`, and refreshing the `lang:` tag. A
@@ -290,11 +300,17 @@ pub async fn cleanup<P: BookmarkStore>(
     let pass = GithubPass {
         client,
         config,
-        opts,
         star_dates,
-        now: crate::timefmt::now_unix(),
     };
-    let failed = run_pass(pinboard, &gh_bms, opts.dry_run, "github", &pass).await;
+    let failed = run_pass(
+        pinboard,
+        &gh_bms,
+        opts.dry_run,
+        "github",
+        opts.date_opts(),
+        &pass,
+    )
+    .await;
     if failed > 0 {
         bail!("{failed} bookmark(s) failed to update");
     }
@@ -307,9 +323,7 @@ pub async fn cleanup<P: BookmarkStore>(
 struct GithubPass<'a> {
     client: &'a GitHubClient,
     config: &'a GithubConfig,
-    opts: &'a GhCleanupOpts,
     star_dates: HashMap<String, i64>,
-    now: i64,
 }
 
 impl CleanupPass for GithubPass<'_> {
@@ -342,21 +356,13 @@ impl CleanupPass for GithubPass<'_> {
             }
         }
 
-        let dt = crate::timefmt::cleanup_dt(
-            self.opts.use_post_date,
-            self.opts.max_age_days,
-            self.opts.cleanup_stale_to_now,
-            url_key(&url).and_then(|k| self.star_dates.get(&k).copied()),
-            self.now,
-            &bm.time,
-        );
-
+        let src_date = url_key(&url).and_then(|k| self.star_dates.get(&k).copied());
         Ok(Some(Planned {
             url,
             description,
             extended,
             tags,
-            dt,
+            src_date,
         }))
     }
 }

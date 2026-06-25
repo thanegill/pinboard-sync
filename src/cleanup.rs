@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{anyhow, bail, Result};
 
-use crate::cleanup_pass::{run_pass, CleanupPass, Planned};
+use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Planned};
 use crate::htmltext::html_to_plain;
 use crate::model::{cased_subreddit, reddit_key};
 use crate::pinboard::{Bookmark, BookmarkStore};
@@ -28,6 +28,16 @@ pub struct CleanupOpts {
     pub max_age_days: u64,
     /// Re-date posts older than the cap to "now" instead of leaving them.
     pub cleanup_stale_to_now: bool,
+}
+
+impl CleanupOpts {
+    fn date_opts(&self) -> DateOpts {
+        DateOpts {
+            use_post_date: self.use_post_date,
+            max_age_days: self.max_age_days,
+            stale_to_now: self.cleanup_stale_to_now,
+        }
+    }
 }
 
 /// Authoritative per-post data from `/api/info`.
@@ -55,12 +65,16 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
         .collect();
 
     let info = fetch_post_info(reddit, opts, &reddit_bms).await?;
-    let pass = RedditPass {
-        info,
-        opts,
-        now: crate::timefmt::now_unix(),
-    };
-    let failed = run_pass(pinboard, &reddit_bms, opts.dry_run, "reddit", &pass).await;
+    let pass = RedditPass { info, opts };
+    let failed = run_pass(
+        pinboard,
+        &reddit_bms,
+        opts.dry_run,
+        "reddit",
+        opts.date_opts(),
+        &pass,
+    )
+    .await;
     if failed > 0 {
         bail!("{failed} bookmark(s) failed to update");
     }
@@ -72,7 +86,6 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
 struct RedditPass<'a> {
     info: HashMap<String, PostMeta>,
     opts: &'a CleanupOpts,
-    now: i64,
 }
 
 impl CleanupPass for RedditPass<'_> {
@@ -100,15 +113,6 @@ impl CleanupPass for RedditPass<'_> {
             }
         }
 
-        let dt = crate::timefmt::cleanup_dt(
-            opts.use_post_date,
-            opts.max_age_days,
-            opts.cleanup_stale_to_now,
-            post.and_then(|p| p.created_utc).map(|s| s as i64),
-            self.now,
-            &bm.time,
-        );
-
         // Reshape the notes. Only for *post* bookmarks: `/api/info` is keyed by the post
         // fullname (`post_fullname`), so a comment's own body is never fetched — leave those
         // notes alone. A non-empty rebuild from authoritative data (selftext wrapped in a
@@ -130,7 +134,7 @@ impl CleanupPass for RedditPass<'_> {
             description,
             extended,
             tags,
-            dt,
+            src_date: post.and_then(|p| p.created_utc).map(|s| s as i64),
         }))
     }
 }

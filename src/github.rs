@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Planned};
+use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PlannedCleanupPass};
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::send_retrying;
 use crate::pinboard::{Bookmark, BookmarkStore};
@@ -243,7 +243,7 @@ impl Source for GitHubClient {
 }
 
 /// Options for `cleanup github`.
-pub struct GhCleanupOpts {
+pub struct GitHubCleanupOpts {
     pub dry_run: bool,
     /// Re-date bookmarks to when the repo was starred (within the age cap). Since the
     /// per-repo lookup doesn't carry `starred_at`, this fetches the star list to map it.
@@ -254,7 +254,7 @@ pub struct GhCleanupOpts {
     pub cleanup_stale_to_now: bool,
 }
 
-impl GhCleanupOpts {
+impl GitHubCleanupOpts {
     fn date_opts(&self) -> DateOpts {
         DateOpts {
             use_post_date: self.use_post_date,
@@ -273,12 +273,12 @@ pub async fn cleanup<P: BookmarkStore>(
     pinboard: &P,
     client: &GitHubClient,
     config: &GithubConfig,
-    opts: &GhCleanupOpts,
+    opts: &GitHubCleanupOpts,
     bookmarks: &[Bookmark],
 ) -> Result<()> {
     let gh_bms: Vec<_> = bookmarks
         .iter()
-        .filter(|b| host_is(&b.url, "github.com"))
+        .filter(|bookmark| host_is(&bookmark.url, "github.com"))
         .cloned()
         .collect();
 
@@ -297,7 +297,7 @@ pub async fn cleanup<P: BookmarkStore>(
         HashMap::new()
     };
 
-    let pass = GithubPass {
+    let pass = GitHubCleanupPass {
         client,
         config,
         star_dates,
@@ -320,22 +320,22 @@ pub async fn cleanup<P: BookmarkStore>(
 /// Re-shapes one GitHub repo bookmark: canonicalize the URL, then refresh from the API
 /// (which follows renames/transfers) — current URL/title, rebuilt `<blockquote>` notes,
 /// and language tag. A 404 keeps just the canonicalization.
-struct GithubPass<'a> {
+struct GitHubCleanupPass<'a> {
     client: &'a GitHubClient,
     config: &'a GithubConfig,
     star_dates: HashMap<String, i64>,
 }
 
-impl CleanupPass for GithubPass<'_> {
-    async fn plan(&self, bm: &Bookmark) -> Result<Option<Planned>> {
-        let canonical = canonical_repo_url(&bm.url).unwrap_or_else(|| bm.url.clone());
+impl CleanupPass for GitHubCleanupPass<'_> {
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
+        let canonical = canonical_repo_url(&bookmark.url).unwrap_or_else(|| bookmark.url.clone());
 
         // Default to the canonicalization, then refresh from the API when the repo
         // still exists (a 404 keeps just the canonical URL).
         let mut url = canonical.clone();
-        let mut description = html_to_plain(&bm.description);
-        let mut extended = bm.extended.clone();
-        let mut tags = bm.tag_list();
+        let mut description = html_to_plain(&bookmark.description);
+        let mut extended = bookmark.extended.clone();
+        let mut tags = bookmark.tag_list();
         if let Some((owner, repo)) = owner_repo(&canonical) {
             match self.client.repo(owner, repo).await {
                 Ok(Some(info)) => {
@@ -348,7 +348,7 @@ impl CleanupPass for GithubPass<'_> {
                         info.homepage.as_deref(),
                         &info.html_url,
                     );
-                    tags = refresh_tags(bm.tag_list(), &info, self.config);
+                    tags = refresh_tags(bookmark.tag_list(), &info, self.config);
                 }
                 Ok(None) => {}
                 // A failed lookup is surfaced to the driver, which logs and counts it.
@@ -357,7 +357,7 @@ impl CleanupPass for GithubPass<'_> {
         }
 
         let src_date = url_key(&url).and_then(|k| self.star_dates.get(&k).copied());
-        Ok(Some(Planned {
+        Ok(Some(PlannedCleanupPass {
             url,
             description,
             extended,
@@ -678,7 +678,7 @@ mod net_tests {
             &pinboard,
             &client,
             &GithubConfig::default(),
-            &GhCleanupOpts {
+            &GitHubCleanupOpts {
                 dry_run: false,
                 use_post_date: false,
                 max_age_days: 30,
@@ -747,7 +747,7 @@ mod net_tests {
             &pinboard,
             &client,
             &GithubConfig::default(),
-            &GhCleanupOpts {
+            &GitHubCleanupOpts {
                 dry_run: false,
                 use_post_date: false,
                 max_age_days: 30,

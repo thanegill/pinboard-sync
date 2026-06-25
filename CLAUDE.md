@@ -28,8 +28,13 @@ gate green.
 
 The flow is one pass: a source yields drafts → skip those already on Pinboard →
 write the rest. `main.rs` is CLI parsing + config/secret resolution + dispatch; the
-sync loop is in [`src/sync.rs`](src/sync.rs), the reddit cleanup loop in
-[`src/cleanup.rs`](src/cleanup.rs), the HN cleanup in
+sync write loop is in [`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one
+driver** ([`src/cleanup_pass.rs`](src/cleanup_pass.rs)): a source implements
+`CleanupPass::plan` (the desired end-state for one bookmark — `None` to skip, `Err` for
+a per-item failure), and `run_pass` owns the loop common to all of them: diff against
+the stored bookmark, skip unchanged, render the dry-run lines, write via `apply_update`
+(deleting the old URL on a rewrite), and tally. The per-source planners live in
+[`src/cleanup.rs`](src/cleanup.rs) (reddit), [`src/github.rs`](src/github.rs), and
 [`src/hackernews.rs`](src/hackernews.rs).
 
 **Every source is a `Source`; the sync loop is generic over it.** The port lives in
@@ -39,7 +44,8 @@ maps an existing Pinboard URL to that source's dedup key. `sync::run` fetches dr
 builds the set of existing keys by mapping `pinboard.all()` through
 `source.existing_key`, and writes the drafts whose `dedup_key` isn't present. To add
 a source, implement `Source` and wire it into `main.rs` + `config.rs`. The clients
-also sit behind the `BookmarkStore` port (Pinboard) so the loops are unit-tested with
+also sit behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a
+`BookmarkUpdate`) so the loops are unit-tested with
 in-memory fakes ([`src/test_support.rs`](src/test_support.rs)); real clients are
 covered by `net_tests` against a wiremock server via test-only `with_base_url(s)`
 constructors.
@@ -90,7 +96,10 @@ renamed/moved repos and refresh the title + language tag.
 **`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
 `SyncJob { client: SourceClient, hook, limit }`; `SourceClient` is an enum over the
 three clients implementing `Source`, so `build_jobs` + `run_sync_jobs` handle one
-account and `--all` uniformly. `run_sync_jobs` fetches every job's source
+account and `--all` uniformly. Per-account settings
+(`toread`/`public`/`limit`/`use_post_date`/…) resolve account → `[defaults.<source>]`
+→ `[pinboard]` through the generic `tier` helper and `DateSettings`, reading the
+shared override fields via the `config::Account` trait. `run_sync_jobs` fetches every job's source
 concurrently via `futures::future::join_all` (reads only, on one task — the client
 futures aren't `Send`, so no `tokio::spawn`), then writes the merged, URL-deduped
 drafts **sequentially** through one rate-limited writer (`sync::write_drafts`).

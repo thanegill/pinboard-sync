@@ -32,6 +32,11 @@ All notable changes to this project are documented here. The format is based on
   rebuilding titles and notes through the shared builders — since `cleanup` is the only
   path that reshapes already-saved bookmarks. Reddit *comment* bookmarks are left untouched
   (their bodies aren't refetched, so the parent post's text can't be misapplied).
+- `cleanup --dry-run` output is now uniform across all three sources: the changed-field
+  lines (`url`/`title`/`notes`/`tags`/`date`) print in one consistent order, and
+  HackerNews now lists changed notes too. Internally the three per-source `cleanup` loops
+  were unified behind a single driver ([`src/cleanup_pass.rs`](src/cleanup_pass.rs)) — no
+  change to what gets written.
 
 ### Fixed
 

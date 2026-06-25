@@ -59,6 +59,9 @@ pub struct EntryFields {
     pub url: Option<String>,
     #[serde(default)]
     pub selftext: Option<String>,
+    /// True for text/self posts (whose `url` is the post's own permalink).
+    #[serde(default)]
+    pub is_self: bool,
     #[serde(default)]
     pub post_hint: Option<String>,
     #[serde(default)]
@@ -136,11 +139,15 @@ impl ListingEntry {
             }
         } else {
             // Self-posts carry their text in `selftext`; link posts point elsewhere.
+            // An empty self-post has nothing to add — its `url` is the post's own
+            // permalink, i.e. the bookmark URL, so don't fall back to it.
             let selftext = fields.selftext.unwrap_or_default();
-            if selftext.is_empty() {
-                fields.url.unwrap_or_default()
-            } else {
+            if !selftext.is_empty() {
                 selftext
+            } else if fields.is_self {
+                String::new()
+            } else {
+                fields.url.unwrap_or_default()
             }
         };
 
@@ -445,6 +452,36 @@ mod tests {
             .tags(&RedditConfig::default())
             .iter()
             .any(|t| t.starts_with("type:")));
+    }
+
+    #[test]
+    fn empty_self_post_has_no_duplicated_permalink_in_notes() {
+        // A self-post with no body: Reddit's `url` is the post's own permalink, so
+        // falling back to it would duplicate the bookmark URL in the notes.
+        let post = item(
+            "t3",
+            serde_json::json!({
+                "name": "t3_a", "subreddit": "rust", "permalink": "/r/rust/comments/a/x/",
+                "title": "T", "is_self": true, "selftext": "",
+                "url": "https://www.reddit.com/r/rust/comments/a/x/"
+            }),
+        );
+        assert_eq!(post.extended, "");
+    }
+
+    #[test]
+    fn empty_link_post_keeps_the_external_url_in_notes() {
+        // A link post with no selftext keeps its external URL in the notes — that's
+        // not the bookmark URL (which is the reddit permalink), so it's not a dup.
+        let post = item(
+            "t3",
+            serde_json::json!({
+                "name": "t3_a", "subreddit": "rust", "permalink": "/r/rust/comments/a/x/",
+                "title": "T", "is_self": false, "selftext": "",
+                "url": "https://example.com/article"
+            }),
+        );
+        assert_eq!(post.extended, "https://example.com/article");
     }
 
     #[test]

@@ -164,9 +164,21 @@ impl Item {
             .title
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| format!("HN: {} by {}", self.kind, self.by));
-        let mut extended = format!("HN Link: {hn_url}");
+        // The `HN Link:` line points at the discussion. For a text post the bookmark
+        // URL already *is* that permalink, so including it would duplicate the URL —
+        // skip it and let the notes carry just the post text.
+        let mut extended = if article.is_some() {
+            format!("HN Link: {hn_url}")
+        } else {
+            String::new()
+        };
         if let Some(text) = self.text.filter(|s| !s.is_empty()) {
-            extended = format!("{extended}\n\n<blockquote>{text}</blockquote>");
+            let block = format!("<blockquote>{text}</blockquote>");
+            extended = if extended.is_empty() {
+                block
+            } else {
+                format!("{extended}\n\n{block}")
+            };
         }
         BookmarkDraft {
             url,
@@ -708,12 +720,22 @@ mod tests {
         .into_draft(&HackernewsConfig::default());
         assert_eq!(d.url, "https://news.ycombinator.com/item?id=7");
         assert_eq!(d.dedup_key, "hn:7");
-        assert_eq!(
-            d.extended,
-            "HN Link: https://news.ycombinator.com/item?id=7\n\n<blockquote><p>details</p></blockquote>"
-        );
+        // The bookmark URL is already the HN permalink, so the notes carry only the
+        // post text — no redundant `HN Link:` pointing back at the same URL.
+        assert_eq!(d.extended, "<blockquote><p>details</p></blockquote>");
         // Ask HN: → special-type tag.
         assert!(d.tags.contains(&"hackernews:ask-hn".to_string()));
+    }
+
+    #[test]
+    fn text_post_without_text_has_empty_notes() {
+        let d = item(json!({
+            "id": 8, "type": "story", "by": "bob", "title": "Ask HN: empty?"
+        }))
+        .into_draft(&HackernewsConfig::default());
+        assert_eq!(d.url, "https://news.ycombinator.com/item?id=8");
+        // No text and no redundant HN link: nothing to put in the notes.
+        assert_eq!(d.extended, "");
     }
 
     #[test]

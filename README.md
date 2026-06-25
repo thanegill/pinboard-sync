@@ -152,7 +152,9 @@ which overrides `-v`. Under the NixOS service these lines land in the journal
 Where `sync` *adds* new bookmarks, `cleanup` *repairs the ones already on Pinboard* —
 normalizing URLs, tags, and titles that drift over time or were saved in a messier
 form. It only touches bookmarks it recognizes as belonging to that source, is
-idempotent (safe to re-run), and supports `--dry-run` to preview every change first.
+idempotent (safe to re-run — it re-writes a bookmark only when a field actually
+changes, comparing creation dates by instant so an equivalently-formatted timestamp
+isn't treated as a change), and supports `--dry-run` to preview every change first.
 `cleanup --all` runs all three once over the shared bookmark set.
 
 - **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your

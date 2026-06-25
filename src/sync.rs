@@ -5,7 +5,6 @@
 //! be unit-tested with in-memory fakes.
 
 use std::collections::HashSet;
-use std::time::Duration;
 
 use log::{debug, error};
 
@@ -39,18 +38,16 @@ pub struct WriteOutcome {
     pub failed: usize,
 }
 
-/// Write `drafts` to Pinboard sequentially, pausing `pinboard.rate_limit_secs()`
-/// between `posts/add` calls. A single bookmark that fails to write (e.g. a
-/// rejected URL) is logged and skipped so the rest still go through; the failure is
-/// reflected in the returned [`WriteOutcome`] for a non-zero exit. Writes nothing in
-/// `dry_run`.
+/// Write `drafts` to Pinboard sequentially (the store spaces its own `posts/add` calls).
+/// A single bookmark that fails to write (e.g. a rejected URL) is logged and skipped so
+/// the rest still go through; the failure is reflected in the returned [`WriteOutcome`]
+/// for a non-zero exit. Writes nothing in `dry_run`.
 pub async fn write_drafts<P: BookmarkStore>(
     pinboard: &P,
     drafts: &[BookmarkDraft],
     dry_run: bool,
 ) -> WriteOutcome {
     let mut outcome = WriteOutcome::default();
-    let mut posted = false;
     for draft in drafts {
         let bm = &draft.bookmark;
         if dry_run {
@@ -72,14 +69,8 @@ pub async fn write_drafts<P: BookmarkStore>(
             continue;
         }
 
-        // Pinboard asks for ~3s between posts/add calls (configurable). Pace after the
-        // first attempt regardless of its outcome — a failed attempt still hit the API.
-        if posted {
-            tokio::time::sleep(Duration::from_secs(pinboard.rate_limit_secs())).await;
-        }
-        posted = true;
         // The sync loop already resolved `public`/`read_later` and the post date on the
-        // draft's bookmark, so write it straight through.
+        // draft's bookmark, so write it straight through (the client paces itself).
         match pinboard.add(bm).await {
             Ok(()) => {
                 outcome.written += 1;

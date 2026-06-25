@@ -57,7 +57,6 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     let now = OffsetDateTime::now_utc();
     let mut changed = 0usize;
     let mut failed = 0usize;
-    let mut wrote = false;
     for bookmark in bookmarks {
         let mut planned = match pass.plan(bookmark).await {
             Ok(Some(p)) => p,
@@ -103,7 +102,6 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
         // Log and skip a single failed update so the rest of the pass still runs.
         match apply_update(
             pinboard,
-            &mut wrote,
             &planned,
             url_changed.then_some(bookmark.url.as_str()),
         )

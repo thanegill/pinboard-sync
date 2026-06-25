@@ -16,9 +16,10 @@ use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::send_retrying;
 use crate::pinboard::{Bookmark, BookmarkStore};
 use crate::source::{
-    extend_unique, push_prefixed, push_tag, push_tags, split_host_path, url_key, BookmarkDraft,
-    Source, SourceError,
+    extend_unique, push_prefixed, push_tag, push_tags, url_key, BookmarkDraft, Source, SourceError,
+    UrlKey,
 };
+use url::Url;
 
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0";
@@ -159,7 +160,10 @@ impl Item {
 
         let article = self.url.filter(|s| !s.is_empty());
         let (url, dedup_key) = match &article {
-            Some(u) => (u.clone(), url_key(u).unwrap_or_else(|| u.clone())),
+            Some(u) => {
+                let key = Url::parse(u).ok().as_ref().and_then(url_key);
+                (u.clone(), key.unwrap_or_else(|| u.clone()))
+            }
             None => (hn_url.clone(), format!("hn:{}", self.id)),
         };
         let description = html_to_plain(
@@ -321,12 +325,12 @@ impl HnClient {
 
     /// Find the HN story id discussing `url`, via the Algolia URL search. Returns
     /// the id only when a hit's URL matches `url` (so loose matches are ignored).
-    async fn search_by_url(&self, url: &str) -> Result<Option<String>, SourceError> {
+    async fn search_by_url(&self, url: &Url) -> Result<Option<String>, SourceError> {
         let endpoint = format!("{}/api/v1/search", self.algolia);
         let resp = send_retrying("hn algolia url", MAX_RETRIES, RETRY_DELAY, || {
             self.http.get(&endpoint).query(&[
                 ("restrictSearchableAttributes", "url"),
-                ("query", url),
+                ("query", url.as_str()),
                 ("hitsPerPage", "5"),
             ])
         })
@@ -343,7 +347,11 @@ impl HnClient {
         let search: SearchResponse = resp.json().await.context("parsing hn algolia response")?;
         let want = url_key(url);
         Ok(search.hits.into_iter().find_map(|h| {
-            let hit_key = h.url.as_deref().and_then(url_key);
+            let hit_key = h
+                .url
+                .as_deref()
+                .and_then(|s| Url::parse(s).ok())
+                .and_then(|u| url_key(&u));
             (want.is_some() && hit_key == want).then_some(h.object_id)
         }))
     }
@@ -365,8 +373,12 @@ impl Source for HnClient {
             .map(|item| item.into_draft(&self.config))
             .collect())
     }
+}
 
-    fn existing_key(&self, url: &str) -> Option<String> {
+impl UrlKey for HnClient {
+    /// A favorited HN *item* keys on its id (`hn:<id>`); an article bookmark falls back
+    /// to the generic host+path key.
+    fn dedup_key(&self, url: &Url) -> Option<String> {
         hn_item_id(url)
             .map(|id| format!("hn:{id}"))
             .or_else(|| url_key(url))
@@ -418,16 +430,22 @@ impl HnClient {
         opts: &HackerNewsCleanupOpts,
         bookmarks: &[Bookmark],
     ) -> Result<()> {
-        let hn_bms: Vec<_> = bookmarks
+        let hackernews_bookmarks: Vec<_> = bookmarks
             .iter()
-            .filter(|bookmark| hn_item_id(&bookmark.url).is_some())
+            .filter(|bookmark| {
+                Url::parse(&bookmark.url)
+                    .ok()
+                    .as_ref()
+                    .and_then(hn_item_id)
+                    .is_some()
+            })
             .cloned()
             .collect();
 
         // Batch-fetch every referenced item once.
-        let ids: Vec<String> = hn_bms
+        let ids: Vec<String> = hackernews_bookmarks
             .iter()
-            .filter_map(|bookmark| hn_item_id(&bookmark.url))
+            .filter_map(|bookmark| Url::parse(&bookmark.url).ok().as_ref().and_then(hn_item_id))
             .collect();
         let items = self
             .fetch_items(&ids)
@@ -440,7 +458,7 @@ impl HnClient {
         };
         let mut failed = run_pass(
             pinboard,
-            &hn_bms,
+            &hackernews_bookmarks,
             opts.dry_run,
             "HN",
             opts.date_opts(),
@@ -471,7 +489,11 @@ impl HnClient {
         let candidates: Vec<_> = bookmarks
             .iter()
             .filter(|bookmark| {
-                hn_item_id(&bookmark.url).is_none()
+                Url::parse(&bookmark.url)
+                    .ok()
+                    .as_ref()
+                    .and_then(hn_item_id)
+                    .is_none()
                     && bookmark.tag_list().contains(&self.config.link_tag)
             })
             .cloned()
@@ -498,8 +520,9 @@ struct HackerNewsCleanupPass<'a> {
 
 impl CleanupPass for HackerNewsCleanupPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
-        let id = hn_item_id(&bookmark.url).expect("filtered to HN item URLs");
-        let Some(item) = self.items.get(&id) else {
+        // The pass is filtered to HN item URLs, so this parses and matches.
+        let id = Url::parse(&bookmark.url).ok().as_ref().and_then(hn_item_id);
+        let Some(item) = id.and_then(|id| self.items.get(&id)) else {
             return Ok(None);
         };
         let src_date = item.created_at;
@@ -529,7 +552,10 @@ struct HackerNewsLinkPass<'a> {
 
 impl CleanupPass for HackerNewsLinkPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
-        let id = match self.client.search_by_url(&bookmark.url).await {
+        let Some(url) = Url::parse(&bookmark.url).ok() else {
+            return Ok(None);
+        };
+        let id = match self.client.search_by_url(&url).await {
             Ok(Some(id)) => id,
             Ok(None) => return Ok(None),
             Err(e) => return Err(SourceError::into_anyhow(e)),
@@ -589,16 +615,16 @@ fn parse_favorite_ids(html: &str) -> (Vec<String>, Option<String>) {
 
 /// Extract the item id from an HN `item?id=<n>` URL (host must be exactly
 /// `news.ycombinator.com`), or `None` for non-HN-item URLs.
-fn hn_item_id(url: &str) -> Option<String> {
-    let (host, path) = split_host_path(url);
-    let rest = path.strip_prefix('/').unwrap_or(path);
-    if host != "news.ycombinator.com" || !rest.starts_with("item") {
+fn hn_item_id(url: &Url) -> Option<String> {
+    if url.host_str()? != "news.ycombinator.com"
+        || !url.path().trim_start_matches('/').starts_with("item")
+    {
         return None;
     }
-    let query = rest.split_once('?')?.1;
-    let id: String = query
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("id="))?
+    let id: String = url
+        .query_pairs()
+        .find(|(key, _)| key == "id")
+        .map(|(_, id)| id.into_owned())?
         .chars()
         .take_while(|c| c.is_ascii_digit())
         .collect();
@@ -635,6 +661,10 @@ mod tests {
 
     fn item(value: serde_json::Value) -> Item {
         serde_json::from_value(value).unwrap()
+    }
+
+    fn url(s: &str) -> Url {
+        Url::parse(s).unwrap()
     }
 
     #[test]
@@ -745,23 +775,23 @@ mod tests {
     #[test]
     fn hn_item_id_extracts_only_from_hn_item_urls() {
         assert_eq!(
-            hn_item_id("https://news.ycombinator.com/item?id=42").as_deref(),
+            hn_item_id(&url("https://news.ycombinator.com/item?id=42")).as_deref(),
             Some("42")
         );
-        assert_eq!(hn_item_id("https://example.com/item?id=42"), None);
-        assert_eq!(hn_item_id("https://news.ycombinator.com/news"), None);
+        assert_eq!(hn_item_id(&url("https://example.com/item?id=42")), None);
+        assert_eq!(hn_item_id(&url("https://news.ycombinator.com/news")), None);
     }
 
     #[test]
-    fn existing_key_distinguishes_hn_items_from_articles() {
+    fn dedup_key_distinguishes_hn_items_from_articles() {
         let c = HnClient::new("u".into(), HackernewsConfig::default()).unwrap();
         assert_eq!(
-            c.existing_key("https://news.ycombinator.com/item?id=42")
+            c.dedup_key(&url("https://news.ycombinator.com/item?id=42"))
                 .as_deref(),
             Some("hn:42")
         );
         assert_eq!(
-            c.existing_key("https://example.com/x").as_deref(),
+            c.dedup_key(&url("https://example.com/x")).as_deref(),
             Some("example.com/x")
         );
     }

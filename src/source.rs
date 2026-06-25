@@ -2,6 +2,8 @@
 //! it yields [`BookmarkDraft`]s to write to Pinboard and maps an existing Pinboard
 //! URL back to a dedup key, so the sync loop stays service-agnostic.
 
+use url::Url;
+
 /// Errors from a source, separating the "operator must re-authenticate" case (an
 /// expired/missing credential → a 401/403) from transient/other failures, because
 /// only the former should fire the auth-failure hook.
@@ -51,17 +53,23 @@ pub struct BookmarkDraft {
     pub post_date: Option<i64>,
 }
 
+/// Maps an existing Pinboard URL to a source's dedup key (matched against the
+/// `dedup_key` of fresh drafts), or `None` if the source doesn't manage that URL. Each
+/// source defines its own shape on top of the generic host+path [`url_key`]: GitHub
+/// gates it to github.com hosts, Reddit uses the host-agnostic permalink path, and
+/// HackerNews uses `hn:<id>` (else the host+path key for article bookmarks).
+pub trait UrlKey {
+    fn dedup_key(&self, url: &Url) -> Option<String>;
+}
+
 /// A service that yields saveable items as [`BookmarkDraft`]s. Abstracted from the
 /// concrete client so the `sync` loop can be exercised with an in-memory fake.
 /// (Crate-internal, never spawned across threads, so the missing `Send` bound from
 /// `async fn` in a trait is irrelevant here.)
 #[allow(async_fn_in_trait)]
-pub trait Source {
+pub trait Source: UrlKey {
     /// All saveable items as drafts, newest first.
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError>;
-    /// Map an existing Pinboard bookmark URL to this source's dedup key, or `None`
-    /// if this source doesn't manage that URL.
-    fn existing_key(&self, url: &str) -> Option<String>;
 }
 
 /// Append `key` to `tags` unless it is empty (empty = the tag is disabled).
@@ -107,23 +115,8 @@ pub fn tags_differ(a: &[String], b: &[String]) -> bool {
     a != b
 }
 
-/// Split `url` into its lowercased host (scheme, userinfo, and port removed) and the
-/// path that follows (from the first `/`, defaulting to `/`) — e.g.
-/// `https://User@GitHub.com:443/Owner/Repo?x` → (`github.com`, `/Owner/Repo?x`). The
-/// host is empty only for an input with no host segment (e.g. a bare `/path`).
-pub fn split_host_path(url: &str) -> (String, &str) {
-    let after = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
-    let (host, path) = match after.find('/') {
-        Some(i) => (&after[..i], &after[i..]),
-        None => (after, "/"),
-    };
-    let host = host.rsplit('@').next().unwrap_or(host); // strip userinfo
-    let host = host.split(':').next().unwrap_or(host); // strip port
-    (host.to_ascii_lowercase(), path)
-}
-
 /// Whether `host` is `domain` or a subdomain of it (`*.domain`). `host` is assumed
-/// already lowercased (as [`split_host_path`] returns it); `domain` must be too.
+/// already lowercased (as [`Url::host_str`] returns it for http(s)); `domain` must be too.
 pub fn host_matches(host: &str, domain: &str) -> bool {
     host == domain
         || host
@@ -131,25 +124,27 @@ pub fn host_matches(host: &str, domain: &str) -> bool {
             .is_some_and(|rest| rest.ends_with('.'))
 }
 
-/// Whether `url`'s host is `domain` or a `*.domain` subdomain — the "is this URL one
-/// I manage?" test shared by the per-source bookmark filters. Scheme-agnostic (handles
-/// a missing `://`), since it goes through [`split_host_path`]/[`host_matches`].
-pub fn host_is(url: &str, domain: &str) -> bool {
-    let (host, _) = split_host_path(url);
-    host_matches(&host, domain)
+/// Extension methods on [`Url`] shared across the sources.
+pub trait UrlExt {
+    /// Whether the URL's host is `domain` or a `*.domain` subdomain — the "is this URL
+    /// one I manage?" test used by the per-source bookmark filters.
+    fn host_is(&self, domain: &str) -> bool;
 }
 
-/// A host+path dedup key for a URL: scheme dropped, host lowercased (userinfo and
-/// port stripped), path lowercased with any query/fragment and trailing slash
-/// removed — e.g. `https://GitHub.com/Owner/Repo/?tab=x` → `github.com/owner/repo`.
-/// Returns `None` for inputs without a host.
-pub fn url_key(url: &str) -> Option<String> {
-    let (host, path) = split_host_path(url);
-    if host.is_empty() {
-        return None;
+impl UrlExt for Url {
+    fn host_is(&self, domain: &str) -> bool {
+        self.host_str()
+            .is_some_and(|host| host_matches(host, domain))
     }
-    let path = path.split(['?', '#']).next().unwrap_or(path);
-    let path = path.trim_end_matches('/').to_ascii_lowercase();
+}
+
+/// A host+path dedup key for a URL: scheme and query/fragment dropped, host lowercased
+/// (by the `url` crate), path lowercased with any trailing slash removed — e.g.
+/// `https://GitHub.com/Owner/Repo/?tab=x` → `github.com/owner/repo`. Returns `None` for
+/// a URL without a host.
+pub fn url_key(url: &Url) -> Option<String> {
+    let host = url.host_str()?;
+    let path = url.path().trim_end_matches('/').to_ascii_lowercase();
     Some(format!("{host}{path}"))
 }
 
@@ -167,17 +162,8 @@ mod tests {
         assert_eq!(tags, vec!["lang:Jupyter-Notebook", "x:spaced-out"]);
     }
 
-    #[test]
-    fn split_host_path_strips_scheme_userinfo_and_port() {
-        assert_eq!(
-            split_host_path("https://User@GitHub.com:443/Owner/Repo?x"),
-            ("github.com".to_string(), "/Owner/Repo?x")
-        );
-        assert_eq!(
-            split_host_path("news.ycombinator.com"),
-            ("news.ycombinator.com".to_string(), "/")
-        );
-        assert_eq!(split_host_path("/just/a/path").0, "");
+    fn url(s: &str) -> Url {
+        Url::parse(s).unwrap()
     }
 
     #[test]
@@ -194,13 +180,12 @@ mod tests {
     #[test]
     fn url_key_normalizes_host_and_path() {
         assert_eq!(
-            url_key("https://GitHub.com/Owner/Repo/?tab=stars").as_deref(),
+            url_key(&url("https://GitHub.com/Owner/Repo/?tab=stars")).as_deref(),
             Some("github.com/owner/repo")
         );
         assert_eq!(
-            url_key("http://news.ycombinator.com/item?id=42").as_deref(),
+            url_key(&url("http://news.ycombinator.com/item?id=42")).as_deref(),
             Some("news.ycombinator.com/item")
         );
-        assert_eq!(url_key("not a url").as_deref(), Some("not a url"));
     }
 }

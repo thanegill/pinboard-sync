@@ -7,11 +7,12 @@ use std::collections::HashSet;
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use url::Url;
 
 use crate::model::{reddit_key, ListingEntry, RedditConfig};
 use crate::pinboard::{Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::reddit::PostInfo;
-use crate::source::{BookmarkDraft, Source, SourceError};
+use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 
 /// Build a `ListingEntry` from `kind` (`t3`/`t1`) and a `data` JSON object.
 pub fn listing_entry(kind: &str, data: Value) -> ListingEntry {
@@ -35,8 +36,10 @@ impl Source for FakeReddit {
             .map(|it| it.into_draft(&cfg))
             .collect())
     }
+}
 
-    fn existing_key(&self, url: &str) -> Option<String> {
+impl UrlKey for FakeReddit {
+    fn dedup_key(&self, url: &Url) -> Option<String> {
         reddit_key(url)
     }
 }

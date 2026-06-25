@@ -28,7 +28,8 @@ use github::GitHubClient;
 use hackernews::{HackerNewsCleanupOpts, HnClient};
 use pinboard::{Bookmark, BookmarkStore, PinboardClient, RATE_LIMIT_SECS};
 use reddit::RedditClient;
-use source::{BookmarkDraft, Source, SourceError};
+use source::{BookmarkDraft, Source, SourceError, UrlKey};
+use url::Url;
 
 #[derive(Parser)]
 #[command(name = "pinboard-sync", version, about, arg_required_else_help = true)]
@@ -598,12 +599,14 @@ impl Source for SourceClient {
             SourceClient::Hackernews(c) => c.fetch().await,
         }
     }
+}
 
-    fn existing_key(&self, url: &str) -> Option<String> {
+impl UrlKey for SourceClient {
+    fn dedup_key(&self, url: &Url) -> Option<String> {
         match self {
-            SourceClient::Reddit(c) => c.existing_key(url),
-            SourceClient::Github(c) => c.existing_key(url),
-            SourceClient::Hackernews(c) => c.existing_key(url),
+            SourceClient::Reddit(c) => c.dedup_key(url),
+            SourceClient::Github(c) => c.dedup_key(url),
+            SourceClient::Hackernews(c) => c.dedup_key(url),
         }
     }
 }

@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Planned};
+use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PlannedCleanupPass};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::send_retrying;
 use crate::pinboard::{Bookmark, BookmarkStore};
@@ -374,7 +374,7 @@ impl Source for HnClient {
 }
 
 /// Options for `cleanup hackernews`.
-pub struct HnCleanupOpts {
+pub struct HackerNewsCleanupOpts {
     pub dry_run: bool,
     /// Also link `link_tag`-tagged article bookmarks to their HN discussion.
     pub link_discussions: bool,
@@ -386,7 +386,7 @@ pub struct HnCleanupOpts {
     pub cleanup_stale_to_now: bool,
 }
 
-impl HnCleanupOpts {
+impl HackerNewsCleanupOpts {
     fn date_opts(&self) -> DateOpts {
         DateOpts {
             use_post_date: self.use_post_date,
@@ -415,23 +415,26 @@ impl HnClient {
     pub async fn cleanup<P: BookmarkStore>(
         &self,
         pinboard: &P,
-        opts: &HnCleanupOpts,
+        opts: &HackerNewsCleanupOpts,
         bookmarks: &[Bookmark],
     ) -> Result<()> {
         let hn_bms: Vec<_> = bookmarks
             .iter()
-            .filter(|b| hn_item_id(&b.url).is_some())
+            .filter(|bookmark| hn_item_id(&bookmark.url).is_some())
             .cloned()
             .collect();
 
         // Batch-fetch every referenced item once.
-        let ids: Vec<String> = hn_bms.iter().filter_map(|b| hn_item_id(&b.url)).collect();
+        let ids: Vec<String> = hn_bms
+            .iter()
+            .filter_map(|bookmark| hn_item_id(&bookmark.url))
+            .collect();
         let items = self
             .fetch_items(&ids)
             .await
             .map_err(SourceError::into_anyhow)?;
 
-        let pass = HnCleanupPass {
+        let pass = HackerNewsCleanupPass {
             items,
             config: &self.config,
         };
@@ -462,13 +465,14 @@ impl HnClient {
     async fn link_discussions<P: BookmarkStore>(
         &self,
         pinboard: &P,
-        opts: &HnCleanupOpts,
+        opts: &HackerNewsCleanupOpts,
         bookmarks: &[Bookmark],
     ) -> usize {
         let candidates: Vec<_> = bookmarks
             .iter()
-            .filter(|b| {
-                hn_item_id(&b.url).is_none() && b.tag_list().contains(&self.config.link_tag)
+            .filter(|bookmark| {
+                hn_item_id(&bookmark.url).is_none()
+                    && bookmark.tag_list().contains(&self.config.link_tag)
             })
             .cloned()
             .collect();
@@ -478,7 +482,7 @@ impl HnClient {
             opts.dry_run,
             "HN discussion",
             opts.date_opts(),
-            &LinkPass { client: self },
+            &HackerNewsLinkPass { client: self },
         )
         .await
     }
@@ -487,14 +491,14 @@ impl HnClient {
 /// Re-shapes one favorited HN item bookmark: re-fetch via Algolia and re-derive the
 /// draft (stories rewrite to the article URL; comments/text posts update in place),
 /// preserving existing tags.
-struct HnCleanupPass<'a> {
+struct HackerNewsCleanupPass<'a> {
     items: HashMap<String, Item>,
     config: &'a HackernewsConfig,
 }
 
-impl CleanupPass for HnCleanupPass<'_> {
-    async fn plan(&self, bm: &Bookmark) -> Result<Option<Planned>> {
-        let id = hn_item_id(&bm.url).expect("filtered to HN item URLs");
+impl CleanupPass for HackerNewsCleanupPass<'_> {
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
+        let id = hn_item_id(&bookmark.url).expect("filtered to HN item URLs");
         let Some(item) = self.items.get(&id) else {
             return Ok(None);
         };
@@ -502,10 +506,10 @@ impl CleanupPass for HnCleanupPass<'_> {
         let draft = item.clone().into_draft(self.config);
 
         // Preserve existing tags, appending any freshly-derived ones.
-        let mut tags = bm.tag_list();
+        let mut tags = bookmark.tag_list();
         extend_unique(&mut tags, &draft.tags);
 
-        Ok(Some(Planned {
+        Ok(Some(PlannedCleanupPass {
             url: draft.url,
             description: draft.description,
             extended: draft.extended,
@@ -519,40 +523,40 @@ impl CleanupPass for HnCleanupPass<'_> {
 /// URL, add an `HN Link:` line to the notes, and swap the marker tag for the base HN
 /// tags. Always in-place — the URL is unchanged and `src_date` is `None`, so the
 /// driver preserves the stored date regardless of the dating policy.
-struct LinkPass<'a> {
+struct HackerNewsLinkPass<'a> {
     client: &'a HnClient,
 }
 
-impl CleanupPass for LinkPass<'_> {
-    async fn plan(&self, bm: &Bookmark) -> Result<Option<Planned>> {
-        let id = match self.client.search_by_url(&bm.url).await {
+impl CleanupPass for HackerNewsLinkPass<'_> {
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
+        let id = match self.client.search_by_url(&bookmark.url).await {
             Ok(Some(id)) => id,
             Ok(None) => return Ok(None),
             Err(e) => return Err(SourceError::into_anyhow(e)),
         };
 
         let hn_link = format!("HN Link: https://news.ycombinator.com/item?id={id}");
-        let extended = if bm.extended.contains("HN Link:") {
-            bm.extended.clone()
-        } else if bm.extended.is_empty() {
+        let extended = if bookmark.extended.contains("HN Link:") {
+            bookmark.extended.clone()
+        } else if bookmark.extended.is_empty() {
             hn_link
         } else {
-            format!("{}\n\n{hn_link}", bm.extended)
+            format!("{}\n\n{hn_link}", bookmark.extended)
         };
 
         // Clean the title (arbitrary article bookmarks may carry HTML entities).
-        let description = html_to_plain(&bm.description);
+        let description = html_to_plain(&bookmark.description);
 
         // Drop the marker tag, add the base HN tags.
-        let mut tags: Vec<String> = bm
+        let mut tags: Vec<String> = bookmark
             .tag_list()
             .into_iter()
             .filter(|t| *t != self.client.config.link_tag)
             .collect();
         extend_unique(&mut tags, &self.client.config.tags);
 
-        Ok(Some(Planned {
-            url: bm.url.clone(),
+        Ok(Some(PlannedCleanupPass {
+            url: bookmark.url.clone(),
             description,
             extended,
             tags,
@@ -867,7 +871,7 @@ mod net_tests {
         client
             .cleanup(
                 &pinboard,
-                &HnCleanupOpts {
+                &HackerNewsCleanupOpts {
                     dry_run: false,
                     link_discussions: false,
                     use_post_date: false,
@@ -934,7 +938,7 @@ mod net_tests {
         client
             .cleanup(
                 &pinboard,
-                &HnCleanupOpts {
+                &HackerNewsCleanupOpts {
                     dry_run: false,
                     link_discussions: false,
                     use_post_date: false,
@@ -998,7 +1002,7 @@ mod net_tests {
         client
             .cleanup(
                 &pinboard,
-                &HnCleanupOpts {
+                &HackerNewsCleanupOpts {
                     dry_run: false,
                     link_discussions: true,
                     use_post_date: false,

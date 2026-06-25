@@ -15,7 +15,7 @@ use crate::source::tags_differ;
 /// from the stored bookmark, and the Pinboard `dt` is resolved by the driver from
 /// `src_date` + the pass's [`DateOpts`] — so a pass supplies only the content fields
 /// plus the raw source date.
-pub struct Planned {
+pub struct PlannedCleanupPass {
     pub url: String,
     pub description: String,
     pub extended: String,
@@ -38,11 +38,11 @@ pub struct DateOpts {
 /// How a source re-shapes one bookmark during `cleanup`.
 #[allow(async_fn_in_trait)]
 pub trait CleanupPass {
-    /// The end-state for `bm`, or `None` to leave it unchanged outright. `Err` marks a
+    /// The end-state for `bookmark`, or `None` to leave it unchanged outright. `Err` marks a
     /// per-item failure (logged and counted; the pass continues with the next bookmark).
-    /// The driver still skips an unchanged `Some` (one whose fields all match `bm`), so
+    /// The driver still skips an unchanged `Some` (one whose fields all match `bookmark`), so
     /// a pass can return the computed end-state without checking for changes itself.
-    async fn plan(&self, bm: &Bookmark) -> Result<Option<Planned>>;
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>>;
 }
 
 /// Run `pass` over `bookmarks` (already filtered to the source). Re-writes each
@@ -57,24 +57,25 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     dates: DateOpts,
     pass: &C,
 ) -> usize {
+    // Dry-run output is consistently prefixed with `[dry-run]`.
+    let dry_prefix = if dry_run { "[dry-run] " } else { "" };
     info!(
-        "scanning {} {noun} bookmark(s){}",
-        bookmarks.len(),
-        if dry_run { " (dry run)" } else { "" }
+        "{dry_prefix}scanning {} {noun} bookmark(s)",
+        bookmarks.len()
     );
 
     let now = crate::timefmt::now_unix();
     let mut changed = 0usize;
     let mut failed = 0usize;
     let mut wrote = false;
-    for bm in bookmarks {
-        let planned = match pass.plan(bm).await {
+    for bookmark in bookmarks {
+        let planned = match pass.plan(bookmark).await {
             Ok(Some(p)) => p,
             Ok(None) => continue,
             // Log and skip a single failed plan so the rest of the pass still runs.
             Err(e) => {
                 failed += 1;
-                error!("updating bookmark {}: {e:#}", bm.url);
+                error!("updating bookmark {}: {e:#}", bookmark.url);
                 continue;
             }
         };
@@ -87,17 +88,17 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             dates.stale_to_now,
             planned.src_date,
             now,
-            &bm.time,
+            &bookmark.time,
         );
 
-        let url_changed = planned.url != bm.url;
-        if !changed_at_all(bm, &planned, &dt) {
+        let url_changed = planned.url != bookmark.url;
+        if !changed_at_all(bookmark, &planned, &dt) {
             continue;
         }
 
         if dry_run {
             changed += 1;
-            print_diff(bm, &planned, &dt);
+            print_diff(bookmark, &planned, &dt);
             continue;
         }
 
@@ -110,11 +111,11 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
                 description: &planned.description,
                 extended: &planned.extended,
                 tags: &planned.tags,
-                shared: bm.is_shared(),
-                toread: bm.is_toread(),
+                shared: bookmark.is_shared(),
+                toread: bookmark.is_toread(),
                 dt: &dt,
             },
-            url_changed.then_some(bm.url.as_str()),
+            url_changed.then_some(bookmark.url.as_str()),
         )
         .await
         {
@@ -122,20 +123,20 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
                 changed += 1;
                 debug!(
                     "updated {} -> {} [{}]",
-                    bm.url,
+                    bookmark.url,
                     planned.url,
                     planned.tags.join(" ")
                 );
             }
             Err(e) => {
                 failed += 1;
-                error!("updating bookmark {}: {e:#}", bm.url);
+                error!("updating bookmark {}: {e:#}", bookmark.url);
             }
         }
     }
 
     if dry_run {
-        println!("{changed} bookmark(s) would change.");
+        println!("{dry_prefix}{changed} bookmark(s) would change.");
     } else {
         info!("done: updated {changed} bookmark(s)");
     }
@@ -144,35 +145,39 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
 
 /// Whether the plan (with its driver-resolved `dt`) differs from the stored bookmark
 /// in any written field.
-fn changed_at_all(bm: &Bookmark, p: &Planned, dt: &str) -> bool {
-    p.url != bm.url
-        || p.description != bm.description
-        || p.extended != bm.extended
-        || dt != bm.time
-        || tags_differ(&bm.tag_list(), &p.tags)
+fn changed_at_all(bookmark: &Bookmark, p: &PlannedCleanupPass, dt: &str) -> bool {
+    p.url != bookmark.url
+        || p.description != bookmark.description
+        || p.extended != bookmark.extended
+        || dt != bookmark.time
+        || tags_differ(&bookmark.tag_list(), &p.tags)
 }
 
-/// Print the changed fields of a planned update (dry-run output).
-fn print_diff(bm: &Bookmark, p: &Planned, dt: &str) {
-    println!("[dry-run] {}", bm.url);
-    if p.url != bm.url {
-        println!("          url   -> {}", p.url);
+/// Print the changed fields of a planned update (dry-run output): one aligned
+/// `label -> value` line per field that differs.
+fn print_diff(bookmark: &Bookmark, p: &PlannedCleanupPass, dt: &str) {
+    println!("[dry-run] {}", bookmark.url);
+    let field = |label: &str, value: &str| println!("          {label:<6}-> {value}");
+
+    if p.url != bookmark.url {
+        field("url", &p.url);
     }
-    if p.description != bm.description {
-        println!("          title -> {}", p.description);
+    if p.description != bookmark.description {
+        field("title", &p.description);
     }
-    if p.extended != bm.extended {
-        if p.extended.is_empty() {
-            println!("          notes -> (removed)");
+    if p.extended != bookmark.extended {
+        let notes = if p.extended.is_empty() {
+            "(removed)"
         } else {
-            println!("          notes -> {}", p.extended);
-        }
+            p.extended.as_str()
+        };
+        field("notes", notes);
     }
-    if tags_differ(&bm.tag_list(), &p.tags) {
-        println!("          tags  -> [{}]", p.tags.join(" "));
+    if tags_differ(&bookmark.tag_list(), &p.tags) {
+        field("tags", &format!("[{}]", p.tags.join(" ")));
     }
-    if dt != bm.time {
-        println!("          date  -> {}", dt);
+    if dt != bookmark.time {
+        field("date", dt);
     }
 }
 
@@ -184,13 +189,13 @@ mod tests {
 
     /// A `CleanupPass` whose `plan` is a closure, so each test scripts its own outcome.
     struct FakePass<F>(F);
-    impl<F: Fn(&Bookmark) -> Result<Option<Planned>>> CleanupPass for FakePass<F> {
-        async fn plan(&self, bm: &Bookmark) -> Result<Option<Planned>> {
-            (self.0)(bm)
+    impl<F: Fn(&Bookmark) -> Result<Option<PlannedCleanupPass>>> CleanupPass for FakePass<F> {
+        async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
+            (self.0)(bookmark)
         }
     }
 
-    fn bm(url: &str) -> Bookmark {
+    fn bookmark(url: &str) -> Bookmark {
         Bookmark {
             url: url.into(),
             description: "Title".into(),
@@ -202,14 +207,14 @@ mod tests {
         }
     }
 
-    /// A plan identical to `b` (the driver should treat it as unchanged under
+    /// A plan identical to `bookmark` (the driver should treat it as unchanged under
     /// [`NO_DATING`], which leaves the stored time intact).
-    fn unchanged_plan(b: &Bookmark) -> Planned {
-        Planned {
-            url: b.url.clone(),
-            description: b.description.clone(),
-            extended: b.extended.clone(),
-            tags: b.tag_list(),
+    fn unchanged_plan(bookmark: &Bookmark) -> PlannedCleanupPass {
+        PlannedCleanupPass {
+            url: bookmark.url.clone(),
+            description: bookmark.description.clone(),
+            extended: bookmark.extended.clone(),
+            tags: bookmark.tag_list(),
             src_date: None,
         }
     }
@@ -224,14 +229,14 @@ mod tests {
     #[tokio::test]
     async fn err_plan_counts_failed_and_continues() {
         // The first bookmark's plan fails; the second still gets written.
-        let books = vec![bm("https://x/bad"), bm("https://x/good")];
-        let pass = FakePass(|b: &Bookmark| {
-            if b.url.contains("bad") {
+        let books = vec![bookmark("https://x/bad"), bookmark("https://x/good")];
+        let pass = FakePass(|bookmark: &Bookmark| {
+            if bookmark.url.contains("bad") {
                 Err(anyhow!("boom"))
             } else {
-                Ok(Some(Planned {
+                Ok(Some(PlannedCleanupPass {
                     description: "New".into(),
-                    ..unchanged_plan(b)
+                    ..unchanged_plan(bookmark)
                 }))
             }
         });
@@ -247,7 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn none_plan_is_skipped() {
-        let books = vec![bm("https://x/")];
+        let books = vec![bookmark("https://x/")];
         let pass = FakePass(|_: &Bookmark| Ok(None));
         let pinboard = FakePinboard::default();
 
@@ -259,8 +264,8 @@ mod tests {
 
     #[tokio::test]
     async fn unchanged_plan_is_skipped() {
-        let books = vec![bm("https://x/")];
-        let pass = FakePass(|b: &Bookmark| Ok(Some(unchanged_plan(b))));
+        let books = vec![bookmark("https://x/")];
+        let pass = FakePass(|bookmark: &Bookmark| Ok(Some(unchanged_plan(bookmark))));
         let pinboard = FakePinboard::default();
 
         let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
@@ -270,13 +275,13 @@ mod tests {
 
     #[tokio::test]
     async fn url_change_updates_and_deletes_old_preserving_privacy() {
-        let books = vec![bm("https://old/")];
-        let pass = FakePass(|b: &Bookmark| {
-            Ok(Some(Planned {
+        let books = vec![bookmark("https://old/")];
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Some(PlannedCleanupPass {
                 url: "https://new/".into(),
                 description: "New".into(),
                 tags: vec!["x".into()],
-                ..unchanged_plan(b)
+                ..unchanged_plan(bookmark)
             }))
         });
         let pinboard = FakePinboard::default();
@@ -294,12 +299,12 @@ mod tests {
 
     #[tokio::test]
     async fn apply_update_failure_is_logged_and_counted() {
-        let books = vec![bm("https://x/")];
+        let books = vec![bookmark("https://x/")];
         // A desc-only change (URL unchanged, so no delete); the update itself fails.
-        let pass = FakePass(|b: &Bookmark| {
-            Ok(Some(Planned {
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Some(PlannedCleanupPass {
                 description: "New".into(),
-                ..unchanged_plan(b)
+                ..unchanged_plan(bookmark)
             }))
         });
         let mut pinboard = FakePinboard::default();
@@ -314,15 +319,15 @@ mod tests {
     async fn dry_run_renders_every_field_and_writes_nothing() {
         // Two bookmarks so the dry-run renderer hits both notes branches: the first
         // empties the notes ("(removed)"), the second sets new non-empty notes.
-        let books = vec![bm("https://empty/"), bm("https://full/")];
-        let pass = FakePass(|b: &Bookmark| {
-            let extended = if b.url.contains("empty") {
+        let books = vec![bookmark("https://empty/"), bookmark("https://full/")];
+        let pass = FakePass(|bookmark: &Bookmark| {
+            let extended = if bookmark.url.contains("empty") {
                 String::new()
             } else {
                 "new notes".into()
             };
-            Ok(Some(Planned {
-                url: format!("{}new", b.url),
+            Ok(Some(PlannedCleanupPass {
+                url: format!("{}new", bookmark.url),
                 description: "New".into(),
                 extended,
                 tags: vec!["x".into()],

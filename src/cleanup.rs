@@ -7,14 +7,14 @@ use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{anyhow, bail, Result};
 
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Planned};
+use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PlannedCleanupPass};
 use crate::htmltext::html_to_plain;
 use crate::model::{cased_subreddit, reddit_key};
 use crate::pinboard::{Bookmark, BookmarkStore};
 use crate::reddit::PostInfo;
 use crate::source::{host_is, host_matches, split_host_path, SourceError};
 
-pub struct CleanupOpts {
+pub struct RedditCleanupOpts {
     pub dry_run: bool,
     pub mark_nsfw: bool,
     pub fix_titles: bool,
@@ -30,7 +30,7 @@ pub struct CleanupOpts {
     pub cleanup_stale_to_now: bool,
 }
 
-impl CleanupOpts {
+impl RedditCleanupOpts {
     fn date_opts(&self) -> DateOpts {
         DateOpts {
             use_post_date: self.use_post_date,
@@ -55,17 +55,17 @@ struct PostMeta {
 pub async fn run<P: BookmarkStore, R: PostInfo>(
     pinboard: &P,
     reddit: Option<&R>,
-    opts: &CleanupOpts,
+    opts: &RedditCleanupOpts,
     bookmarks: &[Bookmark],
 ) -> Result<()> {
     let reddit_bms: Vec<_> = bookmarks
         .iter()
-        .filter(|b| host_is(&b.url, "reddit.com"))
+        .filter(|bookmark| host_is(&bookmark.url, "reddit.com"))
         .cloned()
         .collect();
 
     let info = fetch_post_info(reddit, opts, &reddit_bms).await?;
-    let pass = RedditPass { info, opts };
+    let pass = RedditCleanupPass { info, opts };
     let failed = run_pass(
         pinboard,
         &reddit_bms,
@@ -83,19 +83,20 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
 
 /// Re-shapes one reddit bookmark: normalize the URL/tags, then apply the authoritative
 /// `/api/info` data (NSFW marker, placeholder-title replacement, post date, rebuilt notes).
-struct RedditPass<'a> {
+struct RedditCleanupPass<'a> {
     info: HashMap<String, PostMeta>,
-    opts: &'a CleanupOpts,
+    opts: &'a RedditCleanupOpts,
 }
 
-impl CleanupPass for RedditPass<'_> {
-    async fn plan(&self, bm: &Bookmark) -> Result<Option<Planned>> {
+impl CleanupPass for RedditCleanupPass<'_> {
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
         let opts = self.opts;
-        let new_url = normalize_url(&bm.url, &opts.domain).unwrap_or_else(|| bm.url.clone());
+        let new_url =
+            normalize_url(&bookmark.url, &opts.domain).unwrap_or_else(|| bookmark.url.clone());
 
         let mut tags = normalize_tags(
             &new_url,
-            &bm.tag_list(),
+            &bookmark.tag_list(),
             &opts.base_tag,
             &opts.subreddit_tag_prefix,
         );
@@ -106,7 +107,7 @@ impl CleanupPass for RedditPass<'_> {
             tags.sort();
         }
 
-        let mut description = html_to_plain(&bm.description);
+        let mut description = html_to_plain(&bookmark.description);
         if opts.fix_titles && is_placeholder_title(&description) {
             if let Some(title) = post.and_then(|p| p.title.clone()) {
                 description = html_to_plain(&title);
@@ -120,16 +121,16 @@ impl CleanupPass for RedditPass<'_> {
         // (empty rebuild, or no entry this run) only drop a bare self-link an older sync
         // wrote — never wipe genuine notes.
         let extended = if is_comment_url(&new_url) {
-            bm.extended.clone()
+            bookmark.extended.clone()
         } else if let Some(rebuilt) = post.map(|p| p.extended.clone()).filter(|e| !e.is_empty()) {
             rebuilt
-        } else if is_self_link_notes(&bm.extended, &new_url) {
+        } else if is_self_link_notes(&bookmark.extended, &new_url) {
             String::new()
         } else {
-            bm.extended.clone()
+            bookmark.extended.clone()
         };
 
-        Ok(Some(Planned {
+        Ok(Some(PlannedCleanupPass {
             url: new_url,
             description,
             extended,
@@ -145,7 +146,7 @@ impl CleanupPass for RedditPass<'_> {
 /// those caused the `/api/info` call (it needs no extra fetch of its own).
 async fn fetch_post_info<R: PostInfo>(
     reddit: Option<&R>,
-    opts: &CleanupOpts,
+    opts: &RedditCleanupOpts,
     bookmarks: &[Bookmark],
 ) -> Result<HashMap<String, PostMeta>> {
     let mut map = HashMap::new();
@@ -158,8 +159,9 @@ async fn fetch_post_info<R: PostInfo>(
 
     let fullnames: Vec<String> = bookmarks
         .iter()
-        .filter_map(|b| {
-            let url = normalize_url(&b.url, &opts.domain).unwrap_or_else(|| b.url.clone());
+        .filter_map(|bookmark| {
+            let url =
+                normalize_url(&bookmark.url, &opts.domain).unwrap_or_else(|| bookmark.url.clone());
             post_fullname(&url)
         })
         .collect::<BTreeSet<_>>()
@@ -514,8 +516,8 @@ mod loop_tests {
     use crate::test_support::{listing_entry, FakePinboard, FakeReddit};
     use serde_json::json;
 
-    fn opts() -> CleanupOpts {
-        CleanupOpts {
+    fn opts() -> RedditCleanupOpts {
+        RedditCleanupOpts {
             dry_run: false,
             mark_nsfw: true,
             fix_titles: true,
@@ -612,7 +614,7 @@ mod loop_tests {
             ..Default::default()
         };
         // A huge cap so the (old) post is always "within" it; nsfw/titles off.
-        let opts = CleanupOpts {
+        let opts = RedditCleanupOpts {
             use_post_date: true,
             max_age_days: 1_000_000,
             mark_nsfw: false,
@@ -650,7 +652,7 @@ mod loop_tests {
             }],
             ..Default::default()
         };
-        let opts = CleanupOpts {
+        let opts = RedditCleanupOpts {
             mark_nsfw: false,
             fix_titles: false,
             ..opts()
@@ -688,7 +690,7 @@ mod loop_tests {
             }],
             ..Default::default()
         };
-        let opts = CleanupOpts {
+        let opts = RedditCleanupOpts {
             mark_nsfw: false,
             fix_titles: false,
             ..opts()
@@ -830,7 +832,7 @@ mod loop_tests {
             ..Default::default()
         };
         let reddit = FakeReddit::default();
-        let opts = CleanupOpts {
+        let opts = RedditCleanupOpts {
             dry_run: true,
             mark_nsfw: false,
             fix_titles: false,
@@ -857,7 +859,7 @@ mod loop_tests {
             ..Default::default()
         };
         let reddit = FakeReddit::default();
-        let opts = CleanupOpts {
+        let opts = RedditCleanupOpts {
             mark_nsfw: false,
             fix_titles: false,
             ..opts()

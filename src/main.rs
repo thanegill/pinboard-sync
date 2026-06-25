@@ -25,7 +25,7 @@ use log::{debug, error, info, warn};
 
 use config::{Account, Config, GithubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
-use hackernews::{HnCleanupOpts, HnClient};
+use hackernews::{HackerNewsCleanupOpts, HnClient};
 use pinboard::{Bookmark, BookmarkStore, PinboardClient, RATE_LIMIT_SECS};
 use reddit::RedditClient;
 use source::{BookmarkDraft, Source, SourceError};
@@ -616,11 +616,9 @@ fn job_limit(
     source: Option<usize>,
     config: &Config,
 ) -> usize {
-    if ovr.limit > 0 {
-        ovr.limit
-    } else {
-        tier(account, source, config.pinboard.limit.unwrap_or(0))
-    }
+    // The CLI `--limit` (0 = unset) sits at the top of the tier, above account/source/global.
+    let cli = (ovr.limit > 0).then_some(ovr.limit);
+    tier(cli.or(account), source, config.pinboard.limit.unwrap_or(0))
 }
 
 fn build_reddit_job(
@@ -974,9 +972,9 @@ fn gh_cleanup_opts(
     dry_run: bool,
     account: Option<&GithubAccount>,
     config: &Config,
-) -> github::GhCleanupOpts {
+) -> github::GitHubCleanupOpts {
     let dates = DateSettings::resolve(account, &config.defaults.github, config);
-    github::GhCleanupOpts {
+    github::GitHubCleanupOpts {
         dry_run,
         use_post_date: dates.use_post_date,
         max_age_days: dates.max_age_days,
@@ -998,7 +996,7 @@ async fn cleanup_github_for(
     bookmarks: &[Bookmark],
     account: Option<&GithubAccount>,
     token_flag: Option<String>,
-    opts: &github::GhCleanupOpts,
+    opts: &github::GitHubCleanupOpts,
 ) -> Result<()> {
     let config = account
         .map(GithubAccount::github_config)
@@ -1033,7 +1031,7 @@ async fn cleanup_one_reddit(
         .map(RedditAccount::reddit_config)
         .unwrap_or_default();
     let dates = DateSettings::resolve(account, &config.defaults.reddit, config);
-    let opts = cleanup::CleanupOpts {
+    let opts = cleanup::RedditCleanupOpts {
         dry_run: args.dry_run,
         mark_nsfw: !args.no_nsfw,
         fix_titles: !args.no_titles,
@@ -1101,7 +1099,7 @@ async fn cleanup_one_hackernews(
     let hn = HnClient::for_cleanup(hn_config)?;
     hn.cleanup(
         pinboard,
-        &HnCleanupOpts {
+        &HackerNewsCleanupOpts {
             dry_run,
             link_discussions,
             use_post_date: dates.use_post_date,

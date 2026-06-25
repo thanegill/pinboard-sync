@@ -25,7 +25,7 @@ use clap_complete::Shell;
 use log::{debug, error, info, warn};
 
 use bookmark::{Bookmark, BookmarkStore};
-use config::{Account, Config, GithubAccount, HackernewsAccount, RedditAccount};
+use config::{Account, Config, GitHubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
 use hackernews::{HackerNewsCleanupOpts, HackerNewsClient};
 use pinboard::{PinboardClient, RATE_LIMIT_SECS};
@@ -89,7 +89,7 @@ enum SyncSource {
     /// Sync saved Reddit posts and comments.
     Reddit(RedditSyncArgs),
     /// Sync starred GitHub repositories.
-    Github(GithubSyncArgs),
+    Github(GitHubSyncArgs),
     /// Sync favorited HackerNews stories and comments.
     Hackernews(HackernewsSyncArgs),
 }
@@ -125,7 +125,7 @@ struct RedditSyncArgs {
 }
 
 #[derive(Args, Clone)]
-struct GithubSyncArgs {
+struct GitHubSyncArgs {
     /// Account name to select from the config (default: the first github account).
     account: Option<String>,
     /// Run every github account in the config.
@@ -192,13 +192,13 @@ enum CleanupSource {
     /// Normalize existing reddit bookmarks (URLs, tags, NSFW, titles).
     Reddit(RedditCleanupArgs),
     /// Canonicalize existing GitHub repo bookmark URLs.
-    Github(GithubCleanupArgs),
+    Github(GitHubCleanupArgs),
     /// Normalize existing HackerNews bookmarks (rewrite item URLs to articles).
     Hackernews(HackernewsCleanupArgs),
 }
 
 #[derive(Args, Clone)]
-struct GithubCleanupArgs {
+struct GitHubCleanupArgs {
     /// Account name whose token/tags to use (default: the first github account).
     account: Option<String>,
     /// GitHub personal access token (env GITHUB_TOKEN, or *_FILE).
@@ -474,7 +474,7 @@ impl RedditSyncArgs {
     }
 }
 
-impl GithubSyncArgs {
+impl GitHubSyncArgs {
     /// The secret/operational overrides this single-source invocation supplies.
     fn into_overrides(self) -> SyncOverrides {
         SyncOverrides {
@@ -672,7 +672,7 @@ fn build_reddit_job(
 }
 
 fn build_github_job(
-    account: Option<&GithubAccount>,
+    account: Option<&GitHubAccount>,
     ovr: &SyncOverrides,
     config: &Config,
 ) -> Result<SyncJob> {
@@ -684,7 +684,7 @@ fn build_github_job(
     )
     .context("missing GitHub token (set --github-token, GITHUB_TOKEN, or `token`/`token_file` in the config)")?;
     let github_config = account
-        .map(GithubAccount::github_config)
+        .map(GitHubAccount::github_config)
         .unwrap_or_default();
     let src = &config.defaults.github;
     let hook = resolve_hook(
@@ -976,7 +976,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
 /// Resolve the date settings (3-tier) for a github cleanup pass.
 fn gh_cleanup_opts(
     dry_run: bool,
-    account: Option<&GithubAccount>,
+    account: Option<&GitHubAccount>,
     config: &Config,
 ) -> github::GitHubCleanupOpts {
     let dates = DateSettings::resolve(account, &config.defaults.github, config);
@@ -988,7 +988,7 @@ fn gh_cleanup_opts(
     }
 }
 
-async fn run_cleanup_github(args: GithubCleanupArgs, config: &Config) -> Result<()> {
+async fn run_cleanup_github(args: GitHubCleanupArgs, config: &Config) -> Result<()> {
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let account = config::select_account(&config.github, args.account.as_deref())?;
     let opts = gh_cleanup_opts(args.dry_run, account, config);
@@ -1000,12 +1000,12 @@ async fn run_cleanup_github(args: GithubCleanupArgs, config: &Config) -> Result<
 async fn cleanup_github_for(
     pinboard: &PinboardClient,
     bookmarks: &[Bookmark],
-    account: Option<&GithubAccount>,
+    account: Option<&GitHubAccount>,
     token_flag: Option<String>,
     opts: &github::GitHubCleanupOpts,
 ) -> Result<()> {
     let config = account
-        .map(GithubAccount::github_config)
+        .map(GitHubAccount::github_config)
         .unwrap_or_default();
     let token = resolve_secret(
         token_flag,
@@ -1228,7 +1228,7 @@ fn resolve_hook(
         .or_else(|| config.hooks.on_auth_failure.clone())
 }
 
-fn resolve_pinboard_token(flag: Option<String>, pb: &config::Pinboard) -> Option<String> {
+fn resolve_pinboard_token(flag: Option<String>, pb: &config::PinboardConfig) -> Option<String> {
     resolve_secret(
         flag,
         "PINBOARD_TOKEN",

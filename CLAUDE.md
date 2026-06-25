@@ -78,7 +78,7 @@ shaping lives in
 [`src/model.rs`](src/model.rs).
 
 **All tags are config-driven; there are no tag CLI flags.** Each source has a tag
-config struct (`RedditConfig`, `GithubConfig`, `HackernewsConfig`) of overridable
+config struct (`RedditConfig`, `GitHubConfig`, `HackernewsConfig`) of overridable
 fields with built-in defaults; the `tags` list (default e.g. `["reddit"]`) is the
 base tag plus any extras, and `push_tag`/`push_prefixed` in `source.rs` render them
 (empty string disables a tag). `model.rs`'s tag tests are the spec — keep them in
@@ -149,3 +149,6 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   with `file not found`, even though dev-shell `cargo` passes — that discrepancy is
   the tell. `git add` new files before building with Nix.
 - The User-Agent / client identifier derives from `CARGO_PKG_NAME`/`CARGO_PKG_VERSION`.
+- **Service-specific, API-shaped structs carry a service prefix** (`GitHubRepo`,
+  `HackerNewsItem`, `RedditSavedItem`, `AlgoliaSearchResponse`) — not bare `Repo`/`Item`.
+  GitHub is spelled `GitHub` in type names (e.g. `GitHubConfig`, `GitHubClient`).

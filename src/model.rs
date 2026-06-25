@@ -78,7 +78,7 @@ pub struct EntryFields {
 
 /// A normalized saved item ready to become a Pinboard bookmark.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SavedItem {
+pub struct RedditSavedItem {
     pub fullname: String,
     pub is_comment: bool,
     pub subreddit: String,
@@ -98,10 +98,10 @@ pub struct SavedItem {
 }
 
 impl ListingEntry {
-    /// Convert a listing entry into a `SavedItem`, or `None` if it is neither a
+    /// Convert a listing entry into a `RedditSavedItem`, or `None` if it is neither a
     /// post (`t3`) nor a comment (`t1`) or is missing the fields we need. `domain`
     /// is the reddit host used for the parent-thread link prepended to comments.
-    pub fn into_saved_item(self, domain: &str) -> Option<SavedItem> {
+    pub fn into_saved_item(self, domain: &str) -> Option<RedditSavedItem> {
         let is_comment = match self.kind.as_str() {
             "t1" => true,
             "t3" => false,
@@ -140,7 +140,7 @@ impl ListingEntry {
             domain,
         );
 
-        Some(SavedItem {
+        Some(RedditSavedItem {
             fullname,
             is_comment,
             subreddit,
@@ -252,7 +252,7 @@ impl Default for RedditConfig {
     }
 }
 
-impl SavedItem {
+impl RedditSavedItem {
     /// The bookmark URL: the permalink under the configured reddit `domain`.
     pub fn bookmark_url(&self, domain: &str) -> String {
         format!("https://{domain}{}", self.permalink)
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(cased_subreddit("Rust"), "rust");
     }
 
-    fn item(kind: &str, fields: serde_json::Value) -> SavedItem {
+    fn item(kind: &str, fields: serde_json::Value) -> RedditSavedItem {
         let entry: ListingEntry =
             serde_json::from_value(serde_json::json!({ "kind": kind, "data": fields })).unwrap();
         entry.into_saved_item("old.reddit.com").unwrap()

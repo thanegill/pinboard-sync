@@ -42,7 +42,7 @@ impl RedditCleanupOpts {
 }
 
 /// Authoritative per-post data from `/api/info`.
-struct PostMeta {
+struct RedditPostMeta {
     over_18: bool,
     title: Option<String>,
     /// Post creation time (unix epoch seconds), for `use_post_date`.
@@ -85,7 +85,7 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
 /// Re-shapes one reddit bookmark: normalize the URL/tags, then apply the authoritative
 /// `/api/info` data (NSFW marker, placeholder-title replacement, post date, rebuilt notes).
 struct RedditCleanupPass<'a> {
-    info: HashMap<String, PostMeta>,
+    info: HashMap<String, RedditPostMeta>,
     opts: &'a RedditCleanupOpts,
 }
 
@@ -157,7 +157,7 @@ async fn fetch_post_info<R: PostInfo>(
     reddit: Option<&R>,
     opts: &RedditCleanupOpts,
     bookmarks: &[Bookmark],
-) -> Result<HashMap<String, PostMeta>> {
+) -> Result<HashMap<String, RedditPostMeta>> {
     let mut map = HashMap::new();
     if !(opts.mark_nsfw || opts.fix_titles || opts.use_post_date) {
         return Ok(map);
@@ -204,7 +204,7 @@ async fn fetch_post_info<R: PostInfo>(
             );
             map.insert(
                 name,
-                PostMeta {
+                RedditPostMeta {
                     over_18: entry.fields.over_18,
                     title: entry.fields.title.filter(|s| !s.is_empty()),
                     created_utc: entry.fields.created_utc,

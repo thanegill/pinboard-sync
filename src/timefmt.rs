@@ -22,20 +22,17 @@ pub fn rfc3339_to_unix(s: &str) -> Option<i64> {
         .map(|t| t.unix_timestamp())
 }
 
-/// Parse an RFC 3339 timestamp into an [`OffsetDateTime`] — the `cleanup` domain form of
-/// a bookmark's creation time. `None` if it doesn't parse.
-pub fn parse_rfc3339(s: &str) -> Option<OffsetDateTime> {
-    OffsetDateTime::parse(s, &Rfc3339).ok()
-}
-
 /// Format an [`OffsetDateTime`] as RFC 3339 for Pinboard's `dt`. `None` if formatting
-/// fails.
+/// fails. (Can't be a `From`/`Into` impl: `String` and `OffsetDateTime` are both foreign
+/// to this crate, so the orphan rule forbids it — and it's fallible.)
 pub fn to_rfc3339(dt: OffsetDateTime) -> Option<String> {
     dt.format(&Rfc3339).ok()
 }
 
 /// An [`OffsetDateTime`] from unix epoch seconds — used to lift a source's epoch post
-/// date into the `cleanup` domain form. `None` if out of range.
+/// date into the `cleanup` domain form. `None` if out of range. (Thin `.ok()` over the
+/// `time` crate's own `from_unix_timestamp`; can't be a `From` impl — `OffsetDateTime` is
+/// foreign and the conversion is fallible.)
 pub fn from_unix(secs: i64) -> Option<OffsetDateTime> {
     OffsetDateTime::from_unix_timestamp(secs).ok()
 }
@@ -44,11 +41,6 @@ pub fn from_unix(secs: i64) -> Option<OffsetDateTime> {
 /// logic (the age cap) takes the value as a parameter so it stays testable.
 pub fn now_unix() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
-}
-
-/// Current time as an [`OffsetDateTime`] (UTC) — the `cleanup` domain `now`.
-pub fn now() -> OffsetDateTime {
-    OffsetDateTime::now_utc()
 }
 
 /// Whether a post created at `timestamp` (epoch) is at most `max_age_days` old relative

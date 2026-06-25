@@ -40,15 +40,15 @@ per-source planners live in [`src/cleanup.rs`](src/cleanup.rs) (reddit),
 **`Bookmark` is service-agnostic; `PinboardBookmark` is the wire shape.** The domain
 [`Bookmark`](src/bookmark.rs) (`tags: Vec<String>`, `timestamp: Option<OffsetDateTime>`,
 and `public`/`read_later` `bool`s) lives in [`src/bookmark.rs`](src/bookmark.rs) along
-with the `BookmarkStore` port and the `BookmarkUpdate` write-view — everything not
-specific to the Pinboard client. [`src/pinboard.rs`](src/pinboard.rs) is just the client
-behind that port: it deserializes `posts/all` into `PinboardBookmark` (space-joined tags,
-ISO-8601 `time`, `"yes"/"no"` `shared`/`toread`) and converts each via `From` into the
-domain `Bookmark`. The cleanup driver reads stored bookmarks and plans their end-state in
-that one type, so timestamps compare by instant (not formatted string); the Pinboard
-formatting is reapplied at the write boundary in `post_add`. `BookmarkUpdate` (and the
-sync-path `BookmarkDraft`) keep the API's `shared`/`toread` naming; the read/cleanup
-domain uses `public`/`read_later`. Both writes funnel through `BookmarkUpdate`.
+with the `BookmarkStore` port — everything not specific to the Pinboard client.
+[`src/pinboard.rs`](src/pinboard.rs) is just the client behind that port: it deserializes
+`posts/all` into `PinboardBookmark` (space-joined tags, ISO-8601 `time`, `"yes"/"no"`
+`shared`/`toread`) and converts each via `From` into the domain `Bookmark`. The cleanup
+driver reads stored bookmarks and plans their end-state in that one type, so timestamps
+compare by instant (not formatted string). A write takes a whole `Bookmark`; `post_add`
+maps it to the API params (`public`/`read_later` → `shared`/`toread`, `timestamp` → `dt`)
+at the boundary. The sync-path `BookmarkDraft` uses the same `public`/`read_later`
+domain naming.
 
 **Every source is a `Source`; the sync loop is generic over it.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `Vec<BookmarkDraft>`
@@ -58,7 +58,7 @@ builds the set of existing keys by mapping `pinboard.all()` through
 `source.existing_key`, and writes the drafts whose `dedup_key` isn't present. To add
 a source, implement `Source` and wire it into `main.rs` + `config.rs`. The clients
 also sit behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a
-`BookmarkUpdate`) so the loops are unit-tested with
+`&Bookmark`) so the loops are unit-tested with
 in-memory fakes ([`src/test_support.rs`](src/test_support.rs)); real clients are
 covered by `net_tests` against a wiremock server via test-only `with_base_url(s)`
 constructors.

@@ -8,6 +8,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use crate::pinboard::{PinboardBookmark, RATE_LIMIT_SECS};
@@ -34,40 +35,27 @@ impl From<PinboardBookmark> for Bookmark {
             description: b.description,
             extended: b.extended,
             tags: b.tags.split_whitespace().map(String::from).collect(),
-            timestamp: crate::timefmt::parse_rfc3339(&b.time),
+            timestamp: OffsetDateTime::parse(&b.time, &Rfc3339).ok(),
             public: b.shared == "yes",
             read_later: b.toread == "yes",
         }
     }
 }
 
-/// Fields for a write ([`BookmarkStore::add`]/[`BookmarkStore::update`]): the content
-/// (`url`/`description`/`extended`/`tags`) plus the metadata to set (`shared`/`toread`,
-/// and `dt` — the creation time as RFC3339, empty for none). The field names mirror the
-/// Pinboard `posts/add` parameters, which both writes funnel into.
-pub struct BookmarkUpdate<'a> {
-    pub url: &'a str,
-    pub description: &'a str,
-    pub extended: &'a str,
-    pub tags: &'a [String],
-    pub shared: bool,
-    pub toread: bool,
-    pub dt: &'a str,
-}
-
 /// The bookmark-store operations the sync/cleanup loops depend on. Abstracted from the
-/// concrete Pinboard client so those loops can be exercised with an in-memory fake.
+/// concrete Pinboard client so those loops can be exercised with an in-memory fake. A
+/// write takes a whole [`Bookmark`]; the client maps it to the Pinboard `posts/add`
+/// parameters at the boundary (see `pinboard::post_add`).
 /// (Crate-internal, never spawned across threads, so the missing `Send` bound from
 /// `async fn` in a trait is irrelevant here.)
 #[allow(async_fn_in_trait)]
 pub trait BookmarkStore {
     /// Every bookmark in the account (`posts/all`).
     async fn all(&self) -> Result<Vec<Bookmark>>;
-    /// Add a new bookmark. `b.dt` is the creation time (RFC3339); empty = let Pinboard
-    /// default to now.
-    async fn add(&self, b: BookmarkUpdate<'_>) -> Result<()>;
-    /// Re-add an existing bookmark with normalized fields, preserving metadata.
-    async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()>;
+    /// Add a new bookmark. A `None` `timestamp` lets Pinboard default the date to now.
+    async fn add(&self, b: &Bookmark) -> Result<()>;
+    /// Re-add an existing bookmark with normalized fields.
+    async fn update(&self, b: &Bookmark) -> Result<()>;
     /// Delete a bookmark by URL.
     async fn delete(&self, url: &str) -> Result<()>;
     /// Seconds to pause between successive writes (Pinboard asks for ~3s).
@@ -83,17 +71,16 @@ pub trait BookmarkStore {
 pub async fn apply_update<P: BookmarkStore>(
     pinboard: &P,
     wrote: &mut bool,
-    update: BookmarkUpdate<'_>,
+    update: &Bookmark,
     old_url: Option<&str>,
 ) -> Result<()> {
     if *wrote {
         tokio::time::sleep(Duration::from_secs(pinboard.rate_limit_secs())).await;
     }
-    let target = update.url; // `&str` is Copy, so this outlives the move below
     pinboard
         .update(update)
         .await
-        .with_context(|| format!("updating bookmark {target}"))?;
+        .with_context(|| format!("updating bookmark {}", update.url))?;
     if let Some(old) = old_url {
         pinboard
             .delete(old)

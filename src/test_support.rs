@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 use url::Url;
 
-use crate::bookmark::{Bookmark, BookmarkStore, BookmarkUpdate};
+use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::model::{reddit_key, ListingEntry, RedditConfig};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
@@ -48,6 +48,13 @@ impl PostInfo for FakeReddit {
     async fn info(&self, _fullnames: &[String]) -> Result<Vec<ListingEntry>, SourceError> {
         Ok(self.info.clone())
     }
+}
+
+/// The recorded `dt` a write would send: the bookmark's timestamp as RFC3339, or empty.
+fn bookmark_dt(b: &Bookmark) -> String {
+    b.timestamp
+        .and_then(crate::timefmt::to_rfc3339)
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,31 +96,31 @@ impl BookmarkStore for FakePinboard {
         *self.all_calls.borrow_mut() += 1;
         Ok(self.all.clone())
     }
-    async fn add(&self, b: BookmarkUpdate<'_>) -> Result<()> {
-        if self.fail_add_urls.contains(b.url) {
+    async fn add(&self, b: &Bookmark) -> Result<()> {
+        if self.fail_add_urls.contains(&b.url) {
             return Err(anyhow!("simulated add failure for {}", b.url));
         }
         self.added.borrow_mut().push(AddCall {
-            url: b.url.to_string(),
-            tags: b.tags.to_vec(),
-            toread: b.toread,
-            shared: b.shared,
-            dt: b.dt.to_string(),
+            url: b.url.clone(),
+            tags: b.tags.clone(),
+            toread: b.read_later,
+            shared: b.public,
+            dt: bookmark_dt(b),
         });
         Ok(())
     }
-    async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()> {
-        if self.fail_update_urls.contains(b.url) {
+    async fn update(&self, b: &Bookmark) -> Result<()> {
+        if self.fail_update_urls.contains(&b.url) {
             return Err(anyhow!("simulated update failure for {}", b.url));
         }
         self.updated.borrow_mut().push(UpdateCall {
-            url: b.url.to_string(),
-            description: b.description.to_string(),
-            extended: b.extended.to_string(),
-            tags: b.tags.to_vec(),
-            shared: b.shared,
-            toread: b.toread,
-            dt: b.dt.to_string(),
+            url: b.url.clone(),
+            description: b.description.clone(),
+            extended: b.extended.clone(),
+            tags: b.tags.clone(),
+            shared: b.public,
+            toread: b.read_later,
+            dt: bookmark_dt(b),
         });
         Ok(())
     }

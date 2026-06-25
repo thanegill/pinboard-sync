@@ -11,7 +11,7 @@ use log::{debug, error};
 
 use url::Url;
 
-use crate::bookmark::{Bookmark, BookmarkStore, BookmarkUpdate};
+use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::source::{BookmarkDraft, Source};
 
 /// The drafts not already present on Pinboard, matching each existing bookmark URL
@@ -52,13 +52,13 @@ pub async fn write_drafts<P: BookmarkStore>(
     let mut outcome = WriteOutcome::default();
     let mut posted = false;
     for draft in drafts {
-        // The source post date as RFC3339, when set (the sync loop has already applied
-        // the use_post_date flag + age cap); empty = let Pinboard default to now.
-        let dt = draft
-            .post_date
-            .and_then(crate::timefmt::unix_to_rfc3339)
-            .unwrap_or_default();
         if dry_run {
+            // The source post date as RFC3339, when set (the sync loop has already
+            // applied the use_post_date flag + age cap); empty = let Pinboard default.
+            let dt = draft
+                .post_date
+                .and_then(crate::timefmt::unix_to_rfc3339)
+                .unwrap_or_default();
             println!("[dry-run] {}", draft.url);
             println!("          title: {}", draft.description);
             if !draft.extended.is_empty() {
@@ -77,18 +77,19 @@ pub async fn write_drafts<P: BookmarkStore>(
             tokio::time::sleep(Duration::from_secs(pinboard.rate_limit_secs())).await;
         }
         posted = true;
-        match pinboard
-            .add(BookmarkUpdate {
-                url: &draft.url,
-                description: &draft.description,
-                extended: &draft.extended,
-                tags: &draft.tags,
-                shared: draft.public,
-                toread: draft.read_later,
-                dt: &dt,
-            })
-            .await
-        {
+        // Lift the draft into a domain `Bookmark` for the write; the client maps it to
+        // the Pinboard params (the sync loop already resolved `public`/`read_later` and
+        // the post date).
+        let bm = Bookmark {
+            url: draft.url.clone(),
+            description: draft.description.clone(),
+            extended: draft.extended.clone(),
+            tags: draft.tags.clone(),
+            timestamp: draft.post_date.and_then(crate::timefmt::from_unix),
+            public: draft.public,
+            read_later: draft.read_later,
+        };
+        match pinboard.add(&bm).await {
             Ok(()) => {
                 outcome.written += 1;
                 debug!("added {}  [{}]", draft.url, draft.tags.join(" "));

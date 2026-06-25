@@ -7,8 +7,9 @@
 
 use anyhow::Result;
 use log::{debug, error, info};
+use time::OffsetDateTime;
 
-use crate::bookmark::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
+use crate::bookmark::{apply_update, Bookmark, BookmarkStore};
 use crate::source::tags_differ;
 
 /// The `use_post_date` policy applied uniformly across a pass: whether to re-date by
@@ -54,7 +55,7 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
         bookmarks.len()
     );
 
-    let now = crate::timefmt::now();
+    let now = OffsetDateTime::now_utc();
     let mut changed = 0usize;
     let mut failed = 0usize;
     let mut wrote = false;
@@ -93,25 +94,13 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             continue;
         }
 
-        // Format the resolved time for Pinboard's `dt` (empty = leave the time as is).
-        let dt = planned
-            .timestamp
-            .and_then(crate::timefmt::to_rfc3339)
-            .unwrap_or_default();
-
+        // `planned` already carries the stored `public`/`read_later` (the planners copy
+        // them) and the driver-resolved `timestamp`, so it's the complete write model.
         // Log and skip a single failed update so the rest of the pass still runs.
         match apply_update(
             pinboard,
             &mut wrote,
-            BookmarkUpdate {
-                url: &planned.url,
-                description: &planned.description,
-                extended: &planned.extended,
-                tags: &planned.tags,
-                shared: bookmark.public,
-                toread: bookmark.read_later,
-                dt: &dt,
-            },
+            &planned,
             url_changed.then_some(bookmark.url.as_str()),
         )
         .await

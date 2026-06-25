@@ -3,6 +3,7 @@
 
 use serde::Deserialize;
 
+use crate::htmltext::{blockquote, html_to_plain};
 use crate::source::{
     host_matches, push_prefixed, push_tag, push_tags, split_host_path, BookmarkDraft,
 };
@@ -129,27 +130,15 @@ impl ListingEntry {
             post_media_type(fields.is_video, fields.post_hint.as_deref())
         };
 
-        let extended = if is_comment {
-            // Prepend a link to the parent thread, which a bare comment lacks.
-            let body = fields.body.unwrap_or_default();
-            match parent_thread_url(fields.link_permalink.as_deref(), domain) {
-                Some(url) if body.is_empty() => format!("Thread: {url}"),
-                Some(url) => format!("Thread: {url}\n\n{body}"),
-                None => body,
-            }
-        } else {
-            // Self-posts carry their text in `selftext`; link posts point elsewhere.
-            // An empty self-post has nothing to add — its `url` is the post's own
-            // permalink, i.e. the bookmark URL, so don't fall back to it.
-            let selftext = fields.selftext.unwrap_or_default();
-            if !selftext.is_empty() {
-                selftext
-            } else if fields.is_self {
-                String::new()
-            } else {
-                fields.url.unwrap_or_default()
-            }
-        };
+        let extended = reddit_extended(
+            is_comment,
+            fields.body.as_deref().unwrap_or_default(),
+            fields.selftext.as_deref().unwrap_or_default(),
+            fields.url.as_deref().unwrap_or_default(),
+            fields.is_self,
+            fields.link_permalink.as_deref(),
+            domain,
+        );
 
         Some(SavedItem {
             fullname,
@@ -164,6 +153,44 @@ impl ListingEntry {
             flair: fields.link_flair_text.filter(|s| !s.is_empty()),
             media_type,
         })
+    }
+}
+
+/// Build the Pinboard notes for a Reddit item: the quoted body (comment `body` / post
+/// `selftext`) wrapped in a literal `<blockquote>`, which Pinboard renders. For comments
+/// the parent-thread link is prepended outside the quote (a bare comment lacks it). For an
+/// empty self-post the notes are empty (its `url` is the post's own permalink, i.e. the
+/// bookmark URL — not worth duplicating); a link post keeps its external URL as the bare
+/// fallback. Shared by sync and cleanup. Reddit text is already Markdown (`raw_json=1`),
+/// so it is wrapped as-is, never HTML-converted.
+fn reddit_extended(
+    is_comment: bool,
+    body: &str,
+    selftext: &str,
+    url: &str,
+    is_self: bool,
+    link_permalink: Option<&str>,
+    domain: &str,
+) -> String {
+    if is_comment {
+        let quoted = if body.is_empty() {
+            String::new()
+        } else {
+            blockquote(body)
+        };
+        match parent_thread_url(link_permalink, domain) {
+            Some(thread) if quoted.is_empty() => format!("Thread: {thread}"),
+            Some(thread) => format!("Thread: {thread}\n\n{quoted}"),
+            None => quoted,
+        }
+    } else if !selftext.is_empty() {
+        blockquote(selftext)
+    } else if is_self {
+        // Empty self-post: its `url` is its own permalink, so add nothing.
+        String::new()
+    } else {
+        // Link post: keep the external URL.
+        url.to_string()
     }
 }
 
@@ -268,7 +295,7 @@ impl SavedItem {
         let tags = self.tags(cfg);
         BookmarkDraft {
             url,
-            description: self.description,
+            description: html_to_plain(&self.description),
             extended: self.extended,
             tags,
             dedup_key,
@@ -445,7 +472,7 @@ mod tests {
         );
         assert_eq!(
             comment.extended,
-            "Thread: https://old.reddit.com/r/rust/comments/a/x/\n\nmy reply"
+            "Thread: https://old.reddit.com/r/rust/comments/a/x/\n\n<blockquote>my reply</blockquote>"
         );
         // Comments get no `type:` tag.
         assert!(!comment
@@ -498,11 +525,51 @@ mod tests {
         );
         assert!(it.is_comment);
         assert_eq!(it.description, "The story");
-        assert_eq!(it.extended, "my comment");
+        assert_eq!(it.extended, "<blockquote>my comment</blockquote>");
         // All-caps subreddit lowercased.
         assert_eq!(
             it.tags(&RedditConfig::default()),
             vec!["reddit", "subreddit:news", "reddit-comment"]
+        );
+    }
+
+    #[test]
+    fn reddit_extended_wraps_quoted_body_and_keeps_links_outside() {
+        let domain = "old.reddit.com";
+        // Comment: thread link outside, body in a blockquote.
+        assert_eq!(
+            reddit_extended(
+                true,
+                "hi",
+                "",
+                "",
+                false,
+                Some("/r/x/comments/a/t/"),
+                domain
+            ),
+            "Thread: https://old.reddit.com/r/x/comments/a/t/\n\n<blockquote>hi</blockquote>"
+        );
+        // Comment with no body: just the thread link, no empty blockquote.
+        assert_eq!(
+            reddit_extended(true, "", "", "", false, Some("/r/x/comments/a/t/"), domain),
+            "Thread: https://old.reddit.com/r/x/comments/a/t/"
+        );
+        // Comment with body but no resolvable thread: just the wrapped body.
+        assert_eq!(
+            reddit_extended(true, "hi", "", "", false, None, domain),
+            "<blockquote>hi</blockquote>"
+        );
+        // Self-post: selftext wrapped.
+        assert_eq!(
+            reddit_extended(false, "", "post body", "", true, None, domain),
+            "<blockquote>post body</blockquote>"
+        );
+        // Empty self-post: no notes (its url is its own permalink).
+        assert_eq!(reddit_extended(false, "", "", "", true, None, domain), "");
+        // Link post: external URL is a bare fallback, not quoted.
+        assert_eq!(
+            reddit_extended(false, "", "", "https://example.com", false, None, domain),
+            "https://example.com"
         );
     }
 

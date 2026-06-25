@@ -30,6 +30,8 @@ dotenvy = "0.15"
 clap_mangen = "0.2"
 log = "0.4"
 env_logger = { version = "0.11", default-features = false }
+# Source-post-date → Pinboard `dt`: epoch↔RFC3339 conversion + `now`.
+time = { version = "0.3", default-features = false, features = ["std", "formatting", "parsing"] }
 
 [dev-dependencies]
 http = "1"

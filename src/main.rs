@@ -12,6 +12,7 @@ mod source;
 mod sync;
 #[cfg(test)]
 mod test_support;
+mod timefmt;
 
 use std::process::ExitCode;
 

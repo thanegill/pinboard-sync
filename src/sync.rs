@@ -123,10 +123,10 @@ mod tests {
             url: url.into(),
             description: String::new(),
             extended: String::new(),
-            tags: String::new(),
-            time: String::new(),
-            shared: "no".into(),
-            toread: "no".into(),
+            tags: Vec::new(),
+            src_date: None,
+            shared: false,
+            toread: false,
         }
     }
 

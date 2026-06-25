@@ -37,6 +37,12 @@ All notable changes to this project are documented here. The format is based on
   HackerNews now lists changed notes too. Internally the three per-source `cleanup` loops
   were unified behind a single driver ([`src/cleanup_pass.rs`](src/cleanup_pass.rs)) — no
   change to what gets written.
+- `cleanup` compares a bookmark's date by **instant** rather than by its formatted string,
+  so it no longer issues a redundant re-write when a stored date and the source date are
+  the same moment written differently (e.g. a `+00:00` offset vs a trailing `Z`).
+  Internally, the stored Pinboard bookmark is now parsed into a service-agnostic domain
+  type (tags split, time as epoch seconds), and each source plans a `cleanup` end-state in
+  that same type.
 
 ### Fixed
 

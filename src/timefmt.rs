@@ -30,34 +30,33 @@ pub fn now_unix() -> i64 {
 
 /// Whether a post created at `timestamp` (epoch) is at most `max_age_days` old relative
 /// to `now` (epoch) — the `use_post_date` backdate cap. Shared by `sync` (which clears
-/// out-of-cap dates) and `cleanup` ([`cleanup_dt`]).
+/// out-of-cap dates) and `cleanup` ([`cleanup_date`]).
 pub fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
     now - timestamp <= max_age_days as i64 * 86_400
 }
 
-/// The Pinboard `dt` for a `cleanup` re-write of one bookmark, honoring `use_post_date`,
-/// the age cap (`max_age_days`), and the stale fallback (`stale_to_now`). `src_ts` is the
-/// source post time (epoch, if known) and `existing` the bookmark's current `dt`. Returns
-/// the source date (RFC3339) when dating is on and the post is within the cap; otherwise
-/// `now` when the post is stale and `stale_to_now`; otherwise `existing` (unchanged).
-pub fn cleanup_dt(
+/// The creation date (epoch seconds) a `cleanup` re-write should set, honoring
+/// `use_post_date`, the age cap (`max_age_days`), and the stale fallback
+/// (`stale_to_now`). `src_ts` is the source post time (epoch, if known) and `existing`
+/// the bookmark's current date. Returns the source date when dating is on and the post
+/// is within the cap; otherwise `now` when the post is stale and `stale_to_now`;
+/// otherwise `existing` (unchanged). Working in epochs keeps the result comparable to a
+/// stored bookmark's `src_date`; the RFC3339 formatting happens at the write boundary.
+pub fn cleanup_date(
     use_post_date: bool,
     max_age_days: u64,
     stale_to_now: bool,
     src_ts: Option<i64>,
     now: i64,
-    existing: &str,
-) -> String {
+    existing: Option<i64>,
+) -> Option<i64> {
     if !use_post_date {
-        return existing.to_string();
+        return existing;
     }
-    let within_cap = |timestamp: i64| within_age_cap(now, timestamp, max_age_days);
     match src_ts {
-        Some(timestamp) if within_cap(timestamp) => {
-            unix_to_rfc3339(timestamp).unwrap_or_else(|| existing.to_string())
-        }
-        Some(_) if stale_to_now => unix_to_rfc3339(now).unwrap_or_else(|| existing.to_string()),
-        _ => existing.to_string(),
+        Some(timestamp) if within_age_cap(now, timestamp, max_age_days) => Some(timestamp),
+        Some(_) if stale_to_now => Some(now),
+        _ => existing,
     }
 }
 
@@ -96,33 +95,33 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_dt_honors_flag_cap_and_stale_fallback() {
+    fn cleanup_date_honors_flag_cap_and_stale_fallback() {
         let now = 1_700_000_000;
         let recent = now - 5 * 86_400; // 5 days old
         let old = now - 60 * 86_400; // 60 days old
-        let existing = "2019-01-01T00:00:00Z";
+        let existing = Some(1_546_300_800); // 2019-01-01T00:00:00Z
 
         // Dating off → keep existing.
         assert_eq!(
-            cleanup_dt(false, 30, true, Some(recent), now, existing),
+            cleanup_date(false, 30, true, Some(recent), now, existing),
             existing
         );
         // Within cap → source date.
         assert_eq!(
-            cleanup_dt(true, 30, false, Some(recent), now, existing),
-            unix_to_rfc3339(recent).unwrap()
+            cleanup_date(true, 30, false, Some(recent), now, existing),
+            Some(recent)
         );
         // Stale + default (no stale_to_now) → keep existing.
         assert_eq!(
-            cleanup_dt(true, 30, false, Some(old), now, existing),
+            cleanup_date(true, 30, false, Some(old), now, existing),
             existing
         );
         // Stale + stale_to_now → now.
         assert_eq!(
-            cleanup_dt(true, 30, true, Some(old), now, existing),
-            unix_to_rfc3339(now).unwrap()
+            cleanup_date(true, 30, true, Some(old), now, existing),
+            Some(now)
         );
         // No source date → keep existing.
-        assert_eq!(cleanup_dt(true, 30, true, None, now, existing), existing);
+        assert_eq!(cleanup_date(true, 30, true, None, now, existing), existing);
     }
 }

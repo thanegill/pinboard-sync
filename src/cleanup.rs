@@ -12,7 +12,7 @@ use crate::htmltext::html_to_plain;
 use crate::model::{cased_subreddit, reddit_key};
 use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::reddit::PostInfo;
-use crate::source::{host_matches, split_host_path, SourceError};
+use crate::source::{host_is, host_matches, split_host_path, SourceError};
 
 pub struct CleanupOpts {
     pub dry_run: bool,
@@ -265,11 +265,7 @@ async fn fetch_post_info<R: PostInfo>(
 
 /// Whether `url`'s host is reddit.com or a `*.reddit.com` subdomain.
 pub fn is_reddit_url(url: &str) -> bool {
-    let Some((_, after)) = url.split_once("://") else {
-        return false;
-    };
-    let (host, _) = split_host_path(after);
-    host_matches(&host, "reddit.com")
+    host_is(url, "reddit.com")
 }
 
 /// Normalize a Reddit bookmark URL: unwrap an `over18/?dest=` redirect (recursively
@@ -304,8 +300,7 @@ fn over18_dest(url: &str) -> Option<String> {
 /// configured `domain`, preserving the rest of the URL. Returns `None` for a
 /// non-reddit host or one already equal to `domain`.
 fn to_reddit_domain(url: &str, domain: &str) -> Option<String> {
-    let (_scheme, after) = url.split_once("://")?;
-    let (host, rest) = split_host_path(after);
+    let (host, rest) = split_host_path(url);
     if host_matches(&host, "reddit.com") && host != domain {
         Some(format!("https://{domain}{rest}"))
     } else {

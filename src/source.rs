@@ -131,6 +131,14 @@ pub fn host_matches(host: &str, domain: &str) -> bool {
             .is_some_and(|rest| rest.ends_with('.'))
 }
 
+/// Whether `url`'s host is `domain` or a `*.domain` subdomain — the "is this URL one
+/// I manage?" test shared by the per-source bookmark filters. Scheme-agnostic (handles
+/// a missing `://`), since it goes through [`split_host_path`]/[`host_matches`].
+pub fn host_is(url: &str, domain: &str) -> bool {
+    let (host, _) = split_host_path(url);
+    host_matches(&host, domain)
+}
+
 /// A host+path dedup key for a URL: scheme dropped, host lowercased (userinfo and
 /// port stripped), path lowercased with any query/fragment and trailing slash
 /// removed — e.g. `https://GitHub.com/Owner/Repo/?tab=x` → `github.com/owner/repo`.

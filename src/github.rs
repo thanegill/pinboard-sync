@@ -268,7 +268,7 @@ pub async fn cleanup<P: BookmarkStore>(
 ) -> Result<()> {
     let gh_bms: Vec<_> = bookmarks
         .iter()
-        .filter(|b| is_github_url(&b.url))
+        .filter(|b| host_is(&b.url, "github.com"))
         .cloned()
         .collect();
 
@@ -385,18 +385,13 @@ fn refresh_tags(existing: Vec<String>, repo: &Repo, cfg: &GithubConfig) -> Vec<S
     tags
 }
 
-/// Whether `url`'s host is github.com or a `*.github.com` subdomain.
-fn is_github_url(url: &str) -> bool {
-    host_is(url, "github.com")
-}
-
 /// Canonicalize a GitHub *repo-root* URL to `https://github.com/<owner>/<repo>`
 /// (lowercasing the host, forcing https, dropping a `.git` suffix, trailing slash,
 /// and any query/fragment). Returns `Some(new)` only if it changed; `None` for a
 /// non-GitHub host, an already-canonical URL, or a deeper path (e.g. `/tree/...`,
 /// `/issues`) which is left untouched.
 pub fn canonical_repo_url(url: &str) -> Option<String> {
-    if !is_github_url(url) {
+    if !host_is(url, "github.com") {
         return None;
     }
     let (_host, path) = split_host_path(url);
@@ -559,7 +554,7 @@ mod tests {
             Some("github.com/o/r")
         );
         assert!(c.existing_key("https://example.com/o/r").is_none());
-        // Subdomains of github.com are recognized too (consistent with is_github_url).
+        // Subdomains of github.com are recognized too (consistent with host_is).
         assert_eq!(
             c.existing_key("https://www.github.com/o/r").as_deref(),
             Some("www.github.com/o/r")

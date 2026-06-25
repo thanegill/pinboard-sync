@@ -528,8 +528,8 @@ fn job_label<T: config::Named>(source: &str, account: Option<&T>) -> String {
 }
 
 /// Three-tier setting resolution: the account override, else the per-source default,
-/// else the resolved `[pinboard]` global. (The fuller flag → `$VAR` → … ladder is a
-/// TODO; see `TODO.md`.)
+/// else the resolved `[pinboard]` global. (A fuller flag → `$VAR` → … ladder is a
+/// possible future extension.)
 fn tier<T>(account: Option<T>, source: Option<T>, global: T) -> T {
     account.or(source).unwrap_or(global)
 }

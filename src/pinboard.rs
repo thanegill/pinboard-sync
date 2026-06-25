@@ -97,19 +97,9 @@ pub struct BookmarkUpdate<'a> {
 pub trait BookmarkStore {
     /// Every bookmark in the account (`posts/all`).
     async fn all(&self) -> Result<Vec<Bookmark>>;
-    /// Add a new bookmark. `dt` is the creation time (RFC3339); empty = let Pinboard
+    /// Add a new bookmark. `b.dt` is the creation time (RFC3339); empty = let Pinboard
     /// default to now.
-    #[allow(clippy::too_many_arguments)]
-    async fn add(
-        &self,
-        url: &str,
-        description: &str,
-        extended: &str,
-        tags: &[String],
-        toread: bool,
-        shared: bool,
-        dt: &str,
-    ) -> Result<()>;
+    async fn add(&self, b: BookmarkUpdate<'_>) -> Result<()>;
     /// Re-add an existing bookmark with normalized fields, preserving metadata.
     async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()>;
     /// Delete a bookmark by URL.
@@ -210,27 +200,8 @@ impl BookmarkStore for PinboardClient {
         self.rate_limit_secs
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn add(
-        &self,
-        url: &str,
-        description: &str,
-        extended: &str,
-        tags: &[String],
-        toread: bool,
-        shared: bool,
-        dt: &str,
-    ) -> Result<()> {
-        self.post_add(BookmarkUpdate {
-            url,
-            description,
-            extended,
-            tags,
-            shared,
-            toread,
-            dt,
-        })
-        .await
+    async fn add(&self, b: BookmarkUpdate<'_>) -> Result<()> {
+        self.post_add(b).await
     }
 
     async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()> {
@@ -481,15 +452,15 @@ mod net_tests {
             .await;
 
         client(&server)
-            .add(
-                "https://old.reddit.com/r/x/",
-                "Title",
-                "",
-                &["reddit".into()],
-                false,
-                false,
-                "",
-            )
+            .add(BookmarkUpdate {
+                url: "https://old.reddit.com/r/x/",
+                description: "Title",
+                extended: "",
+                tags: &["reddit".into()],
+                shared: false,
+                toread: false,
+                dt: "",
+            })
             .await
             .unwrap();
     }
@@ -522,15 +493,15 @@ mod net_tests {
             .await;
 
         client(&server)
-            .add(
-                "https://old.reddit.com/r/x/",
-                "Title",
-                &"long notes ".repeat(2000),
-                &["reddit".into()],
-                false,
-                false,
-                "",
-            )
+            .add(BookmarkUpdate {
+                url: "https://old.reddit.com/r/x/",
+                description: "Title",
+                extended: &"long notes ".repeat(2000),
+                tags: &["reddit".into()],
+                shared: false,
+                toread: false,
+                dt: "",
+            })
             .await
             .unwrap();
     }
@@ -547,15 +518,15 @@ mod net_tests {
             .await;
 
         let err = client(&server)
-            .add(
-                "https://old.reddit.com/r/x/",
-                "Title",
-                "",
-                &["reddit".into()],
-                false,
-                false,
-                "",
-            )
+            .add(BookmarkUpdate {
+                url: "https://old.reddit.com/r/x/",
+                description: "Title",
+                extended: "",
+                tags: &["reddit".into()],
+                shared: false,
+                toread: false,
+                dt: "",
+            })
             .await
             .unwrap_err();
         assert!(err.to_string().contains("missing url"));

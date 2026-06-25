@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{anyhow, bail, Result};
 
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PlannedCleanupPass};
+use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts};
 use crate::htmltext::html_to_plain;
 use crate::model::{cased_subreddit, reddit_key};
 use crate::pinboard::{Bookmark, BookmarkStore};
@@ -90,7 +90,7 @@ struct RedditCleanupPass<'a> {
 }
 
 impl CleanupPass for RedditCleanupPass<'_> {
-    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
         let opts = self.opts;
         // Parse the stored URL once (it's a reddit URL — the pass is filtered to those);
         // everything below works on the `Url`, formatting back to a string only at the end.
@@ -101,7 +101,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
 
         let mut tags = normalize_tags(
             &new_url,
-            &bookmark.tag_list(),
+            &bookmark.tags,
             &opts.base_tag,
             &opts.subreddit_tag_prefix,
         );
@@ -135,12 +135,14 @@ impl CleanupPass for RedditCleanupPass<'_> {
             bookmark.extended.clone()
         };
 
-        Ok(Some(PlannedCleanupPass {
+        Ok(Some(Bookmark {
             url: new_url.into(),
             description,
             extended,
             tags,
             src_date: post.and_then(|p| p.created_utc).map(|s| s as i64),
+            shared: bookmark.shared,
+            toread: bookmark.toread,
         }))
     }
 }
@@ -485,7 +487,7 @@ mod tests {
 #[cfg(test)]
 mod loop_tests {
     use super::*;
-    use crate::pinboard::Bookmark;
+    use crate::pinboard::PinboardBookmark;
     use crate::test_support::{listing_entry, FakePinboard, FakeReddit};
     use serde_json::json;
 
@@ -504,7 +506,7 @@ mod loop_tests {
     }
 
     fn bookmark(url: &str, description: &str, tags: &str) -> Bookmark {
-        Bookmark {
+        PinboardBookmark {
             url: url.into(),
             description: description.into(),
             extended: String::new(),
@@ -513,21 +515,23 @@ mod loop_tests {
             shared: "no".into(),
             toread: "no".into(),
         }
+        .into()
     }
 
     #[tokio::test]
     async fn normalizes_url_tags_nsfw_and_title() {
         let pinboard = FakePinboard {
             // Carries notes + metadata that cleanup must preserve across the re-add.
-            all: vec![Bookmark {
+            all: vec![PinboardBookmark {
                 url: "https://www.reddit.com/r/NEWS/comments/abc/x/".into(),
                 description: "Reddit - Dive into anything".into(),
                 extended: "original notes".into(),
                 tags: String::new(),
-                time: "1700000000".into(),
+                time: "2023-11-14T22:13:20Z".into(),
                 shared: "yes".into(),
                 toread: "yes".into(),
-            }],
+            }
+            .into()],
             ..Default::default()
         };
         let reddit = FakeReddit {
@@ -558,7 +562,7 @@ mod loop_tests {
         assert_eq!(updated[0].extended, "original notes");
         assert!(updated[0].shared);
         assert!(updated[0].toread);
-        assert_eq!(updated[0].dt, "1700000000");
+        assert_eq!(updated[0].dt, "2023-11-14T22:13:20Z");
         // URL changed, so the old one is deleted.
         assert_eq!(
             *pinboard.deleted.borrow(),
@@ -614,15 +618,16 @@ mod loop_tests {
         // permalink. No /api/info this run (nsfw/titles off), so the string-based
         // self-link drop applies. The URL is already normalized, so only the notes change.
         let pinboard = FakePinboard {
-            all: vec![Bookmark {
+            all: vec![PinboardBookmark {
                 url: "https://old.reddit.com/r/rust/comments/a/x/".into(),
                 description: "A real title".into(),
                 extended: "https://www.reddit.com/r/rust/comments/a/x/".into(),
                 tags: "reddit subreddit:rust".into(),
-                time: "1700000000".into(),
+                time: "2023-11-14T22:13:20Z".into(),
                 shared: "no".into(),
                 toread: "no".into(),
-            }],
+            }
+            .into()],
             ..Default::default()
         };
         let opts = RedditCleanupOpts {
@@ -652,15 +657,16 @@ mod loop_tests {
         // A link post's notes hold the external URL — not the bookmark's own
         // permalink — so cleanup must preserve them while rewriting the host.
         let pinboard = FakePinboard {
-            all: vec![Bookmark {
+            all: vec![PinboardBookmark {
                 url: "https://www.reddit.com/r/rust/comments/b/y/".into(),
                 description: "A real title".into(),
                 extended: "https://example.com/article".into(),
                 tags: "reddit subreddit:rust".into(),
-                time: "1700000000".into(),
+                time: "2023-11-14T22:13:20Z".into(),
                 shared: "no".into(),
                 toread: "no".into(),
-            }],
+            }
+            .into()],
             ..Default::default()
         };
         let opts = RedditCleanupOpts {
@@ -693,7 +699,7 @@ mod loop_tests {
         // /api/info present, the rebuild wraps the authoritative selftext in a
         // <blockquote>; ext_changed triggers the write.
         let pinboard = FakePinboard {
-            all: vec![Bookmark {
+            all: vec![PinboardBookmark {
                 url: "https://old.reddit.com/r/rust/comments/a/x/".into(),
                 description: "A real title".into(),
                 extended: "the body text".into(), // pre-blockquote notes
@@ -701,7 +707,8 @@ mod loop_tests {
                 time: String::new(),
                 shared: "no".into(),
                 toread: "no".into(),
-            }],
+            }
+            .into()],
             ..Default::default()
         };
         let reddit = FakeReddit {
@@ -735,7 +742,7 @@ mod loop_tests {
         // post's selftext must not leak into the comment's notes.
         let stored = "Thread: https://old.reddit.com/r/rust/comments/a/x/\n\nmy comment";
         let pinboard = FakePinboard {
-            all: vec![Bookmark {
+            all: vec![PinboardBookmark {
                 url: "https://old.reddit.com/r/rust/comments/a/x/c/".into(),
                 description: "Parent title".into(),
                 extended: stored.into(),
@@ -743,7 +750,8 @@ mod loop_tests {
                 time: String::new(),
                 shared: "no".into(),
                 toread: "no".into(),
-            }],
+            }
+            .into()],
             ..Default::default()
         };
         let reddit = FakeReddit {

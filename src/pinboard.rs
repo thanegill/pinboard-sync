@@ -33,9 +33,12 @@ struct AddResponse {
     result_code: String,
 }
 
-/// A bookmark as returned by `posts/all`.
+/// A bookmark exactly as `posts/all` returns it — the Pinboard wire shape, with its
+/// space-joined tag string, ISO-8601 `time`, and `"yes"/"no"` flags. Converted to the
+/// service-agnostic [`Bookmark`] on read (see the `From` impl below); nothing outside
+/// this module handles the wire form.
 #[derive(Debug, Clone, Deserialize)]
-pub struct Bookmark {
+pub struct PinboardBookmark {
     #[serde(rename = "href")]
     pub url: String,
     #[serde(default)]
@@ -45,7 +48,7 @@ pub struct Bookmark {
     /// Space-separated tag string.
     #[serde(default)]
     pub tags: String,
-    /// Creation timestamp (ISO 8601), preserved as `dt` on update.
+    /// Creation timestamp (ISO 8601).
     #[serde(default)]
     pub time: String,
     #[serde(default)]
@@ -54,15 +57,35 @@ pub struct Bookmark {
     pub toread: String,
 }
 
-impl Bookmark {
-    pub fn tag_list(&self) -> Vec<String> {
-        self.tags.split_whitespace().map(String::from).collect()
-    }
-    pub fn is_shared(&self) -> bool {
-        self.shared == "yes"
-    }
-    pub fn is_toread(&self) -> bool {
-        self.toread == "yes"
+/// A bookmark in service-agnostic domain form: tags split out, the creation time held
+/// as raw epoch seconds (`src_date`), and the flags as plain `bool`s. The cleanup
+/// driver both reads stored bookmarks and plans their end-state in this type, so the
+/// two are directly comparable; the Pinboard formatting is reapplied at the write
+/// boundary in [`PinboardClient::post_add`].
+#[derive(Debug, Clone)]
+pub struct Bookmark {
+    pub url: String,
+    pub description: String,
+    pub extended: String,
+    pub tags: Vec<String>,
+    /// Creation time as unix epoch seconds, or `None` when Pinboard returned no
+    /// (parseable) time.
+    pub src_date: Option<i64>,
+    pub shared: bool,
+    pub toread: bool,
+}
+
+impl From<PinboardBookmark> for Bookmark {
+    fn from(b: PinboardBookmark) -> Self {
+        Bookmark {
+            url: b.url,
+            description: b.description,
+            extended: b.extended,
+            tags: b.tags.split_whitespace().map(String::from).collect(),
+            src_date: crate::timefmt::rfc3339_to_unix(&b.time),
+            shared: b.shared == "yes",
+            toread: b.toread == "yes",
+        }
     }
 }
 
@@ -171,7 +194,9 @@ impl BookmarkStore for PinboardClient {
         let resp = self
             .get_with_backoff(&self.url("posts/all"), &params)
             .await?;
-        resp.json().await.context("parsing Pinboard posts/all")
+        let wire: Vec<PinboardBookmark> =
+            resp.json().await.context("parsing Pinboard posts/all")?;
+        Ok(wire.into_iter().map(Bookmark::from).collect())
     }
 
     async fn delete(&self, url: &str) -> Result<()> {
@@ -550,7 +575,10 @@ mod net_tests {
         let all = client(&server).all().await.unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].url, "https://old.reddit.com/r/rust/comments/a/x/");
-        assert_eq!(all[0].tag_list(), vec!["reddit", "subreddit:rust"]);
+        assert_eq!(all[0].tags, vec!["reddit", "subreddit:rust"]);
+        // The ISO-8601 `time` is parsed to epoch on read.
+        assert_eq!(all[0].src_date, Some(1_577_836_800)); // 2020-01-01T00:00:00Z
+        assert_eq!(all[1].src_date, None); // empty time → no date
     }
 
     #[tokio::test]

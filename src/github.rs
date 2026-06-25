@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PlannedCleanupPass};
+use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts};
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::send_retrying;
 use crate::pinboard::{Bookmark, BookmarkStore};
@@ -339,7 +339,7 @@ struct GitHubCleanupPass<'a> {
 }
 
 impl CleanupPass for GitHubCleanupPass<'_> {
-    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
         // Parse the stored URL once (the pass is filtered to github URLs).
         let Some(original) = Url::parse(&bookmark.url).ok() else {
             return Ok(None);
@@ -351,7 +351,7 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         let mut url = canonical.clone();
         let mut description = html_to_plain(&bookmark.description);
         let mut extended = bookmark.extended.clone();
-        let mut tags = bookmark.tag_list();
+        let mut tags = bookmark.tags.clone();
         if let Some((owner, repo)) = owner_repo(&canonical) {
             match self.client.repo(&owner, &repo).await {
                 Ok(Some(info)) => {
@@ -363,7 +363,7 @@ impl CleanupPass for GitHubCleanupPass<'_> {
                         info.homepage.as_deref(),
                         &info.html_url,
                     );
-                    tags = refresh_tags(bookmark.tag_list(), &info, self.config);
+                    tags = refresh_tags(bookmark.tags.clone(), &info, self.config);
                     url = Url::parse(&info.html_url).unwrap_or(url); // follows renames/transfers
                 }
                 Ok(None) => {}
@@ -373,12 +373,14 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         }
 
         let src_date = url_key(&url).and_then(|k| self.star_dates.get(&k).copied());
-        Ok(Some(PlannedCleanupPass {
+        Ok(Some(Bookmark {
             url: url.into(),
             description,
             extended,
             tags,
             src_date,
+            shared: bookmark.shared,
+            toread: bookmark.toread,
         }))
     }
 }
@@ -663,7 +665,7 @@ mod net_tests {
 
     #[tokio::test]
     async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
-        use crate::pinboard::Bookmark;
+        use crate::pinboard::PinboardBookmark;
         use crate::test_support::FakePinboard;
 
         // The repo was renamed old/name -> new/name, and its language changed.
@@ -680,7 +682,7 @@ mod net_tests {
             .await;
 
         let pinboard = FakePinboard {
-            all: vec![Bookmark {
+            all: vec![PinboardBookmark {
                 url: "https://github.com/old/name".into(),
                 description: "old/name".into(),
                 extended: "notes".into(),
@@ -688,7 +690,8 @@ mod net_tests {
                 time: "2020-01-01T00:00:00Z".into(),
                 shared: "no".into(),
                 toread: "no".into(),
-            }],
+            }
+            .into()],
             ..Default::default()
         };
         let bookmarks = pinboard.all.clone();
@@ -732,7 +735,7 @@ mod net_tests {
 
     #[tokio::test]
     async fn cleanup_rewrites_notes_only_to_retrofit_the_blockquote() {
-        use crate::pinboard::Bookmark;
+        use crate::pinboard::PinboardBookmark;
         use crate::test_support::FakePinboard;
 
         // URL, title, and tags are already current; only the notes are stale (an old
@@ -749,7 +752,7 @@ mod net_tests {
             .await;
 
         let pinboard = FakePinboard {
-            all: vec![Bookmark {
+            all: vec![PinboardBookmark {
                 url: "https://github.com/o/r".into(),
                 description: "o/r".into(),
                 extended: "A thing".into(), // pre-blockquote notes
@@ -757,7 +760,8 @@ mod net_tests {
                 time: "2020-01-01T00:00:00Z".into(),
                 shared: "no".into(),
                 toread: "no".into(),
-            }],
+            }
+            .into()],
             ..Default::default()
         };
         let bookmarks = pinboard.all.clone();

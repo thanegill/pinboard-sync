@@ -30,12 +30,21 @@ The flow is one pass: a source yields drafts → skip those already on Pinboard 
 write the rest. `main.rs` is CLI parsing + config/secret resolution + dispatch; the
 sync write loop is in [`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one
 driver** ([`src/cleanup_pass.rs`](src/cleanup_pass.rs)): a source implements
-`CleanupPass::plan` (the desired end-state for one bookmark — `None` to skip, `Err` for
-a per-item failure), and `run_pass` owns the loop common to all of them: diff against
-the stored bookmark, skip unchanged, render the dry-run lines, write via `apply_update`
-(deleting the old URL on a rewrite), and tally. The per-source planners live in
-[`src/cleanup.rs`](src/cleanup.rs) (reddit), [`src/github.rs`](src/github.rs), and
-[`src/hackernews.rs`](src/hackernews.rs).
+`CleanupPass::plan` (the desired end-state for one bookmark, as a `Bookmark` — `None` to
+skip, `Err` for a per-item failure), and `run_pass` owns the loop common to all of them:
+diff the planned `Bookmark` against the stored one, skip unchanged, render the dry-run
+lines, write via `apply_update` (deleting the old URL on a rewrite), and tally. The
+per-source planners live in [`src/cleanup.rs`](src/cleanup.rs) (reddit),
+[`src/github.rs`](src/github.rs), and [`src/hackernews.rs`](src/hackernews.rs).
+
+**`Bookmark` is service-agnostic; `PinboardBookmark` is the wire shape.**
+[`src/pinboard.rs`](src/pinboard.rs) deserializes `posts/all` into `PinboardBookmark`
+(space-joined tags, ISO-8601 `time`, `"yes"/"no"` flags) and converts each via `From`
+into the domain `Bookmark` (`tags: Vec<String>`, `src_date: Option<i64>` epoch, `bool`
+flags). The cleanup driver reads stored bookmarks and plans their end-state in that one
+type, so dates compare by instant (not formatted string); the Pinboard formatting is
+reapplied at the write boundary in `post_add`. `BookmarkUpdate` stays the borrowed
+write-view both `add`/`update` funnel through.
 
 **Every source is a `Source`; the sync loop is generic over it.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `Vec<BookmarkDraft>`

@@ -11,20 +11,6 @@ use log::{debug, error, info};
 use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::source::tags_differ;
 
-/// The desired end-state for one bookmark's content. `shared`/`toread` are preserved
-/// from the stored bookmark, and the Pinboard `dt` is resolved by the driver from
-/// `src_date` + the pass's [`DateOpts`] — so a pass supplies only the content fields
-/// plus the raw source date.
-pub struct PlannedCleanupPass {
-    pub url: String,
-    pub description: String,
-    pub extended: String,
-    pub tags: Vec<String>,
-    /// The source item's creation time (unix epoch), or `None` when unknown / not
-    /// datable. The driver turns this into the Pinboard `dt` via [`crate::timefmt::cleanup_dt`].
-    pub src_date: Option<i64>,
-}
-
 /// The `use_post_date` policy applied uniformly across a pass: whether to re-date by
 /// the source date, the backdate age cap, and whether to push stale (older-than-cap)
 /// items to "now". Resolved once by the caller from its source's cleanup options.
@@ -38,11 +24,15 @@ pub struct DateOpts {
 /// How a source re-shapes one bookmark during `cleanup`.
 #[allow(async_fn_in_trait)]
 pub trait CleanupPass {
-    /// The end-state for `bookmark`, or `None` to leave it unchanged outright. `Err` marks a
-    /// per-item failure (logged and counted; the pass continues with the next bookmark).
-    /// The driver still skips an unchanged `Some` (one whose fields all match `bookmark`), so
-    /// a pass can return the computed end-state without checking for changes itself.
-    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>>;
+    /// The end-state for `bookmark` as a [`Bookmark`], or `None` to leave it unchanged
+    /// outright. `Err` marks a per-item failure (logged and counted; the pass continues
+    /// with the next bookmark). The plan's `src_date` is the *candidate* source date; the
+    /// driver resolves the final date from it via the pass's [`DateOpts`], and always
+    /// takes `shared`/`toread` from the stored bookmark — so those two fields on the
+    /// returned `Bookmark` are ignored. The driver still skips an unchanged plan (one
+    /// whose fields all match `bookmark`), so a pass can return the computed end-state
+    /// without checking for changes itself.
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>>;
 }
 
 /// Run `pass` over `bookmarks` (already filtered to the source). Re-writes each
@@ -69,7 +59,7 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     let mut failed = 0usize;
     let mut wrote = false;
     for bookmark in bookmarks {
-        let planned = match pass.plan(bookmark).await {
+        let mut planned = match pass.plan(bookmark).await {
             Ok(Some(p)) => p,
             Ok(None) => continue,
             // Log and skip a single failed plan so the rest of the pass still runs.
@@ -80,27 +70,34 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             }
         };
 
-        // Resolve the Pinboard `dt` here, at the write boundary: the source date when
-        // dating is on and within the cap, else "now"/preserve per the policy.
-        let dt = crate::timefmt::cleanup_dt(
+        // Resolve the final creation date here, at the write boundary: the candidate
+        // source date when dating is on and within the cap, else "now"/preserve per the
+        // policy. Working in epochs keeps it comparable to the stored `src_date`.
+        planned.src_date = crate::timefmt::cleanup_date(
             dates.use_post_date,
             dates.max_age_days,
             dates.stale_to_now,
             planned.src_date,
             now,
-            &bookmark.time,
+            bookmark.src_date,
         );
 
         let url_changed = planned.url != bookmark.url;
-        if !changed_at_all(bookmark, &planned, &dt) {
+        if !changed_at_all(bookmark, &planned) {
             continue;
         }
 
         if dry_run {
             changed += 1;
-            print_diff(bookmark, &planned, &dt);
+            print_diff(bookmark, &planned);
             continue;
         }
+
+        // Format the resolved date for Pinboard's `dt` (empty = leave the time as is).
+        let dt = planned
+            .src_date
+            .and_then(crate::timefmt::unix_to_rfc3339)
+            .unwrap_or_default();
 
         // Log and skip a single failed update so the rest of the pass still runs.
         match apply_update(
@@ -111,8 +108,8 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
                 description: &planned.description,
                 extended: &planned.extended,
                 tags: &planned.tags,
-                shared: bookmark.is_shared(),
-                toread: bookmark.is_toread(),
+                shared: bookmark.shared,
+                toread: bookmark.toread,
                 dt: &dt,
             },
             url_changed.then_some(bookmark.url.as_str()),
@@ -143,19 +140,20 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     failed
 }
 
-/// Whether the plan (with its driver-resolved `dt`) differs from the stored bookmark
-/// in any written field.
-fn changed_at_all(bookmark: &Bookmark, p: &PlannedCleanupPass, dt: &str) -> bool {
+/// Whether the plan (with its driver-resolved `src_date`) differs from the stored
+/// bookmark in any written field. `shared`/`toread` are always carried over, so they
+/// aren't compared.
+fn changed_at_all(bookmark: &Bookmark, p: &Bookmark) -> bool {
     p.url != bookmark.url
         || p.description != bookmark.description
         || p.extended != bookmark.extended
-        || dt != bookmark.time
-        || tags_differ(&bookmark.tag_list(), &p.tags)
+        || p.src_date != bookmark.src_date
+        || tags_differ(&bookmark.tags, &p.tags)
 }
 
 /// Print the changed fields of a planned update (dry-run output): one aligned
 /// `label -> value` line per field that differs.
-fn print_diff(bookmark: &Bookmark, p: &PlannedCleanupPass, dt: &str) {
+fn print_diff(bookmark: &Bookmark, p: &Bookmark) {
     println!("[dry-run] {}", bookmark.url);
     let field = |label: &str, value: &str| println!("          {label:<6}-> {value}");
 
@@ -173,11 +171,15 @@ fn print_diff(bookmark: &Bookmark, p: &PlannedCleanupPass, dt: &str) {
         };
         field("notes", notes);
     }
-    if tags_differ(&bookmark.tag_list(), &p.tags) {
+    if tags_differ(&bookmark.tags, &p.tags) {
         field("tags", &format!("[{}]", p.tags.join(" ")));
     }
-    if dt != bookmark.time {
-        field("date", dt);
+    if p.src_date != bookmark.src_date {
+        let date = p
+            .src_date
+            .and_then(crate::timefmt::unix_to_rfc3339)
+            .unwrap_or_default();
+        field("date", &date);
     }
 }
 
@@ -189,8 +191,8 @@ mod tests {
 
     /// A `CleanupPass` whose `plan` is a closure, so each test scripts its own outcome.
     struct FakePass<F>(F);
-    impl<F: Fn(&Bookmark) -> Result<Option<PlannedCleanupPass>>> CleanupPass for FakePass<F> {
-        async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
+    impl<F: Fn(&Bookmark) -> Result<Option<Bookmark>>> CleanupPass for FakePass<F> {
+        async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
             (self.0)(bookmark)
         }
     }
@@ -200,26 +202,20 @@ mod tests {
             url: url.into(),
             description: "Title".into(),
             extended: "notes".into(),
-            tags: "a b".into(),
-            time: "2020-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
+            tags: vec!["a".into(), "b".into()],
+            src_date: Some(1_577_836_800), // 2020-01-01T00:00:00Z
+            shared: false,
+            toread: false,
         }
     }
 
     /// A plan identical to `bookmark` (the driver should treat it as unchanged under
-    /// [`NO_DATING`], which leaves the stored time intact).
-    fn unchanged_plan(bookmark: &Bookmark) -> PlannedCleanupPass {
-        PlannedCleanupPass {
-            url: bookmark.url.clone(),
-            description: bookmark.description.clone(),
-            extended: bookmark.extended.clone(),
-            tags: bookmark.tag_list(),
-            src_date: None,
-        }
+    /// [`NO_DATING`], which leaves the stored date intact).
+    fn unchanged_plan(bookmark: &Bookmark) -> Bookmark {
+        bookmark.clone()
     }
 
-    /// Dating off: the driver preserves each bookmark's existing `dt`.
+    /// Dating off: the driver preserves each bookmark's existing date.
     const NO_DATING: DateOpts = DateOpts {
         use_post_date: false,
         max_age_days: 0,
@@ -234,7 +230,7 @@ mod tests {
             if bookmark.url.contains("bad") {
                 Err(anyhow!("boom"))
             } else {
-                Ok(Some(PlannedCleanupPass {
+                Ok(Some(Bookmark {
                     description: "New".into(),
                     ..unchanged_plan(bookmark)
                 }))
@@ -277,7 +273,7 @@ mod tests {
     async fn url_change_updates_and_deletes_old_preserving_privacy() {
         let books = vec![bookmark("https://old/")];
         let pass = FakePass(|bookmark: &Bookmark| {
-            Ok(Some(PlannedCleanupPass {
+            Ok(Some(Bookmark {
                 url: "https://new/".into(),
                 description: "New".into(),
                 tags: vec!["x".into()],
@@ -291,7 +287,7 @@ mod tests {
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].url, "https://new/");
-        // shared/toread are carried over from the stored bookmark (both "no").
+        // shared/toread are carried over from the stored bookmark (both off).
         assert!(!updated[0].shared && !updated[0].toread);
         // The old URL is deleted after the rewrite.
         assert_eq!(*pinboard.deleted.borrow(), vec!["https://old/".to_string()]);
@@ -302,7 +298,7 @@ mod tests {
         let books = vec![bookmark("https://x/")];
         // A desc-only change (URL unchanged, so no delete); the update itself fails.
         let pass = FakePass(|bookmark: &Bookmark| {
-            Ok(Some(PlannedCleanupPass {
+            Ok(Some(Bookmark {
                 description: "New".into(),
                 ..unchanged_plan(bookmark)
             }))
@@ -326,13 +322,15 @@ mod tests {
             } else {
                 "new notes".into()
             };
-            Ok(Some(PlannedCleanupPass {
+            Ok(Some(Bookmark {
                 url: format!("{}new", bookmark.url),
                 description: "New".into(),
                 extended,
                 tags: vec!["x".into()],
-                // A datable source time, so the driver re-dates and the `date ->` line renders.
+                // A datable candidate source time, so the driver re-dates and the
+                // `date ->` line renders.
                 src_date: Some(1_700_000_000),
+                ..unchanged_plan(bookmark)
             }))
         });
         let pinboard = FakePinboard::default();

@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PlannedCleanupPass};
+use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::send_retrying;
 use crate::pinboard::{Bookmark, BookmarkStore};
@@ -494,7 +494,7 @@ impl HackerNewsClient {
                     .as_ref()
                     .and_then(hn_item_id)
                     .is_none()
-                    && bookmark.tag_list().contains(&self.config.link_tag)
+                    && bookmark.tags.contains(&self.config.link_tag)
             })
             .cloned()
             .collect();
@@ -519,7 +519,7 @@ struct HackerNewsCleanupPass<'a> {
 }
 
 impl CleanupPass for HackerNewsCleanupPass<'_> {
-    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
         // The pass is filtered to HN item URLs, so this parses and matches.
         let id = Url::parse(&bookmark.url).ok().as_ref().and_then(hn_item_id);
         let Some(item) = id.and_then(|id| self.items.get(&id)) else {
@@ -529,15 +529,17 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         let draft = item.clone().into_draft(self.config);
 
         // Preserve existing tags, appending any freshly-derived ones.
-        let mut tags = bookmark.tag_list();
+        let mut tags = bookmark.tags.clone();
         extend_unique(&mut tags, &draft.tags);
 
-        Ok(Some(PlannedCleanupPass {
+        Ok(Some(Bookmark {
             url: draft.url,
             description: draft.description,
             extended: draft.extended,
             tags,
             src_date,
+            shared: bookmark.shared,
+            toread: bookmark.toread,
         }))
     }
 }
@@ -551,7 +553,7 @@ struct HackerNewsLinkPass<'a> {
 }
 
 impl CleanupPass for HackerNewsLinkPass<'_> {
-    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
         let Some(url) = Url::parse(&bookmark.url).ok() else {
             return Ok(None);
         };
@@ -575,18 +577,22 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
 
         // Drop the marker tag, add the base HN tags.
         let mut tags: Vec<String> = bookmark
-            .tag_list()
-            .into_iter()
-            .filter(|t| *t != self.client.config.link_tag)
+            .tags
+            .iter()
+            .filter(|t| **t != self.client.config.link_tag)
+            .cloned()
             .collect();
         extend_unique(&mut tags, &self.client.config.tags);
 
-        Ok(Some(PlannedCleanupPass {
+        Ok(Some(Bookmark {
             url: bookmark.url.clone(),
             description,
             extended,
             tags,
+            // No candidate source date — the driver preserves the stored date.
             src_date: None,
+            shared: bookmark.shared,
+            toread: bookmark.toread,
         }))
     }
 }
@@ -863,7 +869,7 @@ mod net_tests {
 
     #[tokio::test]
     async fn cleanup_rewrites_story_url_and_deletes_old() {
-        use crate::pinboard::Bookmark;
+        use crate::pinboard::PinboardBookmark;
         use crate::test_support::FakePinboard;
 
         let algolia = MockServer::start().await;
@@ -879,7 +885,7 @@ mod net_tests {
             .await;
 
         let pinboard = FakePinboard {
-            all: vec![Bookmark {
+            all: vec![PinboardBookmark {
                 url: "https://news.ycombinator.com/item?id=42".into(),
                 description: "old title".into(),
                 extended: String::new(),
@@ -887,7 +893,8 @@ mod net_tests {
                 time: "2020-01-01T00:00:00Z".into(),
                 shared: "no".into(),
                 toread: "no".into(),
-            }],
+            }
+            .into()],
             ..Default::default()
         };
 
@@ -928,7 +935,7 @@ mod net_tests {
 
     #[tokio::test]
     async fn cleanup_strips_redundant_hn_link_from_text_post_notes() {
-        use crate::pinboard::Bookmark;
+        use crate::pinboard::PinboardBookmark;
         use crate::test_support::FakePinboard;
 
         // A text post (no url): the bookmark URL already is the HN permalink.
@@ -946,7 +953,7 @@ mod net_tests {
 
         let pinboard = FakePinboard {
             // Notes carry the old redundant self-link to the same item.
-            all: vec![Bookmark {
+            all: vec![PinboardBookmark {
                 url: "https://news.ycombinator.com/item?id=7".into(),
                 description: "Ask HN: How?".into(),
                 extended: "HN Link: https://news.ycombinator.com/item?id=7\n\n<blockquote><p>details</p></blockquote>".into(),
@@ -954,7 +961,8 @@ mod net_tests {
                 time: "2020-01-01T00:00:00Z".into(),
                 shared: "no".into(),
                 toread: "no".into(),
-            }],
+            }
+            .into()],
             ..Default::default()
         };
 
@@ -991,7 +999,7 @@ mod net_tests {
 
     #[tokio::test]
     async fn link_discussions_adds_hn_link_to_tagged_article() {
-        use crate::pinboard::Bookmark;
+        use crate::pinboard::PinboardBookmark;
         use crate::test_support::FakePinboard;
 
         // The URL search returns a matching HN story id; the item batch (unused
@@ -1010,7 +1018,7 @@ mod net_tests {
             .await;
 
         let pinboard = FakePinboard {
-            all: vec![Bookmark {
+            all: vec![PinboardBookmark {
                 url: "https://example.com/x".into(),
                 description: "An article".into(),
                 extended: "my notes".into(),
@@ -1018,7 +1026,8 @@ mod net_tests {
                 time: "2020-01-01T00:00:00Z".into(),
                 shared: "no".into(),
                 toread: "no".into(),
-            }],
+            }
+            .into()],
             ..Default::default()
         };
 

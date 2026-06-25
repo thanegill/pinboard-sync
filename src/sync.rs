@@ -9,11 +9,13 @@ use std::time::Duration;
 
 use log::{debug, error};
 
+use url::Url;
+
 use crate::pinboard::{Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::source::{BookmarkDraft, Source};
 
 /// The drafts not already present on Pinboard, matching each existing bookmark URL
-/// through this source's `existing_key`.
+/// through this source's [`UrlKey::dedup_key`]. Each Pinboard URL is parsed once here.
 pub fn filter_new<S: Source>(
     source: &S,
     drafts: Vec<BookmarkDraft>,
@@ -21,7 +23,8 @@ pub fn filter_new<S: Source>(
 ) -> Vec<BookmarkDraft> {
     let keys: HashSet<String> = existing
         .iter()
-        .filter_map(|b| source.existing_key(&b.url))
+        .filter_map(|b| Url::parse(&b.url).ok())
+        .filter_map(|url| source.dedup_key(&url))
         .collect();
     drafts
         .into_iter()

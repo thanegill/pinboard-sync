@@ -12,9 +12,10 @@ use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::send_retrying;
 use crate::pinboard::{Bookmark, BookmarkStore};
 use crate::source::{
-    extend_unique, host_is, push_prefixed, push_tags, split_host_path, url_key, BookmarkDraft,
-    Source, SourceError,
+    extend_unique, host_matches, push_prefixed, push_tags, url_key, BookmarkDraft, Source,
+    SourceError, UrlExt, UrlKey,
 };
+use url::Url;
 
 const UA: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 const API_BASE: &str = "https://api.github.com";
@@ -93,7 +94,11 @@ impl Repo {
 
     /// Shape the repo into a Pinboard draft, carrying `post_date` (the star time).
     fn into_draft_with_date(self, cfg: &GithubConfig, post_date: Option<i64>) -> BookmarkDraft {
-        let dedup_key = url_key(&self.html_url).unwrap_or_else(|| self.html_url.clone());
+        let dedup_key = Url::parse(&self.html_url)
+            .ok()
+            .as_ref()
+            .and_then(url_key)
+            .unwrap_or_else(|| self.html_url.clone());
 
         let extended = github_extended(
             self.description.as_deref(),
@@ -236,9 +241,13 @@ impl Source for GitHubClient {
         }
         Ok(out)
     }
+}
 
-    fn existing_key(&self, url: &str) -> Option<String> {
-        url_key(url).filter(|_| host_is(url, "github.com"))
+impl UrlKey for GitHubClient {
+    /// The generic host+path key, gated to github.com hosts so a non-github bookmark
+    /// never produces a key.
+    fn dedup_key(&self, url: &Url) -> Option<String> {
+        url_key(url).filter(|_| url.host_is("github.com"))
     }
 }
 
@@ -278,7 +287,7 @@ pub async fn cleanup<P: BookmarkStore>(
 ) -> Result<()> {
     let gh_bms: Vec<_> = bookmarks
         .iter()
-        .filter(|bookmark| host_is(&bookmark.url, "github.com"))
+        .filter(|bookmark| Url::parse(&bookmark.url).is_ok_and(|url| url.host_is("github.com")))
         .cloned()
         .collect();
 
@@ -291,7 +300,10 @@ pub async fn cleanup<P: BookmarkStore>(
             .await
             .map_err(SourceError::into_anyhow)?
             .into_iter()
-            .filter_map(|d| Some((url_key(&d.url)?, d.post_date?)))
+            .filter_map(|d| {
+                let key = Url::parse(&d.url).ok().as_ref().and_then(url_key)?;
+                Some((key, d.post_date?))
+            })
             .collect()
     } else {
         HashMap::new()
@@ -328,7 +340,11 @@ struct GitHubCleanupPass<'a> {
 
 impl CleanupPass for GitHubCleanupPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
-        let canonical = canonical_repo_url(&bookmark.url).unwrap_or_else(|| bookmark.url.clone());
+        // Parse the stored URL once (the pass is filtered to github URLs).
+        let Some(original) = Url::parse(&bookmark.url).ok() else {
+            return Ok(None);
+        };
+        let canonical = canonical_repo_url(&original).unwrap_or(original);
 
         // Default to the canonicalization, then refresh from the API when the repo
         // still exists (a 404 keeps just the canonical URL).
@@ -337,9 +353,8 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         let mut extended = bookmark.extended.clone();
         let mut tags = bookmark.tag_list();
         if let Some((owner, repo)) = owner_repo(&canonical) {
-            match self.client.repo(owner, repo).await {
+            match self.client.repo(&owner, &repo).await {
                 Ok(Some(info)) => {
-                    url = info.html_url.clone(); // follows renames/transfers
                     description = html_to_plain(&info.full_name);
                     // Rebuild the notes from fresh data so old bookmarks retrofit to the
                     // <blockquote> shape (sync skips already-present bookmarks).
@@ -349,6 +364,7 @@ impl CleanupPass for GitHubCleanupPass<'_> {
                         &info.html_url,
                     );
                     tags = refresh_tags(bookmark.tag_list(), &info, self.config);
+                    url = Url::parse(&info.html_url).unwrap_or(url); // follows renames/transfers
                 }
                 Ok(None) => {}
                 // A failed lookup is surfaced to the driver, which logs and counts it.
@@ -358,7 +374,7 @@ impl CleanupPass for GitHubCleanupPass<'_> {
 
         let src_date = url_key(&url).and_then(|k| self.star_dates.get(&k).copied());
         Ok(Some(PlannedCleanupPass {
-            url,
+            url: url.into(),
             description,
             extended,
             tags,
@@ -368,11 +384,10 @@ impl CleanupPass for GitHubCleanupPass<'_> {
 }
 
 /// The `(owner, repo)` of a canonical `https://github.com/owner/repo` URL.
-fn owner_repo(url: &str) -> Option<(&str, &str)> {
-    let after = url.split_once("github.com/")?.1;
-    let mut segments = after.split('/');
-    let owner = segments.next().filter(|s| !s.is_empty())?;
-    let repo = segments.next().filter(|s| !s.is_empty())?;
+fn owner_repo(url: &Url) -> Option<(String, String)> {
+    let mut segments = url.path_segments()?;
+    let owner = segments.next().filter(|s| !s.is_empty())?.to_string();
+    let repo = segments.next().filter(|s| !s.is_empty())?.to_string();
     Some((owner, repo))
 }
 
@@ -396,21 +411,19 @@ fn refresh_tags(existing: Vec<String>, repo: &Repo, cfg: &GithubConfig) -> Vec<S
 /// and any query/fragment). Returns `Some(new)` only if it changed; `None` for a
 /// non-GitHub host, an already-canonical URL, or a deeper path (e.g. `/tree/...`,
 /// `/issues`) which is left untouched.
-pub fn canonical_repo_url(url: &str) -> Option<String> {
-    if !host_is(url, "github.com") {
+pub fn canonical_repo_url(url: &Url) -> Option<Url> {
+    if !host_matches(url.host_str()?, "github.com") {
         return None;
     }
-    let (_host, path) = split_host_path(url);
-    let path = path.split(['?', '#']).next().unwrap_or(path);
-    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
     // Only act on a bare owner/repo (don't mangle deeper links).
     if segments.len() != 2 {
         return None;
     }
     let owner = segments[0];
     let repo = segments[1].strip_suffix(".git").unwrap_or(segments[1]);
-    let canonical = format!("https://github.com/{owner}/{repo}");
-    (canonical != url).then_some(canonical)
+    let canonical = Url::parse(&format!("https://github.com/{owner}/{repo}")).ok()?;
+    (canonical != *url).then_some(canonical)
 }
 
 /// Extract the `page` number of the `rel="next"` link from a GitHub `Link` header,
@@ -442,6 +455,10 @@ mod tests {
 
     fn repo(value: serde_json::Value) -> Repo {
         serde_json::from_value(value).unwrap()
+    }
+
+    fn url(s: &str) -> Url {
+        Url::parse(s).unwrap()
     }
 
     #[test]
@@ -520,24 +537,27 @@ mod tests {
     #[test]
     fn canonical_repo_url_normalizes_repo_roots_only() {
         // Scheme, host case, .git, trailing slash, and query are all normalized.
-        for url in [
+        for u in [
             "http://github.com/Owner/Repo",
             "https://www.github.com/Owner/Repo/",
             "https://github.com/Owner/Repo.git",
             "https://github.com/Owner/Repo?tab=stars",
         ] {
             assert_eq!(
-                canonical_repo_url(url).as_deref(),
+                canonical_repo_url(&url(u)).map(String::from).as_deref(),
                 Some("https://github.com/Owner/Repo"),
-                "url: {url}"
+                "url: {u}"
             );
         }
         // Already canonical → no change.
-        assert_eq!(canonical_repo_url("https://github.com/o/r"), None);
+        assert_eq!(canonical_repo_url(&url("https://github.com/o/r")), None);
         // Non-GitHub and deeper paths are left untouched.
-        assert_eq!(canonical_repo_url("https://example.com/o/r"), None);
-        assert_eq!(canonical_repo_url("https://github.com/o/r/issues/5"), None);
-        assert_eq!(canonical_repo_url("https://github.com/o"), None);
+        assert_eq!(canonical_repo_url(&url("https://example.com/o/r")), None);
+        assert_eq!(
+            canonical_repo_url(&url("https://github.com/o/r/issues/5")),
+            None
+        );
+        assert_eq!(canonical_repo_url(&url("https://github.com/o")), None);
     }
 
     #[test]
@@ -553,16 +573,16 @@ mod tests {
     }
 
     #[test]
-    fn existing_key_only_matches_github() {
+    fn dedup_key_only_matches_github() {
         let c = GitHubClient::new("t".into(), GithubConfig::default()).unwrap();
         assert_eq!(
-            c.existing_key("https://github.com/o/r").as_deref(),
+            c.dedup_key(&url("https://github.com/o/r")).as_deref(),
             Some("github.com/o/r")
         );
-        assert!(c.existing_key("https://example.com/o/r").is_none());
-        // Subdomains of github.com are recognized too (consistent with host_is).
+        assert!(c.dedup_key(&url("https://example.com/o/r")).is_none());
+        // Subdomains of github.com are recognized too.
         assert_eq!(
-            c.existing_key("https://www.github.com/o/r").as_deref(),
+            c.dedup_key(&url("https://www.github.com/o/r")).as_deref(),
             Some("www.github.com/o/r")
         );
     }

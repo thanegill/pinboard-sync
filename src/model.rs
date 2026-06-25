@@ -2,11 +2,10 @@
 //! (URL form, subreddit casing, tag construction).
 
 use serde::Deserialize;
+use url::Url;
 
 use crate::htmltext::{blockquote, html_to_plain};
-use crate::source::{
-    host_matches, push_prefixed, push_tag, push_tags, split_host_path, BookmarkDraft,
-};
+use crate::source::{host_matches, push_prefixed, push_tag, push_tags, BookmarkDraft};
 
 /// A Reddit "Listing" envelope (`{ "kind": "Listing", "data": { ... } }`).
 #[derive(Debug, Deserialize)]
@@ -290,7 +289,12 @@ impl SavedItem {
     /// Shape this item into a Pinboard draft using the reddit config.
     pub fn into_draft(self, cfg: &RedditConfig) -> BookmarkDraft {
         let url = self.bookmark_url(&cfg.domain);
-        let dedup_key = reddit_key(&self.permalink).unwrap_or_else(|| url.clone());
+        // Parse the bookmark URL once for the host-agnostic dedup key.
+        let dedup_key = Url::parse(&url)
+            .ok()
+            .as_ref()
+            .and_then(reddit_key)
+            .unwrap_or_else(|| url.clone());
         let post_date = self.created_utc.map(|s| s as i64);
         let tags = self.tags(cfg);
         BookmarkDraft {
@@ -330,27 +334,16 @@ pub fn cased_subreddit(subreddit: &str) -> String {
     }
 }
 
-/// Build a dedup key from a Reddit permalink path or a full Reddit URL: the
-/// path, lowercased, with any query/fragment and trailing slash removed. Returns
-/// `None` for non-Reddit URLs. Only the path is used, so the same post saved
-/// under any reddit host (`old.`/`www.`/`m.`/none) maps to the same key.
-pub fn reddit_key(path_or_url: &str) -> Option<String> {
-    let path = if path_or_url.starts_with('/') {
-        path_or_url
-    } else {
-        let (host, path) = split_host_path(path_or_url);
-        if !host_matches(&host, "reddit.com") {
-            return None;
-        }
-        path
-    };
-    let path = path.split(['?', '#']).next().unwrap_or(path);
-    let key = path.trim_end_matches('/').to_ascii_lowercase();
-    if key.is_empty() {
-        None
-    } else {
-        Some(key)
+/// Build a dedup key from a full Reddit URL: the path, lowercased, with query/fragment
+/// and trailing slash removed. Returns `None` for non-Reddit URLs. Only the path is
+/// used, so the same post saved under any reddit host (`old.`/`www.`/`m.`) maps to the
+/// same key.
+pub fn reddit_key(url: &Url) -> Option<String> {
+    if !host_matches(url.host_str()?, "reddit.com") {
+        return None;
     }
+    let key = url.path().trim_end_matches('/').to_ascii_lowercase();
+    (!key.is_empty()).then_some(key)
 }
 
 #[cfg(test)]
@@ -590,14 +583,13 @@ mod tests {
             .contains(&"nsfw".to_string()));
     }
 
+    fn key(url: &str) -> Option<String> {
+        reddit_key(&Url::parse(url).unwrap())
+    }
+
     #[test]
     fn reddit_key_matches_across_subdomains_and_query_and_trailing_slash() {
         let want = "/r/rust/comments/abc/title";
-        // A saved item's relative permalink.
-        assert_eq!(
-            reddit_key("/r/rust/comments/abc/title/").as_deref(),
-            Some(want)
-        );
         // The same post bookmarked under any host / case / query / no trailing slash.
         for url in [
             "https://old.reddit.com/r/rust/comments/abc/title/",
@@ -605,16 +597,16 @@ mod tests {
             "http://m.reddit.com/r/rust/comments/abc/title",
             "https://reddit.com/r/rust/comments/abc/title/?utm_source=x",
         ] {
-            assert_eq!(reddit_key(url).as_deref(), Some(want), "url: {url}");
+            assert_eq!(key(url).as_deref(), Some(want), "url: {url}");
         }
     }
 
     #[test]
     fn reddit_key_rejects_non_reddit_and_empty() {
-        assert_eq!(reddit_key("https://example.com/r/rust/comments/abc/"), None);
+        assert_eq!(key("https://example.com/r/rust/comments/abc/"), None);
         // "reddit.com" only in the path of another host must not match.
-        assert_eq!(reddit_key("https://example.com/reddit.com/x"), None);
-        assert_eq!(reddit_key("https://www.reddit.com/"), None);
+        assert_eq!(key("https://example.com/reddit.com/x"), None);
+        assert_eq!(key("https://www.reddit.com/"), None);
     }
 
     #[test]

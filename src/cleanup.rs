@@ -12,7 +12,8 @@ use crate::htmltext::html_to_plain;
 use crate::model::{cased_subreddit, reddit_key};
 use crate::pinboard::{Bookmark, BookmarkStore};
 use crate::reddit::PostInfo;
-use crate::source::{host_is, host_matches, split_host_path, SourceError};
+use crate::source::{host_matches, SourceError, UrlExt};
+use url::Url;
 
 pub struct RedditCleanupOpts {
     pub dry_run: bool,
@@ -60,7 +61,7 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
 ) -> Result<()> {
     let reddit_bms: Vec<_> = bookmarks
         .iter()
-        .filter(|bookmark| host_is(&bookmark.url, "reddit.com"))
+        .filter(|bookmark| Url::parse(&bookmark.url).is_ok_and(|url| url.host_is("reddit.com")))
         .cloned()
         .collect();
 
@@ -91,8 +92,12 @@ struct RedditCleanupPass<'a> {
 impl CleanupPass for RedditCleanupPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Option<PlannedCleanupPass>> {
         let opts = self.opts;
-        let new_url =
-            normalize_url(&bookmark.url, &opts.domain).unwrap_or_else(|| bookmark.url.clone());
+        // Parse the stored URL once (it's a reddit URL — the pass is filtered to those);
+        // everything below works on the `Url`, formatting back to a string only at the end.
+        let Some(original) = Url::parse(&bookmark.url).ok() else {
+            return Ok(None);
+        };
+        let new_url = normalize_url(&original, &opts.domain).unwrap_or(original);
 
         let mut tags = normalize_tags(
             &new_url,
@@ -131,7 +136,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
         };
 
         Ok(Some(PlannedCleanupPass {
-            url: new_url,
+            url: new_url.into(),
             description,
             extended,
             tags,
@@ -160,8 +165,8 @@ async fn fetch_post_info<R: PostInfo>(
     let fullnames: Vec<String> = bookmarks
         .iter()
         .filter_map(|bookmark| {
-            let url =
-                normalize_url(&bookmark.url, &opts.domain).unwrap_or_else(|| bookmark.url.clone());
+            let original = Url::parse(&bookmark.url).ok()?;
+            let url = normalize_url(&original, &opts.domain).unwrap_or(original);
             post_fullname(&url)
         })
         .collect::<BTreeSet<_>>()
@@ -209,49 +214,51 @@ async fn fetch_post_info<R: PostInfo>(
 
 // --- pure transforms ---------------------------------------------------------
 
-/// Normalize a Reddit bookmark URL: unwrap an `over18/?dest=` redirect (recursively
-/// URL-decoding the destination), then rewrite any reddit host to the configured
-/// `domain`. Returns `Some(new)` only if it changed.
-pub fn normalize_url(url: &str, domain: &str) -> Option<String> {
-    let mut current = url.to_string();
+/// Normalize a Reddit bookmark URL: unwrap an `over18/?dest=` redirect, then rewrite
+/// any reddit host to the configured `domain`. Returns `Some(new)` only if it changed.
+pub fn normalize_url(url: &Url, domain: &str) -> Option<Url> {
+    let mut current = url.clone();
     let mut changed = false;
     if let Some(dest) = over18_dest(&current) {
         current = dest;
         changed = true;
     }
-    if let Some(n) = to_reddit_domain(&current, domain) {
-        if n != current {
-            current = n;
-            changed = true;
-        }
+    if let Some(rewritten) = to_reddit_domain(&current, domain) {
+        current = rewritten;
+        changed = true;
     }
     changed.then_some(current)
 }
 
-/// If `url` is an `over18` interstitial, return its decoded `dest`.
-fn over18_dest(url: &str) -> Option<String> {
-    let lower = url.to_ascii_lowercase();
-    let marker = lower.find("reddit.com/over18")?;
-    let rest = &url[marker..];
-    let dpos = rest.find("dest=")?;
-    Some(recursive_percent_decode(&rest[dpos + 5..]))
+/// If `url` is a reddit `over18` interstitial, return its `dest` target (the `url`
+/// crate percent-decodes the query value).
+fn over18_dest(url: &Url) -> Option<Url> {
+    if !host_matches(url.host_str()?, "reddit.com")
+        || !url.path().trim_start_matches('/').starts_with("over18")
+    {
+        return None;
+    }
+    let dest = url.query_pairs().find(|(key, _)| key == "dest")?.1;
+    Url::parse(&dest).ok()
 }
 
 /// Rewrite any reddit host (`reddit.com` or a `*.reddit.com` subdomain) to the
-/// configured `domain`, preserving the rest of the URL. Returns `None` for a
-/// non-reddit host or one already equal to `domain`.
-fn to_reddit_domain(url: &str, domain: &str) -> Option<String> {
-    let (host, rest) = split_host_path(url);
-    if host_matches(&host, "reddit.com") && host != domain {
-        Some(format!("https://{domain}{rest}"))
-    } else {
-        None
+/// configured `domain` (over https), preserving the rest of the URL. Returns `None`
+/// for a non-reddit host or one already equal to `domain`.
+fn to_reddit_domain(url: &Url, domain: &str) -> Option<Url> {
+    let host = url.host_str()?;
+    if !(host_matches(host, "reddit.com") && host != domain) {
+        return None;
     }
+    let mut rewritten = url.clone();
+    rewritten.set_scheme("https").ok()?;
+    rewritten.set_host(Some(domain)).ok()?;
+    Some(rewritten)
 }
 
 /// Extract the subreddit name from a Reddit URL's `/r/<sub>/` segment.
-pub fn extract_subreddit(url: &str) -> Option<String> {
-    let (_host, path) = split_host_path(url);
+pub fn extract_subreddit(url: &Url) -> Option<String> {
+    let path = url.path();
     let idx = path.find("/r/")?;
     let sub: String = path[idx + 3..]
         .chars()
@@ -262,8 +269,8 @@ pub fn extract_subreddit(url: &str) -> Option<String> {
 
 /// The post fullname (`t3_<id>`) from a permalink's `/comments/<id>/` segment.
 /// Works for both post and comment permalinks (comments inherit the post id).
-pub fn post_fullname(url: &str) -> Option<String> {
-    let (_host, path) = split_host_path(url);
+pub fn post_fullname(url: &Url) -> Option<String> {
+    let path = url.path();
     let idx = path.find("/comments/")?;
     let id: String = path[idx + "/comments/".len()..]
         .chars()
@@ -275,13 +282,13 @@ pub fn post_fullname(url: &str) -> Option<String> {
 /// Whether a reddit URL points at a comment (`/comments/<post>/<slug>/<comment>/`) rather
 /// than a post. Used to skip the notes retrofit for comments, whose own body `/api/info`
 /// never returns (it is keyed by the post fullname; see [`post_fullname`]).
-fn is_comment_url(url: &str) -> bool {
-    let (_host, path) = split_host_path(url);
+fn is_comment_url(url: &Url) -> bool {
+    let path = url.path();
     let Some(idx) = path.find("/comments/") else {
         return false;
     };
     let rest = &path[idx + "/comments/".len()..];
-    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    // `Url::path` excludes any query/fragment.
     // post → [id, slug]; comment → [id, slug, comment-id].
     rest.split('/').filter(|s| !s.is_empty()).count() >= 3
 }
@@ -289,7 +296,7 @@ fn is_comment_url(url: &str) -> bool {
 /// Normalize a bookmark's tags: ensure the base tag, derive `subreddit:<sub>` from
 /// the URL (casing per [`cased_subreddit`]), and strip bare/legacy/duplicate
 /// subreddit forms. Returns a sorted, de-duplicated list.
-pub fn normalize_tags(url: &str, existing: &[String], base_tag: &str, prefix: &str) -> Vec<String> {
+pub fn normalize_tags(url: &Url, existing: &[String], base_tag: &str, prefix: &str) -> Vec<String> {
     let mut set: BTreeSet<String> = existing.iter().cloned().collect();
     set.insert(base_tag.to_string());
     set.remove(prefix); // bare "subreddit:"
@@ -320,9 +327,10 @@ pub fn normalize_tags(url: &str, existing: &[String], base_tag: &str, prefix: &s
 /// duplicated self-link older syncs wrote into empty self-posts' notes. Compared by
 /// [`reddit_key`], so it matches across hosts/casing; non-Reddit notes (e.g. a link
 /// post's external URL) and free-text notes don't match and are left untouched.
-fn is_self_link_notes(notes: &str, url: &str) -> bool {
-    let key = reddit_key(notes.trim());
-    key.is_some() && key == reddit_key(url)
+fn is_self_link_notes(notes: &str, url: &Url) -> bool {
+    let notes_key = Url::parse(notes.trim()).ok();
+    let notes_key = notes_key.as_ref().and_then(reddit_key);
+    notes_key.is_some() && notes_key == reddit_key(url)
 }
 
 /// The generic placeholder titles Reddit bookmarks often get from a browser.
@@ -333,56 +341,29 @@ pub fn is_placeholder_title(description: &str) -> bool {
     )
 }
 
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) =
-                u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or(""), 16)
-            {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn recursive_percent_decode(s: &str) -> String {
-    let mut cur = s.to_string();
-    for _ in 0..8 {
-        if !cur.contains('%') {
-            break;
-        }
-        let decoded = percent_decode(&cur);
-        if decoded == cur {
-            break;
-        }
-        cur = decoded;
-    }
-    cur
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn url(s: &str) -> Url {
+        Url::parse(s).unwrap()
+    }
+
+    fn norm(u: &str, domain: &str) -> Option<String> {
+        normalize_url(&url(u), domain).map(String::from)
+    }
+
     #[test]
     fn host_is_matches_reddit_hosts_only() {
-        assert!(host_is("https://old.reddit.com/r/rust/", "reddit.com"));
-        assert!(host_is("http://reddit.com/r/x/", "reddit.com"));
-        assert!(!host_is("https://example.com/reddit.com/x", "reddit.com"));
+        assert!(url("https://old.reddit.com/r/rust/").host_is("reddit.com"));
+        assert!(url("http://reddit.com/r/x/").host_is("reddit.com"));
+        assert!(!url("https://example.com/reddit.com/x").host_is("reddit.com"));
     }
 
     #[test]
     fn normalize_url_rewrites_host_to_domain() {
         assert_eq!(
-            normalize_url(
+            norm(
                 "https://www.reddit.com/r/Rust/comments/abc/x/",
                 "old.reddit.com"
             )
@@ -390,29 +371,26 @@ mod tests {
             Some("https://old.reddit.com/r/Rust/comments/abc/x/")
         );
         assert_eq!(
-            normalize_url("https://reddit.com/r/x/", "old.reddit.com").as_deref(),
+            norm("https://reddit.com/r/x/", "old.reddit.com").as_deref(),
             Some("https://old.reddit.com/r/x/")
         );
         assert_eq!(
-            normalize_url("https://m.reddit.com/r/x/", "old.reddit.com").as_deref(),
+            norm("https://m.reddit.com/r/x/", "old.reddit.com").as_deref(),
             Some("https://old.reddit.com/r/x/")
         );
-        assert_eq!(
-            normalize_url("https://old.reddit.com/r/x/", "old.reddit.com"),
-            None
-        );
+        assert_eq!(norm("https://old.reddit.com/r/x/", "old.reddit.com"), None);
         // A non-default domain rewrites old.reddit.com too.
         assert_eq!(
-            normalize_url("https://old.reddit.com/r/x/", "www.reddit.com").as_deref(),
+            norm("https://old.reddit.com/r/x/", "www.reddit.com").as_deref(),
             Some("https://www.reddit.com/r/x/")
         );
     }
 
     #[test]
     fn normalize_url_unwraps_over18_then_normalizes_host() {
-        let url = "https://www.reddit.com/over18/?dest=https%3A%2F%2Fwww.reddit.com%2Fr%2Fx%2Fcomments%2Fa%2F";
+        let u = "https://www.reddit.com/over18/?dest=https%3A%2F%2Fwww.reddit.com%2Fr%2Fx%2Fcomments%2Fa%2F";
         assert_eq!(
-            normalize_url(url, "old.reddit.com").as_deref(),
+            norm(u, "old.reddit.com").as_deref(),
             Some("https://old.reddit.com/r/x/comments/a/")
         );
     }
@@ -420,11 +398,11 @@ mod tests {
     #[test]
     fn extract_subreddit_from_path() {
         assert_eq!(
-            extract_subreddit("https://old.reddit.com/r/AskReddit/comments/x/").as_deref(),
+            extract_subreddit(&url("https://old.reddit.com/r/AskReddit/comments/x/")).as_deref(),
             Some("AskReddit")
         );
         assert_eq!(
-            extract_subreddit("https://old.reddit.com/").as_deref(),
+            extract_subreddit(&url("https://old.reddit.com/")).as_deref(),
             None
         );
     }
@@ -432,32 +410,35 @@ mod tests {
     #[test]
     fn post_fullname_from_post_and_comment_permalinks() {
         assert_eq!(
-            post_fullname("https://old.reddit.com/r/rust/comments/abc123/title/").as_deref(),
+            post_fullname(&url("https://old.reddit.com/r/rust/comments/abc123/title/")).as_deref(),
             Some("t3_abc123")
         );
         assert_eq!(
-            post_fullname("https://old.reddit.com/r/rust/comments/abc123/title/def456/").as_deref(),
+            post_fullname(&url(
+                "https://old.reddit.com/r/rust/comments/abc123/title/def456/"
+            ))
+            .as_deref(),
             Some("t3_abc123")
         );
         assert_eq!(
-            post_fullname("https://old.reddit.com/r/rust/").as_deref(),
+            post_fullname(&url("https://old.reddit.com/r/rust/")).as_deref(),
             None
         );
     }
 
     #[test]
     fn is_comment_url_distinguishes_comments_from_posts() {
-        assert!(!is_comment_url(
+        assert!(!is_comment_url(&url(
             "https://old.reddit.com/r/rust/comments/abc/title/"
-        ));
-        assert!(is_comment_url(
+        )));
+        assert!(is_comment_url(&url(
             "https://old.reddit.com/r/rust/comments/abc/title/def/"
-        ));
+        )));
         // Query strings don't fool the segment count.
-        assert!(is_comment_url(
+        assert!(is_comment_url(&url(
             "https://old.reddit.com/r/rust/comments/abc/title/def/?context=3"
-        ));
-        assert!(!is_comment_url("https://old.reddit.com/r/rust/"));
+        )));
+        assert!(!is_comment_url(&url("https://old.reddit.com/r/rust/")));
     }
 
     #[test]
@@ -468,7 +449,7 @@ mod tests {
             "subreddit:rust".to_string(),
         ];
         let tags = normalize_tags(
-            "https://old.reddit.com/r/rust/comments/x/",
+            &url("https://old.reddit.com/r/rust/comments/x/"),
             &existing,
             "reddit",
             "subreddit:",
@@ -482,7 +463,7 @@ mod tests {
     #[test]
     fn normalize_tags_lowercases_all_caps_subreddit() {
         let tags = normalize_tags(
-            "https://old.reddit.com/r/NEWS/comments/x/",
+            &url("https://old.reddit.com/r/NEWS/comments/x/"),
             &["subreddit:NEWS".to_string(), "NEWS".to_string()],
             "reddit",
             "subreddit:",
@@ -498,14 +479,6 @@ mod tests {
         assert!(is_placeholder_title("Reddit - Dive into anything"));
         assert!(is_placeholder_title("  reddit.com: over 18?  "));
         assert!(!is_placeholder_title("Some real title : r/rust"));
-    }
-
-    #[test]
-    fn recursive_percent_decode_handles_double_encoding() {
-        assert_eq!(
-            recursive_percent_decode("https%253A%252F%252Fx"),
-            "https://x"
-        );
     }
 }
 

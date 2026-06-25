@@ -10,10 +10,11 @@ use std::time::Duration;
 
 use anyhow::Context;
 use serde::de::DeserializeOwned;
+use url::Url;
 
 use crate::http::send_retrying;
 use crate::model::{reddit_key, ListingEntry, RedditConfig, RedditListing};
-use crate::source::{BookmarkDraft, Source, SourceError};
+use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 
 /// Descriptive User-Agent built from the crate name + version. Reddit rejects
 /// generic or missing User-Agents.
@@ -180,8 +181,12 @@ impl Source for RedditClient {
             .map(|it| it.into_draft(&self.config))
             .collect())
     }
+}
 
-    fn existing_key(&self, url: &str) -> Option<String> {
+impl UrlKey for RedditClient {
+    /// Reddit's dedup key is the host-agnostic permalink path, so the same post matches
+    /// across `old.`/`www.`/`m.` subdomains.
+    fn dedup_key(&self, url: &Url) -> Option<String> {
         reddit_key(url)
     }
 }

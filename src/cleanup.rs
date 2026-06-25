@@ -8,6 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use anyhow::{anyhow, bail, Result};
 use log::{debug, error, info};
 
+use crate::htmltext::html_to_plain;
 use crate::model::{cased_subreddit, reddit_key};
 use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::reddit::PostInfo;
@@ -35,6 +36,10 @@ struct PostMeta {
     title: Option<String>,
     /// Post creation time (unix epoch seconds), for `use_post_date`.
     created_utc: Option<f64>,
+    /// The notes rebuilt from authoritative data — the quoted body wrapped in a
+    /// `<blockquote>` (empty when there's nothing to quote). Used to retrofit existing
+    /// bookmarks to the shape `sync` now writes.
+    extended: String,
 }
 
 pub async fn run<P: BookmarkStore, R: PostInfo>(
@@ -80,10 +85,10 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
             tags.sort();
         }
 
-        let mut description = bm.description.clone();
+        let mut description = html_to_plain(&bm.description);
         if opts.fix_titles && is_placeholder_title(&description) {
             if let Some(title) = post.and_then(|p| p.title.clone()) {
-                description = title;
+                description = html_to_plain(&title);
             }
         }
 
@@ -99,9 +104,17 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
             &bm.time,
         );
 
-        // Older syncs wrote an empty self-post's notes as a link back to its own
-        // permalink — a duplicate of the bookmark URL. Drop that self-link.
-        let extended = if is_self_link_notes(&bm.extended, &new_url) {
+        // Reshape the notes. Only for *post* bookmarks: `/api/info` is keyed by the post
+        // fullname (`post_fullname`), so a comment's own body is never fetched — leave those
+        // notes alone. A non-empty rebuild from authoritative data (selftext wrapped in a
+        // <blockquote>, or a link post's external URL) replaces the stored notes. Otherwise
+        // (empty rebuild, or no entry this run) only drop a bare self-link an older sync
+        // wrote — never wipe genuine notes.
+        let extended = if is_comment_url(&new_url) {
+            bm.extended.clone()
+        } else if let Some(rebuilt) = post.map(|p| p.extended.clone()).filter(|e| !e.is_empty()) {
+            rebuilt
+        } else if is_self_link_notes(&bm.extended, &new_url) {
             String::new()
         } else {
             bm.extended.clone()
@@ -131,7 +144,11 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
                 println!("          title -> {description}");
             }
             if ext_changed {
-                println!("          notes -> (removed duplicated self-link)");
+                if extended.is_empty() {
+                    println!("          notes -> (removed)");
+                } else {
+                    println!("          notes -> {extended}");
+                }
             }
             if date_changed {
                 println!("          date  -> {dt}");
@@ -178,9 +195,10 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
     Ok(())
 }
 
-/// Batch-fetch `over_18` + `title` + `created_utc` for every post referenced by the
-/// bookmarks, keyed by fullname. Empty when none of NSFW tagging, title fixing, or
-/// `use_post_date` is requested (all that the `/api/info` call feeds).
+/// Batch-fetch `over_18` + `title` + `created_utc` + the rebuilt notes for every post
+/// referenced by the bookmarks, keyed by fullname. Empty when none of NSFW tagging, title
+/// fixing, or `use_post_date` is requested — the notes retrofit then rides on whichever of
+/// those caused the `/api/info` call (it needs no extra fetch of its own).
 async fn fetch_post_info<R: PostInfo>(
     reddit: Option<&R>,
     opts: &CleanupOpts,
@@ -215,12 +233,27 @@ async fn fetch_post_info<R: PostInfo>(
     })?;
     for entry in entries {
         if let Some(name) = entry.fields.name.clone() {
+            // Rebuild the notes from authoritative data the same way sync does, so the
+            // <blockquote> shaping retrofits onto existing bookmarks. These entries are
+            // always posts (`/api/info` is queried with post fullnames), so build the
+            // post-shaped notes — selftext quoted, empty for an empty self-post, else the
+            // external URL.
+            let extended = crate::model::reddit_extended(
+                false,
+                "",
+                entry.fields.selftext.as_deref().unwrap_or_default(),
+                entry.fields.url.as_deref().unwrap_or_default(),
+                entry.fields.is_self,
+                None,
+                &opts.domain,
+            );
             map.insert(
                 name,
                 PostMeta {
                     over_18: entry.fields.over_18,
                     title: entry.fields.title.filter(|s| !s.is_empty()),
                     created_utc: entry.fields.created_utc,
+                    extended,
                 },
             );
         }
@@ -301,6 +334,20 @@ pub fn post_fullname(url: &str) -> Option<String> {
         .take_while(|c| c.is_alphanumeric())
         .collect();
     (!id.is_empty()).then(|| format!("t3_{id}"))
+}
+
+/// Whether a reddit URL points at a comment (`/comments/<post>/<slug>/<comment>/`) rather
+/// than a post. Used to skip the notes retrofit for comments, whose own body `/api/info`
+/// never returns (it is keyed by the post fullname; see [`post_fullname`]).
+fn is_comment_url(url: &str) -> bool {
+    let (_host, path) = split_host_path(url);
+    let Some(idx) = path.find("/comments/") else {
+        return false;
+    };
+    let rest = &path[idx + "/comments/".len()..];
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    // post → [id, slug]; comment → [id, slug, comment-id].
+    rest.split('/').filter(|s| !s.is_empty()).count() >= 3
 }
 
 /// Normalize a bookmark's tags: ensure the base tag, derive `subreddit:<sub>` from
@@ -460,6 +507,21 @@ mod tests {
             post_fullname("https://old.reddit.com/r/rust/").as_deref(),
             None
         );
+    }
+
+    #[test]
+    fn is_comment_url_distinguishes_comments_from_posts() {
+        assert!(!is_comment_url(
+            "https://old.reddit.com/r/rust/comments/abc/title/"
+        ));
+        assert!(is_comment_url(
+            "https://old.reddit.com/r/rust/comments/abc/title/def/"
+        ));
+        // Query strings don't fool the segment count.
+        assert!(is_comment_url(
+            "https://old.reddit.com/r/rust/comments/abc/title/def/?context=3"
+        ));
+        assert!(!is_comment_url("https://old.reddit.com/r/rust/"));
     }
 
     #[test]
@@ -640,7 +702,8 @@ mod loop_tests {
     #[tokio::test]
     async fn strips_self_link_notes_from_a_self_post() {
         // An older sync left an empty self-post's notes as a link back to its own
-        // permalink. The URL is already normalized, so only the notes should change.
+        // permalink. No /api/info this run (nsfw/titles off), so the string-based
+        // self-link drop applies. The URL is already normalized, so only the notes change.
         let pinboard = FakePinboard {
             all: vec![Bookmark {
                 url: "https://old.reddit.com/r/rust/comments/a/x/".into(),
@@ -713,6 +776,83 @@ mod loop_tests {
             "https://old.reddit.com/r/rust/comments/b/y/"
         );
         assert_eq!(updated[0].extended, "https://example.com/article");
+    }
+
+    #[tokio::test]
+    async fn retrofits_self_post_notes_with_blockquote() {
+        // Already normalized except for the notes: an old unwrapped selftext. With
+        // /api/info present, the rebuild wraps the authoritative selftext in a
+        // <blockquote>; ext_changed triggers the write.
+        let pinboard = FakePinboard {
+            all: vec![Bookmark {
+                url: "https://old.reddit.com/r/rust/comments/a/x/".into(),
+                description: "A real title".into(),
+                extended: "the body text".into(), // pre-blockquote notes
+                tags: "reddit subreddit:rust".into(),
+                time: String::new(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }],
+            ..Default::default()
+        };
+        let reddit = FakeReddit {
+            info: vec![listing_entry(
+                "t3",
+                json!({ "name": "t3_a", "subreddit": "rust",
+                        "permalink": "/r/rust/comments/a/x/", "title": "A real title",
+                        "selftext": "the body text" }),
+            )],
+            ..Default::default()
+        };
+
+        run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
+            .await
+            .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(
+            updated[0].extended,
+            "<blockquote>the body text</blockquote>"
+        );
+        // Notes-only change: URL unchanged, so nothing is deleted.
+        assert!(pinboard.deleted.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn leaves_comment_notes_untouched() {
+        // A comment bookmark: /api/info only returns the parent *post* (post_fullname keys
+        // by t3), never the comment body, so the comment's notes must be left as-is — the
+        // post's selftext must not leak into the comment's notes.
+        let stored = "Thread: https://old.reddit.com/r/rust/comments/a/x/\n\nmy comment";
+        let pinboard = FakePinboard {
+            all: vec![Bookmark {
+                url: "https://old.reddit.com/r/rust/comments/a/x/c/".into(),
+                description: "Parent title".into(),
+                extended: stored.into(),
+                tags: "reddit subreddit:rust reddit-comment".into(),
+                time: String::new(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }],
+            ..Default::default()
+        };
+        let reddit = FakeReddit {
+            info: vec![listing_entry(
+                "t3",
+                json!({ "name": "t3_a", "subreddit": "rust",
+                        "permalink": "/r/rust/comments/a/x/", "title": "Parent title",
+                        "selftext": "POST BODY should not leak into the comment" }),
+            )],
+            ..Default::default()
+        };
+
+        run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
+            .await
+            .unwrap();
+
+        // Nothing changed (notes preserved, URL/title/tags already current), so no write.
+        assert!(pinboard.updated.borrow().is_empty());
     }
 
     #[tokio::test]

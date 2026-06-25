@@ -163,7 +163,7 @@ impl ListingEntry {
 /// bookmark URL — not worth duplicating); a link post keeps its external URL as the bare
 /// fallback. Shared by sync and cleanup. Reddit text is already Markdown (`raw_json=1`),
 /// so it is wrapped as-is, never HTML-converted.
-fn reddit_extended(
+pub(crate) fn reddit_extended(
     is_comment: bool,
     body: &str,
     selftext: &str,

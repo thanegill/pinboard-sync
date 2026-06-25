@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use anyhow::{anyhow, bail, Result};
 use log::{debug, error, info};
 
-use crate::model::cased_subreddit;
+use crate::model::{cased_subreddit, reddit_key};
 use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::reddit::PostInfo;
 use crate::source::{host_matches, split_host_path, SourceError};
@@ -99,13 +99,22 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
             &bm.time,
         );
 
+        // Older syncs wrote an empty self-post's notes as a link back to its own
+        // permalink — a duplicate of the bookmark URL. Drop that self-link.
+        let extended = if is_self_link_notes(&bm.extended, &new_url) {
+            String::new()
+        } else {
+            bm.extended.clone()
+        };
+
         let old_tags: BTreeSet<String> = bm.tag_list().into_iter().collect();
         let new_tags: BTreeSet<String> = tags.iter().cloned().collect();
         let tags_changed = old_tags != new_tags;
         let desc_changed = description != bm.description;
+        let ext_changed = extended != bm.extended;
         let date_changed = dt != bm.time;
 
-        if !(url_changed || tags_changed || desc_changed || date_changed) {
+        if !(url_changed || tags_changed || desc_changed || ext_changed || date_changed) {
             continue;
         }
 
@@ -121,6 +130,9 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
             if desc_changed {
                 println!("          title -> {description}");
             }
+            if ext_changed {
+                println!("          notes -> (removed duplicated self-link)");
+            }
             if date_changed {
                 println!("          date  -> {dt}");
             }
@@ -134,7 +146,7 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
             BookmarkUpdate {
                 url: &new_url,
                 description: &description,
-                extended: &bm.extended,
+                extended: &extended,
                 tags: &tags,
                 shared: bm.is_shared(),
                 toread: bm.is_toread(),
@@ -319,6 +331,15 @@ pub fn normalize_tags(url: &str, existing: &[String], base_tag: &str, prefix: &s
         set.insert(format!("{prefix}{cased}"));
     }
     set.into_iter().collect()
+}
+
+/// Whether `notes` is nothing but a Reddit link to the same post as `url` — the
+/// duplicated self-link older syncs wrote into empty self-posts' notes. Compared by
+/// [`reddit_key`], so it matches across hosts/casing; non-Reddit notes (e.g. a link
+/// post's external URL) and free-text notes don't match and are left untouched.
+fn is_self_link_notes(notes: &str, url: &str) -> bool {
+    let key = reddit_key(notes.trim());
+    key.is_some() && key == reddit_key(url)
 }
 
 /// The generic placeholder titles Reddit bookmarks often get from a browser.
@@ -614,6 +635,84 @@ mod loop_tests {
             "a date-only change should still be written"
         );
         assert_eq!(updated[0].dt, "2023-11-14T22:13:20Z");
+    }
+
+    #[tokio::test]
+    async fn strips_self_link_notes_from_a_self_post() {
+        // An older sync left an empty self-post's notes as a link back to its own
+        // permalink. The URL is already normalized, so only the notes should change.
+        let pinboard = FakePinboard {
+            all: vec![Bookmark {
+                url: "https://old.reddit.com/r/rust/comments/a/x/".into(),
+                description: "A real title".into(),
+                extended: "https://www.reddit.com/r/rust/comments/a/x/".into(),
+                tags: "reddit subreddit:rust".into(),
+                time: "1700000000".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }],
+            ..Default::default()
+        };
+        let opts = CleanupOpts {
+            mark_nsfw: false,
+            fix_titles: false,
+            ..opts()
+        };
+
+        run(
+            &pinboard,
+            Some(&FakeReddit::default()),
+            &opts,
+            &pinboard.all,
+        )
+        .await
+        .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].extended, "");
+        // URL was already normalized, so nothing is deleted.
+        assert!(pinboard.deleted.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn keeps_external_link_notes_on_a_link_post() {
+        // A link post's notes hold the external URL — not the bookmark's own
+        // permalink — so cleanup must preserve them while rewriting the host.
+        let pinboard = FakePinboard {
+            all: vec![Bookmark {
+                url: "https://www.reddit.com/r/rust/comments/b/y/".into(),
+                description: "A real title".into(),
+                extended: "https://example.com/article".into(),
+                tags: "reddit subreddit:rust".into(),
+                time: "1700000000".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }],
+            ..Default::default()
+        };
+        let opts = CleanupOpts {
+            mark_nsfw: false,
+            fix_titles: false,
+            ..opts()
+        };
+
+        run(
+            &pinboard,
+            Some(&FakeReddit::default()),
+            &opts,
+            &pinboard.all,
+        )
+        .await
+        .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(
+            updated[0].url,
+            "https://old.reddit.com/r/rust/comments/b/y/"
+        );
+        assert_eq!(updated[0].extended, "https://example.com/article");
     }
 
     #[tokio::test]

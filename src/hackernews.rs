@@ -936,6 +936,71 @@ mod net_tests {
     }
 
     #[tokio::test]
+    async fn cleanup_strips_redundant_hn_link_from_text_post_notes() {
+        use crate::pinboard::Bookmark;
+        use crate::test_support::FakePinboard;
+
+        // A text post (no url): the bookmark URL already is the HN permalink.
+        let algolia = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "hits": [
+                    { "objectID": "7", "title": "Ask HN: How?", "story_text": "<p>details</p>",
+                      "author": "bob", "_tags": ["story", "author_bob", "story_7"] }
+                ]
+            })))
+            .mount(&algolia)
+            .await;
+
+        let pinboard = FakePinboard {
+            // Notes carry the old redundant self-link to the same item.
+            all: vec![Bookmark {
+                url: "https://news.ycombinator.com/item?id=7".into(),
+                description: "Ask HN: How?".into(),
+                extended: "HN Link: https://news.ycombinator.com/item?id=7\n\n<blockquote><p>details</p></blockquote>".into(),
+                tags: "hackernews".into(),
+                time: "2020-01-01T00:00:00Z".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }],
+            ..Default::default()
+        };
+
+        let client = HnClient::with_base_urls(
+            String::new(),
+            HackernewsConfig::default(),
+            "unused".into(),
+            algolia.uri(),
+        );
+        let bookmarks = pinboard.all.clone();
+        client
+            .cleanup(
+                &pinboard,
+                &HnCleanupOpts {
+                    dry_run: false,
+                    link_discussions: false,
+                    use_post_date: false,
+                    max_age_days: 30,
+                    cleanup_stale_to_now: false,
+                },
+                &bookmarks,
+            )
+            .await
+            .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        // URL unchanged (in-place); the redundant HN Link line is gone, leaving the text.
+        assert_eq!(updated[0].url, "https://news.ycombinator.com/item?id=7");
+        assert_eq!(
+            updated[0].extended,
+            "<blockquote><p>details</p></blockquote>"
+        );
+        assert!(pinboard.deleted.borrow().is_empty());
+    }
+
+    #[tokio::test]
     async fn link_discussions_adds_hn_link_to_tagged_article() {
         use crate::pinboard::Bookmark;
         use crate::test_support::FakePinboard;

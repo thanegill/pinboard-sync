@@ -247,12 +247,27 @@ name = "main"
 use_post_date = true        # ...except this one
 ```
 
-With `use_post_date`, a bookmark's creation date is set to the **source post date** —
-Reddit/HN by when the item was posted, GitHub by when you starred it — rather than the
-time of the sync. Posts older than `post_date_max_age_days` (default 30) fall back to
-"now" on `sync`; on `cleanup` they keep their existing date unless
-`cleanup_stale_to_now = true`. (`cleanup reddit` needs the cookie when `use_post_date`
-is on, since the date comes from `/api/info`.)
+With `use_post_date`, a bookmark's creation date (Pinboard's `dt`) is set to the
+**source post date** rather than the time of the sync. The exact logic:
+
+- **Where the date comes from.** Reddit uses the post's `created_utc`, HackerNews the
+  item's `created_at`, and GitHub the time you *starred* the repo (`starred_at`).
+  `cleanup reddit` reads the date from `/api/info`, so it needs the `reddit_session`
+  cookie when `use_post_date` is on; `cleanup github` reads the star list to map it.
+- **The age cap.** `post_date_max_age_days` (default 30) bounds how far back a bookmark
+  is dated. A post **within** the cap is dated to its source time. A post **older** than
+  the cap is treated differently by the two commands:
+  - `sync` falls back to **"now"** (it omits `dt`, letting Pinboard default it).
+  - `cleanup` **keeps the bookmark's existing date** — unless `cleanup_stale_to_now =
+    true`, which re-dates stale items to now.
+- **When the date is unknown** (the source exposes none), the date is left untouched.
+- **`cleanup` compares by instant.** A re-write only happens when a field a write would
+  change actually differs. The date is compared as a moment in time, not as a string, so
+  a stored timestamp and the source date that are the *same instant* formatted
+  differently (e.g. a `+00:00` offset vs a trailing `Z`) are **not** counted as a change
+  and don't trigger a needless re-write.
+
+Dating is off by default; enable it per the resolution tiers above.
 
 ## Shell completions and example config
 

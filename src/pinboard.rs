@@ -164,7 +164,7 @@ impl PinboardClient {
         // budget that `extended` has to fit within.
         let mut fixed = vec![
             ("url", b.url.as_str()),
-            ("description", b.description.as_str()),
+            ("description", b.title.as_str()),
             ("tags", tags.as_str()),
             ("replace", "yes"),
             ("shared", if b.public { "yes" } else { "no" }),
@@ -181,7 +181,7 @@ impl PinboardClient {
         // the bookmark. Transient errors (network/429/5xx) are handled by send_retrying.
         let mut budget = MAX_URL_BYTES;
         loop {
-            let extended = self.fit_extended(&endpoint, &fixed, &b.extended, budget);
+            let extended = self.fit_extended(&endpoint, &fixed, &b.note, budget);
             let mut params = fixed.clone();
             params.push(("extended", extended.as_str()));
 
@@ -398,8 +398,8 @@ mod net_tests {
         client(&server)
             .add(&Bookmark {
                 url: "https://old.reddit.com/r/x/".into(),
-                description: "Title".into(),
-                extended: String::new(),
+                title: "Title".into(),
+                note: String::new(),
                 tags: vec!["reddit".into()],
                 timestamp: None,
                 public: false,
@@ -439,8 +439,8 @@ mod net_tests {
         client(&server)
             .add(&Bookmark {
                 url: "https://old.reddit.com/r/x/".into(),
-                description: "Title".into(),
-                extended: "long notes ".repeat(2000),
+                title: "Title".into(),
+                note: "long notes ".repeat(2000),
                 tags: vec!["reddit".into()],
                 timestamp: None,
                 public: false,
@@ -464,8 +464,8 @@ mod net_tests {
         let err = client(&server)
             .add(&Bookmark {
                 url: "https://old.reddit.com/r/x/".into(),
-                description: "Title".into(),
-                extended: String::new(),
+                title: "Title".into(),
+                note: String::new(),
                 tags: vec!["reddit".into()],
                 timestamp: None,
                 public: false,

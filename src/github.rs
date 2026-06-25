@@ -100,7 +100,7 @@ impl Repo {
             .and_then(url_key)
             .unwrap_or_else(|| self.html_url.clone());
 
-        let extended = github_extended(
+        let note = github_extended(
             self.description.as_deref(),
             self.homepage.as_deref(),
             &self.html_url,
@@ -113,14 +113,16 @@ impl Repo {
         }
 
         BookmarkDraft {
-            url: self.html_url,
-            description: html_to_plain(&self.full_name),
-            extended,
-            tags,
+            bookmark: Bookmark {
+                url: self.html_url,
+                title: html_to_plain(&self.full_name),
+                note,
+                tags,
+                timestamp: post_date.and_then(crate::timefmt::from_unix),
+                public: false,
+                read_later: false,
+            },
             dedup_key,
-            read_later: false,
-            public: false,
-            post_date,
         }
     }
 }
@@ -301,8 +303,11 @@ pub async fn cleanup<P: BookmarkStore>(
             .map_err(SourceError::into_anyhow)?
             .into_iter()
             .filter_map(|d| {
-                let key = Url::parse(&d.url).ok().as_ref().and_then(url_key)?;
-                Some((key, d.post_date?))
+                let key = Url::parse(&d.bookmark.url)
+                    .ok()
+                    .as_ref()
+                    .and_then(url_key)?;
+                Some((key, d.bookmark.timestamp?.unix_timestamp()))
             })
             .collect()
     } else {
@@ -349,16 +354,16 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         // Default to the canonicalization, then refresh from the API when the repo
         // still exists (a 404 keeps just the canonical URL).
         let mut url = canonical.clone();
-        let mut description = html_to_plain(&bookmark.description);
-        let mut extended = bookmark.extended.clone();
+        let mut title = html_to_plain(&bookmark.title);
+        let mut note = bookmark.note.clone();
         let mut tags = bookmark.tags.clone();
         if let Some((owner, repo)) = owner_repo(&canonical) {
             match self.client.repo(&owner, &repo).await {
                 Ok(Some(info)) => {
-                    description = html_to_plain(&info.full_name);
+                    title = html_to_plain(&info.full_name);
                     // Rebuild the notes from fresh data so old bookmarks retrofit to the
                     // <blockquote> shape (sync skips already-present bookmarks).
-                    extended = github_extended(
+                    note = github_extended(
                         info.description.as_deref(),
                         info.homepage.as_deref(),
                         &info.html_url,
@@ -377,8 +382,8 @@ impl CleanupPass for GitHubCleanupPass<'_> {
             .and_then(crate::timefmt::from_unix);
         Ok(Some(Bookmark {
             url: url.into(),
-            description,
-            extended,
+            title,
+            note,
             tags,
             timestamp,
             public: bookmark.public,
@@ -476,13 +481,13 @@ mod tests {
         }))
         .into_draft(&GithubConfig::default());
 
-        assert_eq!(d.url, "https://github.com/owner/Repo");
-        assert_eq!(d.description, "owner/Repo");
+        assert_eq!(d.bookmark.url, "https://github.com/owner/Repo");
+        assert_eq!(d.bookmark.title, "owner/Repo");
         assert_eq!(
-            d.extended,
+            d.bookmark.note,
             "<blockquote>A thing</blockquote>\n\nProject homepage: https://example.com"
         );
-        assert_eq!(d.tags, vec!["github-star", "lang:rust"]);
+        assert_eq!(d.bookmark.tags, vec!["github-star", "lang:rust"]);
         assert_eq!(d.dedup_key, "github.com/owner/repo");
     }
 
@@ -512,7 +517,10 @@ mod tests {
             "language": "Jupyter Notebook"
         }))
         .into_draft(&GithubConfig::default());
-        assert_eq!(d.tags, vec!["github-star", "lang:jupyter-notebook"]);
+        assert_eq!(
+            d.bookmark.tags,
+            vec!["github-star", "lang:jupyter-notebook"]
+        );
     }
 
     #[test]
@@ -523,8 +531,8 @@ mod tests {
         }))
         .into_draft(&GithubConfig::default());
         // Missing description falls back to the URL; no language → no lang tag.
-        assert_eq!(d.extended, "https://github.com/o/r");
-        assert_eq!(d.tags, vec!["github-star"]);
+        assert_eq!(d.bookmark.note, "https://github.com/o/r");
+        assert_eq!(d.bookmark.tags, vec!["github-star"]);
     }
 
     #[test]
@@ -535,7 +543,7 @@ mod tests {
         };
         let d = repo(json!({ "full_name": "o/r", "html_url": "https://github.com/o/r" }))
             .into_draft(&cfg);
-        assert_eq!(d.tags, vec!["github-star", "account:work"]);
+        assert_eq!(d.bookmark.tags, vec!["github-star", "account:work"]);
     }
 
     #[test]
@@ -640,14 +648,14 @@ mod net_tests {
             GitHubClient::with_base_url("tok".into(), GithubConfig::default(), server.uri());
         let drafts = client.fetch().await.unwrap();
         assert_eq!(drafts.len(), 2);
-        assert_eq!(drafts[0].description, "a/one");
-        assert_eq!(drafts[0].tags, vec!["github-star", "lang:rust"]);
-        // The star time becomes the draft's post_date (RFC3339 → epoch).
+        assert_eq!(drafts[0].bookmark.title, "a/one");
+        assert_eq!(drafts[0].bookmark.tags, vec!["github-star", "lang:rust"]);
+        // The star time becomes the draft bookmark's timestamp.
         assert_eq!(
-            drafts[0].post_date,
-            crate::timefmt::rfc3339_to_unix("2023-01-02T03:04:05Z")
+            drafts[0].bookmark.timestamp,
+            crate::timefmt::parse_rfc3339("2023-01-02T03:04:05Z")
         );
-        assert_eq!(drafts[1].description, "b/two");
+        assert_eq!(drafts[1].bookmark.title, "b/two");
     }
 
     #[tokio::test]

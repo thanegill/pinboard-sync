@@ -52,19 +52,20 @@ pub async fn write_drafts<P: BookmarkStore>(
     let mut outcome = WriteOutcome::default();
     let mut posted = false;
     for draft in drafts {
+        let bm = &draft.bookmark;
         if dry_run {
             // The source post date as RFC3339, when set (the sync loop has already
             // applied the use_post_date flag + age cap); empty = let Pinboard default.
-            let dt = draft
-                .post_date
-                .and_then(crate::timefmt::unix_to_rfc3339)
+            let dt = bm
+                .timestamp
+                .and_then(crate::timefmt::to_rfc3339)
                 .unwrap_or_default();
-            println!("[dry-run] {}", draft.url);
-            println!("          title: {}", draft.description);
-            if !draft.extended.is_empty() {
-                println!("          notes: {}", crate::preview(&draft.extended));
+            println!("[dry-run] {}", bm.url);
+            println!("          title: {}", bm.title);
+            if !bm.note.is_empty() {
+                println!("          notes: {}", crate::preview(&bm.note));
             }
-            println!("          tags:  [{}]", draft.tags.join(" "));
+            println!("          tags:  [{}]", bm.tags.join(" "));
             if !dt.is_empty() {
                 println!("          date:  {dt}");
             }
@@ -77,27 +78,17 @@ pub async fn write_drafts<P: BookmarkStore>(
             tokio::time::sleep(Duration::from_secs(pinboard.rate_limit_secs())).await;
         }
         posted = true;
-        // Lift the draft into a domain `Bookmark` for the write; the client maps it to
-        // the Pinboard params (the sync loop already resolved `public`/`read_later` and
-        // the post date).
-        let bm = Bookmark {
-            url: draft.url.clone(),
-            description: draft.description.clone(),
-            extended: draft.extended.clone(),
-            tags: draft.tags.clone(),
-            timestamp: draft.post_date.and_then(crate::timefmt::from_unix),
-            public: draft.public,
-            read_later: draft.read_later,
-        };
-        match pinboard.add(&bm).await {
+        // The sync loop already resolved `public`/`read_later` and the post date on the
+        // draft's bookmark, so write it straight through.
+        match pinboard.add(bm).await {
             Ok(()) => {
                 outcome.written += 1;
-                debug!("added {}  [{}]", draft.url, draft.tags.join(" "));
+                debug!("added {}  [{}]", bm.url, bm.tags.join(" "));
             }
             // Log and skip — one bad bookmark shouldn't abort the rest of the run.
             Err(e) => {
                 outcome.failed += 1;
-                error!("adding bookmark {}: {e:#}", draft.url);
+                error!("adding bookmark {}: {e:#}", bm.url);
             }
         }
     }
@@ -122,8 +113,8 @@ mod tests {
     fn bookmark(url: &str) -> Bookmark {
         Bookmark {
             url: url.into(),
-            description: String::new(),
-            extended: String::new(),
+            title: String::new(),
+            note: String::new(),
             tags: Vec::new(),
             timestamp: None,
             public: false,
@@ -146,8 +137,11 @@ mod tests {
         let drafts = reddit.fetch().await.unwrap();
         let new = filter_new(&reddit, drafts, &existing);
         assert_eq!(new.len(), 1);
-        assert_eq!(new[0].url, "https://old.reddit.com/r/rust/comments/b/y/");
-        assert_eq!(new[0].tags, vec!["reddit", "subreddit:rust"]);
+        assert_eq!(
+            new[0].bookmark.url,
+            "https://old.reddit.com/r/rust/comments/b/y/"
+        );
+        assert_eq!(new[0].bookmark.tags, vec!["reddit", "subreddit:rust"]);
 
         let pinboard = FakePinboard::default();
         let outcome = write_drafts(&pinboard, &new, false).await;
@@ -174,14 +168,16 @@ mod tests {
     #[tokio::test]
     async fn write_drafts_passes_each_drafts_toread_and_shared() {
         let draft = |url: &str, toread: bool, shared: bool| BookmarkDraft {
-            url: url.into(),
-            description: "T".into(),
-            extended: String::new(),
-            tags: vec![],
+            bookmark: Bookmark {
+                url: url.into(),
+                title: "T".into(),
+                note: String::new(),
+                tags: vec![],
+                timestamp: None,
+                public: shared,
+                read_later: toread,
+            },
             dedup_key: url.into(),
-            read_later: toread,
-            public: shared,
-            post_date: None,
         };
         let drafts = vec![
             draft("https://a.test/", true, true),
@@ -198,14 +194,16 @@ mod tests {
     #[tokio::test]
     async fn write_drafts_sends_post_date_as_dt_when_set() {
         let draft = |url: &str, post_date: Option<i64>| BookmarkDraft {
-            url: url.into(),
-            description: "T".into(),
-            extended: String::new(),
-            tags: vec![],
+            bookmark: Bookmark {
+                url: url.into(),
+                title: "T".into(),
+                note: String::new(),
+                tags: vec![],
+                timestamp: post_date.and_then(crate::timefmt::from_unix),
+                public: false,
+                read_later: false,
+            },
             dedup_key: url.into(),
-            read_later: false,
-            public: false,
-            post_date,
         };
         let drafts = vec![
             draft("https://a.test/", Some(1_292_096_882)),
@@ -240,14 +238,16 @@ mod tests {
     #[tokio::test]
     async fn write_drafts_logs_and_skips_a_failing_bookmark() {
         let draft = |url: &str| BookmarkDraft {
-            url: url.into(),
-            description: "T".into(),
-            extended: String::new(),
-            tags: vec![],
+            bookmark: Bookmark {
+                url: url.into(),
+                title: "T".into(),
+                note: String::new(),
+                tags: vec![],
+                timestamp: None,
+                public: false,
+                read_later: false,
+            },
             dedup_key: url.into(),
-            read_later: false,
-            public: false,
-            post_date: None,
         };
         let drafts = vec![
             draft("https://a.test/"),

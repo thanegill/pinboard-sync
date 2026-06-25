@@ -38,21 +38,23 @@ per-source planners live in [`src/cleanup.rs`](src/cleanup.rs) (reddit),
 [`src/github.rs`](src/github.rs), and [`src/hackernews.rs`](src/hackernews.rs).
 
 **`Bookmark` is service-agnostic; `PinboardBookmark` is the wire shape.** The domain
-[`Bookmark`](src/bookmark.rs) (`tags: Vec<String>`, `timestamp: Option<OffsetDateTime>`,
-and `public`/`read_later` `bool`s) lives in [`src/bookmark.rs`](src/bookmark.rs) along
-with the `BookmarkStore` port — everything not specific to the Pinboard client.
-[`src/pinboard.rs`](src/pinboard.rs) is just the client behind that port: it deserializes
-`posts/all` into `PinboardBookmark` (space-joined tags, ISO-8601 `time`, `"yes"/"no"`
-`shared`/`toread`) and converts each via `From` into the domain `Bookmark`. The cleanup
-driver reads stored bookmarks and plans their end-state in that one type, so timestamps
-compare by instant (not formatted string). A write takes a whole `Bookmark`; `post_add`
-maps it to the API params (`public`/`read_later` → `shared`/`toread`, `timestamp` → `dt`)
-at the boundary. The sync-path `BookmarkDraft` uses the same `public`/`read_later`
-domain naming.
+[`Bookmark`](src/bookmark.rs) (`title`, `note`, `tags: Vec<String>`, `timestamp:
+Option<OffsetDateTime>`, and `public`/`read_later` `bool`s — the domain's names, not the
+API's `description`/`extended`/`shared`/`toread`) lives in
+[`src/bookmark.rs`](src/bookmark.rs) along with the `BookmarkStore` port — everything not
+specific to the Pinboard client. [`src/pinboard.rs`](src/pinboard.rs) is just the client
+behind that port: it deserializes `posts/all` into `PinboardBookmark` (space-joined tags,
+ISO-8601 `time`, `"yes"/"no"` `shared`/`toread`) and converts each via `From` into the
+domain `Bookmark`. The cleanup driver reads stored bookmarks and plans their end-state in
+that one type; `Bookmark::diff` returns the written fields that changed (timestamps
+compared by instant, not formatted string), which the driver uses both to skip unchanged
+bookmarks and to render the dry-run. A write takes a whole `Bookmark`; `post_add` maps it
+to the API params (`public`/`read_later` → `shared`/`toread`, `timestamp` → `dt`) at the
+boundary.
 
 **Every source is a `Source`; the sync loop is generic over it.** The port lives in
-[`src/source.rs`](src/source.rs): `Source::fetch()` returns `Vec<BookmarkDraft>`
-(`url`, `description`, `extended`, `tags`, `dedup_key`), and `Source::existing_key()`
+[`src/source.rs`](src/source.rs): `Source::fetch()` returns `Vec<BookmarkDraft>` (a
+`Bookmark` plus the `dedup_key`), and `Source::existing_key()`
 maps an existing Pinboard URL to that source's dedup key. `sync::run` fetches drafts,
 builds the set of existing keys by mapping `pinboard.all()` through
 `source.existing_key`, and writes the drafts whose `dedup_key` isn't present. To add

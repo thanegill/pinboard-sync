@@ -4,6 +4,8 @@
 
 use url::Url;
 
+use crate::bookmark::Bookmark;
+
 /// Errors from a source, separating the "operator must re-authenticate" case (an
 /// expired/missing credential → a 401/403) from transient/other failures, because
 /// only the former should fire the auth-failure hook.
@@ -29,28 +31,17 @@ impl SourceError {
 }
 
 /// A bookmark ready to write to Pinboard, plus the key used to tell whether it is
-/// already present there.
+/// already present there. It's a [`Bookmark`] (the thing written) and the extra
+/// `dedup_key` that only matters before the write. Sources build `bookmark.public`/
+/// `read_later` `false` and set `bookmark.timestamp` to the source post date (when
+/// known); the sync loop stamps the resolved flags and applies the age cap before
+/// writing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookmarkDraft {
-    /// Pinboard `url`.
-    pub url: String,
-    /// Pinboard `description` (the bookmark title).
-    pub description: String,
-    /// Pinboard `extended` (the notes body).
-    pub extended: String,
-    pub tags: Vec<String>,
+    /// The bookmark to write.
+    pub bookmark: Bookmark,
     /// Key matched against existing Pinboard bookmarks via [`Source::existing_key`].
     pub dedup_key: String,
-    /// Whether to write the bookmark queued-to-read (Pinboard's `toread`). Sources build
-    /// this `false`; the sync loop stamps the per-account resolved value before writing.
-    pub read_later: bool,
-    /// Whether to write the bookmark public (Pinboard's `shared`). Sources build this
-    /// `false`; the sync loop stamps the per-account resolved value before writing.
-    pub public: bool,
-    /// The source post's creation time as a unix epoch (UTC), when known. Used as the
-    /// Pinboard `dt` if `use_post_date` is on and the post is within the age cap; the
-    /// sync loop clears it otherwise. `None` when the source exposes no date.
-    pub post_date: Option<i64>,
 }
 
 /// Maps an existing Pinboard URL to a source's dedup key (matched against the

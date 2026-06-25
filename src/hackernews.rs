@@ -11,10 +11,10 @@ use anyhow::{bail, Context, Result};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
+use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::send_retrying;
-use crate::pinboard::{Bookmark, BookmarkStore};
 use crate::source::{
     extend_unique, push_prefixed, push_tag, push_tags, url_key, BookmarkDraft, Source, SourceError,
     UrlKey,
@@ -152,8 +152,8 @@ impl Item {
                 extended: if md.is_empty() { md } else { blockquote(&md) },
                 tags,
                 dedup_key: format!("hn:{}", self.id),
-                toread: false,
-                shared: false,
+                read_later: false,
+                public: false,
                 post_date: self.created_at,
             };
         }
@@ -195,8 +195,8 @@ impl Item {
             extended,
             tags,
             dedup_key,
-            toread: false,
-            shared: false,
+            read_later: false,
+            public: false,
             post_date: self.created_at,
         }
     }
@@ -525,7 +525,7 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         let Some(item) = id.and_then(|id| self.items.get(&id)) else {
             return Ok(None);
         };
-        let src_date = item.created_at;
+        let timestamp = item.created_at.and_then(crate::timefmt::from_unix);
         let draft = item.clone().into_draft(self.config);
 
         // Preserve existing tags, appending any freshly-derived ones.
@@ -537,9 +537,9 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
             description: draft.description,
             extended: draft.extended,
             tags,
-            src_date,
-            shared: bookmark.shared,
-            toread: bookmark.toread,
+            timestamp,
+            public: bookmark.public,
+            read_later: bookmark.read_later,
         }))
     }
 }
@@ -589,10 +589,10 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
             description,
             extended,
             tags,
-            // No candidate source date — the driver preserves the stored date.
-            src_date: None,
-            shared: bookmark.shared,
-            toread: bookmark.toread,
+            // No candidate source time — the driver preserves the stored time.
+            timestamp: None,
+            public: bookmark.public,
+            read_later: bookmark.read_later,
         }))
     }
 }

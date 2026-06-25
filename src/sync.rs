@@ -11,7 +11,7 @@ use log::{debug, error};
 
 use url::Url;
 
-use crate::pinboard::{Bookmark, BookmarkStore, BookmarkUpdate};
+use crate::bookmark::{Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::source::{BookmarkDraft, Source};
 
 /// The drafts not already present on Pinboard, matching each existing bookmark URL
@@ -83,8 +83,8 @@ pub async fn write_drafts<P: BookmarkStore>(
                 description: &draft.description,
                 extended: &draft.extended,
                 tags: &draft.tags,
-                shared: draft.shared,
-                toread: draft.toread,
+                shared: draft.public,
+                toread: draft.read_later,
                 dt: &dt,
             })
             .await
@@ -124,9 +124,9 @@ mod tests {
             description: String::new(),
             extended: String::new(),
             tags: Vec::new(),
-            src_date: None,
-            shared: false,
-            toread: false,
+            timestamp: None,
+            public: false,
+            read_later: false,
         }
     }
 
@@ -178,8 +178,8 @@ mod tests {
             extended: String::new(),
             tags: vec![],
             dedup_key: url.into(),
-            toread,
-            shared,
+            read_later: toread,
+            public: shared,
             post_date: None,
         };
         let drafts = vec![
@@ -202,8 +202,8 @@ mod tests {
             extended: String::new(),
             tags: vec![],
             dedup_key: url.into(),
-            toread: false,
-            shared: false,
+            read_later: false,
+            public: false,
             post_date,
         };
         let drafts = vec![
@@ -244,8 +244,8 @@ mod tests {
             extended: String::new(),
             tags: vec![],
             dedup_key: url.into(),
-            toread: false,
-            shared: false,
+            read_later: false,
+            public: false,
             post_date: None,
         };
         let drafts = vec![

@@ -37,14 +37,18 @@ lines, write via `apply_update` (deleting the old URL on a rewrite), and tally. 
 per-source planners live in [`src/cleanup.rs`](src/cleanup.rs) (reddit),
 [`src/github.rs`](src/github.rs), and [`src/hackernews.rs`](src/hackernews.rs).
 
-**`Bookmark` is service-agnostic; `PinboardBookmark` is the wire shape.**
-[`src/pinboard.rs`](src/pinboard.rs) deserializes `posts/all` into `PinboardBookmark`
-(space-joined tags, ISO-8601 `time`, `"yes"/"no"` flags) and converts each via `From`
-into the domain `Bookmark` (`tags: Vec<String>`, `src_date: Option<i64>` epoch, `bool`
-flags). The cleanup driver reads stored bookmarks and plans their end-state in that one
-type, so dates compare by instant (not formatted string); the Pinboard formatting is
-reapplied at the write boundary in `post_add`. `BookmarkUpdate` stays the borrowed
-write-view both `add`/`update` funnel through.
+**`Bookmark` is service-agnostic; `PinboardBookmark` is the wire shape.** The domain
+[`Bookmark`](src/bookmark.rs) (`tags: Vec<String>`, `timestamp: Option<OffsetDateTime>`,
+and `public`/`read_later` `bool`s) lives in [`src/bookmark.rs`](src/bookmark.rs) along
+with the `BookmarkStore` port and the `BookmarkUpdate` write-view — everything not
+specific to the Pinboard client. [`src/pinboard.rs`](src/pinboard.rs) is just the client
+behind that port: it deserializes `posts/all` into `PinboardBookmark` (space-joined tags,
+ISO-8601 `time`, `"yes"/"no"` `shared`/`toread`) and converts each via `From` into the
+domain `Bookmark`. The cleanup driver reads stored bookmarks and plans their end-state in
+that one type, so timestamps compare by instant (not formatted string); the Pinboard
+formatting is reapplied at the write boundary in `post_add`. `BookmarkUpdate` (and the
+sync-path `BookmarkDraft`) keep the API's `shared`/`toread` naming; the read/cleanup
+domain uses `public`/`read_later`. Both writes funnel through `BookmarkUpdate`.
 
 **Every source is a `Source`; the sync loop is generic over it.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `Vec<BookmarkDraft>`

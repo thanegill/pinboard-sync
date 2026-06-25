@@ -41,8 +41,9 @@ All notable changes to this project are documented here. The format is based on
   so it no longer issues a redundant re-write when a stored date and the source date are
   the same moment written differently (e.g. a `+00:00` offset vs a trailing `Z`).
   Internally, the stored Pinboard bookmark is now parsed into a service-agnostic domain
-  type (tags split, time as epoch seconds), and each source plans a `cleanup` end-state in
-  that same type.
+  type (`src/bookmark.rs`: tags split out, the time as a real `OffsetDateTime`, and
+  `public`/`read_later` flags), separate from the `PinboardBookmark` wire shape; each
+  source plans a `cleanup` end-state in that same domain type.
 
 ### Fixed
 

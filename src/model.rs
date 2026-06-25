@@ -303,8 +303,8 @@ impl SavedItem {
             extended: self.extended,
             tags,
             dedup_key,
-            toread: false,
-            shared: false,
+            read_later: false,
+            public: false,
             post_date,
         }
     }

@@ -7,10 +7,10 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
+use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts};
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::send_retrying;
-use crate::pinboard::{Bookmark, BookmarkStore};
 use crate::source::{
     extend_unique, host_matches, push_prefixed, push_tags, url_key, BookmarkDraft, Source,
     SourceError, UrlExt, UrlKey,
@@ -118,8 +118,8 @@ impl Repo {
             extended,
             tags,
             dedup_key,
-            toread: false,
-            shared: false,
+            read_later: false,
+            public: false,
             post_date,
         }
     }
@@ -372,15 +372,17 @@ impl CleanupPass for GitHubCleanupPass<'_> {
             }
         }
 
-        let src_date = url_key(&url).and_then(|k| self.star_dates.get(&k).copied());
+        let timestamp = url_key(&url)
+            .and_then(|k| self.star_dates.get(&k).copied())
+            .and_then(crate::timefmt::from_unix);
         Ok(Some(Bookmark {
             url: url.into(),
             description,
             extended,
             tags,
-            src_date,
-            shared: bookmark.shared,
-            toread: bookmark.toread,
+            timestamp,
+            public: bookmark.public,
+            read_later: bookmark.read_later,
         }))
     }
 }

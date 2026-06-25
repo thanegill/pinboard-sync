@@ -7,10 +7,10 @@ use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{anyhow, bail, Result};
 
+use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts};
 use crate::htmltext::html_to_plain;
 use crate::model::{cased_subreddit, reddit_key};
-use crate::pinboard::{Bookmark, BookmarkStore};
 use crate::reddit::PostInfo;
 use crate::source::{host_matches, SourceError, UrlExt};
 use url::Url;
@@ -140,9 +140,11 @@ impl CleanupPass for RedditCleanupPass<'_> {
             description,
             extended,
             tags,
-            src_date: post.and_then(|p| p.created_utc).map(|s| s as i64),
-            shared: bookmark.shared,
-            toread: bookmark.toread,
+            timestamp: post
+                .and_then(|p| p.created_utc)
+                .and_then(|s| crate::timefmt::from_unix(s as i64)),
+            public: bookmark.public,
+            read_later: bookmark.read_later,
         }))
     }
 }

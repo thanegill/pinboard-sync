@@ -41,12 +41,12 @@ pub struct BookmarkDraft {
     pub tags: Vec<String>,
     /// Key matched against existing Pinboard bookmarks via [`Source::existing_key`].
     pub dedup_key: String,
-    /// Whether to write the bookmark to-read/unread. Sources build this `false`; the
-    /// sync loop stamps the per-account resolved value before writing.
-    pub toread: bool,
-    /// Whether to write the bookmark public/shared. Sources build this `false`; the
-    /// sync loop stamps the per-account resolved value before writing.
-    pub shared: bool,
+    /// Whether to write the bookmark queued-to-read (Pinboard's `toread`). Sources build
+    /// this `false`; the sync loop stamps the per-account resolved value before writing.
+    pub read_later: bool,
+    /// Whether to write the bookmark public (Pinboard's `shared`). Sources build this
+    /// `false`; the sync loop stamps the per-account resolved value before writing.
+    pub public: bool,
     /// The source post's creation time as a unix epoch (UTC), when known. Used as the
     /// Pinboard `dt` if `use_post_date` is on and the post is within the age cap; the
     /// sync loop clears it otherwise. `None` when the source exposes no date.

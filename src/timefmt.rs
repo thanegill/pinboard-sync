@@ -22,10 +22,33 @@ pub fn rfc3339_to_unix(s: &str) -> Option<i64> {
         .map(|t| t.unix_timestamp())
 }
 
+/// Parse an RFC 3339 timestamp into an [`OffsetDateTime`] — the `cleanup` domain form of
+/// a bookmark's creation time. `None` if it doesn't parse.
+pub fn parse_rfc3339(s: &str) -> Option<OffsetDateTime> {
+    OffsetDateTime::parse(s, &Rfc3339).ok()
+}
+
+/// Format an [`OffsetDateTime`] as RFC 3339 for Pinboard's `dt`. `None` if formatting
+/// fails.
+pub fn to_rfc3339(dt: OffsetDateTime) -> Option<String> {
+    dt.format(&Rfc3339).ok()
+}
+
+/// An [`OffsetDateTime`] from unix epoch seconds — used to lift a source's epoch post
+/// date into the `cleanup` domain form. `None` if out of range.
+pub fn from_unix(secs: i64) -> Option<OffsetDateTime> {
+    OffsetDateTime::from_unix_timestamp(secs).ok()
+}
+
 /// Current time as unix epoch seconds (UTC). Kept as the single `now` call site; pure
 /// logic (the age cap) takes the value as a parameter so it stays testable.
 pub fn now_unix() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
+}
+
+/// Current time as an [`OffsetDateTime`] (UTC) — the `cleanup` domain `now`.
+pub fn now() -> OffsetDateTime {
+    OffsetDateTime::now_utc()
 }
 
 /// Whether a post created at `timestamp` (epoch) is at most `max_age_days` old relative
@@ -35,26 +58,27 @@ pub fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
     now - timestamp <= max_age_days as i64 * 86_400
 }
 
-/// The creation date (epoch seconds) a `cleanup` re-write should set, honoring
-/// `use_post_date`, the age cap (`max_age_days`), and the stale fallback
-/// (`stale_to_now`). `src_ts` is the source post time (epoch, if known) and `existing`
-/// the bookmark's current date. Returns the source date when dating is on and the post
-/// is within the cap; otherwise `now` when the post is stale and `stale_to_now`;
-/// otherwise `existing` (unchanged). Working in epochs keeps the result comparable to a
-/// stored bookmark's `src_date`; the RFC3339 formatting happens at the write boundary.
+/// The creation time a `cleanup` re-write should set, honoring `use_post_date`, the age
+/// cap (`max_age_days`), and the stale fallback (`stale_to_now`). `candidate` is the
+/// source post time (if known) and `existing` the bookmark's current time. Returns the
+/// source time when dating is on and the post is within the cap; otherwise `now` when
+/// the post is stale and `stale_to_now`; otherwise `existing` (unchanged). The age cap
+/// compares by instant; the RFC3339 formatting happens at the write boundary.
 pub fn cleanup_date(
     use_post_date: bool,
     max_age_days: u64,
     stale_to_now: bool,
-    src_ts: Option<i64>,
-    now: i64,
-    existing: Option<i64>,
-) -> Option<i64> {
+    candidate: Option<OffsetDateTime>,
+    now: OffsetDateTime,
+    existing: Option<OffsetDateTime>,
+) -> Option<OffsetDateTime> {
     if !use_post_date {
         return existing;
     }
-    match src_ts {
-        Some(timestamp) if within_age_cap(now, timestamp, max_age_days) => Some(timestamp),
+    match candidate {
+        Some(ts) if within_age_cap(now.unix_timestamp(), ts.unix_timestamp(), max_age_days) => {
+            Some(ts)
+        }
         Some(_) if stale_to_now => Some(now),
         _ => existing,
     }
@@ -96,10 +120,10 @@ mod tests {
 
     #[test]
     fn cleanup_date_honors_flag_cap_and_stale_fallback() {
-        let now = 1_700_000_000;
-        let recent = now - 5 * 86_400; // 5 days old
-        let old = now - 60 * 86_400; // 60 days old
-        let existing = Some(1_546_300_800); // 2019-01-01T00:00:00Z
+        let now = from_unix(1_700_000_000).unwrap();
+        let recent = from_unix(1_700_000_000 - 5 * 86_400).unwrap(); // 5 days old
+        let old = from_unix(1_700_000_000 - 60 * 86_400).unwrap(); // 60 days old
+        let existing = from_unix(1_546_300_800); // Some(2019-01-01T00:00:00Z)
 
         // Dating off → keep existing.
         assert_eq!(

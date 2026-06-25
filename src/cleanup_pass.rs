@@ -8,7 +8,7 @@
 use anyhow::Result;
 use log::{debug, error, info};
 
-use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
+use crate::bookmark::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::source::tags_differ;
 
 /// The `use_post_date` policy applied uniformly across a pass: whether to re-date by
@@ -54,7 +54,7 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
         bookmarks.len()
     );
 
-    let now = crate::timefmt::now_unix();
+    let now = crate::timefmt::now();
     let mut changed = 0usize;
     let mut failed = 0usize;
     let mut wrote = false;
@@ -70,16 +70,16 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             }
         };
 
-        // Resolve the final creation date here, at the write boundary: the candidate
-        // source date when dating is on and within the cap, else "now"/preserve per the
-        // policy. Working in epochs keeps it comparable to the stored `src_date`.
-        planned.src_date = crate::timefmt::cleanup_date(
+        // Resolve the final creation time here, at the write boundary: the candidate
+        // source time when dating is on and within the cap, else "now"/preserve per the
+        // policy. Comparable by instant to the stored `timestamp`.
+        planned.timestamp = crate::timefmt::cleanup_date(
             dates.use_post_date,
             dates.max_age_days,
             dates.stale_to_now,
-            planned.src_date,
+            planned.timestamp,
             now,
-            bookmark.src_date,
+            bookmark.timestamp,
         );
 
         let url_changed = planned.url != bookmark.url;
@@ -93,10 +93,10 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             continue;
         }
 
-        // Format the resolved date for Pinboard's `dt` (empty = leave the time as is).
+        // Format the resolved time for Pinboard's `dt` (empty = leave the time as is).
         let dt = planned
-            .src_date
-            .and_then(crate::timefmt::unix_to_rfc3339)
+            .timestamp
+            .and_then(crate::timefmt::to_rfc3339)
             .unwrap_or_default();
 
         // Log and skip a single failed update so the rest of the pass still runs.
@@ -108,8 +108,8 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
                 description: &planned.description,
                 extended: &planned.extended,
                 tags: &planned.tags,
-                shared: bookmark.shared,
-                toread: bookmark.toread,
+                shared: bookmark.public,
+                toread: bookmark.read_later,
                 dt: &dt,
             },
             url_changed.then_some(bookmark.url.as_str()),
@@ -140,14 +140,15 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     failed
 }
 
-/// Whether the plan (with its driver-resolved `src_date`) differs from the stored
-/// bookmark in any written field. `shared`/`toread` are always carried over, so they
-/// aren't compared.
+/// Whether the plan (with its driver-resolved `timestamp`) differs from the stored
+/// bookmark in any written field. `public`/`read_later` are always carried over, so they
+/// aren't compared. `OffsetDateTime` equality is by instant, so a re-formatted but
+/// equivalent timestamp isn't a change.
 fn changed_at_all(bookmark: &Bookmark, p: &Bookmark) -> bool {
     p.url != bookmark.url
         || p.description != bookmark.description
         || p.extended != bookmark.extended
-        || p.src_date != bookmark.src_date
+        || p.timestamp != bookmark.timestamp
         || tags_differ(&bookmark.tags, &p.tags)
 }
 
@@ -174,10 +175,10 @@ fn print_diff(bookmark: &Bookmark, p: &Bookmark) {
     if tags_differ(&bookmark.tags, &p.tags) {
         field("tags", &format!("[{}]", p.tags.join(" ")));
     }
-    if p.src_date != bookmark.src_date {
+    if p.timestamp != bookmark.timestamp {
         let date = p
-            .src_date
-            .and_then(crate::timefmt::unix_to_rfc3339)
+            .timestamp
+            .and_then(crate::timefmt::to_rfc3339)
             .unwrap_or_default();
         field("date", &date);
     }
@@ -203,9 +204,9 @@ mod tests {
             description: "Title".into(),
             extended: "notes".into(),
             tags: vec!["a".into(), "b".into()],
-            src_date: Some(1_577_836_800), // 2020-01-01T00:00:00Z
-            shared: false,
-            toread: false,
+            timestamp: crate::timefmt::from_unix(1_577_836_800), // 2020-01-01T00:00:00Z
+            public: false,
+            read_later: false,
         }
     }
 
@@ -329,7 +330,7 @@ mod tests {
                 tags: vec!["x".into()],
                 // A datable candidate source time, so the driver re-dates and the
                 // `date ->` line renders.
-                src_date: Some(1_700_000_000),
+                timestamp: crate::timefmt::from_unix(1_700_000_000),
                 ..unchanged_plan(bookmark)
             }))
         });

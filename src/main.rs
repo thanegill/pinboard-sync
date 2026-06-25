@@ -1,5 +1,6 @@
 //! pinboard-sync: sync saved/favorited items from multiple services to Pinboard.
 
+mod bookmark;
 mod cleanup;
 mod cleanup_pass;
 mod config;
@@ -23,10 +24,11 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use log::{debug, error, info, warn};
 
+use bookmark::{Bookmark, BookmarkStore};
 use config::{Account, Config, GithubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
 use hackernews::{HackerNewsCleanupOpts, HackerNewsClient};
-use pinboard::{Bookmark, BookmarkStore, PinboardClient, RATE_LIMIT_SECS};
+use pinboard::{PinboardClient, RATE_LIMIT_SECS};
 use reddit::RedditClient;
 use source::{BookmarkDraft, Source, SourceError, UrlKey};
 use url::Url;
@@ -763,8 +765,8 @@ async fn run_sync_jobs(
         let fetched = drafts.len();
         let mut new = sync::filter_new(&job.client, drafts, bookmarks);
         for d in &mut new {
-            d.toread = job.toread;
-            d.shared = job.shared;
+            d.read_later = job.toread;
+            d.public = job.shared;
             // Keep the source date only when dating is enabled and the post is within
             // the age cap; otherwise clear it so the writer lets Pinboard use "now".
             d.post_date = if job.use_post_date {

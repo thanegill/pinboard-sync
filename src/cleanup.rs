@@ -6,11 +6,11 @@
 use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{anyhow, bail, Result};
-use log::{debug, error, info};
 
+use crate::cleanup_pass::{run_pass, CleanupPass, Planned};
 use crate::htmltext::html_to_plain;
 use crate::model::{cased_subreddit, reddit_key};
-use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
+use crate::pinboard::{Bookmark, BookmarkStore};
 use crate::reddit::PostInfo;
 use crate::source::{host_is, host_matches, split_host_path, SourceError};
 
@@ -53,22 +53,32 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
         .filter(|b| is_reddit_url(&b.url))
         .cloned()
         .collect();
-    info!(
-        "scanning {} reddit bookmark(s){}",
-        reddit_bms.len(),
-        if opts.dry_run { " (dry run)" } else { "" }
-    );
 
     let info = fetch_post_info(reddit, opts, &reddit_bms).await?;
+    let pass = RedditPass {
+        info,
+        opts,
+        now: crate::timefmt::now_unix(),
+    };
+    let failed = run_pass(pinboard, &reddit_bms, opts.dry_run, "reddit", &pass).await;
+    if failed > 0 {
+        bail!("{failed} bookmark(s) failed to update");
+    }
+    Ok(())
+}
 
-    let now = crate::timefmt::now_unix();
-    let mut changed = 0usize;
-    let mut failed = 0usize;
-    let mut wrote = false;
-    for bm in &reddit_bms {
-        let normalized = normalize_url(&bm.url, &opts.domain);
-        let url_changed = normalized.is_some();
-        let new_url = normalized.unwrap_or_else(|| bm.url.clone());
+/// Re-shapes one reddit bookmark: normalize the URL/tags, then apply the authoritative
+/// `/api/info` data (NSFW marker, placeholder-title replacement, post date, rebuilt notes).
+struct RedditPass<'a> {
+    info: HashMap<String, PostMeta>,
+    opts: &'a CleanupOpts,
+    now: i64,
+}
+
+impl CleanupPass for RedditPass<'_> {
+    async fn plan(&self, bm: &Bookmark) -> Result<Option<Planned>> {
+        let opts = self.opts;
+        let new_url = normalize_url(&bm.url, &opts.domain).unwrap_or_else(|| bm.url.clone());
 
         let mut tags = normalize_tags(
             &new_url,
@@ -76,11 +86,9 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
             &opts.base_tag,
             &opts.subreddit_tag_prefix,
         );
-        let post = post_fullname(&new_url).and_then(|f| info.get(&f));
+        let post = post_fullname(&new_url).and_then(|f| self.info.get(&f));
 
-        let wants_nsfw =
-            opts.mark_nsfw && post.is_some_and(|p| p.over_18) && !tags.iter().any(|t| t == "nsfw");
-        if wants_nsfw {
+        if opts.mark_nsfw && post.is_some_and(|p| p.over_18) && !tags.iter().any(|t| t == "nsfw") {
             tags.push("nsfw".to_string());
             tags.sort();
         }
@@ -92,15 +100,12 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
             }
         }
 
-        // The creation date to write: source post date within the cap, else preserve
-        // (or "now" when stale and cleanup_stale_to_now). Bound to a `String` here so it
-        // outlives the borrow in `BookmarkUpdate` below.
         let dt = crate::timefmt::cleanup_dt(
             opts.use_post_date,
             opts.max_age_days,
             opts.cleanup_stale_to_now,
             post.and_then(|p| p.created_utc).map(|s| s as i64),
-            now,
+            self.now,
             &bm.time,
         );
 
@@ -120,79 +125,14 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
             bm.extended.clone()
         };
 
-        let old_tags: BTreeSet<String> = bm.tag_list().into_iter().collect();
-        let new_tags: BTreeSet<String> = tags.iter().cloned().collect();
-        let tags_changed = old_tags != new_tags;
-        let desc_changed = description != bm.description;
-        let ext_changed = extended != bm.extended;
-        let date_changed = dt != bm.time;
-
-        if !(url_changed || tags_changed || desc_changed || ext_changed || date_changed) {
-            continue;
-        }
-
-        if opts.dry_run {
-            changed += 1;
-            println!("[dry-run] {}", bm.url);
-            if url_changed {
-                println!("          url   -> {new_url}");
-            }
-            if tags_changed {
-                println!("          tags  -> [{}]", tags.join(" "));
-            }
-            if desc_changed {
-                println!("          title -> {description}");
-            }
-            if ext_changed {
-                if extended.is_empty() {
-                    println!("          notes -> (removed)");
-                } else {
-                    println!("          notes -> {extended}");
-                }
-            }
-            if date_changed {
-                println!("          date  -> {dt}");
-            }
-            continue;
-        }
-
-        // Log and skip a single failed update so the rest of the pass still runs.
-        match apply_update(
-            pinboard,
-            &mut wrote,
-            BookmarkUpdate {
-                url: &new_url,
-                description: &description,
-                extended: &extended,
-                tags: &tags,
-                shared: bm.is_shared(),
-                toread: bm.is_toread(),
-                dt: &dt,
-            },
-            url_changed.then_some(bm.url.as_str()),
-        )
-        .await
-        {
-            Ok(()) => {
-                changed += 1;
-                debug!("updated {} -> {new_url} [{}]", bm.url, tags.join(" "));
-            }
-            Err(e) => {
-                failed += 1;
-                error!("updating bookmark {}: {e:#}", bm.url);
-            }
-        }
+        Ok(Some(Planned {
+            url: new_url,
+            description,
+            extended,
+            tags,
+            dt,
+        }))
     }
-
-    if opts.dry_run {
-        println!("{changed} bookmark(s) would change.");
-    } else {
-        info!("done: updated {changed} bookmark(s)");
-    }
-    if failed > 0 {
-        bail!("{failed} bookmark(s) failed to update");
-    }
-    Ok(())
 }
 
 /// Batch-fetch `over_18` + `title` + `created_utc` + the rebuilt notes for every post

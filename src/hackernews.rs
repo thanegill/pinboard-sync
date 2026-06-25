@@ -8,16 +8,16 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use log::{debug, error, info};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
+use crate::cleanup_pass::{run_pass, CleanupPass, Planned};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::send_retrying;
-use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
+use crate::pinboard::{Bookmark, BookmarkStore};
 use crate::source::{
-    extend_unique, push_prefixed, push_tag, push_tags, split_host_path, tags_differ, url_key,
-    BookmarkDraft, Source, SourceError,
+    extend_unique, push_prefixed, push_tag, push_tags, split_host_path, url_key, BookmarkDraft,
+    Source, SourceError,
 };
 
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.
@@ -413,11 +413,6 @@ impl HnClient {
             .filter(|b| hn_item_id(&b.url).is_some())
             .cloned()
             .collect();
-        info!(
-            "scanning {} HN bookmark(s){}",
-            hn_bms.len(),
-            if opts.dry_run { " (dry run)" } else { "" }
-        );
 
         // Batch-fetch every referenced item once.
         let ids: Vec<String> = hn_bms.iter().filter_map(|b| hn_item_id(&b.url)).collect();
@@ -426,94 +421,16 @@ impl HnClient {
             .await
             .map_err(SourceError::into_anyhow)?;
 
-        let now = crate::timefmt::now_unix();
-        let mut changed = 0usize;
-        let mut failed = 0usize;
-        let mut wrote = false;
-        for bm in &hn_bms {
-            let id = hn_item_id(&bm.url).expect("filtered to HN item URLs");
-            let Some(item) = items.get(&id) else {
-                continue;
-            };
-            let src_ts = item.created_at;
-            let draft = item.clone().into_draft(&self.config);
-
-            // Preserve existing tags, appending any freshly-derived ones.
-            let mut tags = bm.tag_list();
-            extend_unique(&mut tags, &draft.tags);
-
-            let dt = crate::timefmt::cleanup_dt(
-                opts.use_post_date,
-                opts.max_age_days,
-                opts.cleanup_stale_to_now,
-                src_ts,
-                now,
-                &bm.time,
-            );
-
-            let url_changed = draft.url != bm.url;
-            let tags_changed = tags != bm.tag_list();
-            let desc_changed = draft.description != bm.description;
-            let ext_changed = draft.extended != bm.extended;
-            let date_changed = dt != bm.time;
-            if !(url_changed || tags_changed || desc_changed || ext_changed || date_changed) {
-                continue;
-            }
-
-            if opts.dry_run {
-                changed += 1;
-                println!("[dry-run] {}", bm.url);
-                if url_changed {
-                    println!("          url   -> {}", draft.url);
-                }
-                if desc_changed {
-                    println!("          title -> {}", draft.description);
-                }
-                if tags_changed {
-                    println!("          tags  -> [{}]", tags.join(" "));
-                }
-                if date_changed {
-                    println!("          date  -> {dt}");
-                }
-                continue;
-            }
-
-            // Log and skip a single failed update so the rest of the pass still runs.
-            match apply_update(
-                pinboard,
-                &mut wrote,
-                BookmarkUpdate {
-                    url: &draft.url,
-                    description: &draft.description,
-                    extended: &draft.extended,
-                    tags: &tags,
-                    shared: bm.is_shared(),
-                    toread: bm.is_toread(),
-                    dt: &dt,
-                },
-                url_changed.then_some(bm.url.as_str()),
-            )
-            .await
-            {
-                Ok(()) => {
-                    changed += 1;
-                    debug!("updated {} -> {} [{}]", bm.url, draft.url, tags.join(" "));
-                }
-                Err(e) => {
-                    failed += 1;
-                    error!("updating bookmark {}: {e:#}", bm.url);
-                }
-            }
-        }
-
-        if opts.dry_run {
-            println!("{changed} bookmark(s) would change.");
-        } else {
-            info!("done: updated {changed} bookmark(s)");
-        }
+        let pass = HnCleanupPass {
+            items,
+            config: &self.config,
+            opts,
+            now: crate::timefmt::now_unix(),
+        };
+        let mut failed = run_pass(pinboard, &hn_bms, opts.dry_run, "HN", &pass).await;
 
         if opts.link_discussions {
-            failed += self.link_discussions(pinboard, opts, bookmarks).await?;
+            failed += self.link_discussions(pinboard, opts, bookmarks).await;
         }
         if failed > 0 {
             bail!("{failed} bookmark(s) failed to update");
@@ -521,9 +438,9 @@ impl HnClient {
         Ok(())
     }
 
-    /// For each article bookmark tagged `link_tag`, look it up on HN by URL and, if
-    /// it has a discussion, add `HN Link: <discussion>` to the notes, swap the
-    /// marker tag for the base HN tags, and update in place. Default-off (opt-in via
+    /// For each article bookmark tagged `link_tag`, look it up on HN by URL and, if it
+    /// has a discussion, add `HN Link: <discussion>` to the notes and swap the marker
+    /// tag for the base HN tags (update in place). Default-off (opt-in via
     /// `--link-discussions`) because it issues one Algolia query per tagged bookmark.
     /// Returns the number of bookmarks that failed to link (logged and skipped).
     async fn link_discussions<P: BookmarkStore>(
@@ -531,7 +448,7 @@ impl HnClient {
         pinboard: &P,
         opts: &HnCleanupOpts,
         bookmarks: &[Bookmark],
-    ) -> Result<usize> {
+    ) -> usize {
         let candidates: Vec<_> = bookmarks
             .iter()
             .filter(|b| {
@@ -539,101 +456,100 @@ impl HnClient {
             })
             .cloned()
             .collect();
-        info!(
-            "linking {} '{}'-tagged bookmark(s) to HN discussions{}",
-            candidates.len(),
-            self.config.link_tag,
-            if opts.dry_run { " (dry run)" } else { "" }
+        run_pass(
+            pinboard,
+            &candidates,
+            opts.dry_run,
+            "HN discussion",
+            &LinkPass { client: self },
+        )
+        .await
+    }
+}
+
+/// Re-shapes one favorited HN item bookmark: re-fetch via Algolia and re-derive the
+/// draft (stories rewrite to the article URL; comments/text posts update in place),
+/// preserving existing tags and the creation time.
+struct HnCleanupPass<'a> {
+    items: HashMap<String, Item>,
+    config: &'a HackernewsConfig,
+    opts: &'a HnCleanupOpts,
+    now: i64,
+}
+
+impl CleanupPass for HnCleanupPass<'_> {
+    async fn plan(&self, bm: &Bookmark) -> Result<Option<Planned>> {
+        let id = hn_item_id(&bm.url).expect("filtered to HN item URLs");
+        let Some(item) = self.items.get(&id) else {
+            return Ok(None);
+        };
+        let draft = item.clone().into_draft(self.config);
+
+        // Preserve existing tags, appending any freshly-derived ones.
+        let mut tags = bm.tag_list();
+        extend_unique(&mut tags, &draft.tags);
+
+        let dt = crate::timefmt::cleanup_dt(
+            self.opts.use_post_date,
+            self.opts.max_age_days,
+            self.opts.cleanup_stale_to_now,
+            item.created_at,
+            self.now,
+            &bm.time,
         );
 
-        let mut changed = 0usize;
-        let mut failed = 0usize;
-        let mut wrote = false;
-        for bm in &candidates {
-            // Log and skip a single bookmark whose HN lookup fails.
-            let id = match self.search_by_url(&bm.url).await {
-                Ok(Some(id)) => id,
-                Ok(None) => continue,
-                Err(e) => {
-                    failed += 1;
-                    error!("looking up {}: {:#}", bm.url, SourceError::into_anyhow(e));
-                    continue;
-                }
-            };
+        Ok(Some(Planned {
+            url: draft.url,
+            description: draft.description,
+            extended: draft.extended,
+            tags,
+            dt,
+        }))
+    }
+}
 
-            let hn_link = format!("HN Link: https://news.ycombinator.com/item?id={id}");
-            let extended = if bm.extended.contains("HN Link:") {
-                bm.extended.clone()
-            } else if bm.extended.is_empty() {
-                hn_link.clone()
-            } else {
-                format!("{}\n\n{hn_link}", bm.extended)
-            };
+/// Links one `link_tag`-tagged article bookmark to its HN discussion: look it up by
+/// URL, add an `HN Link:` line to the notes, and swap the marker tag for the base HN
+/// tags. Always in-place (the bookmark URL and date are unchanged).
+struct LinkPass<'a> {
+    client: &'a HnClient,
+}
 
-            // Clean the title for consistency with the rest of cleanup (these are arbitrary
-            // article bookmarks, so they may carry HTML entities).
-            let description = html_to_plain(&bm.description);
+impl CleanupPass for LinkPass<'_> {
+    async fn plan(&self, bm: &Bookmark) -> Result<Option<Planned>> {
+        let id = match self.client.search_by_url(&bm.url).await {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(SourceError::into_anyhow(e)),
+        };
 
-            // Drop the marker tag, add the base HN tags.
-            let mut tags: Vec<String> = bm
-                .tag_list()
-                .into_iter()
-                .filter(|t| *t != self.config.link_tag)
-                .collect();
-            extend_unique(&mut tags, &self.config.tags);
-
-            if extended == bm.extended
-                && description == bm.description
-                && !tags_differ(&bm.tag_list(), &tags)
-            {
-                continue;
-            }
-
-            if opts.dry_run {
-                changed += 1;
-                println!("[dry-run] {}", bm.url);
-                println!("          notes -> {hn_link}");
-                if description != bm.description {
-                    println!("          title -> {description}");
-                }
-                println!("          tags  -> [{}]", tags.join(" "));
-                continue;
-            }
-
-            // Log and skip a single failed update so the rest of the pass still runs.
-            match apply_update(
-                pinboard,
-                &mut wrote,
-                BookmarkUpdate {
-                    url: &bm.url,
-                    description: &description,
-                    extended: &extended,
-                    tags: &tags,
-                    shared: bm.is_shared(),
-                    toread: bm.is_toread(),
-                    dt: &bm.time,
-                },
-                None,
-            )
-            .await
-            {
-                Ok(()) => {
-                    changed += 1;
-                    debug!("linked {} -> item?id={id}", bm.url);
-                }
-                Err(e) => {
-                    failed += 1;
-                    error!("linking bookmark {}: {e:#}", bm.url);
-                }
-            }
-        }
-
-        if opts.dry_run {
-            println!("{changed} bookmark(s) would be linked.");
+        let hn_link = format!("HN Link: https://news.ycombinator.com/item?id={id}");
+        let extended = if bm.extended.contains("HN Link:") {
+            bm.extended.clone()
+        } else if bm.extended.is_empty() {
+            hn_link
         } else {
-            info!("done: linked {changed} bookmark(s)");
-        }
-        Ok(failed)
+            format!("{}\n\n{hn_link}", bm.extended)
+        };
+
+        // Clean the title (arbitrary article bookmarks may carry HTML entities).
+        let description = html_to_plain(&bm.description);
+
+        // Drop the marker tag, add the base HN tags.
+        let mut tags: Vec<String> = bm
+            .tag_list()
+            .into_iter()
+            .filter(|t| *t != self.client.config.link_tag)
+            .collect();
+        extend_unique(&mut tags, &self.client.config.tags);
+
+        Ok(Some(Planned {
+            url: bm.url.clone(),
+            description,
+            extended,
+            tags,
+            dt: bm.time.clone(),
+        }))
     }
 }
 

@@ -5,15 +5,15 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use log::{debug, error, info};
 use serde::Deserialize;
 
+use crate::cleanup_pass::{run_pass, CleanupPass, Planned};
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::send_retrying;
-use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
+use crate::pinboard::{Bookmark, BookmarkStore};
 use crate::source::{
-    extend_unique, host_is, push_prefixed, push_tags, split_host_path, tags_differ, url_key,
-    BookmarkDraft, Source, SourceError,
+    extend_unique, host_is, push_prefixed, push_tags, split_host_path, url_key, BookmarkDraft,
+    Source, SourceError,
 };
 
 const UA: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
@@ -271,11 +271,6 @@ pub async fn cleanup<P: BookmarkStore>(
         .filter(|b| is_github_url(&b.url))
         .cloned()
         .collect();
-    info!(
-        "scanning {} github bookmark(s){}",
-        gh_bms.len(),
-        if opts.dry_run { " (dry run)" } else { "" }
-    );
 
     // `starred_at` isn't on the per-repo lookup, so for use_post_date fetch the star
     // list once and map url_key -> star epoch. A repo no longer starred won't be here
@@ -292,11 +287,33 @@ pub async fn cleanup<P: BookmarkStore>(
         HashMap::new()
     };
 
-    let now = crate::timefmt::now_unix();
-    let mut changed = 0usize;
-    let mut failed = 0usize;
-    let mut wrote = false;
-    for bm in &gh_bms {
+    let pass = GithubPass {
+        client,
+        config,
+        opts,
+        star_dates,
+        now: crate::timefmt::now_unix(),
+    };
+    let failed = run_pass(pinboard, &gh_bms, opts.dry_run, "github", &pass).await;
+    if failed > 0 {
+        bail!("{failed} bookmark(s) failed to update");
+    }
+    Ok(())
+}
+
+/// Re-shapes one GitHub repo bookmark: canonicalize the URL, then refresh from the API
+/// (which follows renames/transfers) — current URL/title, rebuilt `<blockquote>` notes,
+/// and language tag. A 404 keeps just the canonicalization.
+struct GithubPass<'a> {
+    client: &'a GitHubClient,
+    config: &'a GithubConfig,
+    opts: &'a GhCleanupOpts,
+    star_dates: HashMap<String, i64>,
+    now: i64,
+}
+
+impl CleanupPass for GithubPass<'_> {
+    async fn plan(&self, bm: &Bookmark) -> Result<Option<Planned>> {
         let canonical = canonical_repo_url(&bm.url).unwrap_or_else(|| bm.url.clone());
 
         // Default to the canonicalization, then refresh from the API when the repo
@@ -306,8 +323,7 @@ pub async fn cleanup<P: BookmarkStore>(
         let mut extended = bm.extended.clone();
         let mut tags = bm.tag_list();
         if let Some((owner, repo)) = owner_repo(&canonical) {
-            // Log and skip a single repo whose lookup fails so the rest still run.
-            match client.repo(owner, repo).await {
+            match self.client.repo(owner, repo).await {
                 Ok(Some(info)) => {
                     url = info.html_url.clone(); // follows renames/transfers
                     description = html_to_plain(&info.full_name);
@@ -318,93 +334,31 @@ pub async fn cleanup<P: BookmarkStore>(
                         info.homepage.as_deref(),
                         &info.html_url,
                     );
-                    tags = refresh_tags(bm.tag_list(), &info, config);
+                    tags = refresh_tags(bm.tag_list(), &info, self.config);
                 }
                 Ok(None) => {}
-                Err(e) => {
-                    failed += 1;
-                    error!("looking up {}: {:#}", bm.url, SourceError::into_anyhow(e));
-                    continue;
-                }
+                // A failed lookup is surfaced to the driver, which logs and counts it.
+                Err(e) => return Err(SourceError::into_anyhow(e)),
             }
         }
 
         let dt = crate::timefmt::cleanup_dt(
-            opts.use_post_date,
-            opts.max_age_days,
-            opts.cleanup_stale_to_now,
-            url_key(&url).and_then(|k| star_dates.get(&k).copied()),
-            now,
+            self.opts.use_post_date,
+            self.opts.max_age_days,
+            self.opts.cleanup_stale_to_now,
+            url_key(&url).and_then(|k| self.star_dates.get(&k).copied()),
+            self.now,
             &bm.time,
         );
 
-        let url_changed = url != bm.url;
-        let desc_changed = description != bm.description;
-        let extended_changed = extended != bm.extended;
-        let tags_changed = tags_differ(&bm.tag_list(), &tags);
-        let date_changed = dt != bm.time;
-        if !(url_changed || desc_changed || extended_changed || tags_changed || date_changed) {
-            continue;
-        }
-
-        if opts.dry_run {
-            changed += 1;
-            println!("[dry-run] {}", bm.url);
-            if url_changed {
-                println!("          url   -> {url}");
-            }
-            if desc_changed {
-                println!("          title -> {description}");
-            }
-            if extended_changed {
-                println!("          notes -> {extended}");
-            }
-            if tags_changed {
-                println!("          tags  -> [{}]", tags.join(" "));
-            }
-            if date_changed {
-                println!("          date  -> {dt}");
-            }
-            continue;
-        }
-
-        // Log and skip a single failed update so the rest of the pass still runs.
-        match apply_update(
-            pinboard,
-            &mut wrote,
-            BookmarkUpdate {
-                url: &url,
-                description: &description,
-                extended: &extended,
-                tags: &tags,
-                shared: bm.is_shared(),
-                toread: bm.is_toread(),
-                dt: &dt,
-            },
-            url_changed.then_some(bm.url.as_str()),
-        )
-        .await
-        {
-            Ok(()) => {
-                changed += 1;
-                debug!("updated {} -> {url}", bm.url);
-            }
-            Err(e) => {
-                failed += 1;
-                error!("updating bookmark {}: {e:#}", bm.url);
-            }
-        }
+        Ok(Some(Planned {
+            url,
+            description,
+            extended,
+            tags,
+            dt,
+        }))
     }
-
-    if opts.dry_run {
-        println!("{changed} bookmark(s) would change.");
-    } else {
-        info!("done: updated {changed} bookmark(s)");
-    }
-    if failed > 0 {
-        bail!("{failed} bookmark(s) failed to update");
-    }
-    Ok(())
 }
 
 /// The `(owner, repo)` of a canonical `https://github.com/owner/repo` URL.

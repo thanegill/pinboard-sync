@@ -1,6 +1,7 @@
 //! pinboard-sync: sync saved/favorited items from multiple services to Pinboard.
 
 mod cleanup;
+mod cleanup_pass;
 mod config;
 mod github;
 mod hackernews;

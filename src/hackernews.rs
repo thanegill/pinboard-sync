@@ -203,7 +203,7 @@ impl Item {
 }
 
 /// Reads a user's public HackerNews favorites.
-pub struct HnClient {
+pub struct HackerNewsClient {
     http: reqwest::Client,
     username: String,
     config: HackernewsConfig,
@@ -213,7 +213,7 @@ pub struct HnClient {
     algolia: String,
 }
 
-impl HnClient {
+impl HackerNewsClient {
     pub fn new(username: String, config: HackernewsConfig) -> anyhow::Result<Self> {
         Self::build(
             username,
@@ -357,7 +357,7 @@ impl HnClient {
     }
 }
 
-impl Source for HnClient {
+impl Source for HackerNewsClient {
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
         let mut ids = Vec::new();
         self.collect_ids(false, &mut ids).await?;
@@ -375,7 +375,7 @@ impl Source for HnClient {
     }
 }
 
-impl UrlKey for HnClient {
+impl UrlKey for HackerNewsClient {
     /// A favorited HN *item* keys on its id (`hn:<id>`); an article bookmark falls back
     /// to the generic host+path key.
     fn dedup_key(&self, url: &Url) -> Option<String> {
@@ -408,7 +408,7 @@ impl HackerNewsCleanupOpts {
     }
 }
 
-impl HnClient {
+impl HackerNewsClient {
     /// Client for `cleanup hackernews`: only the Algolia API is used (no favorites
     /// scraping), so no username is needed.
     pub fn for_cleanup(config: HackernewsConfig) -> anyhow::Result<Self> {
@@ -547,7 +547,7 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
 /// tags. Always in-place — the URL is unchanged and `src_date` is `None`, so the
 /// driver preserves the stored date regardless of the dating policy.
 struct HackerNewsLinkPass<'a> {
-    client: &'a HnClient,
+    client: &'a HackerNewsClient,
 }
 
 impl CleanupPass for HackerNewsLinkPass<'_> {
@@ -643,7 +643,7 @@ fn special_type(title: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-impl HnClient {
+impl HackerNewsClient {
     fn with_base_urls(
         username: String,
         config: HackernewsConfig,
@@ -784,7 +784,7 @@ mod tests {
 
     #[test]
     fn dedup_key_distinguishes_hn_items_from_articles() {
-        let c = HnClient::new("u".into(), HackernewsConfig::default()).unwrap();
+        let c = HackerNewsClient::new("u".into(), HackernewsConfig::default()).unwrap();
         assert_eq!(
             c.dedup_key(&url("https://news.ycombinator.com/item?id=42"))
                 .as_deref(),
@@ -848,7 +848,7 @@ mod net_tests {
             .mount(&algolia)
             .await;
 
-        let client = HnClient::with_base_urls(
+        let client = HackerNewsClient::with_base_urls(
             "psophis".into(),
             HackernewsConfig::default(),
             hn.uri(),
@@ -891,7 +891,7 @@ mod net_tests {
             ..Default::default()
         };
 
-        let client = HnClient::with_base_urls(
+        let client = HackerNewsClient::with_base_urls(
             String::new(),
             HackernewsConfig::default(),
             "unused".into(),
@@ -958,7 +958,7 @@ mod net_tests {
             ..Default::default()
         };
 
-        let client = HnClient::with_base_urls(
+        let client = HackerNewsClient::with_base_urls(
             String::new(),
             HackernewsConfig::default(),
             "unused".into(),
@@ -1022,7 +1022,7 @@ mod net_tests {
             ..Default::default()
         };
 
-        let client = HnClient::with_base_urls(
+        let client = HackerNewsClient::with_base_urls(
             String::new(),
             HackernewsConfig::default(),
             "unused".into(),

@@ -25,7 +25,7 @@ use log::{debug, error, info, warn};
 
 use config::{Account, Config, GithubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
-use hackernews::{HackerNewsCleanupOpts, HnClient};
+use hackernews::{HackerNewsCleanupOpts, HackerNewsClient};
 use pinboard::{Bookmark, BookmarkStore, PinboardClient, RATE_LIMIT_SECS};
 use reddit::RedditClient;
 use source::{BookmarkDraft, Source, SourceError, UrlKey};
@@ -588,7 +588,7 @@ impl DateSettings {
 enum SourceClient {
     Reddit(RedditClient),
     Github(GitHubClient),
-    Hackernews(HnClient),
+    Hackernews(HackerNewsClient),
 }
 
 impl Source for SourceClient {
@@ -729,7 +729,7 @@ fn build_hackernews_job(
     let dates = DateSettings::resolve(account, src, config);
     Ok(SyncJob {
         // HackerNews favorites are public, so there is no auth-failure hook.
-        client: SourceClient::Hackernews(HnClient::new(username, hn_config)?),
+        client: SourceClient::Hackernews(HackerNewsClient::new(username, hn_config)?),
         label: job_label("hackernews", account),
         hook: None,
         limit: job_limit(ovr, account.and_then(|a| a.limit()), src.limit, config),
@@ -1099,7 +1099,7 @@ async fn cleanup_one_hackernews(
         hn_config.link_tag = tag;
     }
     let dates = DateSettings::resolve(account, &config.defaults.hackernews, config);
-    let hn = HnClient::for_cleanup(hn_config)?;
+    let hn = HackerNewsClient::for_cleanup(hn_config)?;
     hn.cleanup(
         pinboard,
         &HackerNewsCleanupOpts {

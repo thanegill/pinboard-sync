@@ -86,26 +86,16 @@ impl BookmarkStore for FakePinboard {
         *self.all_calls.borrow_mut() += 1;
         Ok(self.all.clone())
     }
-    #[allow(clippy::too_many_arguments)]
-    async fn add(
-        &self,
-        url: &str,
-        _description: &str,
-        _extended: &str,
-        tags: &[String],
-        toread: bool,
-        shared: bool,
-        dt: &str,
-    ) -> Result<()> {
-        if self.fail_add_urls.contains(url) {
-            return Err(anyhow!("simulated add failure for {url}"));
+    async fn add(&self, b: BookmarkUpdate<'_>) -> Result<()> {
+        if self.fail_add_urls.contains(b.url) {
+            return Err(anyhow!("simulated add failure for {}", b.url));
         }
         self.added.borrow_mut().push(AddCall {
-            url: url.to_string(),
-            tags: tags.to_vec(),
-            toread,
-            shared,
-            dt: dt.to_string(),
+            url: b.url.to_string(),
+            tags: b.tags.to_vec(),
+            toread: b.toread,
+            shared: b.shared,
+            dt: b.dt.to_string(),
         });
         Ok(())
     }

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use log::{debug, error};
 
-use crate::pinboard::{Bookmark, BookmarkStore};
+use crate::pinboard::{Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::source::{BookmarkDraft, Source};
 
 /// The drafts not already present on Pinboard, matching each existing bookmark URL
@@ -75,15 +75,15 @@ pub async fn write_drafts<P: BookmarkStore>(
         }
         posted = true;
         match pinboard
-            .add(
-                &draft.url,
-                &draft.description,
-                &draft.extended,
-                &draft.tags,
-                draft.toread,
-                draft.shared,
-                &dt,
-            )
+            .add(BookmarkUpdate {
+                url: &draft.url,
+                description: &draft.description,
+                extended: &draft.extended,
+                tags: &draft.tags,
+                shared: draft.shared,
+                toread: draft.toread,
+                dt: &dt,
+            })
             .await
         {
             Ok(()) => {

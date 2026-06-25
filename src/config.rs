@@ -352,6 +352,36 @@ macro_rules! impl_named {
 }
 impl_named!(RedditAccount => username, GithubAccount, HackernewsAccount => username);
 
+/// The per-account settings shared across every source. Each returns the
+/// account-level override, or `None` to fall through to the per-source default and
+/// then the `[pinboard]` global — letting the job/cleanup builders resolve them
+/// generically (see `tier`/`DateSettings` in `main`). The method names normalize the
+/// two longer field names (`post_date_max_age_days`, `cleanup_stale_to_now`).
+pub trait Account: Named {
+    fn limit(&self) -> Option<usize>;
+    fn toread(&self) -> Option<bool>;
+    fn public(&self) -> Option<bool>;
+    fn use_post_date(&self) -> Option<bool>;
+    fn max_age_days(&self) -> Option<u64>;
+    fn stale_to_now(&self) -> Option<bool>;
+}
+
+/// Implement [`Account`] by reading the identically-purposed fields each account
+/// struct carries (all `Copy` `Option`s).
+macro_rules! impl_account {
+    ($($t:ty),+ $(,)?) => {
+        $(impl Account for $t {
+            fn limit(&self) -> Option<usize> { self.limit }
+            fn toread(&self) -> Option<bool> { self.toread }
+            fn public(&self) -> Option<bool> { self.public }
+            fn use_post_date(&self) -> Option<bool> { self.use_post_date }
+            fn max_age_days(&self) -> Option<u64> { self.post_date_max_age_days }
+            fn stale_to_now(&self) -> Option<bool> { self.cleanup_stale_to_now }
+        })+
+    };
+}
+impl_account!(RedditAccount, GithubAccount, HackernewsAccount);
+
 /// Pick the account named `name`, or the first account when `name` is `None`.
 /// Returns `Ok(None)` only when there are no configured accounts and no name was
 /// given (the caller then falls back to CLI flags / env for a single account).

@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 
+use crate::bookmark::{Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::http::send_retrying;
 
 const DEFAULT_BASE: &str = "https://api.pinboard.in/v1";
@@ -57,37 +58,10 @@ pub struct PinboardBookmark {
     pub toread: String,
 }
 
-/// A bookmark in service-agnostic domain form: tags split out, the creation time held
-/// as raw epoch seconds (`src_date`), and the flags as plain `bool`s. The cleanup
-/// driver both reads stored bookmarks and plans their end-state in this type, so the
-/// two are directly comparable; the Pinboard formatting is reapplied at the write
-/// boundary in [`PinboardClient::post_add`].
-#[derive(Debug, Clone)]
-pub struct Bookmark {
-    pub url: String,
-    pub description: String,
-    pub extended: String,
-    pub tags: Vec<String>,
-    /// Creation time as unix epoch seconds, or `None` when Pinboard returned no
-    /// (parseable) time.
-    pub src_date: Option<i64>,
-    pub shared: bool,
-    pub toread: bool,
-}
-
-impl From<PinboardBookmark> for Bookmark {
-    fn from(b: PinboardBookmark) -> Self {
-        Bookmark {
-            url: b.url,
-            description: b.description,
-            extended: b.extended,
-            tags: b.tags.split_whitespace().map(String::from).collect(),
-            src_date: crate::timefmt::rfc3339_to_unix(&b.time),
-            shared: b.shared == "yes",
-            toread: b.toread == "yes",
-        }
-    }
-}
+// The service-agnostic domain form, `crate::bookmark::Bookmark`, is what the rest of the
+// crate works with; `posts/all` parses into `PinboardBookmark` and converts via its
+// `From` impl. The `BookmarkStore` port + `BookmarkUpdate` write-view also live in
+// `bookmark`; this module is just the Pinboard client behind that port.
 
 pub struct PinboardClient {
     http: reqwest::Client,
@@ -97,68 +71,6 @@ pub struct PinboardClient {
     rate_limit_secs: u64,
     /// API base, e.g. `https://api.pinboard.in/v1`.
     base: String,
-}
-
-/// Fields for [`BookmarkStore::update`]: an existing bookmark re-added with
-/// normalized content (`url`/`description`/`extended`/`tags`) plus the metadata to
-/// preserve (`shared`/`toread`, and `dt` — the original time, empty for none).
-pub struct BookmarkUpdate<'a> {
-    pub url: &'a str,
-    pub description: &'a str,
-    pub extended: &'a str,
-    pub tags: &'a [String],
-    pub shared: bool,
-    pub toread: bool,
-    pub dt: &'a str,
-}
-
-/// The Pinboard operations the sync/cleanup loops depend on. Abstracted from the
-/// concrete client so those loops can be exercised with an in-memory fake.
-/// (Crate-internal, never spawned across threads, so the missing `Send` bound
-/// from `async fn` in a trait is irrelevant here.)
-#[allow(async_fn_in_trait)]
-pub trait BookmarkStore {
-    /// Every bookmark in the account (`posts/all`).
-    async fn all(&self) -> Result<Vec<Bookmark>>;
-    /// Add a new bookmark. `b.dt` is the creation time (RFC3339); empty = let Pinboard
-    /// default to now.
-    async fn add(&self, b: BookmarkUpdate<'_>) -> Result<()>;
-    /// Re-add an existing bookmark with normalized fields, preserving metadata.
-    async fn update(&self, b: BookmarkUpdate<'_>) -> Result<()>;
-    /// Delete a bookmark by URL.
-    async fn delete(&self, url: &str) -> Result<()>;
-    /// Seconds to pause between successive writes (Pinboard asks for ~3s).
-    fn rate_limit_secs(&self) -> u64 {
-        RATE_LIMIT_SECS
-    }
-}
-
-/// The shared write step of the cleanup loops: rate-limit after the first write (so
-/// successive `posts/add`s are spaced), `update` the bookmark, then `delete` the old
-/// URL when it changed (`old_url`). `wrote` gates the inter-write delay and is set
-/// once any write has happened.
-pub async fn apply_update<P: BookmarkStore>(
-    pinboard: &P,
-    wrote: &mut bool,
-    update: BookmarkUpdate<'_>,
-    old_url: Option<&str>,
-) -> Result<()> {
-    if *wrote {
-        tokio::time::sleep(Duration::from_secs(pinboard.rate_limit_secs())).await;
-    }
-    let target = update.url; // `&str` is Copy, so this outlives the move below
-    pinboard
-        .update(update)
-        .await
-        .with_context(|| format!("updating bookmark {target}"))?;
-    if let Some(old) = old_url {
-        pinboard
-            .delete(old)
-            .await
-            .with_context(|| format!("deleting old URL {old}"))?;
-    }
-    *wrote = true;
-    Ok(())
 }
 
 impl PinboardClient {
@@ -576,9 +488,9 @@ mod net_tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].url, "https://old.reddit.com/r/rust/comments/a/x/");
         assert_eq!(all[0].tags, vec!["reddit", "subreddit:rust"]);
-        // The ISO-8601 `time` is parsed to epoch on read.
-        assert_eq!(all[0].src_date, Some(1_577_836_800)); // 2020-01-01T00:00:00Z
-        assert_eq!(all[1].src_date, None); // empty time → no date
+        // The ISO-8601 `time` is parsed into a timestamp on read.
+        assert_eq!(all[0].timestamp, crate::timefmt::from_unix(1_577_836_800)); // 2020-01-01T00:00:00Z
+        assert_eq!(all[1].timestamp, None); // empty time → no timestamp
     }
 
     #[tokio::test]

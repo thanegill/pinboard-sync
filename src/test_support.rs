@@ -9,8 +9,8 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 use url::Url;
 
+use crate::bookmark::{Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::model::{reddit_key, ListingEntry, RedditConfig};
-use crate::pinboard::{Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 

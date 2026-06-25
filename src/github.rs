@@ -304,14 +304,22 @@ pub async fn cleanup<P: BookmarkStore>(
         // Default to the canonicalization, then refresh from the API when the repo
         // still exists (a 404 keeps just the canonical URL).
         let mut url = canonical.clone();
-        let mut description = bm.description.clone();
+        let mut description = html_to_plain(&bm.description);
+        let mut extended = bm.extended.clone();
         let mut tags = bm.tag_list();
         if let Some((owner, repo)) = owner_repo(&canonical) {
             // Log and skip a single repo whose lookup fails so the rest still run.
             match client.repo(owner, repo).await {
                 Ok(Some(info)) => {
                     url = info.html_url.clone(); // follows renames/transfers
-                    description = info.full_name.clone();
+                    description = html_to_plain(&info.full_name);
+                    // Rebuild the notes from fresh data so old bookmarks retrofit to the
+                    // <blockquote> shape (sync skips already-present bookmarks).
+                    extended = github_extended(
+                        info.description.as_deref(),
+                        info.homepage.as_deref(),
+                        &info.html_url,
+                    );
                     tags = refresh_tags(bm.tag_list(), &info, config);
                 }
                 Ok(None) => {}
@@ -334,9 +342,10 @@ pub async fn cleanup<P: BookmarkStore>(
 
         let url_changed = url != bm.url;
         let desc_changed = description != bm.description;
+        let extended_changed = extended != bm.extended;
         let tags_changed = tags_differ(&bm.tag_list(), &tags);
         let date_changed = dt != bm.time;
-        if !(url_changed || desc_changed || tags_changed || date_changed) {
+        if !(url_changed || desc_changed || extended_changed || tags_changed || date_changed) {
             continue;
         }
 
@@ -348,6 +357,9 @@ pub async fn cleanup<P: BookmarkStore>(
             }
             if desc_changed {
                 println!("          title -> {description}");
+            }
+            if extended_changed {
+                println!("          notes -> {extended}");
             }
             if tags_changed {
                 println!("          tags  -> [{}]", tags.join(" "));
@@ -365,7 +377,7 @@ pub async fn cleanup<P: BookmarkStore>(
             BookmarkUpdate {
                 url: &url,
                 description: &description,
-                extended: &bm.extended,
+                extended: &extended,
                 tags: &tags,
                 shared: bm.is_shared(),
                 toread: bm.is_toread(),
@@ -689,6 +701,7 @@ mod net_tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "full_name": "new/name",
                 "html_url": "https://github.com/new/name",
+                "description": "A renamed thing",
                 "language": "Rust"
             })))
             .mount(&server)
@@ -728,6 +741,11 @@ mod net_tests {
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].url, "https://github.com/new/name");
         assert_eq!(updated[0].description, "new/name");
+        // Notes rebuilt from fresh data: description wrapped in a <blockquote>.
+        assert_eq!(
+            updated[0].extended,
+            "<blockquote>A renamed thing</blockquote>"
+        );
         // Language tag refreshed (python → rust), base + user tags kept.
         assert!(updated[0].tags.contains(&"lang:rust".to_string()));
         assert!(!updated[0].tags.contains(&"lang:python".to_string()));
@@ -738,5 +756,60 @@ mod net_tests {
             pinboard.deleted.borrow().as_slice(),
             &["https://github.com/old/name".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn cleanup_rewrites_notes_only_to_retrofit_the_blockquote() {
+        use crate::pinboard::Bookmark;
+        use crate::test_support::FakePinboard;
+
+        // URL, title, and tags are already current; only the notes are stale (an old
+        // unwrapped description). The extended_changed guard must still trigger a write.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "full_name": "o/r",
+                "html_url": "https://github.com/o/r",
+                "description": "A thing"
+            })))
+            .mount(&server)
+            .await;
+
+        let pinboard = FakePinboard {
+            all: vec![Bookmark {
+                url: "https://github.com/o/r".into(),
+                description: "o/r".into(),
+                extended: "A thing".into(), // pre-blockquote notes
+                tags: "github-star".into(),
+                time: "2020-01-01T00:00:00Z".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }],
+            ..Default::default()
+        };
+        let bookmarks = pinboard.all.clone();
+        let client =
+            GitHubClient::with_base_url("tok".into(), GithubConfig::default(), server.uri());
+        cleanup(
+            &pinboard,
+            &client,
+            &GithubConfig::default(),
+            &GhCleanupOpts {
+                dry_run: false,
+                use_post_date: false,
+                max_age_days: 30,
+                cleanup_stale_to_now: false,
+            },
+            &bookmarks,
+        )
+        .await
+        .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].extended, "<blockquote>A thing</blockquote>");
+        // Nothing else changed, so no delete (URL is unchanged).
+        assert!(pinboard.deleted.borrow().is_empty());
     }
 }

@@ -8,6 +8,7 @@ use anyhow::{bail, Context, Result};
 use log::{debug, error, info};
 use serde::Deserialize;
 
+use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::send_retrying;
 use crate::pinboard::{apply_update, Bookmark, BookmarkStore, BookmarkUpdate};
 use crate::source::{
@@ -67,6 +68,21 @@ impl StarredRepo {
     }
 }
 
+/// Build the Pinboard notes for a repo: the `description` wrapped in a `<blockquote>`
+/// (Pinboard renders HTML in the notes), with the project homepage appended outside the
+/// quote. Falls back to the repo URL when there's no description. Shared by sync and
+/// cleanup so both produce the same shape.
+fn github_extended(description: Option<&str>, homepage: Option<&str>, html_url: &str) -> String {
+    let mut extended = match description.filter(|s| !s.is_empty()) {
+        Some(desc) => blockquote(desc),
+        None => html_url.to_string(),
+    };
+    if let Some(home) = homepage.filter(|s| !s.is_empty()) {
+        extended = format!("{extended}\n\nProject homepage: {home}");
+    }
+    extended
+}
+
 impl Repo {
     /// Shape the repo into a Pinboard draft (no source date). Test-only convenience;
     /// the production path dates each draft via [`StarredRepo::into_draft`].
@@ -79,13 +95,11 @@ impl Repo {
     fn into_draft_with_date(self, cfg: &GithubConfig, post_date: Option<i64>) -> BookmarkDraft {
         let dedup_key = url_key(&self.html_url).unwrap_or_else(|| self.html_url.clone());
 
-        let mut extended = self
-            .description
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| self.html_url.clone());
-        if let Some(home) = self.homepage.filter(|s| !s.is_empty()) {
-            extended = format!("{extended}\n\nProject homepage: {home}");
-        }
+        let extended = github_extended(
+            self.description.as_deref(),
+            self.homepage.as_deref(),
+            &self.html_url,
+        );
 
         let mut tags = Vec::new();
         push_tags(&mut tags, &cfg.tags);
@@ -95,7 +109,7 @@ impl Repo {
 
         BookmarkDraft {
             url: self.html_url,
-            description: self.full_name,
+            description: html_to_plain(&self.full_name),
             extended,
             tags,
             dedup_key,
@@ -481,10 +495,27 @@ mod tests {
         assert_eq!(d.description, "owner/Repo");
         assert_eq!(
             d.extended,
-            "A thing\n\nProject homepage: https://example.com"
+            "<blockquote>A thing</blockquote>\n\nProject homepage: https://example.com"
         );
         assert_eq!(d.tags, vec!["github-star", "lang:rust"]);
         assert_eq!(d.dedup_key, "github.com/owner/repo");
+    }
+
+    #[test]
+    fn github_extended_wraps_description_and_keeps_homepage_outside() {
+        assert_eq!(
+            github_extended(Some("A thing"), Some("https://h"), "https://github.com/o/r"),
+            "<blockquote>A thing</blockquote>\n\nProject homepage: https://h"
+        );
+        // No description: fall back to the URL, no blockquote.
+        assert_eq!(
+            github_extended(None, None, "https://github.com/o/r"),
+            "https://github.com/o/r"
+        );
+        assert_eq!(
+            github_extended(Some(""), None, "https://github.com/o/r"),
+            "https://github.com/o/r"
+        );
     }
 
     #[test]

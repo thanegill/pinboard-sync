@@ -178,7 +178,7 @@ impl Source for RedditClient {
             .await?
             .into_iter()
             .filter_map(|e| e.into_saved_item(&self.config.domain))
-            .map(|it| it.into_draft(&self.config))
+            .filter_map(|it| it.into_draft(&self.config))
             .collect())
     }
 }

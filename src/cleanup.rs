@@ -61,7 +61,7 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
 ) -> Result<()> {
     let reddit_bms: Vec<_> = bookmarks
         .iter()
-        .filter(|bookmark| Url::parse(&bookmark.url).is_ok_and(|url| url.host_is("reddit.com")))
+        .filter(|bookmark| bookmark.url.host_is("reddit.com"))
         .cloned()
         .collect();
 
@@ -92,12 +92,10 @@ struct RedditCleanupPass<'a> {
 impl CleanupPass for RedditCleanupPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
         let opts = self.opts;
-        // Parse the stored URL once (it's a reddit URL — the pass is filtered to those);
-        // everything below works on the `Url`, formatting back to a string only at the end.
-        let Some(original) = Url::parse(&bookmark.url).ok() else {
-            return Ok(None);
-        };
-        let new_url = normalize_url(&original, &opts.domain).unwrap_or(original);
+        // The stored URL is already a parsed `Url` (and a reddit one — the pass is filtered
+        // to those); normalize it, falling back to the original when nothing changed.
+        let new_url =
+            normalize_url(&bookmark.url, &opts.domain).unwrap_or_else(|| bookmark.url.clone());
 
         let mut tags = normalize_tags(
             &new_url,
@@ -136,7 +134,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
         };
 
         Ok(Some(Bookmark {
-            url: new_url.into(),
+            url: new_url,
             title,
             note,
             tags,
@@ -169,8 +167,8 @@ async fn fetch_post_info<R: PostInfo>(
     let fullnames: Vec<String> = bookmarks
         .iter()
         .filter_map(|bookmark| {
-            let original = Url::parse(&bookmark.url).ok()?;
-            let url = normalize_url(&original, &opts.domain).unwrap_or(original);
+            let url =
+                normalize_url(&bookmark.url, &opts.domain).unwrap_or_else(|| bookmark.url.clone());
             post_fullname(&url)
         })
         .collect::<BTreeSet<_>>()
@@ -517,7 +515,8 @@ mod loop_tests {
             shared: "no".into(),
             toread: "no".into(),
         }
-        .into()
+        .try_into()
+        .unwrap()
     }
 
     #[tokio::test]
@@ -533,7 +532,8 @@ mod loop_tests {
                 shared: "yes".into(),
                 toread: "yes".into(),
             }
-            .into()],
+            .try_into()
+            .unwrap()],
             ..Default::default()
         };
         let reddit = FakeReddit {
@@ -629,7 +629,8 @@ mod loop_tests {
                 shared: "no".into(),
                 toread: "no".into(),
             }
-            .into()],
+            .try_into()
+            .unwrap()],
             ..Default::default()
         };
         let opts = RedditCleanupOpts {
@@ -668,7 +669,8 @@ mod loop_tests {
                 shared: "no".into(),
                 toread: "no".into(),
             }
-            .into()],
+            .try_into()
+            .unwrap()],
             ..Default::default()
         };
         let opts = RedditCleanupOpts {
@@ -710,7 +712,8 @@ mod loop_tests {
                 shared: "no".into(),
                 toread: "no".into(),
             }
-            .into()],
+            .try_into()
+            .unwrap()],
             ..Default::default()
         };
         let reddit = FakeReddit {
@@ -753,7 +756,8 @@ mod loop_tests {
                 shared: "no".into(),
                 toread: "no".into(),
             }
-            .into()],
+            .try_into()
+            .unwrap()],
             ..Default::default()
         };
         let reddit = FakeReddit {

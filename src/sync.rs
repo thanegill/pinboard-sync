@@ -8,13 +8,11 @@ use std::collections::HashSet;
 
 use log::{debug, error};
 
-use url::Url;
-
 use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::source::{BookmarkDraft, Source};
 
 /// The drafts not already present on Pinboard, matching each existing bookmark URL
-/// through this source's [`UrlKey::dedup_key`]. Each Pinboard URL is parsed once here.
+/// through this source's [`UrlKey::dedup_key`].
 pub fn filter_new<S: Source>(
     source: &S,
     drafts: Vec<BookmarkDraft>,
@@ -22,8 +20,7 @@ pub fn filter_new<S: Source>(
 ) -> Vec<BookmarkDraft> {
     let keys: HashSet<String> = existing
         .iter()
-        .filter_map(|b| Url::parse(&b.url).ok())
-        .filter_map(|url| source.dedup_key(&url))
+        .filter_map(|b| source.dedup_key(&b.url))
         .collect();
     drafts
         .into_iter()
@@ -92,6 +89,7 @@ mod tests {
     use crate::source::Source;
     use crate::test_support::{listing_entry, FakePinboard, FakeReddit};
     use serde_json::json;
+    use url::Url;
 
     fn post(name: &str, permalink: &str) -> crate::model::ListingEntry {
         listing_entry(
@@ -103,7 +101,7 @@ mod tests {
     /// An existing Pinboard bookmark at `url` (other fields irrelevant to dedup).
     fn bookmark(url: &str) -> Bookmark {
         Bookmark {
-            url: url.into(),
+            url: Url::parse(url).unwrap(),
             title: String::new(),
             note: String::new(),
             tags: Vec::new(),
@@ -129,7 +127,7 @@ mod tests {
         let new = filter_new(&reddit, drafts, &existing);
         assert_eq!(new.len(), 1);
         assert_eq!(
-            new[0].bookmark.url,
+            new[0].bookmark.url.as_str(),
             "https://old.reddit.com/r/rust/comments/b/y/"
         );
         assert_eq!(new[0].bookmark.tags, vec!["reddit", "subreddit:rust"]);
@@ -160,7 +158,7 @@ mod tests {
     async fn write_drafts_passes_each_drafts_toread_and_shared() {
         let draft = |url: &str, toread: bool, shared: bool| BookmarkDraft {
             bookmark: Bookmark {
-                url: url.into(),
+                url: Url::parse(url).unwrap(),
                 title: "T".into(),
                 note: String::new(),
                 tags: vec![],
@@ -186,7 +184,7 @@ mod tests {
     async fn write_drafts_sends_post_date_as_dt_when_set() {
         let draft = |url: &str, post_date: Option<i64>| BookmarkDraft {
             bookmark: Bookmark {
-                url: url.into(),
+                url: Url::parse(url).unwrap(),
                 title: "T".into(),
                 note: String::new(),
                 tags: vec![],
@@ -230,7 +228,7 @@ mod tests {
     async fn write_drafts_logs_and_skips_a_failing_bookmark() {
         let draft = |url: &str| BookmarkDraft {
             bookmark: Bookmark {
-                url: url.into(),
+                url: Url::parse(url).unwrap(),
                 title: "T".into(),
                 note: String::new(),
                 tags: vec![],

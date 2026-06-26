@@ -33,7 +33,7 @@ impl Source for FakeReddit {
             .iter()
             .cloned()
             .filter_map(|e| e.into_saved_item(&cfg.domain))
-            .map(|it| it.into_draft(&cfg))
+            .filter_map(|it| it.into_draft(&cfg))
             .collect())
     }
 }
@@ -97,11 +97,11 @@ impl BookmarkStore for FakePinboard {
         Ok(self.all.clone())
     }
     async fn add(&self, b: &Bookmark) -> Result<()> {
-        if self.fail_add_urls.contains(&b.url) {
+        if self.fail_add_urls.contains(b.url.as_str()) {
             return Err(anyhow!("simulated add failure for {}", b.url));
         }
         self.added.borrow_mut().push(AddCall {
-            url: b.url.clone(),
+            url: b.url.to_string(),
             tags: b.tags.clone(),
             toread: b.read_later,
             shared: b.public,
@@ -110,11 +110,11 @@ impl BookmarkStore for FakePinboard {
         Ok(())
     }
     async fn update(&self, b: &Bookmark) -> Result<()> {
-        if self.fail_update_urls.contains(&b.url) {
+        if self.fail_update_urls.contains(b.url.as_str()) {
             return Err(anyhow!("simulated update failure for {}", b.url));
         }
         self.updated.borrow_mut().push(UpdateCall {
-            url: b.url.clone(),
+            url: b.url.to_string(),
             description: b.title.clone(),
             extended: b.note.clone(),
             tags: b.tags.clone(),
@@ -124,7 +124,7 @@ impl BookmarkStore for FakePinboard {
         });
         Ok(())
     }
-    async fn delete(&self, url: &str) -> Result<()> {
+    async fn delete(&self, url: &Url) -> Result<()> {
         self.deleted.borrow_mut().push(url.to_string());
         Ok(())
     }

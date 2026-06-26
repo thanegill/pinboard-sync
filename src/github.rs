@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use log::warn;
 use serde::Deserialize;
 
 use crate::bookmark::{Bookmark, BookmarkStore};
@@ -62,8 +63,9 @@ struct StarredRepo {
 }
 
 impl StarredRepo {
-    /// Shape into a draft, dating it by the (RFC3339) star time.
-    fn into_draft(self, cfg: &GitHubConfig) -> BookmarkDraft {
+    /// Shape into a draft, dating it by the (RFC3339) star time. `None` (with a warning)
+    /// if the repo's `html_url` doesn't parse.
+    fn into_draft(self, cfg: &GitHubConfig) -> Option<BookmarkDraft> {
         let post_date = crate::timefmt::rfc3339_to_unix(&self.starred_at);
         self.repo.into_draft_with_date(cfg, post_date)
     }
@@ -88,17 +90,26 @@ impl GitHubRepo {
     /// Shape the repo into a Pinboard draft (no source date). Test-only convenience;
     /// the production path dates each draft via [`StarredRepo::into_draft`].
     #[cfg(test)]
-    fn into_draft(self, cfg: &GitHubConfig) -> BookmarkDraft {
+    fn into_draft(self, cfg: &GitHubConfig) -> Option<BookmarkDraft> {
         self.into_draft_with_date(cfg, None)
     }
 
-    /// Shape the repo into a Pinboard draft, carrying `post_date` (the star time).
-    fn into_draft_with_date(self, cfg: &GitHubConfig, post_date: Option<i64>) -> BookmarkDraft {
-        let dedup_key = Url::parse(&self.html_url)
-            .ok()
-            .as_ref()
-            .and_then(url_key)
-            .unwrap_or_else(|| self.html_url.clone());
+    /// Shape the repo into a Pinboard draft, carrying `post_date` (the star time). `None`
+    /// (with a warning) if `html_url` doesn't parse.
+    fn into_draft_with_date(
+        self,
+        cfg: &GitHubConfig,
+        post_date: Option<i64>,
+    ) -> Option<BookmarkDraft> {
+        let url = Url::parse(&self.html_url)
+            .map_err(|e| {
+                warn!(
+                    "skipping github repo with unparseable URL {}: {e}",
+                    self.html_url
+                )
+            })
+            .ok()?;
+        let dedup_key = url_key(&url).unwrap_or_else(|| url.to_string());
 
         let note = github_extended(
             self.description.as_deref(),
@@ -112,9 +123,9 @@ impl GitHubRepo {
             push_prefixed(&mut tags, &cfg.lang_prefix, &lang.to_lowercase());
         }
 
-        BookmarkDraft {
+        Some(BookmarkDraft {
             bookmark: Bookmark {
-                url: self.html_url,
+                url,
                 title: html_to_plain(&self.full_name),
                 note,
                 tags,
@@ -123,7 +134,7 @@ impl GitHubRepo {
                 read_later: false,
             },
             dedup_key,
-        }
+        })
     }
 }
 
@@ -234,7 +245,11 @@ impl Source for GitHubClient {
                 .json()
                 .await
                 .context("parsing github starred response")?;
-            out.extend(starred.into_iter().map(|s| s.into_draft(&self.config)));
+            out.extend(
+                starred
+                    .into_iter()
+                    .filter_map(|s| s.into_draft(&self.config)),
+            );
 
             match next {
                 Some(p) => page = p,
@@ -289,7 +304,7 @@ pub async fn cleanup<P: BookmarkStore>(
 ) -> Result<()> {
     let gh_bms: Vec<_> = bookmarks
         .iter()
-        .filter(|bookmark| Url::parse(&bookmark.url).is_ok_and(|url| url.host_is("github.com")))
+        .filter(|bookmark| bookmark.url.host_is("github.com"))
         .cloned()
         .collect();
 
@@ -303,10 +318,7 @@ pub async fn cleanup<P: BookmarkStore>(
             .map_err(SourceError::into_anyhow)?
             .into_iter()
             .filter_map(|d| {
-                let key = Url::parse(&d.bookmark.url)
-                    .ok()
-                    .as_ref()
-                    .and_then(url_key)?;
+                let key = url_key(&d.bookmark.url)?;
                 Some((key, d.bookmark.timestamp?.unix_timestamp()))
             })
             .collect()
@@ -345,11 +357,8 @@ struct GitHubCleanupPass<'a> {
 
 impl CleanupPass for GitHubCleanupPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
-        // Parse the stored URL once (the pass is filtered to github URLs).
-        let Some(original) = Url::parse(&bookmark.url).ok() else {
-            return Ok(None);
-        };
-        let canonical = canonical_repo_url(&original).unwrap_or(original);
+        // The stored URL is already parsed (the pass is filtered to github URLs).
+        let canonical = canonical_repo_url(&bookmark.url).unwrap_or_else(|| bookmark.url.clone());
 
         // Default to the canonicalization, then refresh from the API when the repo
         // still exists (a 404 keeps just the canonical URL).
@@ -381,7 +390,7 @@ impl CleanupPass for GitHubCleanupPass<'_> {
             .and_then(|k| self.star_dates.get(&k).copied())
             .and_then(crate::timefmt::from_unix);
         Ok(Some(Bookmark {
-            url: url.into(),
+            url,
             title,
             note,
             tags,
@@ -479,9 +488,10 @@ mod tests {
             "homepage": "https://example.com",
             "language": "Rust",
         }))
-        .into_draft(&GitHubConfig::default());
+        .into_draft(&GitHubConfig::default())
+        .unwrap();
 
-        assert_eq!(d.bookmark.url, "https://github.com/owner/Repo");
+        assert_eq!(d.bookmark.url.as_str(), "https://github.com/owner/Repo");
         assert_eq!(d.bookmark.title, "owner/Repo");
         assert_eq!(
             d.bookmark.note,
@@ -489,6 +499,14 @@ mod tests {
         );
         assert_eq!(d.bookmark.tags, vec!["github-star", "lang:rust"]);
         assert_eq!(d.dedup_key, "github.com/owner/repo");
+    }
+
+    #[test]
+    fn into_draft_skips_repo_with_unparseable_url() {
+        // A repo whose `html_url` doesn't parse is dropped rather than producing a draft.
+        assert!(repo(json!({ "full_name": "o/r", "html_url": "not a url" }))
+            .into_draft(&GitHubConfig::default())
+            .is_none());
     }
 
     #[test]
@@ -516,7 +534,8 @@ mod tests {
             "full_name": "o/r", "html_url": "https://github.com/o/r",
             "language": "Jupyter Notebook"
         }))
-        .into_draft(&GitHubConfig::default());
+        .into_draft(&GitHubConfig::default())
+        .unwrap();
         assert_eq!(
             d.bookmark.tags,
             vec!["github-star", "lang:jupyter-notebook"]
@@ -529,7 +548,8 @@ mod tests {
             "full_name": "o/r",
             "html_url": "https://github.com/o/r",
         }))
-        .into_draft(&GitHubConfig::default());
+        .into_draft(&GitHubConfig::default())
+        .unwrap();
         // Missing description falls back to the URL; no language → no lang tag.
         assert_eq!(d.bookmark.note, "https://github.com/o/r");
         assert_eq!(d.bookmark.tags, vec!["github-star"]);
@@ -542,7 +562,8 @@ mod tests {
             ..GitHubConfig::default()
         };
         let d = repo(json!({ "full_name": "o/r", "html_url": "https://github.com/o/r" }))
-            .into_draft(&cfg);
+            .into_draft(&cfg)
+            .unwrap();
         assert_eq!(d.bookmark.tags, vec!["github-star", "account:work"]);
     }
 
@@ -701,7 +722,8 @@ mod net_tests {
                 shared: "no".into(),
                 toread: "no".into(),
             }
-            .into()],
+            .try_into()
+            .unwrap()],
             ..Default::default()
         };
         let bookmarks = pinboard.all.clone();
@@ -771,7 +793,8 @@ mod net_tests {
                 shared: "no".into(),
                 toread: "no".into(),
             }
-            .into()],
+            .try_into()
+            .unwrap()],
             ..Default::default()
         };
         let bookmarks = pinboard.all.clone();

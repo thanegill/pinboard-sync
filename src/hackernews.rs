@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use log::warn;
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
@@ -130,8 +131,12 @@ impl HackerNewsItem {
     /// Shape the item into a Pinboard draft. Comments keep the HN permalink; stories
     /// bookmark the linked article (HN discussion in the notes), falling back to the
     /// HN permalink for text posts (Ask HN, etc.).
-    fn into_draft(self, cfg: &HackernewsConfig) -> BookmarkDraft {
-        let hn_url = hn_item_url(self.id);
+    fn into_draft(self, cfg: &HackernewsConfig) -> Option<BookmarkDraft> {
+        // The HN permalink is constructed, so it parses; bail (with a warning) only if
+        // that ever changes.
+        let hn_url = Url::parse(&hn_item_url(self.id))
+            .map_err(|e| warn!("skipping HN item {}: bad permalink: {e}", self.id))
+            .ok()?;
         let is_comment = self.kind == "comment";
 
         let mut tags = Vec::new();
@@ -146,9 +151,9 @@ impl HackerNewsItem {
 
         if is_comment {
             let md = html_to_markdown(&self.text.unwrap_or_default());
-            return BookmarkDraft {
+            return Some(BookmarkDraft {
                 bookmark: Bookmark {
-                    url: hn_url.clone(),
+                    url: hn_url,
                     title: html_to_plain(&format!("HN: Comment by {}", self.by)),
                     note: if md.is_empty() { md } else { blockquote(&md) },
                     tags,
@@ -157,15 +162,21 @@ impl HackerNewsItem {
                     read_later: false,
                 },
                 dedup_key: format!("hn:{}", self.id),
-            };
+            });
         }
 
         let article = self.url.filter(|s| !s.is_empty());
-        let (url, dedup_key) = match &article {
-            Some(u) => {
-                let key = Url::parse(u).ok().as_ref().and_then(url_key);
-                (u.clone(), key.unwrap_or_else(|| u.clone()))
-            }
+        let (url, dedup_key) = match article.as_deref() {
+            Some(u) => match Url::parse(u) {
+                Ok(parsed) => {
+                    let key = url_key(&parsed).unwrap_or_else(|| parsed.to_string());
+                    (parsed, key)
+                }
+                Err(e) => {
+                    warn!("skipping HN story with unparseable article URL {u}: {e}");
+                    return None;
+                }
+            },
             None => (hn_url.clone(), format!("hn:{}", self.id)),
         };
         let title = html_to_plain(
@@ -191,7 +202,7 @@ impl HackerNewsItem {
                 format!("{note}\n\n{block}")
             };
         }
-        BookmarkDraft {
+        Some(BookmarkDraft {
             bookmark: Bookmark {
                 url,
                 title,
@@ -202,7 +213,7 @@ impl HackerNewsItem {
                 read_later: false,
             },
             dedup_key,
-        }
+        })
     }
 }
 
@@ -378,7 +389,7 @@ impl Source for HackerNewsClient {
         Ok(ids
             .iter()
             .filter_map(|id| items.get(id).cloned())
-            .map(|item| item.into_draft(&self.config))
+            .filter_map(|item| item.into_draft(&self.config))
             .collect())
     }
 }
@@ -440,20 +451,14 @@ impl HackerNewsClient {
     ) -> Result<()> {
         let hackernews_bookmarks: Vec<_> = bookmarks
             .iter()
-            .filter(|bookmark| {
-                Url::parse(&bookmark.url)
-                    .ok()
-                    .as_ref()
-                    .and_then(hn_item_id)
-                    .is_some()
-            })
+            .filter(|bookmark| hn_item_id(&bookmark.url).is_some())
             .cloned()
             .collect();
 
         // Batch-fetch every referenced item once.
         let ids: Vec<String> = hackernews_bookmarks
             .iter()
-            .filter_map(|bookmark| Url::parse(&bookmark.url).ok().as_ref().and_then(hn_item_id))
+            .filter_map(|bookmark| hn_item_id(&bookmark.url))
             .collect();
         let items = self
             .fetch_items(&ids)
@@ -497,12 +502,7 @@ impl HackerNewsClient {
         let candidates: Vec<_> = bookmarks
             .iter()
             .filter(|bookmark| {
-                Url::parse(&bookmark.url)
-                    .ok()
-                    .as_ref()
-                    .and_then(hn_item_id)
-                    .is_none()
-                    && bookmark.tags.contains(&self.config.link_tag)
+                hn_item_id(&bookmark.url).is_none() && bookmark.tags.contains(&self.config.link_tag)
             })
             .cloned()
             .collect();
@@ -528,14 +528,16 @@ struct HackerNewsCleanupPass<'a> {
 
 impl CleanupPass for HackerNewsCleanupPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
-        // The pass is filtered to HN item URLs, so this parses and matches.
-        let id = Url::parse(&bookmark.url).ok().as_ref().and_then(hn_item_id);
+        // The pass is filtered to HN item URLs, so this matches.
+        let id = hn_item_id(&bookmark.url);
         let Some(item) = id.and_then(|id| self.items.get(&id)) else {
             return Ok(None);
         };
         // Re-derive the bookmark from the fresh item (url/title/note/date), then preserve
         // the stored bookmark's existing tags and privacy on the re-write.
-        let mut new = item.clone().into_draft(self.config).bookmark;
+        let Some(mut new) = item.clone().into_draft(self.config).map(|d| d.bookmark) else {
+            return Ok(None);
+        };
         let mut tags = bookmark.tags.clone();
         extend_unique(&mut tags, &new.tags);
         new.tags = tags;
@@ -555,10 +557,7 @@ struct HackerNewsLinkPass<'a> {
 
 impl CleanupPass for HackerNewsLinkPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
-        let Some(url) = Url::parse(&bookmark.url).ok() else {
-            return Ok(None);
-        };
-        let id = match self.client.search_by_url(&url).await {
+        let id = match self.client.search_by_url(&bookmark.url).await {
             Ok(Some(id)) => id,
             Ok(None) => return Ok(None),
             Err(e) => return Err(SourceError::into_anyhow(e)),
@@ -680,8 +679,9 @@ mod tests {
             "id": 42, "type": "story", "by": "alice",
             "title": "Cool thing", "url": "https://example.com/x"
         }))
-        .into_draft(&HackernewsConfig::default());
-        assert_eq!(d.bookmark.url, "https://example.com/x");
+        .into_draft(&HackernewsConfig::default())
+        .unwrap();
+        assert_eq!(d.bookmark.url.as_str(), "https://example.com/x");
         assert_eq!(d.bookmark.title, "Cool thing");
         assert_eq!(
             d.bookmark.note,
@@ -700,8 +700,12 @@ mod tests {
             "id": 7, "type": "story", "by": "bob",
             "title": "Ask HN: How?", "text": "<p>details</p>"
         }))
-        .into_draft(&HackernewsConfig::default());
-        assert_eq!(d.bookmark.url, "https://news.ycombinator.com/item?id=7");
+        .into_draft(&HackernewsConfig::default())
+        .unwrap();
+        assert_eq!(
+            d.bookmark.url.as_str(),
+            "https://news.ycombinator.com/item?id=7"
+        );
         assert_eq!(d.dedup_key, "hn:7");
         // The bookmark URL is already the HN permalink, so the notes carry only the post
         // text (no redundant `HN Link:`), with the inner HTML converted to Markdown.
@@ -715,8 +719,12 @@ mod tests {
         let d = item(json!({
             "id": 8, "type": "story", "by": "bob", "title": "Ask HN: empty?"
         }))
-        .into_draft(&HackernewsConfig::default());
-        assert_eq!(d.bookmark.url, "https://news.ycombinator.com/item?id=8");
+        .into_draft(&HackernewsConfig::default())
+        .unwrap();
+        assert_eq!(
+            d.bookmark.url.as_str(),
+            "https://news.ycombinator.com/item?id=8"
+        );
         // No text and no redundant HN link: nothing to put in the notes.
         assert_eq!(d.bookmark.note, "");
     }
@@ -729,7 +737,8 @@ mod tests {
             "title": "Rust&#x27;s &amp; more", "url": "https://example.com/a",
             "text": "<p>see <a href=\"https://x.com\">x</a> &gt; y</p>"
         }))
-        .into_draft(&HackernewsConfig::default());
+        .into_draft(&HackernewsConfig::default())
+        .unwrap();
         // Title: entities decoded, tags stripped, single line.
         assert_eq!(d.bookmark.title, "Rust's & more");
         // Body: HTML converted to Markdown, wrapped in a literal <blockquote>.
@@ -744,8 +753,12 @@ mod tests {
         let d = item(json!({
             "id": 9, "type": "comment", "by": "carol", "text": "my reply"
         }))
-        .into_draft(&HackernewsConfig::default());
-        assert_eq!(d.bookmark.url, "https://news.ycombinator.com/item?id=9");
+        .into_draft(&HackernewsConfig::default())
+        .unwrap();
+        assert_eq!(
+            d.bookmark.url.as_str(),
+            "https://news.ycombinator.com/item?id=9"
+        );
         assert_eq!(d.bookmark.title, "HN: Comment by carol");
         assert_eq!(d.bookmark.note, "<blockquote>my reply</blockquote>");
         assert_eq!(d.dedup_key, "hn:9");
@@ -756,6 +769,18 @@ mod tests {
                 "hackernews-comment",
                 "author:hackernews:carol"
             ]
+        );
+    }
+
+    #[test]
+    fn into_draft_skips_story_with_unparseable_article_url() {
+        // A story whose article URL doesn't parse is dropped rather than producing a
+        // draft with no URL. (Comments/text posts use the HN permalink, which always
+        // parses, so only article stories can hit this.)
+        assert!(
+            item(json!({ "id": 5, "type": "story", "by": "ann", "url": "not a url" }))
+                .into_draft(&HackernewsConfig::default())
+                .is_none()
         );
     }
 
@@ -866,9 +891,9 @@ mod net_tests {
         );
         let drafts = client.fetch().await.unwrap();
         assert_eq!(drafts.len(), 2);
-        assert_eq!(drafts[0].bookmark.url, "https://example.com/x");
+        assert_eq!(drafts[0].bookmark.url.as_str(), "https://example.com/x");
         assert_eq!(
-            drafts[1].bookmark.url,
+            drafts[1].bookmark.url.as_str(),
             "https://news.ycombinator.com/item?id=9"
         );
         assert!(drafts[1]
@@ -904,7 +929,8 @@ mod net_tests {
                 shared: "no".into(),
                 toread: "no".into(),
             }
-            .into()],
+            .try_into()
+            .unwrap()],
             ..Default::default()
         };
 
@@ -972,7 +998,7 @@ mod net_tests {
                 shared: "no".into(),
                 toread: "no".into(),
             }
-            .into()],
+            .try_into().unwrap()],
             ..Default::default()
         };
 
@@ -1037,7 +1063,8 @@ mod net_tests {
                 shared: "no".into(),
                 toread: "no".into(),
             }
-            .into()],
+            .try_into()
+            .unwrap()],
             ..Default::default()
         };
 

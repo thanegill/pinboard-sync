@@ -116,9 +116,9 @@ renamed/moved repos and refresh the title + language tag.
 `SyncJob { client: SourceClient, hook, limit }`; `SourceClient` is an enum over the
 three clients implementing `Source`, so `build_jobs` + `run_sync_jobs` handle one
 account and `--all` uniformly. Per-account settings
-(`toread`/`public`/`limit`/`use_post_date`/…) resolve account → `[defaults.<source>]`
-→ `[pinboard]` through the generic `tier` helper and `DateSettings`, reading the
-shared override fields via the `config::Account` trait. `run_sync_jobs` fetches every job's source
+(`toread`/`public`/`limit`/`use_post_date`/…) resolve CLI flag → account →
+`[defaults.<source>]` → `[pinboard]` through the generic `resolve_setting` helper and
+`DateSettings`, reading the shared override fields via the `config::Account` trait. `run_sync_jobs` fetches every job's source
 concurrently via `futures::future::join_all` (reads only, on one task — the client
 futures aren't `Send`, so no `tokio::spawn`), then writes the merged, URL-deduped
 drafts **sequentially** through one rate-limited writer (`sync::write_drafts`).

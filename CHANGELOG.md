@@ -20,9 +20,19 @@ All notable changes to this project are documented here. The format is based on
   `toread`, `public`, `limit`, `on_auth_failure`, `post_date_max_age_days`, and
   `cleanup_stale_to_now` now resolve **CLI → account → `[defaults.<source>]` → global**.
   A new global `[pinboard].limit` is the bottom tier for the write cap.
+- CLI flags for the per-run setting tier, each topping the ladder
+  (**flag → account → `[defaults.<source>]` → `[pinboard]` global → built-in default**):
+  `--limit`, `--max-age-days`, `--toread[=BOOL]`, `--public[=BOOL]`,
+  `--use-post-date[=BOOL]` on `sync`, and `--max-age-days`, `--use-post-date[=BOOL]`,
+  `--stale-to-now[=BOOL]` on `cleanup` (per source and `cleanup --all`). No environment
+  variables — these are CLI- and config-only.
 
 ### Changed
 
+- `--public` is now a value-taking flag: `--public` (= `true`) or `--public=false`.
+  Previously it was a bare force-on switch that could not override a config-set `true`
+  back to `false`; the new form can. `--limit` is likewise now an optional value (unset,
+  rather than the old `0` sentinel, means "no per-run override").
 - Bookmark **titles and notes are cleaned of raw HTML** before reaching Pinboard. Titles
   run through an HTML-strip + entity-decode pass for all three sources (so `&#x27;`/`&amp;`
   decode and stray markup is removed). Note bodies are wrapped in a literal `<blockquote>`,

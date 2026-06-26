@@ -110,12 +110,21 @@ struct RedditSyncArgs {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
-    /// Cap on new bookmarks written this run; 0 = all.
-    #[arg(long, default_value_t = 0)]
-    limit: usize,
-    /// Create bookmarks public (default: private).
+    /// Cap on new bookmarks written this run (overrides config; unset = config / no cap).
     #[arg(long)]
-    public: bool,
+    limit: Option<usize>,
+    /// Only backdate posts newer than N days; older use "now" (overrides config).
+    #[arg(long)]
+    max_age_days: Option<u64>,
+    /// Mark new bookmarks to-read: `--toread` or `--toread=false` (overrides config).
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    toread: Option<bool>,
+    /// Create bookmarks public: `--public` or `--public=false` (overrides config).
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    public: Option<bool>,
+    /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    use_post_date: Option<bool>,
     /// Shell command run when the Reddit cookie needs refreshing (a 401/403).
     #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
     on_auth_failure: Option<String>,
@@ -137,12 +146,21 @@ struct GitHubSyncArgs {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
-    /// Cap on new bookmarks written this run; 0 = all.
-    #[arg(long, default_value_t = 0)]
-    limit: usize,
-    /// Create bookmarks public (default: private).
+    /// Cap on new bookmarks written this run (overrides config; unset = config / no cap).
     #[arg(long)]
-    public: bool,
+    limit: Option<usize>,
+    /// Only backdate posts newer than N days; older use "now" (overrides config).
+    #[arg(long)]
+    max_age_days: Option<u64>,
+    /// Mark new bookmarks to-read: `--toread` or `--toread=false` (overrides config).
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    toread: Option<bool>,
+    /// Create bookmarks public: `--public` or `--public=false` (overrides config).
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    public: Option<bool>,
+    /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    use_post_date: Option<bool>,
     /// Shell command run when the GitHub token needs refreshing (a 401).
     #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
     on_auth_failure: Option<String>,
@@ -164,12 +182,21 @@ struct HackernewsSyncArgs {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
-    /// Cap on new bookmarks written this run; 0 = all.
-    #[arg(long, default_value_t = 0)]
-    limit: usize,
-    /// Create bookmarks public (default: private).
+    /// Cap on new bookmarks written this run (overrides config; unset = config / no cap).
     #[arg(long)]
-    public: bool,
+    limit: Option<usize>,
+    /// Only backdate posts newer than N days; older use "now" (overrides config).
+    #[arg(long)]
+    max_age_days: Option<u64>,
+    /// Mark new bookmarks to-read: `--toread` or `--toread=false` (overrides config).
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    toread: Option<bool>,
+    /// Create bookmarks public: `--public` or `--public=false` (overrides config).
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    public: Option<bool>,
+    /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    use_post_date: Option<bool>,
     /// Fetch and print what would be posted, without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
@@ -183,6 +210,8 @@ struct CleanupCmd {
     /// Show what would change without writing to Pinboard (with --all).
     #[arg(long)]
     dry_run: bool,
+    #[command(flatten)]
+    dates: DateFlags,
     #[command(subcommand)]
     source: Option<CleanupSource>,
 }
@@ -197,6 +226,32 @@ enum CleanupSource {
     Hackernews(HackernewsCleanupArgs),
 }
 
+/// The date-setting flags shared by every cleanup command (and `cleanup --all`),
+/// flattened into each so the declarations + their override mapping live in one place.
+#[derive(Args, Clone, Default)]
+struct DateFlags {
+    /// Only backdate posts newer than N days; older use "now" (overrides config).
+    #[arg(long)]
+    max_age_days: Option<u64>,
+    /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    use_post_date: Option<bool>,
+    /// Re-date too-old posts to now: `--stale-to-now[=BOOL]` (overrides config).
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    stale_to_now: Option<bool>,
+}
+
+impl DateFlags {
+    /// The date-setting overrides these flags supply, sitting at the top of the tier.
+    fn overrides(&self) -> DateOverrides {
+        DateOverrides {
+            use_post_date: self.use_post_date,
+            max_age_days: self.max_age_days,
+            stale_to_now: self.stale_to_now,
+        }
+    }
+}
+
 #[derive(Args, Clone)]
 struct GitHubCleanupArgs {
     /// Account name whose token/tags to use (default: the first github account).
@@ -207,6 +262,8 @@ struct GitHubCleanupArgs {
     /// Pinboard API token (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
+    #[command(flatten)]
+    dates: DateFlags,
     /// Show what would change without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
@@ -226,6 +283,8 @@ struct HackernewsCleanupArgs {
     /// Override the marker tag used by --link-discussions (config: `tag_link`).
     #[arg(long)]
     link_tag: Option<String>,
+    #[command(flatten)]
+    dates: DateFlags,
     /// Show what would change without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
@@ -248,6 +307,8 @@ struct RedditCleanupArgs {
     /// Skip replacing generic placeholder titles.
     #[arg(long)]
     no_titles: bool,
+    #[command(flatten)]
+    dates: DateFlags,
     /// Show what would change without writing to Pinboard.
     #[arg(long)]
     dry_run: bool,
@@ -453,9 +514,24 @@ struct SyncOverrides {
     hackernews_username: Option<String>,
     pinboard_token: Option<String>,
     on_auth_failure: Option<String>,
-    limit: usize,
-    public: bool,
+    limit: Option<usize>,
+    toread: Option<bool>,
+    public: Option<bool>,
+    use_post_date: Option<bool>,
+    max_age_days: Option<u64>,
     dry_run: bool,
+}
+
+impl SyncOverrides {
+    /// The date-setting overrides this invocation supplies. `stale_to_now` is
+    /// cleanup-only, so it is always `None` here.
+    fn date_overrides(&self) -> DateOverrides {
+        DateOverrides {
+            use_post_date: self.use_post_date,
+            max_age_days: self.max_age_days,
+            stale_to_now: None,
+        }
+    }
 }
 
 impl RedditSyncArgs {
@@ -467,7 +543,10 @@ impl RedditSyncArgs {
             pinboard_token: self.pinboard_token,
             on_auth_failure: self.on_auth_failure,
             limit: self.limit,
+            toread: self.toread,
             public: self.public,
+            use_post_date: self.use_post_date,
+            max_age_days: self.max_age_days,
             dry_run: self.dry_run,
             ..SyncOverrides::default()
         }
@@ -482,7 +561,10 @@ impl GitHubSyncArgs {
             pinboard_token: self.pinboard_token,
             on_auth_failure: self.on_auth_failure,
             limit: self.limit,
+            toread: self.toread,
             public: self.public,
+            use_post_date: self.use_post_date,
+            max_age_days: self.max_age_days,
             dry_run: self.dry_run,
             ..SyncOverrides::default()
         }
@@ -496,7 +578,10 @@ impl HackernewsSyncArgs {
             hackernews_username: self.username,
             pinboard_token: self.pinboard_token,
             limit: self.limit,
+            toread: self.toread,
             public: self.public,
+            use_post_date: self.use_post_date,
+            max_age_days: self.max_age_days,
             dry_run: self.dry_run,
             ..SyncOverrides::default()
         }
@@ -530,45 +615,49 @@ fn job_label<T: config::Named>(source: &str, account: Option<&T>) -> String {
     )
 }
 
-/// Three-tier setting resolution: the account override, else the per-source default,
-/// else the resolved `[pinboard]` global. (A fuller flag → `$VAR` → … ladder is a
-/// possible future extension.)
-fn tier<T>(account: Option<T>, source: Option<T>, global: T) -> T {
-    account.or(source).unwrap_or(global)
+/// Resolve a setting through its precedence tiers, highest first: the CLI flag, else
+/// the account override, else the per-source default, else the resolved `[pinboard]`
+/// global. The first present (`Some`) value wins; the global is the guaranteed fallback.
+fn resolve_setting<T>(flag: Option<T>, account: Option<T>, source: Option<T>, global: T) -> T {
+    flag.or(account).or(source).unwrap_or(global)
 }
 
-/// This account's public flag: forced on by `--public`, else 3-tier resolved.
-fn job_shared(
-    ovr: &SyncOverrides,
-    account: Option<bool>,
-    source: Option<bool>,
-    config: &Config,
-) -> bool {
-    ovr.public || tier(account, source, config.pinboard.public)
-}
-
-/// The resolved `use_post_date` trio for an account, each 3-tier (account override →
-/// per-source default → `[pinboard]` global, with `max_age_days` defaulting to
-/// [`config::DEFAULT_MAX_AGE_DAYS`]). Shared by every `sync`/`cleanup` builder.
+/// The resolved `use_post_date` trio for an account, each resolved through
+/// [`resolve_setting`] (flag → account → per-source default → `[pinboard]` global, with
+/// `max_age_days` defaulting to [`config::DEFAULT_MAX_AGE_DAYS`]). Shared by every
+/// `sync`/`cleanup` builder.
 struct DateSettings {
     use_post_date: bool,
     max_age_days: u64,
     stale_to_now: bool,
 }
 
+/// CLI-flag overrides for the date settings, sitting at the top of the tier
+/// (flag → account → per-source default → `[pinboard]` global). All-`None` means
+/// "no flag given", so resolution falls through to the existing tiers unchanged.
+#[derive(Default, Clone)]
+struct DateOverrides {
+    use_post_date: Option<bool>,
+    max_age_days: Option<u64>,
+    stale_to_now: Option<bool>,
+}
+
 impl DateSettings {
     fn resolve(
+        over: &DateOverrides,
         account: Option<&impl config::Account>,
         src: &config::SourceDefaults,
         config: &Config,
     ) -> Self {
         Self {
-            use_post_date: tier(
+            use_post_date: resolve_setting(
+                over.use_post_date,
                 account.and_then(|a| a.use_post_date()),
                 src.use_post_date,
                 config.pinboard.use_post_date,
             ),
-            max_age_days: tier(
+            max_age_days: resolve_setting(
+                over.max_age_days,
                 account.and_then(|a| a.max_age_days()),
                 src.post_date_max_age_days,
                 config
@@ -576,7 +665,8 @@ impl DateSettings {
                     .post_date_max_age_days
                     .unwrap_or(config::DEFAULT_MAX_AGE_DAYS),
             ),
-            stale_to_now: tier(
+            stale_to_now: resolve_setting(
+                over.stale_to_now,
                 account.and_then(|a| a.stale_to_now()),
                 src.cleanup_stale_to_now,
                 config.pinboard.cleanup_stale_to_now,
@@ -613,19 +703,6 @@ impl UrlKey for SourceClient {
     }
 }
 
-/// The per-run write cap: the CLI flag if set, else the account's `limit`, else the
-/// per-source default, else the `[pinboard]` global, else 0 (no cap).
-fn job_limit(
-    ovr: &SyncOverrides,
-    account: Option<usize>,
-    source: Option<usize>,
-    config: &Config,
-) -> usize {
-    // The CLI `--limit` (0 = unset) sits at the top of the tier, above account/source/global.
-    let cli = (ovr.limit > 0).then_some(ovr.limit);
-    tier(cli.or(account), source, config.pinboard.limit.unwrap_or(0))
-}
-
 fn build_reddit_job(
     account: Option<&RedditAccount>,
     ovr: &SyncOverrides,
@@ -654,18 +731,29 @@ fn build_reddit_job(
         src.on_auth_failure.as_deref(),
         config,
     );
-    let dates = DateSettings::resolve(account, src, config);
+    let dates = DateSettings::resolve(&ovr.date_overrides(), account, src, config);
     Ok(SyncJob {
         client: SourceClient::Reddit(RedditClient::for_user(username, cookie, reddit_config)?),
         label: job_label("reddit", account),
         hook,
-        limit: job_limit(ovr, account.and_then(|a| a.limit()), src.limit, config),
-        toread: tier(
+        limit: resolve_setting(
+            ovr.limit,
+            account.and_then(|a| a.limit()),
+            src.limit,
+            config.pinboard.limit.unwrap_or(0),
+        ),
+        toread: resolve_setting(
+            ovr.toread,
             account.and_then(|a| a.toread()),
             src.toread,
             config.pinboard.toread,
         ),
-        shared: job_shared(ovr, account.and_then(|a| a.public()), src.public, config),
+        shared: resolve_setting(
+            ovr.public,
+            account.and_then(|a| a.public()),
+            src.public,
+            config.pinboard.public,
+        ),
         use_post_date: dates.use_post_date,
         max_age_days: dates.max_age_days,
     })
@@ -693,18 +781,29 @@ fn build_github_job(
         src.on_auth_failure.as_deref(),
         config,
     );
-    let dates = DateSettings::resolve(account, src, config);
+    let dates = DateSettings::resolve(&ovr.date_overrides(), account, src, config);
     Ok(SyncJob {
         client: SourceClient::Github(GitHubClient::new(token, github_config)?),
         label: job_label("github", account),
         hook,
-        limit: job_limit(ovr, account.and_then(|a| a.limit()), src.limit, config),
-        toread: tier(
+        limit: resolve_setting(
+            ovr.limit,
+            account.and_then(|a| a.limit()),
+            src.limit,
+            config.pinboard.limit.unwrap_or(0),
+        ),
+        toread: resolve_setting(
+            ovr.toread,
             account.and_then(|a| a.toread()),
             src.toread,
             config.pinboard.toread,
         ),
-        shared: job_shared(ovr, account.and_then(|a| a.public()), src.public, config),
+        shared: resolve_setting(
+            ovr.public,
+            account.and_then(|a| a.public()),
+            src.public,
+            config.pinboard.public,
+        ),
         use_post_date: dates.use_post_date,
         max_age_days: dates.max_age_days,
     })
@@ -728,19 +827,30 @@ fn build_hackernews_job(
         .map(HackernewsAccount::hackernews_config)
         .unwrap_or_default();
     let src = &config.defaults.hackernews;
-    let dates = DateSettings::resolve(account, src, config);
+    let dates = DateSettings::resolve(&ovr.date_overrides(), account, src, config);
     Ok(SyncJob {
         // HackerNews favorites are public, so there is no auth-failure hook.
         client: SourceClient::Hackernews(HackerNewsClient::new(username, hn_config)?),
         label: job_label("hackernews", account),
         hook: None,
-        limit: job_limit(ovr, account.and_then(|a| a.limit()), src.limit, config),
-        toread: tier(
+        limit: resolve_setting(
+            ovr.limit,
+            account.and_then(|a| a.limit()),
+            src.limit,
+            config.pinboard.limit.unwrap_or(0),
+        ),
+        toread: resolve_setting(
+            ovr.toread,
             account.and_then(|a| a.toread()),
             src.toread,
             config.pinboard.toread,
         ),
-        shared: job_shared(ovr, account.and_then(|a| a.public()), src.public, config),
+        shared: resolve_setting(
+            ovr.public,
+            account.and_then(|a| a.public()),
+            src.public,
+            config.pinboard.public,
+        ),
         use_post_date: dates.use_post_date,
         max_age_days: dates.max_age_days,
     })
@@ -918,6 +1028,7 @@ async fn check_accounts<T: config::Named>(
 // --- cleanup -----------------------------------------------------------------
 
 async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
+    let over = cmd.dates.overrides();
     match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
@@ -930,7 +1041,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             let (pinboard, bookmarks) = open_pinboard(None, config).await?;
             let mut run = AllRun::default();
             if let Some(acct) = config.github.first() {
-                let opts = gh_cleanup_opts(cmd.dry_run, Some(acct), config);
+                let opts = gh_cleanup_opts(&over, cmd.dry_run, Some(acct), config);
                 run.record(
                     cleanup_github_for(&pinboard, &bookmarks, Some(acct), None, &opts).await,
                 );
@@ -942,10 +1053,12 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                     pinboard_token: None,
                     no_nsfw: false,
                     no_titles: false,
+                    dates: DateFlags::default(),
                     dry_run: cmd.dry_run,
                 };
                 run.record(
-                    cleanup_one_reddit(Some(acct), &args, &pinboard, &bookmarks, config).await,
+                    cleanup_one_reddit(Some(acct), &args, &over, &pinboard, &bookmarks, config)
+                        .await,
                 );
             }
             if let Some(acct) = config.hackernews.first() {
@@ -955,6 +1068,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                         cmd.dry_run,
                         false, // linking is opt-in via `cleanup hackernews --link-discussions`
                         None,
+                        &over,
                         &pinboard,
                         &bookmarks,
                         config,
@@ -973,13 +1087,14 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
     }
 }
 
-/// Resolve the date settings (3-tier) for a github cleanup pass.
+/// Resolve the tiered date settings for a github cleanup pass.
 fn gh_cleanup_opts(
+    over: &DateOverrides,
     dry_run: bool,
     account: Option<&GitHubAccount>,
     config: &Config,
 ) -> github::GitHubCleanupOpts {
-    let dates = DateSettings::resolve(account, &config.defaults.github, config);
+    let dates = DateSettings::resolve(over, account, &config.defaults.github, config);
     github::GitHubCleanupOpts {
         dry_run,
         use_post_date: dates.use_post_date,
@@ -989,9 +1104,10 @@ fn gh_cleanup_opts(
 }
 
 async fn run_cleanup_github(args: GitHubCleanupArgs, config: &Config) -> Result<()> {
+    let over = args.dates.overrides();
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let account = config::select_account(&config.github, args.account.as_deref())?;
-    let opts = gh_cleanup_opts(args.dry_run, account, config);
+    let opts = gh_cleanup_opts(&over, args.dry_run, account, config);
     cleanup_github_for(&pinboard, &bookmarks, account, args.github_token, &opts).await
 }
 
@@ -1023,12 +1139,21 @@ async fn run_cleanup_reddit(args: RedditCleanupArgs, config: &Config) -> Result<
     // first, or implicit CLI/env) account's cookie + domain/tags.
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let account = config::select_account(&config.reddit, args.account.as_deref())?;
-    cleanup_one_reddit(account, &args, &pinboard, &bookmarks, config).await
+    cleanup_one_reddit(
+        account,
+        &args,
+        &args.dates.overrides(),
+        &pinboard,
+        &bookmarks,
+        config,
+    )
+    .await
 }
 
 async fn cleanup_one_reddit(
     account: Option<&RedditAccount>,
     args: &RedditCleanupArgs,
+    over: &DateOverrides,
     pinboard: &PinboardClient,
     bookmarks: &[Bookmark],
     config: &Config,
@@ -1036,7 +1161,7 @@ async fn cleanup_one_reddit(
     let reddit_config = account
         .map(RedditAccount::reddit_config)
         .unwrap_or_default();
-    let dates = DateSettings::resolve(account, &config.defaults.reddit, config);
+    let dates = DateSettings::resolve(over, account, &config.defaults.reddit, config);
     let opts = cleanup::RedditCleanupOpts {
         dry_run: args.dry_run,
         mark_nsfw: !args.no_nsfw,
@@ -1072,11 +1197,13 @@ async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) ->
     // first, or implicit) account's tag config.
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let account = config::select_account(&config.hackernews, args.account.as_deref())?;
+    let over = args.dates.overrides();
     cleanup_one_hackernews(
         account,
         args.dry_run,
         args.link_discussions,
         args.link_tag,
+        &over,
         &pinboard,
         &bookmarks,
         config,
@@ -1090,6 +1217,7 @@ async fn cleanup_one_hackernews(
     dry_run: bool,
     link_discussions: bool,
     link_tag: Option<String>,
+    over: &DateOverrides,
     pinboard: &PinboardClient,
     bookmarks: &[Bookmark],
     config: &Config,
@@ -1101,7 +1229,7 @@ async fn cleanup_one_hackernews(
     if let Some(tag) = link_tag {
         hn_config.link_tag = tag;
     }
-    let dates = DateSettings::resolve(account, &config.defaults.hackernews, config);
+    let dates = DateSettings::resolve(over, account, &config.defaults.hackernews, config);
     let hn = HackerNewsClient::for_cleanup(hn_config)?;
     hn.cleanup(
         pinboard,
@@ -1278,5 +1406,80 @@ mod tests {
         let p = preview(&long);
         assert!(p.ends_with('…'));
         assert_eq!(p.chars().count(), 161);
+    }
+
+    #[test]
+    fn resolve_setting_picks_the_highest_present_tier() {
+        // flag → account → source → global, first `Some` wins.
+        assert_eq!(resolve_setting(Some(1), Some(2), Some(3), 5), 1); // flag tops all
+        assert_eq!(resolve_setting(None, Some(2), Some(3), 5), 2); // account over source
+        assert_eq!(resolve_setting(None, None, Some(3), 5), 3); // source over global
+        assert_eq!(resolve_setting::<usize>(None, None, None, 5), 5); // global fallback
+
+        // A `Some(false)` flag is a real value, so it forces a `true` lower tier off —
+        // the behavior a bare clap flag could not express (this is why `--public[=BOOL]`).
+        assert!(!resolve_setting(Some(false), Some(true), Some(true), true));
+        assert!(resolve_setting(Some(true), None, None, false));
+        assert!(resolve_setting(None, None, None, true)); // global fallback
+    }
+
+    #[test]
+    fn date_settings_stale_to_now_flag_tops_the_tier() {
+        let config = Config::default(); // global cleanup_stale_to_now = false
+        let src = &config.defaults.reddit;
+
+        // flag forces it on against a false global
+        let over = DateOverrides {
+            stale_to_now: Some(true),
+            ..Default::default()
+        };
+        let d = DateSettings::resolve(&over, None::<&RedditAccount>, src, &config);
+        assert!(d.stale_to_now);
+
+        // flag forces it off against a true global
+        let mut config = Config::default();
+        config.pinboard.cleanup_stale_to_now = true;
+        let src = &config.defaults.reddit;
+        let over = DateOverrides {
+            stale_to_now: Some(false),
+            ..Default::default()
+        };
+        let d = DateSettings::resolve(&over, None::<&RedditAccount>, src, &config);
+        assert!(!d.stale_to_now);
+    }
+
+    #[test]
+    fn date_settings_max_age_days_flag_tops_the_tier() {
+        let mut config = Config::default();
+        config.pinboard.post_date_max_age_days = Some(10); // global
+        let src = &config.defaults.reddit; // per-source default None
+
+        // flag wins
+        let over = DateOverrides {
+            max_age_days: Some(99),
+            ..Default::default()
+        };
+        let d = DateSettings::resolve(&over, None::<&RedditAccount>, src, &config);
+        assert_eq!(d.max_age_days, 99);
+
+        // no flag → global
+        let d = DateSettings::resolve(
+            &DateOverrides::default(),
+            None::<&RedditAccount>,
+            src,
+            &config,
+        );
+        assert_eq!(d.max_age_days, 10);
+
+        // global unset → built-in default
+        let config = Config::default();
+        let src = &config.defaults.reddit;
+        let d = DateSettings::resolve(
+            &DateOverrides::default(),
+            None::<&RedditAccount>,
+            src,
+            &config,
+        );
+        assert_eq!(d.max_age_days, config::DEFAULT_MAX_AGE_DAYS);
     }
 }

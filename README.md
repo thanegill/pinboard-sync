@@ -137,6 +137,26 @@ pinboard-sync doctor
 `completions` and `config example` — are covered in
 [Shell completions and example config](#shell-completions-and-example-config).
 
+### Per-run setting flags
+
+These per-account settings can also be set on the command line, where the flag tops
+the resolution tier (**flag → account → `[defaults.<source>]` → `[pinboard]` global →
+built-in default**). They are CLI- and config-only — there are no environment
+variables for them.
+
+| Flag | Commands | Setting |
+| --- | --- | --- |
+| `--limit <N>` | `sync` | Cap on new bookmarks written this run (0 / unset = no cap). |
+| `--max-age-days <N>` | `sync`, `cleanup` | Only backdate posts newer than N days; older use "now". |
+| `--toread[=BOOL]` | `sync` | Mark new bookmarks to-read. |
+| `--public[=BOOL]` | `sync` | Create bookmarks public (default private). |
+| `--use-post-date[=BOOL]` | `sync`, `cleanup` | Date bookmarks by the source post date. |
+| `--stale-to-now[=BOOL]` | `cleanup` | Re-date too-old posts to now (default: keep existing). |
+
+The boolean flags take an optional value: `--toread` means `true`, `--toread=false`
+forces it off (so a config-set `true` can be overridden back to `false`). Bare
+`--public` likewise means `--public=true`.
+
 ### Logging
 
 Progress is logged to **stderr** at `info` level by default (the version on startup,

@@ -132,11 +132,9 @@ impl HackerNewsItem {
     /// bookmark the linked article (HN discussion in the notes), falling back to the
     /// HN permalink for text posts (Ask HN, etc.).
     fn into_draft(self, cfg: &HackernewsConfig) -> Option<BookmarkDraft> {
-        // The HN permalink is constructed, so it parses; bail (with a warning) only if
-        // that ever changes.
-        let hn_url = Url::parse(&hn_item_url(self.id))
-            .map_err(|e| warn!("skipping HN item {}: bad permalink: {e}", self.id))
-            .ok()?;
+        let item_id = HackerNewsItemId::from(self.id);
+        // The HN discussion permalink (always valid — the id sits in the query string).
+        let hn_url = Url::from(&item_id);
         let is_comment = self.kind == "comment";
 
         let mut tags = Vec::new();
@@ -161,7 +159,7 @@ impl HackerNewsItem {
                     public: false,
                     read_later: false,
                 },
-                dedup_key: format!("hn:{}", self.id),
+                dedup_key: format!("hn:{item_id}"),
             });
         }
 
@@ -177,7 +175,7 @@ impl HackerNewsItem {
                     return None;
                 }
             },
-            None => (hn_url.clone(), format!("hn:{}", self.id)),
+            None => (hn_url.clone(), format!("hn:{item_id}")),
         };
         let title = html_to_plain(
             &self
@@ -259,7 +257,11 @@ impl HackerNewsClient {
 
     /// Collect favorited item IDs from the stories page (`comments=false`) or the
     /// comments page (`comments=true`), following the "More" link across pages.
-    async fn collect_ids(&self, comments: bool, out: &mut Vec<String>) -> Result<(), SourceError> {
+    async fn collect_ids(
+        &self,
+        comments: bool,
+        out: &mut Vec<HackerNewsItemId>,
+    ) -> Result<(), SourceError> {
         let suffix = if comments { "&comments=t" } else { "" };
         let mut next = Some(format!(
             "{}/favorites?id={}{}",
@@ -280,7 +282,7 @@ impl HackerNewsClient {
                 .into());
             }
             let (ids, more) = parse_favorite_ids(&body);
-            out.extend(ids);
+            out.extend(ids.into_iter().map(HackerNewsItemId::from));
             next = more.map(|href| self.resolve(&href));
             // Be gentle between page fetches.
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -304,8 +306,8 @@ impl HackerNewsClient {
     /// no longer exist are simply absent from the map.
     async fn fetch_items(
         &self,
-        ids: &[String],
-    ) -> Result<HashMap<String, HackerNewsItem>, SourceError> {
+        ids: &[HackerNewsItemId],
+    ) -> Result<HashMap<HackerNewsItemId, HackerNewsItem>, SourceError> {
         let endpoint = format!("{}/api/v1/search", self.algolia);
         let mut out = HashMap::new();
         for chunk in ids.chunks(ITEM_BATCH) {
@@ -333,7 +335,7 @@ impl HackerNewsClient {
                 resp.json().await.context("parsing hn algolia response")?;
             for hit in search.hits {
                 let item = HackerNewsItem::from(hit);
-                out.insert(item.id.to_string(), item);
+                out.insert(HackerNewsItemId::from(item.id), item);
             }
             // Be gentle between chunk queries.
             tokio::time::sleep(Duration::from_millis(300)).await;
@@ -378,7 +380,7 @@ impl HackerNewsClient {
 
 impl Source for HackerNewsClient {
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
-        let mut ids = Vec::new();
+        let mut ids: Vec<HackerNewsItemId> = Vec::new();
         self.collect_ids(false, &mut ids).await?;
         self.collect_ids(true, &mut ids).await?;
         // De-dup IDs while preserving order (newest first).
@@ -398,7 +400,8 @@ impl UrlKey for HackerNewsClient {
     /// A favorited HN *item* keys on its id (`hn:<id>`); an article bookmark falls back
     /// to the generic host+path key.
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        hn_item_id(url)
+        HackerNewsItemId::try_from(url)
+            .ok()
             .map(|id| format!("hn:{id}"))
             .or_else(|| url_key(url))
     }
@@ -451,14 +454,14 @@ impl HackerNewsClient {
     ) -> Result<()> {
         let hackernews_bookmarks: Vec<_> = bookmarks
             .iter()
-            .filter(|bookmark| hn_item_id(&bookmark.url).is_some())
+            .filter(|bookmark| HackerNewsItemId::try_from(&bookmark.url).is_ok())
             .cloned()
             .collect();
 
         // Batch-fetch every referenced item once.
-        let ids: Vec<String> = hackernews_bookmarks
+        let ids: Vec<HackerNewsItemId> = hackernews_bookmarks
             .iter()
-            .filter_map(|bookmark| hn_item_id(&bookmark.url))
+            .filter_map(|bookmark| HackerNewsItemId::try_from(&bookmark.url).ok())
             .collect();
         let items = self
             .fetch_items(&ids)
@@ -502,7 +505,8 @@ impl HackerNewsClient {
         let candidates: Vec<_> = bookmarks
             .iter()
             .filter(|bookmark| {
-                hn_item_id(&bookmark.url).is_none() && bookmark.tags.contains(&self.config.link_tag)
+                HackerNewsItemId::try_from(&bookmark.url).is_err()
+                    && bookmark.tags.contains(&self.config.link_tag)
             })
             .cloned()
             .collect();
@@ -522,14 +526,14 @@ impl HackerNewsClient {
 /// draft (stories rewrite to the article URL; comments/text posts update in place),
 /// preserving existing tags.
 struct HackerNewsCleanupPass<'a> {
-    items: HashMap<String, HackerNewsItem>,
+    items: HashMap<HackerNewsItemId, HackerNewsItem>,
     config: &'a HackernewsConfig,
 }
 
 impl CleanupPass for HackerNewsCleanupPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
         // The pass is filtered to HN item URLs, so this matches.
-        let id = hn_item_id(&bookmark.url);
+        let id = HackerNewsItemId::try_from(&bookmark.url).ok();
         let Some(item) = id.and_then(|id| self.items.get(&id)) else {
             return Ok(None);
         };
@@ -597,10 +601,68 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
     }
 }
 
-/// The HN discussion permalink for an item id.
-fn hn_item_url(id: u64) -> String {
-    format!("https://news.ycombinator.com/item?id={id}")
+/// A HackerNews item id — the `<n>` in a `news.ycombinator.com/item?id=<n>` URL. Held
+/// as a string (the favorites page scrapes it as text and Algolia's `objectID` filter
+/// takes it as text); built from a numeric id, a scraped string, or parsed out of a URL
+/// (`TryFrom<&Url>`), and rendered back to the discussion permalink (`From<&Self> for Url`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HackerNewsItemId(String);
+
+impl std::fmt::Display for HackerNewsItemId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
+
+impl From<u64> for HackerNewsItemId {
+    fn from(id: u64) -> Self {
+        Self(id.to_string())
+    }
+}
+
+impl From<String> for HackerNewsItemId {
+    fn from(id: String) -> Self {
+        Self(id)
+    }
+}
+
+/// Parse the item id out of an HN `item?id=<n>` URL (host must be exactly
+/// `news.ycombinator.com`). `Err` for any non-HN-item URL.
+impl TryFrom<&Url> for HackerNewsItemId {
+    type Error = NotHnItemUrl;
+    fn try_from(url: &Url) -> Result<Self, Self::Error> {
+        if url.host_str() != Some("news.ycombinator.com")
+            || !url.path().trim_start_matches('/').starts_with("item")
+        {
+            return Err(NotHnItemUrl);
+        }
+        let id: String = url
+            .query_pairs()
+            .find(|(key, _)| key == "id")
+            .map(|(_, id)| id.into_owned())
+            .ok_or(NotHnItemUrl)?
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if id.is_empty() {
+            return Err(NotHnItemUrl);
+        }
+        Ok(Self(id))
+    }
+}
+
+/// The HN discussion permalink for an item id (`news.ycombinator.com/item?id=<n>`). The
+/// id only ever sits in the query string, so this always parses.
+impl From<&HackerNewsItemId> for Url {
+    fn from(id: &HackerNewsItemId) -> Self {
+        Url::parse(&format!("{HN_BASE}/item?id={}", id.0))
+            .expect("HN item permalink is a valid URL")
+    }
+}
+
+/// The URL isn't an HN `item?id=<n>` permalink (so it has no [`HackerNewsItemId`]).
+#[derive(Debug)]
+pub struct NotHnItemUrl;
 
 /// Parse a favorites page: the favorited item IDs (the `id` of each `tr.athing`
 /// row) and the "More" link href, if any. Pure, so it's unit-tested on sample HTML.
@@ -617,24 +679,6 @@ fn parse_favorite_ids(html: &str) -> (Vec<String>, Option<String>) {
         .next()
         .and_then(|e| e.value().attr("href").map(str::to_string));
     (ids, next)
-}
-
-/// Extract the item id from an HN `item?id=<n>` URL (host must be exactly
-/// `news.ycombinator.com`), or `None` for non-HN-item URLs.
-fn hn_item_id(url: &Url) -> Option<String> {
-    if url.host_str()? != "news.ycombinator.com"
-        || !url.path().trim_start_matches('/').starts_with("item")
-    {
-        return None;
-    }
-    let id: String = url
-        .query_pairs()
-        .find(|(key, _)| key == "id")
-        .map(|(_, id)| id.into_owned())?
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    (!id.is_empty()).then_some(id)
 }
 
 /// The slug for a `Show/Ask/Tell/Launch HN:` title prefix (e.g. `Show HN:` →
@@ -809,12 +853,16 @@ mod tests {
 
     #[test]
     fn hn_item_id_extracts_only_from_hn_item_urls() {
+        let id =
+            HackerNewsItemId::try_from(&url("https://news.ycombinator.com/item?id=42")).unwrap();
+        assert_eq!(id.to_string(), "42");
+        // And round-trips back to the discussion permalink.
         assert_eq!(
-            hn_item_id(&url("https://news.ycombinator.com/item?id=42")).as_deref(),
-            Some("42")
+            Url::from(&id).as_str(),
+            "https://news.ycombinator.com/item?id=42"
         );
-        assert_eq!(hn_item_id(&url("https://example.com/item?id=42")), None);
-        assert_eq!(hn_item_id(&url("https://news.ycombinator.com/news")), None);
+        assert!(HackerNewsItemId::try_from(&url("https://example.com/item?id=42")).is_err());
+        assert!(HackerNewsItemId::try_from(&url("https://news.ycombinator.com/news")).is_err());
     }
 
     #[test]

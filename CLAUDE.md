@@ -49,7 +49,7 @@ the `BookmarkStore` port — everything not specific to the Pinboard client.
 `url` is a parsed [`Url`], a bookmark whose `href` (or a source item's URL) doesn't parse
 is skipped with a warning rather than aborting the run — `all()` and each source's
 `fetch()` `filter_map` over the fallible conversion. Consumers then never re-parse the URL
-(`bookmark.url.host_is(…)`, `hn_item_id(&bookmark.url)`, etc.). The cleanup driver reads stored bookmarks and plans their end-state in
+(`bookmark.url.host_is(…)`, `HackerNewsItemId::try_from(&bookmark.url)`, etc.). The cleanup driver reads stored bookmarks and plans their end-state in
 that one type; `Bookmark::diff` returns the written fields that changed (timestamps
 compared by instant, not formatted string), which the driver uses both to skip unchanged
 bookmarks and to render the dry-run. A write takes a whole `Bookmark`; `post_add` maps it

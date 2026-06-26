@@ -40,7 +40,7 @@ impl SourceError {
 pub struct BookmarkDraft {
     /// The bookmark to write.
     pub bookmark: Bookmark,
-    /// Key matched against existing Pinboard bookmarks via [`Source::existing_key`].
+    /// Key matched against existing Pinboard bookmarks via [`UrlKey::dedup_key`].
     pub dedup_key: String,
 }
 

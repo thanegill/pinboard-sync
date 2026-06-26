@@ -1482,4 +1482,87 @@ mod tests {
         );
         assert_eq!(d.max_age_days, config::DEFAULT_MAX_AGE_DAYS);
     }
+
+    /// Override values chosen so each setting is distinct from the others and from the
+    /// `Config::default()` globals — so a builder that wires a flag into the *wrong*
+    /// `SyncJob` field (e.g. `public` into the `toread` slot) fails the assertions.
+    fn wiring_overrides() -> SyncOverrides {
+        SyncOverrides {
+            limit: Some(7),
+            toread: Some(true),        // global default is false
+            public: Some(false),       // distinct from toread, so a swap is caught
+            use_post_date: Some(true), // global default is false
+            max_age_days: Some(99),    // global default is 30
+            ..Default::default()
+        }
+    }
+
+    fn assert_wired(job: &SyncJob) {
+        assert_eq!(job.limit, 7, "limit");
+        assert!(job.toread, "toread");
+        assert!(!job.shared, "shared (from --public=false)");
+        assert!(job.use_post_date, "use_post_date");
+        assert_eq!(job.max_age_days, 99, "max_age_days");
+    }
+
+    #[test]
+    fn build_reddit_job_wires_overrides_to_job_fields() {
+        let ovr = SyncOverrides {
+            reddit_username: Some("alice".into()),
+            reddit_cookie: Some("reddit_session=x".into()),
+            ..wiring_overrides()
+        };
+        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        assert_wired(&job);
+    }
+
+    #[test]
+    fn build_github_job_wires_overrides_to_job_fields() {
+        let ovr = SyncOverrides {
+            github_token: Some("ghp_test".into()),
+            ..wiring_overrides()
+        };
+        let job = build_github_job(None, &ovr, &Config::default()).expect("builds");
+        assert_wired(&job);
+    }
+
+    #[test]
+    fn build_hackernews_job_wires_overrides_to_job_fields() {
+        let ovr = SyncOverrides {
+            hackernews_username: Some("alice".into()),
+            ..wiring_overrides()
+        };
+        let job = build_hackernews_job(None, &ovr, &Config::default()).expect("builds");
+        assert_wired(&job);
+    }
+
+    /// Parse `sync reddit <extra>` and return the parsed source args.
+    fn parse_reddit_sync(extra: &[&str]) -> RedditSyncArgs {
+        use clap::Parser;
+        let mut argv = vec!["pinboard-sync", "sync", "reddit"];
+        argv.extend_from_slice(extra);
+        match Cli::try_parse_from(argv).expect("parses").command {
+            Command::Sync(SyncCmd {
+                source: Some(SyncSource::Reddit(args)),
+                ..
+            }) => args,
+            _ => panic!("expected `sync reddit` args"),
+        }
+    }
+
+    #[test]
+    fn value_taking_boolean_flags_parse_bare_and_explicit() {
+        // Absent → None (falls through to the config tiers).
+        assert_eq!(parse_reddit_sync(&[]).public, None);
+        // Bare `--public` → Some(true) via default_missing_value.
+        assert_eq!(parse_reddit_sync(&["--public"]).public, Some(true));
+        // `--public=false` → Some(false): the explicit force-off a bare flag can't express.
+        assert_eq!(parse_reddit_sync(&["--public=false"]).public, Some(false));
+        // Same shape for the other booleans.
+        assert_eq!(parse_reddit_sync(&["--toread"]).toread, Some(true));
+        assert_eq!(
+            parse_reddit_sync(&["--use-post-date=false"]).use_post_date,
+            Some(false)
+        );
+    }
 }

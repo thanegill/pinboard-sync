@@ -1,7 +1,7 @@
 //! The shared `cleanup` driver. Each source describes how to re-shape one bookmark
 //! (a [`CleanupPass`]); this module owns the loop common to all of them: diff the
 //! planned end-state against the stored bookmark, skip when nothing changed, render
-//! the dry-run lines, write via [`apply_update`] (deleting the old URL on a rewrite),
+//! the dry-run lines, write via [`BookmarkStore::apply_update`] (deleting the old URL on a rewrite),
 //! and tally. `run_pass` returns the number of bookmarks that failed (logged and
 //! skipped) so a caller running several passes can aggregate and bail once.
 
@@ -9,7 +9,7 @@ use anyhow::Result;
 use log::{debug, error, info};
 use time::OffsetDateTime;
 
-use crate::bookmark::{apply_update, Bookmark, BookmarkStore};
+use crate::bookmark::{Bookmark, BookmarkStore};
 
 /// The `use_post_date` policy applied uniformly across a pass: whether to re-date by
 /// the source date, the backdate age cap, and whether to push stale (older-than-cap)
@@ -100,12 +100,9 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
         // `planned` already carries the stored `public`/`read_later` (the planners copy
         // them) and the driver-resolved `timestamp`, so it's the complete write model.
         // Log and skip a single failed update so the rest of the pass still runs.
-        match apply_update(
-            pinboard,
-            &planned,
-            url_changed.then_some(bookmark.url.as_str()),
-        )
-        .await
+        match pinboard
+            .apply_update(&planned, url_changed.then_some(bookmark.url.as_str()))
+            .await
         {
             Ok(()) => {
                 changed += 1;

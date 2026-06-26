@@ -94,25 +94,19 @@ pub trait BookmarkStore {
     async fn update(&self, b: &Bookmark) -> Result<()>;
     /// Delete a bookmark by URL.
     async fn delete(&self, url: &str) -> Result<()>;
-}
 
-/// The shared write step of the cleanup loops: `update` the bookmark, then `delete` the
-/// old URL when it changed (`old_url`). Any inter-write pacing is the store's own
-/// concern (the Pinboard client spaces its `posts/add` calls internally).
-pub async fn apply_update<P: BookmarkStore>(
-    pinboard: &P,
-    update: &Bookmark,
-    old_url: Option<&str>,
-) -> Result<()> {
-    pinboard
-        .update(update)
-        .await
-        .with_context(|| format!("updating bookmark {}", update.url))?;
-    if let Some(old) = old_url {
-        pinboard
-            .delete(old)
+    /// The cleanup re-write step: `update` the bookmark, then `delete` the old URL when it
+    /// changed (`old_url`). Any inter-write pacing is the store's own concern (the Pinboard
+    /// client spaces its `posts/add` calls internally).
+    async fn apply_update(&self, update: &Bookmark, old_url: Option<&str>) -> Result<()> {
+        self.update(update)
             .await
-            .with_context(|| format!("deleting old URL {old}"))?;
+            .with_context(|| format!("updating bookmark {}", update.url))?;
+        if let Some(old) = old_url {
+            self.delete(old)
+                .await
+                .with_context(|| format!("deleting old URL {old}"))?;
+        }
+        Ok(())
     }
-    Ok(())
 }

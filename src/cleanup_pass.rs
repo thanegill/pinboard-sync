@@ -101,7 +101,7 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
         // them) and the driver-resolved `timestamp`, so it's the complete write model.
         // Log and skip a single failed update so the rest of the pass still runs.
         match pinboard
-            .apply_update(&planned, url_changed.then_some(bookmark.url.as_str()))
+            .apply_update(&planned, url_changed.then_some(&bookmark.url))
             .await
         {
             Ok(()) => {
@@ -133,6 +133,11 @@ mod tests {
     use super::*;
     use crate::test_support::FakePinboard;
     use anyhow::anyhow;
+    use url::Url;
+
+    fn u(s: &str) -> Url {
+        Url::parse(s).unwrap()
+    }
 
     /// A `CleanupPass` whose `plan` is a closure, so each test scripts its own outcome.
     struct FakePass<F>(F);
@@ -144,7 +149,7 @@ mod tests {
 
     fn bookmark(url: &str) -> Bookmark {
         Bookmark {
-            url: url.into(),
+            url: u(url),
             title: "Title".into(),
             note: "notes".into(),
             tags: vec!["a".into(), "b".into()],
@@ -172,7 +177,7 @@ mod tests {
         // The first bookmark's plan fails; the second still gets written.
         let books = vec![bookmark("https://x/bad"), bookmark("https://x/good")];
         let pass = FakePass(|bookmark: &Bookmark| {
-            if bookmark.url.contains("bad") {
+            if bookmark.url.as_str().contains("bad") {
                 Err(anyhow!("boom"))
             } else {
                 Ok(Some(Bookmark {
@@ -219,7 +224,7 @@ mod tests {
         let books = vec![bookmark("https://old/")];
         let pass = FakePass(|bookmark: &Bookmark| {
             Ok(Some(Bookmark {
-                url: "https://new/".into(),
+                url: u("https://new/"),
                 title: "New".into(),
                 tags: vec!["x".into()],
                 ..unchanged_plan(bookmark)
@@ -262,13 +267,13 @@ mod tests {
         // empties the notes ("(removed)"), the second sets new non-empty notes.
         let books = vec![bookmark("https://empty/"), bookmark("https://full/")];
         let pass = FakePass(|bookmark: &Bookmark| {
-            let note = if bookmark.url.contains("empty") {
+            let note = if bookmark.url.as_str().contains("empty") {
                 String::new()
             } else {
                 "new notes".into()
             };
             Ok(Some(Bookmark {
-                url: format!("{}new", bookmark.url),
+                url: u(&format!("{}new", bookmark.url)),
                 title: "New".into(),
                 note,
                 tags: vec!["x".into()],

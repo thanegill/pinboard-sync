@@ -287,20 +287,23 @@ impl RedditSavedItem {
         tags
     }
 
-    /// Shape this item into a Pinboard draft using the reddit config.
-    pub fn into_draft(self, cfg: &RedditConfig) -> BookmarkDraft {
-        let url = self.bookmark_url(&cfg.domain);
-        // Parse the bookmark URL once for the host-agnostic dedup key.
-        let dedup_key = Url::parse(&url)
-            .ok()
-            .as_ref()
-            .and_then(reddit_key)
-            .unwrap_or_else(|| url.clone());
+    /// Shape this item into a Pinboard draft using the reddit config. `None` (with a
+    /// warning) if the constructed bookmark URL doesn't parse.
+    pub fn into_draft(self, cfg: &RedditConfig) -> Option<BookmarkDraft> {
+        let url = match Url::parse(&self.bookmark_url(&cfg.domain)) {
+            Ok(url) => url,
+            Err(e) => {
+                log::warn!("skipping reddit item {}: bad URL: {e}", self.fullname);
+                return None;
+            }
+        };
+        // The host-agnostic dedup key, derived from the same URL.
+        let dedup_key = reddit_key(&url).unwrap_or_else(|| url.to_string());
         let timestamp = self
             .created_utc
             .and_then(|s| crate::timefmt::from_unix(s as i64));
         let tags = self.tags(cfg);
-        BookmarkDraft {
+        Some(BookmarkDraft {
             bookmark: Bookmark {
                 url,
                 title: html_to_plain(&self.description),
@@ -311,7 +314,7 @@ impl RedditSavedItem {
                 read_later: false,
             },
             dedup_key,
-        }
+        })
     }
 }
 
@@ -401,6 +404,24 @@ mod tests {
             it.tags(&RedditConfig::default()),
             vec!["reddit", "subreddit:rust"]
         );
+    }
+
+    #[test]
+    fn into_draft_skips_item_with_unparseable_url() {
+        // A `domain` that can't form a valid URL (a space in the host) — the item is
+        // dropped rather than producing a draft with no URL.
+        let cfg = RedditConfig {
+            domain: "bad host".into(),
+            ..RedditConfig::default()
+        };
+        let it = item(
+            "t3",
+            serde_json::json!({
+                "name": "t3_abc", "subreddit": "rust",
+                "permalink": "/r/rust/comments/abc/x/", "title": "T"
+            }),
+        );
+        assert!(it.into_draft(&cfg).is_none());
     }
 
     #[test]

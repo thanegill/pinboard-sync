@@ -5,7 +5,9 @@ use std::cell::Cell;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
+use log::warn;
 use serde::Deserialize;
+use url::Url;
 
 use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::http::send_retrying;
@@ -124,12 +126,22 @@ impl BookmarkStore for PinboardClient {
             .await?;
         let wire: Vec<PinboardBookmark> =
             resp.json().await.context("parsing Pinboard posts/all")?;
-        Ok(wire.into_iter().map(Bookmark::from).collect())
+        // Skip (and warn on) any bookmark whose `href` doesn't parse as a URL rather than
+        // aborting the whole run for one bad entry.
+        Ok(wire
+            .into_iter()
+            .filter_map(|b| {
+                let href = b.url.clone();
+                Bookmark::try_from(b)
+                    .map_err(|e| warn!("skipping bookmark with unparseable URL {href}: {e}"))
+                    .ok()
+            })
+            .collect())
     }
 
-    async fn delete(&self, url: &str) -> Result<()> {
+    async fn delete(&self, url: &Url) -> Result<()> {
         let params = [
-            ("url", url),
+            ("url", url.as_str()),
             ("auth_token", self.auth_token.as_str()),
             ("format", "json"),
         ];
@@ -411,7 +423,7 @@ mod net_tests {
 
         client(&server)
             .add(&Bookmark {
-                url: "https://old.reddit.com/r/x/".into(),
+                url: Url::parse("https://old.reddit.com/r/x/").unwrap(),
                 title: "Title".into(),
                 note: String::new(),
                 tags: vec!["reddit".into()],
@@ -452,7 +464,7 @@ mod net_tests {
 
         client(&server)
             .add(&Bookmark {
-                url: "https://old.reddit.com/r/x/".into(),
+                url: Url::parse("https://old.reddit.com/r/x/").unwrap(),
                 title: "Title".into(),
                 note: "long notes ".repeat(2000),
                 tags: vec!["reddit".into()],
@@ -477,7 +489,7 @@ mod net_tests {
 
         let err = client(&server)
             .add(&Bookmark {
-                url: "https://old.reddit.com/r/x/".into(),
+                url: Url::parse("https://old.reddit.com/r/x/").unwrap(),
                 title: "Title".into(),
                 note: String::new(),
                 tags: vec!["reddit".into()],
@@ -507,11 +519,34 @@ mod net_tests {
 
         let all = client(&server).all().await.unwrap();
         assert_eq!(all.len(), 2);
-        assert_eq!(all[0].url, "https://old.reddit.com/r/rust/comments/a/x/");
+        assert_eq!(
+            all[0].url.as_str(),
+            "https://old.reddit.com/r/rust/comments/a/x/"
+        );
         assert_eq!(all[0].tags, vec!["reddit", "subreddit:rust"]);
         // The ISO-8601 `time` is parsed into a timestamp on read.
         assert_eq!(all[0].timestamp, crate::timefmt::from_unix(1_577_836_800)); // 2020-01-01T00:00:00Z
         assert_eq!(all[1].timestamp, None); // empty time → no timestamp
+    }
+
+    #[tokio::test]
+    async fn all_skips_bookmark_with_unparseable_href() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/posts/all"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "href": "not a url", "description": "bad", "extended": "", "tags": "",
+                  "time": "", "shared": "no", "toread": "no" },
+                { "href": "https://example.com/", "description": "E", "extended": "", "tags": "",
+                  "time": "", "shared": "no", "toread": "no" }
+            ])))
+            .mount(&server)
+            .await;
+
+        // The unparseable href is skipped (logged); the valid bookmark still comes through.
+        let all = client(&server).all().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].url.as_str(), "https://example.com/");
     }
 
     #[tokio::test]
@@ -525,7 +560,7 @@ mod net_tests {
             .await;
 
         client(&server)
-            .delete("https://old.reddit.com/r/x/")
+            .delete(&Url::parse("https://old.reddit.com/r/x/").unwrap())
             .await
             .unwrap();
     }

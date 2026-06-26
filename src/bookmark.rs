@@ -7,16 +7,18 @@
 
 use anyhow::{Context, Result};
 use time::OffsetDateTime;
+use url::Url;
 
 use crate::pinboard::PinboardBookmark;
 use crate::source::tags_differ;
 
 /// A bookmark in service-agnostic domain form. The field names are the domain's
 /// (`title`/`note`/`public`/`read_later`), not Pinboard's wire names
-/// (`description`/`extended`/`shared`/`toread` — those stay on [`PinboardBookmark`]).
+/// (`description`/`extended`/`shared`/`toread` — those stay on [`PinboardBookmark`]). The
+/// URL is a parsed [`Url`], so consumers don't re-parse it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bookmark {
-    pub url: String,
+    pub url: Url,
     pub title: String,
     pub note: String,
     pub tags: Vec<String>,
@@ -28,17 +30,20 @@ pub struct Bookmark {
     pub read_later: bool,
 }
 
-impl From<PinboardBookmark> for Bookmark {
-    fn from(b: PinboardBookmark) -> Self {
-        Bookmark {
-            url: b.url,
+impl TryFrom<PinboardBookmark> for Bookmark {
+    /// Fails only when the wire `href` doesn't parse as a URL; `all()` skips (and warns
+    /// on) such entries.
+    type Error = url::ParseError;
+    fn try_from(b: PinboardBookmark) -> Result<Self, Self::Error> {
+        Ok(Bookmark {
+            url: Url::parse(&b.url)?,
             title: b.description,
             note: b.extended,
             tags: b.tags.split_whitespace().map(String::from).collect(),
             timestamp: crate::timefmt::parse_rfc3339(&b.time),
             public: b.shared == "yes",
             read_later: b.toread == "yes",
-        }
+        })
     }
 }
 
@@ -51,7 +56,7 @@ impl Bookmark {
     pub fn diff(&self, new: &Bookmark) -> Vec<(&'static str, String)> {
         let mut changes = Vec::new();
         if new.url != self.url {
-            changes.push(("url", new.url.clone()));
+            changes.push(("url", new.url.to_string()));
         }
         if new.title != self.title {
             changes.push(("title", new.title.clone()));
@@ -93,12 +98,12 @@ pub trait BookmarkStore {
     /// Re-add an existing bookmark with normalized fields.
     async fn update(&self, b: &Bookmark) -> Result<()>;
     /// Delete a bookmark by URL.
-    async fn delete(&self, url: &str) -> Result<()>;
+    async fn delete(&self, url: &Url) -> Result<()>;
 
     /// The cleanup re-write step: `update` the bookmark, then `delete` the old URL when it
     /// changed (`old_url`). Any inter-write pacing is the store's own concern (the Pinboard
     /// client spaces its `posts/add` calls internally).
-    async fn apply_update(&self, update: &Bookmark, old_url: Option<&str>) -> Result<()> {
+    async fn apply_update(&self, update: &Bookmark, old_url: Option<&Url>) -> Result<()> {
         self.update(update)
             .await
             .with_context(|| format!("updating bookmark {}", update.url))?;

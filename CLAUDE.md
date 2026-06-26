@@ -38,14 +38,18 @@ per-source planners live in [`src/cleanup.rs`](src/cleanup.rs) (reddit),
 [`src/github.rs`](src/github.rs), and [`src/hackernews.rs`](src/hackernews.rs).
 
 **`Bookmark` is service-agnostic; `PinboardBookmark` is the wire shape.** The domain
-[`Bookmark`](src/bookmark.rs) (`title`, `note`, `tags: Vec<String>`, `timestamp:
-Option<OffsetDateTime>`, and `public`/`read_later` `bool`s — the domain's names, not the
-API's `description`/`extended`/`shared`/`toread`) lives in
-[`src/bookmark.rs`](src/bookmark.rs) along with the `BookmarkStore` port — everything not
-specific to the Pinboard client. [`src/pinboard.rs`](src/pinboard.rs) is just the client
-behind that port: it deserializes `posts/all` into `PinboardBookmark` (space-joined tags,
-ISO-8601 `time`, `"yes"/"no"` `shared`/`toread`) and converts each via `From` into the
-domain `Bookmark`. The cleanup driver reads stored bookmarks and plans their end-state in
+[`Bookmark`](src/bookmark.rs) (`url: Url`, `title`, `note`, `tags: Vec<String>`,
+`timestamp: Option<OffsetDateTime>`, and `public`/`read_later` `bool`s — the domain's
+names and *parsed* types, not the API's string `href`/`description`/`extended` and
+`"yes"/"no"` `shared`/`toread`) lives in [`src/bookmark.rs`](src/bookmark.rs) along with
+the `BookmarkStore` port — everything not specific to the Pinboard client.
+[`src/pinboard.rs`](src/pinboard.rs) is just the client behind that port: it deserializes
+`posts/all` into `PinboardBookmark` (space-joined tags, ISO-8601 `time`, `"yes"/"no"`
+`shared`/`toread`) and converts each via `TryFrom` into the domain `Bookmark`. Because the
+`url` is a parsed [`Url`], a bookmark whose `href` (or a source item's URL) doesn't parse
+is skipped with a warning rather than aborting the run — `all()` and each source's
+`fetch()` `filter_map` over the fallible conversion. Consumers then never re-parse the URL
+(`bookmark.url.host_is(…)`, `hn_item_id(&bookmark.url)`, etc.). The cleanup driver reads stored bookmarks and plans their end-state in
 that one type; `Bookmark::diff` returns the written fields that changed (timestamps
 compared by instant, not formatted string), which the driver uses both to skip unchanged
 bookmarks and to render the dry-run. A write takes a whole `Bookmark`; `post_add` maps it

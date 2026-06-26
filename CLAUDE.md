@@ -58,10 +58,10 @@ boundary.
 
 **Every source is a `Source`; the sync loop is generic over it.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `Vec<BookmarkDraft>` (a
-`Bookmark` plus the `dedup_key`), and `Source::existing_key()`
+`Bookmark` plus the `dedup_key`), and the `UrlKey::dedup_key()` supertrait method
 maps an existing Pinboard URL to that source's dedup key. `sync::run` fetches drafts,
 builds the set of existing keys by mapping `pinboard.all()` through
-`source.existing_key`, and writes the drafts whose `dedup_key` isn't present. To add
+`source.dedup_key`, and writes the drafts whose `dedup_key` isn't present. To add
 a source, implement `Source` and wire it into `main.rs` + `config.rs`. The clients
 also sit behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a
 `&Bookmark`) so the loops are unit-tested with

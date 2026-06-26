@@ -40,10 +40,8 @@ All notable changes to this project are documented here. The format is based on
 - `cleanup` compares a bookmark's date by **instant** rather than by its formatted string,
   so it no longer issues a redundant re-write when a stored date and the source date are
   the same moment written differently (e.g. a `+00:00` offset vs a trailing `Z`).
-  Internally, the stored Pinboard bookmark is now parsed into a service-agnostic domain
-  type (`src/bookmark.rs`: tags split out, the time as a real `OffsetDateTime`, and
-  `public`/`read_later` flags), separate from the `PinboardBookmark` wire shape; each
-  source plans a `cleanup` end-state in that same domain type.
+- A saved bookmark or fetched item whose **URL doesn't parse** is now skipped with a
+  warning, so one malformed entry can't derail a `sync` or `cleanup` run.
 
 ### Fixed
 

@@ -313,6 +313,21 @@ impl PinboardClient {
         Ok(resp)
     }
 
+    /// Fetch the raw `posts/all` JSON body verbatim (with `meta=yes`), for backups.
+    /// Unlike [`BookmarkStore::all`], this neither parses nor filters — it returns exactly
+    /// what Pinboard sends, preserving `meta`/`hash` and any entries `all` would skip.
+    pub async fn export_all(&self) -> Result<String> {
+        let params = [
+            ("auth_token", self.auth_token.as_str()),
+            ("format", "json"),
+            ("meta", "yes"),
+        ];
+        let resp = self
+            .get_with_backoff(&self.url("posts/all"), &params)
+            .await?;
+        resp.text().await.context("reading Pinboard posts/all body")
+    }
+
     /// Construct a client pointed at an arbitrary API base, for tests. No inter-write
     /// pacing so `net_tests` don't sleep.
     #[cfg(test)]
@@ -570,6 +585,25 @@ mod net_tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].url.as_str(), "https://example.com/");
         assert_eq!(all[0].timestamp, crate::timefmt::from_unix(1_577_836_800));
+    }
+
+    #[tokio::test]
+    async fn export_all_returns_body_verbatim() {
+        let server = MockServer::start().await;
+        // Raw body carrying `meta`/`hash` and an unparseable `href` — both of which the
+        // parsed `all()` path drops. `export_all` must return the bytes untouched, so
+        // assert against a raw string (not re-serialized JSON).
+        let body = r#"[{"href":"not a url","description":"bad","meta":"abc","hash":"def"},
+{"href":"https://example.com/","description":"E","meta":"123","hash":"456"}]"#;
+        Mock::given(method("GET"))
+            .and(path("/posts/all"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dumped = client(&server).export_all().await.unwrap();
+        assert_eq!(dumped, body);
     }
 
     #[tokio::test]

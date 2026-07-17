@@ -57,12 +57,12 @@ struct GitHubRepo {
 /// A `/user/starred` element when requested with the star+json media type: the repo
 /// plus the time the user starred it.
 #[derive(Debug, Clone, Deserialize)]
-struct StarredRepo {
+struct GitHubStarredRepo {
     starred_at: String,
     repo: GitHubRepo,
 }
 
-impl StarredRepo {
+impl GitHubStarredRepo {
     /// Shape into a draft, dating it by the (RFC3339) star time. `None` (with a warning)
     /// if the repo's `html_url` doesn't parse.
     fn into_draft(self, cfg: &GitHubConfig) -> Option<BookmarkDraft> {
@@ -88,7 +88,7 @@ fn github_extended(description: Option<&str>, homepage: Option<&str>, html_url: 
 
 impl GitHubRepo {
     /// Shape the repo into a Pinboard draft (no source date). Test-only convenience;
-    /// the production path dates each draft via [`StarredRepo::into_draft`].
+    /// the production path dates each draft via [`GitHubStarredRepo::into_draft`].
     #[cfg(test)]
     fn into_draft(self, cfg: &GitHubConfig) -> Option<BookmarkDraft> {
         self.into_draft_with_date(cfg, None)
@@ -241,7 +241,7 @@ impl Source for GitHubClient {
                 );
             }
 
-            let starred: Vec<StarredRepo> = resp
+            let starred: Vec<GitHubStarredRepo> = resp
                 .json()
                 .await
                 .context("parsing github starred response")?;

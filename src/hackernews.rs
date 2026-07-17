@@ -524,7 +524,8 @@ impl HackerNewsClient {
 
 /// Re-shapes one favorited HN item bookmark: re-fetch via Algolia and re-derive the
 /// draft (stories rewrite to the article URL; comments/text posts update in place),
-/// preserving existing tags.
+/// preserving existing tags, privacy, and any note the user added by hand (the
+/// reconstructed note is only used when the stored note is empty).
 struct HackerNewsCleanupPass<'a> {
     items: HashMap<HackerNewsItemId, HackerNewsItem>,
     config: &'a HackernewsConfig,
@@ -547,6 +548,9 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         new.tags = tags;
         new.public = bookmark.public;
         new.read_later = bookmark.read_later;
+        if !bookmark.note.is_empty() {
+            new.note = bookmark.note.clone();
+        }
         Ok(Some(new))
     }
 }
@@ -878,6 +882,42 @@ mod tests {
             Some("example.com/x")
         );
     }
+
+    #[tokio::test]
+    async fn plan_preserves_user_supplied_note_while_merging_base_tags() {
+        let stored = Bookmark {
+            url: url("https://news.ycombinator.com/item?id=42"),
+            title: "old title".into(),
+            note: "my own thoughts on this".into(),
+            tags: vec!["mine".into()],
+            timestamp: None,
+            public: false,
+            read_later: false,
+        };
+        let mut items = HashMap::new();
+        items.insert(
+            HackerNewsItemId::from(42u64),
+            item(json!({
+                "id": 42, "type": "story", "by": "alice",
+                "title": "Cool thing", "url": "https://example.com/x"
+            })),
+        );
+        let config = HackernewsConfig::default();
+        let pass = HackerNewsCleanupPass {
+            items,
+            config: &config,
+        };
+
+        let planned = pass.plan(&stored).await.unwrap().unwrap();
+        // The user's note survives the re-shape rather than being replaced by the
+        // reconstructed `HN Link:` note.
+        assert_eq!(planned.note, "my own thoughts on this");
+        // The re-derived url/title still apply and the base tags still merge in.
+        assert_eq!(planned.url.as_str(), "https://example.com/x");
+        assert_eq!(planned.title, "Cool thing");
+        assert!(planned.tags.contains(&"mine".to_string()));
+        assert!(planned.tags.contains(&"hackernews".to_string()));
+    }
 }
 
 /// Integration tests against a `wiremock` server. These bind a TCP socket, so they
@@ -1018,7 +1058,7 @@ mod net_tests {
     }
 
     #[tokio::test]
-    async fn cleanup_strips_redundant_hn_link_from_text_post_notes() {
+    async fn cleanup_preserves_existing_note_on_text_post() {
         use crate::pinboard::PinboardBookmark;
         use crate::test_support::FakePinboard;
 
@@ -1035,18 +1075,19 @@ mod net_tests {
             .mount(&algolia)
             .await;
 
+        let stored_note = "my own answer to this question";
         let pinboard = FakePinboard {
-            // Notes carry the old redundant self-link to the same item.
             all: vec![PinboardBookmark {
                 url: "https://news.ycombinator.com/item?id=7".into(),
                 description: "Ask HN: How?".into(),
-                extended: "HN Link: https://news.ycombinator.com/item?id=7\n\n<blockquote><p>details</p></blockquote>".into(),
+                extended: stored_note.into(),
                 tags: "hackernews".into(),
                 time: "2020-01-01T00:00:00Z".into(),
                 shared: "no".into(),
                 toread: "no".into(),
             }
-            .try_into().unwrap()],
+            .try_into()
+            .unwrap()],
             ..Default::default()
         };
 
@@ -1074,10 +1115,11 @@ mod net_tests {
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
-        // URL unchanged (in-place); the redundant HN Link line is gone, leaving the text
-        // with its inner HTML converted to Markdown.
+        // URL unchanged (in-place); the author/special-type tags are added, but the note
+        // the user wrote is kept verbatim rather than replaced by the reconstructed one.
         assert_eq!(updated[0].url, "https://news.ycombinator.com/item?id=7");
-        assert_eq!(updated[0].extended, "<blockquote>details</blockquote>");
+        assert_eq!(updated[0].extended, stored_note);
+        assert!(updated[0].tags.contains(&"hackernews:ask-hn".to_string()));
         assert!(pinboard.deleted.borrow().is_empty());
     }
 

@@ -187,7 +187,7 @@ impl Config {
 /// Error if `value` (a tag or tag prefix) contains whitespace — Pinboard tags can't
 /// contain spaces (its API splits the tag string on them), so a space here silently
 /// corrupts and should fail loudly instead.
-fn reject_whitespace(field: &str, value: &str) -> Result<()> {
+pub(crate) fn reject_whitespace(field: &str, value: &str) -> Result<()> {
     if value.chars().any(char::is_whitespace) {
         bail!("config: `{field}` must not contain whitespace (got {value:?})");
     }

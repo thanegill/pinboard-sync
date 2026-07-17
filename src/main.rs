@@ -117,13 +117,13 @@ struct RedditSyncArgs {
     #[arg(long)]
     max_age_days: Option<u64>,
     /// Mark new bookmarks to-read: `--toread` or `--toread=false` (overrides config).
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     toread: Option<bool>,
     /// Create bookmarks public: `--public` or `--public=false` (overrides config).
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     public: Option<bool>,
     /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     use_post_date: Option<bool>,
     /// Shell command run when the Reddit cookie needs refreshing (a 401/403).
     #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
@@ -153,13 +153,13 @@ struct GitHubSyncArgs {
     #[arg(long)]
     max_age_days: Option<u64>,
     /// Mark new bookmarks to-read: `--toread` or `--toread=false` (overrides config).
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     toread: Option<bool>,
     /// Create bookmarks public: `--public` or `--public=false` (overrides config).
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     public: Option<bool>,
     /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     use_post_date: Option<bool>,
     /// Shell command run when the GitHub token needs refreshing (a 401).
     #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
@@ -189,13 +189,13 @@ struct HackernewsSyncArgs {
     #[arg(long)]
     max_age_days: Option<u64>,
     /// Mark new bookmarks to-read: `--toread` or `--toread=false` (overrides config).
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     toread: Option<bool>,
     /// Create bookmarks public: `--public` or `--public=false` (overrides config).
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     public: Option<bool>,
     /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     use_post_date: Option<bool>,
     /// Fetch and print what would be posted, without writing to Pinboard.
     #[arg(long)]
@@ -234,10 +234,10 @@ struct DateFlags {
     #[arg(long)]
     max_age_days: Option<u64>,
     /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     use_post_date: Option<bool>,
     /// Re-date too-old posts to now: `--stale-to-now[=BOOL]` (overrides config).
-    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     stale_to_now: Option<bool>,
 }
 
@@ -1564,5 +1564,17 @@ mod tests {
             parse_reddit_sync(&["--use-post-date=false"]).use_post_date,
             Some(false)
         );
+    }
+
+    #[test]
+    fn bare_bool_flag_does_not_swallow_the_account_positional() {
+        // `require_equals` keeps clap from consuming the account as the flag value.
+        let args = parse_reddit_sync(&["--public", "alice"]);
+        assert_eq!(args.account.as_deref(), Some("alice"));
+        assert_eq!(args.public, Some(true));
+        // The `=` form still forces the flag off while leaving the positional alone.
+        let args = parse_reddit_sync(&["--public=false", "alice"]);
+        assert_eq!(args.account.as_deref(), Some("alice"));
+        assert_eq!(args.public, Some(false));
     }
 }

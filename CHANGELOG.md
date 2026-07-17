@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- A `backup <path>` subcommand that snapshots every bookmark to a file as the raw
+  Pinboard `posts/all` JSON, verbatim — preserving `meta`/`hash` and any entry the
+  parsed read path would skip. The NixOS module gains a `backup` timer
+  (`services.pinboard-sync.backup.{enable,schedule,path}`) that runs it under the
+  hardened service, writing into the service's `StateDirectory` by default.
 - NixOS module: per-credential `*File` options — `pinboardTokenFile`,
   `redditUsernameFile`, `redditCookieFile`, `githubTokenFile`, `hnUsernameFile`. Each
   points at a single secret path (e.g. one sops-nix secret per credential), loaded into
@@ -16,7 +21,6 @@ All notable changes to this project are documented here. The format is based on
   hand-roll a `serviceConfig` override. `environmentFile` is now optional: set it,
   at least one `*File` option, or account-table `*_file` paths (the assertion still
   fires when a source has no credentials configured at all).
-
 - `use_post_date`: date bookmarks by the **source post date** (Pinboard `dt`) instead
   of "now", for both `sync` and `cleanup`. Reddit uses the post's `created_utc`, HN the
   item's `created_at`, GitHub the **star date** (`starred_at`, via the `star+json`

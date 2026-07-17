@@ -45,6 +45,18 @@ let
       ++ map (a: a.token_file or null) (configSettings.github or [ ])
     );
 
+  # `backup` needs the Pinboard token specifically (not just any source credential), so
+  # it's asserted separately from the general credentials check below.
+  pinboardTokenConfigured =
+    cfg.environmentFile != null
+    || cfg.pinboardTokenFile != null
+    || (configSettings.pinboard.token_file or null) != null;
+
+  # The service runs as a transient `DynamicUser`, which can only write to its own
+  # `StateDirectory`. `backup.path` must live under this dir; the snapshot is then
+  # retrievable by root (the state dir sits under the 0700 `/var/lib/private`).
+  stateDir = "/var/lib/pinboard-sync";
+
   # Build a oneshot service + timer running `pinboard-sync <args>` on `schedule`. The
   # generated config path and the optional hook are the only things in the unit
   # environment; credentials (incl. usernames) come from `environmentFile` (a sops-nix
@@ -149,6 +161,30 @@ in
       };
     };
 
+    backup = {
+      enable = lib.mkEnableOption "a timer backing up all Pinboard bookmarks to a file";
+      schedule = lib.mkOption {
+        type = lib.types.str;
+        default = "daily";
+        example = "*-*-* 04:00:00";
+        description = ''
+          systemd OnCalendar schedule for the backup timer (default: daily). Only used
+          when `backup.enable = true`.
+        '';
+      };
+      path = lib.mkOption {
+        type = lib.types.str;
+        default = "${stateDir}/pinboard-backup.json";
+        description = ''
+          File the backup is written to (replaced atomically each run), as raw Pinboard
+          `posts/all` JSON. Must live under `${stateDir}` — the service runs as a
+          transient `DynamicUser` and can only write to its `StateDirectory`. The
+          snapshot is readable by root (retrieve it with a root-run job); the state dir
+          sits under the 0700 `/var/lib/private`.
+        '';
+      };
+    };
+
     onAuthFailure = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -238,6 +274,14 @@ in
         assertion = cfg.environmentFile != null || setCredentialFiles != [ ] || settingsCredentialFiles != [ ];
         message = "services.pinboard-sync: provide credentials via `environmentFile` (e.g. a sops-nix rendered template with PINBOARD_TOKEN), the per-credential `*File` options (e.g. `pinboardTokenFile`), or `*_file` paths inside the config account tables (e.g. `[pinboard].token_file`).";
       }
+      {
+        assertion = !cfg.backup.enable || pinboardTokenConfigured;
+        message = "services.pinboard-sync: backup.enable needs a Pinboard token — set `pinboardTokenFile`, `environmentFile` (with PINBOARD_TOKEN), or `[pinboard].token_file`. Source-only credentials (e.g. a reddit cookie) don't satisfy `backup`.";
+      }
+      {
+        assertion = !cfg.backup.enable || lib.hasPrefix "${stateDir}/" cfg.backup.path;
+        message = "services.pinboard-sync: backup.path must be under ${stateDir} — the service runs as a transient DynamicUser and can only write to its StateDirectory.";
+      }
     ];
 
     # `--config` (PINBOARD_SYNC_CONFIG) is in the environment, so the verb is all that's
@@ -253,12 +297,24 @@ in
         mkService "Normalize existing Pinboard bookmarks" cfg.cleanup.schedule [ "cleanup" "--all" ]
       );
 
+    # `StateDirectory` gives the hardened service its one writable location
+    # (`/var/lib/pinboard-sync`), which `backup.path` is asserted to live under.
+    systemd.services.pinboard-sync-backup =
+      lib.mkIf cfg.backup.enable (
+        lib.recursiveUpdate
+          (mkService "Back up all Pinboard bookmarks" cfg.backup.schedule [ "backup" cfg.backup.path ])
+          { serviceConfig.StateDirectory = "pinboard-sync"; }
+      );
+
     # Fire a missed run on next boot (the machine may be asleep/off at the scheduled
     # instant — especially for the weekly cleanup).
     systemd.timers.pinboard-sync = lib.mkIf cfg.sync.enable {
       timerConfig.Persistent = true;
     };
     systemd.timers.pinboard-sync-cleanup = lib.mkIf cfg.cleanup.enable {
+      timerConfig.Persistent = true;
+    };
+    systemd.timers.pinboard-sync-backup = lib.mkIf cfg.backup.enable {
       timerConfig.Persistent = true;
     };
   };

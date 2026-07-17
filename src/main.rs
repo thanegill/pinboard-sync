@@ -25,7 +25,7 @@ use clap_complete::Shell;
 use log::{debug, error, info, warn};
 
 use bookmark::{Bookmark, BookmarkStore};
-use config::{Account, Config, GitHubAccount, HackernewsAccount, RedditAccount};
+use config::{Config, GitHubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
 use hackernews::{HackerNewsCleanupOpts, HackerNewsClient};
 use pinboard::{PinboardClient, RATE_LIMIT_SECS};
@@ -703,6 +703,46 @@ impl UrlKey for SourceClient {
     }
 }
 
+/// The per-account settings every `build_*_job` resolves the same way: the
+/// `limit`/`toread`/`shared` trio through [`resolve_setting`] plus the [`DateSettings`],
+/// each on the flag → account → per-source default → `[pinboard]` global ladder. Leaves
+/// client/secret/hook construction to each source builder.
+struct JobCommon {
+    limit: usize,
+    toread: bool,
+    shared: bool,
+    dates: DateSettings,
+}
+
+fn resolve_job_common(
+    account: Option<&impl config::Account>,
+    ovr: &SyncOverrides,
+    src: &config::SourceDefaults,
+    config: &Config,
+) -> JobCommon {
+    JobCommon {
+        limit: resolve_setting(
+            ovr.limit,
+            account.and_then(|a| a.limit()),
+            src.limit,
+            config.pinboard.limit.unwrap_or(0),
+        ),
+        toread: resolve_setting(
+            ovr.toread,
+            account.and_then(|a| a.toread()),
+            src.toread,
+            config.pinboard.toread,
+        ),
+        shared: resolve_setting(
+            ovr.public,
+            account.and_then(|a| a.public()),
+            src.public,
+            config.pinboard.public,
+        ),
+        dates: DateSettings::resolve(&ovr.date_overrides(), account, src, config),
+    }
+}
+
 fn build_reddit_job(
     account: Option<&RedditAccount>,
     ovr: &SyncOverrides,
@@ -731,31 +771,16 @@ fn build_reddit_job(
         src.on_auth_failure.as_deref(),
         config,
     );
-    let dates = DateSettings::resolve(&ovr.date_overrides(), account, src, config);
+    let common = resolve_job_common(account, ovr, src, config);
     Ok(SyncJob {
         client: SourceClient::Reddit(RedditClient::for_user(username, cookie, reddit_config)?),
         label: job_label("reddit", account),
         hook,
-        limit: resolve_setting(
-            ovr.limit,
-            account.and_then(|a| a.limit()),
-            src.limit,
-            config.pinboard.limit.unwrap_or(0),
-        ),
-        toread: resolve_setting(
-            ovr.toread,
-            account.and_then(|a| a.toread()),
-            src.toread,
-            config.pinboard.toread,
-        ),
-        shared: resolve_setting(
-            ovr.public,
-            account.and_then(|a| a.public()),
-            src.public,
-            config.pinboard.public,
-        ),
-        use_post_date: dates.use_post_date,
-        max_age_days: dates.max_age_days,
+        limit: common.limit,
+        toread: common.toread,
+        shared: common.shared,
+        use_post_date: common.dates.use_post_date,
+        max_age_days: common.dates.max_age_days,
     })
 }
 
@@ -781,31 +806,16 @@ fn build_github_job(
         src.on_auth_failure.as_deref(),
         config,
     );
-    let dates = DateSettings::resolve(&ovr.date_overrides(), account, src, config);
+    let common = resolve_job_common(account, ovr, src, config);
     Ok(SyncJob {
         client: SourceClient::Github(GitHubClient::new(token, github_config)?),
         label: job_label("github", account),
         hook,
-        limit: resolve_setting(
-            ovr.limit,
-            account.and_then(|a| a.limit()),
-            src.limit,
-            config.pinboard.limit.unwrap_or(0),
-        ),
-        toread: resolve_setting(
-            ovr.toread,
-            account.and_then(|a| a.toread()),
-            src.toread,
-            config.pinboard.toread,
-        ),
-        shared: resolve_setting(
-            ovr.public,
-            account.and_then(|a| a.public()),
-            src.public,
-            config.pinboard.public,
-        ),
-        use_post_date: dates.use_post_date,
-        max_age_days: dates.max_age_days,
+        limit: common.limit,
+        toread: common.toread,
+        shared: common.shared,
+        use_post_date: common.dates.use_post_date,
+        max_age_days: common.dates.max_age_days,
     })
 }
 
@@ -827,32 +837,17 @@ fn build_hackernews_job(
         .map(HackernewsAccount::hackernews_config)
         .unwrap_or_default();
     let src = &config.defaults.hackernews;
-    let dates = DateSettings::resolve(&ovr.date_overrides(), account, src, config);
+    let common = resolve_job_common(account, ovr, src, config);
     Ok(SyncJob {
         // HackerNews favorites are public, so there is no auth-failure hook.
         client: SourceClient::Hackernews(HackerNewsClient::new(username, hn_config)?),
         label: job_label("hackernews", account),
         hook: None,
-        limit: resolve_setting(
-            ovr.limit,
-            account.and_then(|a| a.limit()),
-            src.limit,
-            config.pinboard.limit.unwrap_or(0),
-        ),
-        toread: resolve_setting(
-            ovr.toread,
-            account.and_then(|a| a.toread()),
-            src.toread,
-            config.pinboard.toread,
-        ),
-        shared: resolve_setting(
-            ovr.public,
-            account.and_then(|a| a.public()),
-            src.public,
-            config.pinboard.public,
-        ),
-        use_post_date: dates.use_post_date,
-        max_age_days: dates.max_age_days,
+        limit: common.limit,
+        toread: common.toread,
+        shared: common.shared,
+        use_post_date: common.dates.use_post_date,
+        max_age_days: common.dates.max_age_days,
     })
 }
 

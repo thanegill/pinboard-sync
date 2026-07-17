@@ -379,6 +379,28 @@ template, read as root — never in the store), running on a timer under a harde
 }
 ```
 
+Instead of rendering every credential into one `environmentFile`, you can point the
+per-credential `*File` options at individual secret paths (e.g. one sops-nix secret
+per credential). Each is loaded into the unit's credentials directory via systemd
+`LoadCredential` and read through its `<VAR>_FILE` env var, so the value never lands in
+the unit environment or the store, and the `DynamicUser` can read it even though the
+source path is root-only:
+
+```nix
+services.pinboard-sync = {
+  enable = true;
+  pinboardTokenFile = config.sops.secrets.pinboard-token.path;
+  redditUsernameFile = config.sops.secrets.reddit-username.path;
+  # The Reddit cookie file must contain the full `reddit_session=<value>` form.
+  redditCookieFile = config.sops.secrets.reddit-cookie.path;
+};
+```
+
+The options are `pinboardTokenFile`, `redditUsernameFile`, `redditCookieFile`,
+`githubTokenFile`, and `hnUsernameFile`. Set at least one of them or `environmentFile`;
+the two can be combined, and credentials may also come from `*_file` paths inside
+account tables.
+
 ## Roadmap
 
 Planned but not yet implemented:

@@ -17,6 +17,7 @@ mod sync;
 mod test_support;
 mod timefmt;
 
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -55,6 +56,8 @@ enum Command {
     Cleanup(CleanupCmd),
     /// Check the Pinboard token and every configured account's credentials.
     Doctor,
+    /// Back up all Pinboard bookmarks to a file (raw `posts/all` JSON, verbatim).
+    Backup(BackupCmd),
     /// Print a shell completion script (bash, zsh, fish, …) to stdout.
     Completions { shell: Shell },
     /// Print a man page (roff) to stdout.
@@ -70,6 +73,15 @@ enum Command {
 enum ConfigAction {
     /// Print a fully-commented example config (every key with its default).
     Example,
+}
+
+#[derive(Args)]
+struct BackupCmd {
+    /// File to write the raw Pinboard JSON snapshot to (replaced atomically).
+    path: PathBuf,
+    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
+    #[arg(long)]
+    pinboard_token: Option<String>,
 }
 
 #[derive(Args)]
@@ -336,6 +348,10 @@ async fn main() -> ExitCode {
             Command::Doctor => {
                 log_start("doctor");
                 run_doctor(&load_config(cli.config.clone())?).await
+            }
+            Command::Backup(cmd) => {
+                log_start("backup");
+                run_backup(cmd, &load_config(cli.config.clone())?).await
             }
             Command::Completions { shell } => {
                 print_completions(shell);
@@ -942,21 +958,63 @@ async fn run_sync_jobs(
     Ok(())
 }
 
-/// Resolve the Pinboard token and fetch `posts/all` once. Returns the client and
-/// the bookmark set to share across every account in a run (so `posts/all` — the
-/// most rate-limited endpoint — is hit once, not once per account).
+/// Resolve the Pinboard token and build the client (no fetch).
+fn build_pinboard(token_flag: Option<String>, config: &Config) -> Result<PinboardClient> {
+    let token = resolve_pinboard_token(token_flag, &config.pinboard)
+        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or [pinboard] in the config)")?;
+    let rate_limit = config.pinboard.rate_limit_secs.unwrap_or(RATE_LIMIT_SECS);
+    PinboardClient::new(token, rate_limit)
+}
+
+/// Build the client and fetch `posts/all` once. Returns the client and the bookmark
+/// set to share across every account in a run (so `posts/all` — the most rate-limited
+/// endpoint — is hit once, not once per account).
 async fn open_pinboard(
     token_flag: Option<String>,
     config: &Config,
 ) -> Result<(PinboardClient, Vec<Bookmark>)> {
-    let token = resolve_pinboard_token(token_flag, &config.pinboard)
-        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or [pinboard] in the config)")?;
-    let rate_limit = config.pinboard.rate_limit_secs.unwrap_or(RATE_LIMIT_SECS);
-    let pinboard = PinboardClient::new(token, rate_limit)?;
+    let pinboard = build_pinboard(token_flag, config)?;
     debug!("fetching existing bookmarks from Pinboard (posts/all)");
     let bookmarks = pinboard.all().await.context("listing Pinboard bookmarks")?;
     info!("pinboard: {} existing bookmark(s)", bookmarks.len());
     Ok((pinboard, bookmarks))
+}
+
+// --- backup ------------------------------------------------------------------
+
+/// Write a verbatim snapshot of every Pinboard bookmark (raw `posts/all` JSON) to a
+/// file. Preserves exactly what Pinboard returns — no lossy conversion.
+async fn run_backup(cmd: BackupCmd, config: &Config) -> Result<()> {
+    let pinboard = build_pinboard(cmd.pinboard_token, config)?;
+    let body = pinboard
+        .export_all()
+        .await
+        .context("exporting Pinboard bookmarks")?;
+    write_backup(&cmd.path, &body)?;
+    info!("backed up Pinboard bookmarks to {}", cmd.path.display());
+    Ok(())
+}
+
+/// Atomically replace `path` with `body`. Guards a good backup two ways: it refuses a
+/// body that isn't a JSON array (a 2xx interstitial/proxy page or an empty response can
+/// pass `posts/all`'s status check), and it writes a sibling temp file then renames it
+/// over the target — an atomic swap, so a partial or failed write leaves the previous
+/// snapshot intact rather than truncating it.
+fn write_backup(path: &Path, body: &str) -> Result<()> {
+    if !body.trim_start().starts_with('[') {
+        bail!(
+            "Pinboard returned an unexpected non-JSON response ({} bytes); refusing to overwrite {}",
+            body.len(),
+            path.display()
+        );
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("pinboard-backup");
+    let tmp = path.with_file_name(format!("{file_name}.tmp"));
+    std::fs::write(&tmp, body).with_context(|| format!("writing backup to {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
 }
 
 // --- doctor ------------------------------------------------------------------
@@ -1627,5 +1685,68 @@ mod tests {
         let args = parse_reddit_sync(&["--public=false", "alice"]);
         assert_eq!(args.account.as_deref(), Some("alice"));
         assert_eq!(args.public, Some(false));
+    }
+
+    /// Parse `backup <extra>` and return the parsed command.
+    fn parse_backup(extra: &[&str]) -> BackupCmd {
+        use clap::Parser;
+        let mut argv = vec!["pinboard-sync", "backup"];
+        argv.extend_from_slice(extra);
+        match Cli::try_parse_from(argv).expect("parses").command {
+            Command::Backup(cmd) => cmd,
+            _ => panic!("expected `backup` args"),
+        }
+    }
+
+    #[test]
+    fn backup_takes_a_required_path_and_optional_token() {
+        let cmd = parse_backup(&["out.json"]);
+        assert_eq!(cmd.path, PathBuf::from("out.json"));
+        assert_eq!(cmd.pinboard_token, None);
+
+        let cmd = parse_backup(&["out.json", "--pinboard-token", "user:tok"]);
+        assert_eq!(cmd.pinboard_token.as_deref(), Some("user:tok"));
+
+        // The path is required.
+        assert!(Cli::try_parse_from(["pinboard-sync", "backup"]).is_err());
+    }
+
+    /// A fresh, empty temp directory unique to `label`, cleaned up by the caller.
+    fn scratch_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pinboard-sync-test-{label}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn write_backup_replaces_atomically_and_leaves_no_temp() {
+        let dir = scratch_dir("write-backup-ok");
+        let target = dir.join("pinboard-backup.json");
+        std::fs::write(&target, "OLD").unwrap();
+
+        write_backup(&target, "[{\"href\":\"https://example.com/\"}]").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "[{\"href\":\"https://example.com/\"}]"
+        );
+        assert!(!target.with_file_name("pinboard-backup.json.tmp").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_backup_refuses_non_json_and_preserves_existing() {
+        let dir = scratch_dir("write-backup-bad");
+        let target = dir.join("pinboard-backup.json");
+        std::fs::write(&target, "GOOD BACKUP").unwrap();
+
+        // A 200 that isn't a JSON array (proxy page, empty body) must not clobber it.
+        for bad in ["", "  ", "<html>Back off</html>"] {
+            let err = write_backup(&target, bad).unwrap_err();
+            assert!(err.to_string().contains("non-JSON"), "got: {err}");
+        }
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "GOOD BACKUP");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

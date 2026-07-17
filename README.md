@@ -130,6 +130,9 @@ pinboard-sync cleanup hackernews      # rewrite HN item URLs to the linked artic
 
 # Validate the Pinboard token + every configured account's credentials
 pinboard-sync doctor
+
+# Back up every bookmark to a file (raw Pinboard JSON, verbatim)
+pinboard-sync backup pinboard-backup.json
 ```
 
 `cleanup reddit` only contacts Reddit when marking NSFW or fixing placeholder titles
@@ -289,6 +292,22 @@ With `use_post_date`, a bookmark's creation date (Pinboard's `dt`) is set to the
 
 Dating is off by default; enable it per the resolution tiers above.
 
+## Backing up
+
+`pinboard-sync backup <path>` writes a snapshot of every bookmark to `<path>`. The
+file is the raw Pinboard `posts/all` JSON **verbatim** — no conversion — so it
+preserves everything the API returns (including each bookmark's `meta`/`hash`) and any
+entry the sync/cleanup path would skip. Diagnostics go to stderr; the snapshot is the
+file. The write is atomic (a temp file renamed over `<path>`) and a non-JSON response
+is refused rather than written, so a bad run can't clobber a good backup.
+
+```sh
+pinboard-sync backup pinboard-backup.json
+```
+
+It needs only the Pinboard token (`--pinboard-token`, `$PINBOARD_TOKEN`, or
+`[pinboard]`). Run it on a schedule via the NixOS `backup` timer (see below).
+
 ## Shell completions and example config
 
 Two utility subcommands print to **stdout** so you can pipe or redirect them
@@ -375,9 +394,18 @@ template, read as root — never in the store), running on a timer under a harde
     # sync.schedule = "*:0/30";               # sync timer; default every 30 minutes
     cleanup.enable = true;                   # also normalize existing bookmarks…
     # cleanup.schedule = "weekly";           # …on its own timer; default weekly
+    backup.enable = true;                    # also snapshot all bookmarks to a file…
+    # backup.schedule = "daily";             # …on its own timer; default daily
+    # backup.path = "/var/lib/pinboard-sync/pinboard-backup.json";  # default location
   };
 }
 ```
+
+The `backup` timer writes into the service's `StateDirectory`
+(`/var/lib/pinboard-sync`); `backup.path` must stay under it, since the hardened
+`DynamicUser` can only write there. Each run replaces the file atomically, and the
+snapshot is readable by root (retrieve it with a root-run job — the state dir lives
+under the 0700 `/var/lib/private`).
 
 Instead of rendering every credential into one `environmentFile`, you can point the
 per-credential `*File` options at individual secret paths (e.g. one sops-nix secret

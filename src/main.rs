@@ -27,7 +27,7 @@ use log::{debug, error, info, warn};
 use bookmark::{Bookmark, BookmarkStore};
 use config::{Account, Config, GitHubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
-use hackernews::{HackerNewsCleanupOpts, HackerNewsClient};
+use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackernewsConfig};
 use pinboard::{PinboardClient, RATE_LIMIT_SECS};
 use reddit::RedditClient;
 use source::{BookmarkDraft, Source, SourceError, UrlKey};
@@ -1211,6 +1211,23 @@ async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) ->
     .await
 }
 
+/// Build the HackerNews tag config for a cleanup run, letting `--link-tag` override the
+/// config `tag_link`. The override is validated for whitespace like the config value so a
+/// space-bearing marker (which Pinboard would split, matching nothing) fails loudly.
+fn resolve_hackernews_cleanup_config(
+    account: Option<&HackernewsAccount>,
+    link_tag: Option<String>,
+) -> Result<HackernewsConfig> {
+    let mut hn_config = account
+        .map(HackernewsAccount::hackernews_config)
+        .unwrap_or_default();
+    if let Some(tag) = link_tag {
+        config::reject_whitespace("--link-tag", &tag)?;
+        hn_config.link_tag = tag;
+    }
+    Ok(hn_config)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn cleanup_one_hackernews(
     account: Option<&HackernewsAccount>,
@@ -1222,13 +1239,7 @@ async fn cleanup_one_hackernews(
     bookmarks: &[Bookmark],
     config: &Config,
 ) -> Result<()> {
-    let mut hn_config = account
-        .map(HackernewsAccount::hackernews_config)
-        .unwrap_or_default();
-    // CLI flag overrides the config `tag_link`.
-    if let Some(tag) = link_tag {
-        hn_config.link_tag = tag;
-    }
+    let hn_config = resolve_hackernews_cleanup_config(account, link_tag)?;
     let dates = DateSettings::resolve(over, account, &config.defaults.hackernews, config);
     let hn = HackerNewsClient::for_cleanup(hn_config)?;
     hn.cleanup(
@@ -1393,6 +1404,18 @@ mod tests {
             Some("b".into())
         );
         assert_eq!(first_nonempty([None, Some(String::new())]), None);
+    }
+
+    #[test]
+    fn link_tag_override_rejects_whitespace() {
+        assert!(resolve_hackernews_cleanup_config(None, Some("find hn".into())).is_err());
+    }
+
+    #[test]
+    fn link_tag_override_accepts_a_bare_tag() {
+        let hn_config =
+            resolve_hackernews_cleanup_config(None, Some("find-hn".into())).expect("valid tag");
+        assert_eq!(hn_config.link_tag, "find-hn");
     }
 
     #[test]

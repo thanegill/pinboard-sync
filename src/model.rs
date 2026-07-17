@@ -1,7 +1,7 @@
 //! Reddit listing data structures and the bookmark-shaping logic
 //! (URL form, subreddit casing, tag construction).
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use url::Url;
 
 use crate::bookmark::Bookmark;
@@ -20,8 +20,29 @@ pub struct RedditListingPage {
     /// Fullname to pass as `after` for the next page; `null` at the end.
     #[serde(default)]
     pub after: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_children")]
     pub children: Vec<RedditListingEntry>,
+}
+
+/// Deserialize a listing's children, skipping (with a warning) any single entry that
+/// doesn't match `RedditListingEntry` so one malformed item can't discard a whole page. A
+/// body that isn't a JSON array of objects still fails, keeping an anti-bot HTML page
+/// a genuine error.
+fn deserialize_lenient_children<'de, D>(
+    deserializer: D,
+) -> Result<Vec<RedditListingEntry>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|value| {
+            serde_json::from_value::<RedditListingEntry>(value)
+                .map_err(|e| log::warn!("skipping malformed reddit listing entry: {e}"))
+                .ok()
+        })
+        .collect())
 }
 
 /// A single entry in a listing: `kind` is `t3` (post) or `t1` (comment), and
@@ -633,6 +654,41 @@ mod tests {
         // "reddit.com" only in the path of another host must not match.
         assert_eq!(key("https://example.com/reddit.com/x"), None);
         assert_eq!(key("https://www.reddit.com/"), None);
+    }
+
+    #[test]
+    fn malformed_child_is_skipped_not_failing_the_whole_page() {
+        // The second child lacks the required `kind`, so it can't deserialize into a
+        // RedditListingEntry. It must be dropped, keeping the good sibling rather than
+        // failing the entire listing.
+        let listing: RedditListing = serde_json::from_str(
+            r#"{
+                "kind": "Listing",
+                "data": {
+                    "after": null,
+                    "children": [
+                        { "kind": "t3", "data": { "name": "t3_a", "subreddit": "rust",
+                          "permalink": "/r/rust/a/", "title": "A" } },
+                        { "data": { "name": "t3_b" } }
+                    ]
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(listing.data.children.len(), 1);
+        assert_eq!(
+            listing.data.children[0].fields.name.as_deref(),
+            Some("t3_a")
+        );
+    }
+
+    #[test]
+    fn non_array_children_still_fail() {
+        // A body whose `children` isn't a JSON array (e.g. an anti-bot page shape) is
+        // still a genuine error, not silently an empty page.
+        let result: Result<RedditListing, _> =
+            serde_json::from_str(r#"{ "kind": "Listing", "data": { "children": "nope" } }"#);
+        assert!(result.is_err());
     }
 
     #[test]

@@ -241,15 +241,19 @@ impl Source for GitHubClient {
                 );
             }
 
-            let starred: Vec<GitHubStarredRepo> = resp
+            // Deserialize element-by-element so one malformed repo is skipped with a
+            // warning rather than discarding this page (and every earlier one). A body
+            // that isn't a JSON array at all still fails the whole page.
+            let elements: Vec<serde_json::Value> = resp
                 .json()
                 .await
                 .context("parsing github starred response")?;
-            out.extend(
-                starred
-                    .into_iter()
-                    .filter_map(|s| s.into_draft(&self.config)),
-            );
+            out.extend(elements.into_iter().filter_map(|element| {
+                serde_json::from_value::<GitHubStarredRepo>(element)
+                    .map_err(|e| warn!("skipping malformed github starred element: {e}"))
+                    .ok()?
+                    .into_draft(&self.config)
+            }));
 
             match next {
                 Some(p) => page = p,
@@ -728,6 +732,28 @@ mod net_tests {
             crate::timefmt::parse_rfc3339("2023-01-02T03:04:05Z")
         );
         assert_eq!(drafts[1].bookmark.title, "b/two");
+    }
+
+    #[tokio::test]
+    async fn fetch_skips_malformed_element_and_keeps_the_good_repos() {
+        let server = MockServer::start().await;
+        // The page mixes a valid starred entry with one missing the required `repo`
+        // fields: the bad element is dropped, the good one survives.
+        Mock::given(method("GET"))
+            .and(path("/user/starred"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "starred_at": "2023-01-02T03:04:05Z",
+                  "repo": { "full_name": "a/one", "html_url": "https://github.com/a/one" } },
+                { "starred_at": "2023-01-02T03:04:05Z", "repo": { "full_name": "b/two" } }
+            ])))
+            .mount(&server)
+            .await;
+
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+        let drafts = client.fetch().await.unwrap();
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].bookmark.title, "a/one");
     }
 
     #[tokio::test]

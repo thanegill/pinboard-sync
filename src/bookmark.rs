@@ -22,7 +22,9 @@ pub struct Bookmark {
     pub title: String,
     pub note: String,
     pub tags: Vec<String>,
-    /// Creation time, or `None` when none was set / it didn't parse.
+    /// Creation time, or `None` when the source set none (an empty wire `time`). A
+    /// non-empty `time` that won't parse makes the whole bookmark skip on read rather
+    /// than silently becoming `None` (see [`BookmarkConversionError`]).
     pub timestamp: Option<OffsetDateTime>,
     /// Whether the bookmark is public (Pinboard's `shared=yes`).
     pub public: bool,
@@ -30,17 +32,36 @@ pub struct Bookmark {
     pub read_later: bool,
 }
 
+/// Why a [`PinboardBookmark`] can't be lifted into the domain [`Bookmark`]. Both cases
+/// make `all()` skip (and warn on) the entry: a URL that won't parse, or a non-empty
+/// `time` that won't parse. The latter matters because a bookmark with an unknown
+/// creation date, if rewritten by `cleanup`, would have its date silently reset to now
+/// (`posts/add replace=yes` defaults `dt` to now when omitted).
+#[derive(Debug, thiserror::Error)]
+pub enum BookmarkConversionError {
+    #[error("unparseable URL: {0}")]
+    Url(#[from] url::ParseError),
+    #[error("unparseable creation time {0:?}")]
+    Time(String),
+}
+
 impl TryFrom<PinboardBookmark> for Bookmark {
-    /// Fails only when the wire `href` doesn't parse as a URL; `all()` skips (and warns
-    /// on) such entries.
-    type Error = url::ParseError;
+    type Error = BookmarkConversionError;
     fn try_from(b: PinboardBookmark) -> Result<Self, Self::Error> {
+        let timestamp = if b.time.is_empty() {
+            None
+        } else {
+            Some(
+                crate::timefmt::parse_rfc3339(&b.time)
+                    .ok_or(BookmarkConversionError::Time(b.time))?,
+            )
+        };
         Ok(Bookmark {
             url: Url::parse(&b.url)?,
             title: b.description,
             note: b.extended,
             tags: b.tags.split_whitespace().map(String::from).collect(),
-            timestamp: crate::timefmt::parse_rfc3339(&b.time),
+            timestamp,
             public: b.shared == "yes",
             read_later: b.toread == "yes",
         })

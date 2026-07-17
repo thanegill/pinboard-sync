@@ -3,11 +3,15 @@
 //! (raw Algolia HTML) become Markdown; quoted bodies are wrapped in a literal
 //! `<blockquote>`, which Pinboard renders in the notes field.
 
-/// Clean a title (`description`): strip HTML tags, decode entities, and collapse all
-/// internal whitespace to single spaces (trimmed). Plain text passes through unchanged
-/// apart from whitespace normalization.
+/// Clean a title (`description`): decode HTML entities and collapse all internal
+/// whitespace to single spaces (trimmed). Source titles (GitHub descriptions, HN
+/// titles) are plain text, not markup, so literal angle brackets (`Vec<String>`,
+/// `vector<T>`) are preserved verbatim rather than dropped as HTML tags. Literal `<`/`>`
+/// are escaped before parsing so scraper decodes entities without treating a `<...>`
+/// span as an element to strip.
 pub fn html_to_plain(s: &str) -> String {
-    let fragment = scraper::Html::parse_fragment(s);
+    let escaped = s.replace('<', "&lt;").replace('>', "&gt;");
+    let fragment = scraper::Html::parse_fragment(&escaped);
     let text: String = fragment.root_element().text().collect();
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -44,12 +48,15 @@ mod tests {
     }
 
     #[test]
-    fn plain_strips_tags() {
-        assert_eq!(html_to_plain("<b>Bold</b> title"), "Bold title");
-        assert_eq!(
-            html_to_plain("<a href=\"https://x.com\">link</a> text"),
-            "link text"
-        );
+    fn plain_preserves_literal_angle_brackets() {
+        assert_eq!(html_to_plain("Vec<String> support"), "Vec<String> support");
+        assert_eq!(html_to_plain("C++ vector<T>"), "C++ vector<T>");
+        assert_eq!(html_to_plain("a < b > c"), "a < b > c");
+    }
+
+    #[test]
+    fn plain_does_not_strip_tag_like_text() {
+        assert_eq!(html_to_plain("<b>Bold</b> title"), "<b>Bold</b> title");
     }
 
     #[test]

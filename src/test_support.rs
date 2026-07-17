@@ -10,19 +10,19 @@ use serde_json::Value;
 use url::Url;
 
 use crate::bookmark::{Bookmark, BookmarkStore};
-use crate::model::{reddit_key, ListingEntry, RedditConfig};
+use crate::model::{reddit_key, RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 
-/// Build a `ListingEntry` from `kind` (`t3`/`t1`) and a `data` JSON object.
-pub fn listing_entry(kind: &str, data: Value) -> ListingEntry {
+/// Build a `RedditListingEntry` from `kind` (`t3`/`t1`) and a `data` JSON object.
+pub fn listing_entry(kind: &str, data: Value) -> RedditListingEntry {
     serde_json::from_value(serde_json::json!({ "kind": kind, "data": data })).unwrap()
 }
 
 #[derive(Default)]
 pub struct FakeReddit {
-    pub saved: Vec<ListingEntry>,
-    pub info: Vec<ListingEntry>,
+    pub saved: Vec<RedditListingEntry>,
+    pub info: Vec<RedditListingEntry>,
 }
 
 impl Source for FakeReddit {
@@ -45,7 +45,7 @@ impl UrlKey for FakeReddit {
 }
 
 impl PostInfo for FakeReddit {
-    async fn info(&self, _fullnames: &[String]) -> Result<Vec<ListingEntry>, SourceError> {
+    async fn info(&self, _fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError> {
         Ok(self.info.clone())
     }
 }

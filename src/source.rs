@@ -102,7 +102,9 @@ pub fn tags_differ(a: &[String], b: &[String]) -> bool {
     let mut a = a.to_vec();
     let mut b = b.to_vec();
     a.sort();
+    a.dedup();
     b.sort();
+    b.dedup();
     a != b
 }
 
@@ -155,6 +157,21 @@ mod tests {
 
     fn url(s: &str) -> Url {
         Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn tags_differ_is_set_based() {
+        let tags = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // A duplicate on one side must not read as a difference.
+        assert!(!tags_differ(
+            &tags(&["reddit"]),
+            &tags(&["reddit", "reddit"])
+        ));
+        // Order-insensitive.
+        assert!(!tags_differ(&tags(&["a", "b"]), &tags(&["b", "a"])));
+        // Genuinely different sets still differ.
+        assert!(tags_differ(&tags(&["reddit"]), &tags(&["reddit", "rust"])));
+        assert!(tags_differ(&tags(&["a", "a"]), &tags(&["a", "b"])));
     }
 
     #[test]

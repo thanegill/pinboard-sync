@@ -22,7 +22,9 @@ pub struct Bookmark {
     pub title: String,
     pub note: String,
     pub tags: Vec<String>,
-    /// Creation time, or `None` when none was set / it didn't parse.
+    /// Creation time, or `None` when the source set none (an empty wire `time`). A
+    /// non-empty `time` that won't parse makes the whole bookmark skip on read rather
+    /// than silently becoming `None` (see [`BookmarkConversionError`]).
     pub timestamp: Option<OffsetDateTime>,
     /// Whether the bookmark is public (Pinboard's `shared=yes`).
     pub public: bool,
@@ -30,17 +32,36 @@ pub struct Bookmark {
     pub read_later: bool,
 }
 
+/// Why a [`PinboardBookmark`] can't be lifted into the domain [`Bookmark`]. Both cases
+/// make `all()` skip (and warn on) the entry: a URL that won't parse, or a non-empty
+/// `time` that won't parse. The latter matters because a bookmark with an unknown
+/// creation date, if rewritten by `cleanup`, would have its date silently reset to now
+/// (`posts/add replace=yes` defaults `dt` to now when omitted).
+#[derive(Debug, thiserror::Error)]
+pub enum BookmarkConversionError {
+    #[error("unparseable URL: {0}")]
+    Url(#[from] url::ParseError),
+    #[error("unparseable creation time {0:?}")]
+    Time(String),
+}
+
 impl TryFrom<PinboardBookmark> for Bookmark {
-    /// Fails only when the wire `href` doesn't parse as a URL; `all()` skips (and warns
-    /// on) such entries.
-    type Error = url::ParseError;
+    type Error = BookmarkConversionError;
     fn try_from(b: PinboardBookmark) -> Result<Self, Self::Error> {
+        let timestamp = if b.time.is_empty() {
+            None
+        } else {
+            Some(
+                crate::timefmt::parse_rfc3339(&b.time)
+                    .ok_or(BookmarkConversionError::Time(b.time))?,
+            )
+        };
         Ok(Bookmark {
             url: Url::parse(&b.url)?,
             title: b.description,
             note: b.extended,
             tags: b.tags.split_whitespace().map(String::from).collect(),
-            timestamp: crate::timefmt::parse_rfc3339(&b.time),
+            timestamp,
             public: b.shared == "yes",
             read_later: b.toread == "yes",
         })
@@ -50,9 +71,8 @@ impl TryFrom<PinboardBookmark> for Bookmark {
 impl Bookmark {
     /// The written fields where `new` differs from `self` (the stored bookmark), each as
     /// a `(label, rendered new value)` pair for the cleanup dry-run. Empty when nothing a
-    /// write would change differs — so `cleanup` skips the bookmark. `public`/`read_later`
-    /// are carried over on a re-write, so they aren't compared; `timestamp` compares by
-    /// instant (a re-formatted but equivalent time isn't a change).
+    /// write would change differs — so `cleanup` skips the bookmark. `timestamp` compares
+    /// by instant (a re-formatted but equivalent time isn't a change).
     pub fn diff(&self, new: &Bookmark) -> Vec<(&'static str, String)> {
         let mut changes = Vec::new();
         if new.url != self.url {
@@ -78,6 +98,12 @@ impl Bookmark {
                 .and_then(crate::timefmt::to_rfc3339)
                 .unwrap_or_default();
             changes.push(("date", value));
+        }
+        if new.public != self.public {
+            changes.push(("public", new.public.to_string()));
+        }
+        if new.read_later != self.read_later {
+            changes.push(("toread", new.read_later.to_string()));
         }
         changes
     }
@@ -113,5 +139,48 @@ pub trait BookmarkStore {
                 .with_context(|| format!("deleting old URL {old}"))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bookmark() -> Bookmark {
+        Bookmark {
+            url: Url::parse("https://example.com/").unwrap(),
+            title: "Title".into(),
+            note: "note".into(),
+            tags: vec!["a".into(), "b".into()],
+            timestamp: None,
+            public: false,
+            read_later: false,
+        }
+    }
+
+    #[test]
+    fn diff_reports_public_change() {
+        let stored = bookmark();
+        let planned = Bookmark {
+            public: true,
+            ..bookmark()
+        };
+        assert_eq!(stored.diff(&planned), vec![("public", "true".to_string())]);
+    }
+
+    #[test]
+    fn diff_reports_read_later_change() {
+        let stored = bookmark();
+        let planned = Bookmark {
+            read_later: true,
+            ..bookmark()
+        };
+        assert_eq!(stored.diff(&planned), vec![("toread", "true".to_string())]);
+    }
+
+    #[test]
+    fn diff_ignores_unchanged_privacy_flags() {
+        let stored = bookmark();
+        assert!(stored.diff(&bookmark()).is_empty());
     }
 }

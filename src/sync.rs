@@ -91,7 +91,7 @@ mod tests {
     use serde_json::json;
     use url::Url;
 
-    fn post(name: &str, permalink: &str) -> crate::model::ListingEntry {
+    fn post(name: &str, permalink: &str) -> crate::model::RedditListingEntry {
         listing_entry(
             "t3",
             json!({ "name": name, "subreddit": "rust", "permalink": permalink, "title": "T" }),

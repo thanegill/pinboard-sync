@@ -81,6 +81,11 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             bookmark.timestamp,
         );
 
+        // Privacy flags are never re-shaped by cleanup: take them from the stored
+        // bookmark so a plan can't silently flip them.
+        planned.public = bookmark.public;
+        planned.read_later = bookmark.read_later;
+
         // The written fields that differ; empty means nothing a write would change.
         let changes = bookmark.diff(&planned);
         if changes.is_empty() {
@@ -97,8 +102,8 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             continue;
         }
 
-        // `planned` already carries the stored `public`/`read_later` (the planners copy
-        // them) and the driver-resolved `timestamp`, so it's the complete write model.
+        // `planned` now carries the stored `public`/`read_later` and the driver-resolved
+        // `timestamp`, so it's the complete write model.
         // Log and skip a single failed update so the rest of the pass still runs.
         match pinboard
             .apply_update(&planned, url_changed.then_some(&bookmark.url))

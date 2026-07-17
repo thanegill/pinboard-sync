@@ -80,6 +80,9 @@ struct SyncCmd {
     /// Show what would be written without touching Pinboard (with --all).
     #[arg(long)]
     dry_run: bool,
+    /// Shell command run when a source's credential needs refreshing (a 401/403).
+    #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
+    on_auth_failure: Option<String>,
     #[command(subcommand)]
     source: Option<SyncSource>,
 }
@@ -440,6 +443,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
             }
             let ovr = SyncOverrides {
                 dry_run: cmd.dry_run,
+                on_auth_failure: cmd.on_auth_failure.clone(),
                 ..SyncOverrides::default()
             };
             let mut jobs = Vec::new();
@@ -1534,6 +1538,35 @@ mod tests {
         };
         let job = build_hackernews_job(None, &ovr, &Config::default()).expect("builds");
         assert_wired(&job);
+    }
+
+    /// Parse `sync <extra>` (no source subcommand) and return the top-level command.
+    fn parse_sync(extra: &[&str]) -> SyncCmd {
+        use clap::Parser;
+        let mut argv = vec!["pinboard-sync", "sync"];
+        argv.extend_from_slice(extra);
+        match Cli::try_parse_from(argv).expect("parses").command {
+            Command::Sync(cmd) => cmd,
+            _ => panic!("expected `sync` command"),
+        }
+    }
+
+    #[test]
+    fn top_level_all_threads_on_auth_failure_into_the_hook() {
+        // The `sync --all` path builds `SyncOverrides` itself (no `into_overrides`),
+        // so the hook must be carried explicitly from the top-level flag.
+        let cmd = parse_sync(&["--all", "--on-auth-failure", "refresh-cookie"]);
+        assert_eq!(cmd.on_auth_failure.as_deref(), Some("refresh-cookie"));
+
+        let ovr = SyncOverrides {
+            dry_run: cmd.dry_run,
+            on_auth_failure: cmd.on_auth_failure.clone(),
+            reddit_username: Some("alice".into()),
+            reddit_cookie: Some("reddit_session=x".into()),
+            ..SyncOverrides::default()
+        };
+        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        assert_eq!(job.hook.as_deref(), Some("refresh-cookie"));
     }
 
     /// Parse `sync reddit <extra>` and return the parsed source args.

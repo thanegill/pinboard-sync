@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::http::send_retrying;
-use crate::model::{reddit_key, ListingEntry, RedditConfig, RedditListing};
+use crate::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 
 /// Descriptive User-Agent built from the crate name + version. Reddit rejects
@@ -31,7 +31,7 @@ const RETRY_DELAY: Duration = Duration::from_secs(2);
 /// Reddit `/api/info` lookups by fullname (used by `cleanup` for over_18/title).
 #[allow(async_fn_in_trait)]
 pub trait PostInfo {
-    async fn info(&self, fullnames: &[String]) -> Result<Vec<ListingEntry>, SourceError>;
+    async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError>;
 }
 
 /// Reads Reddit's saved listing and `/api/info.json`, authenticated by a session
@@ -104,13 +104,13 @@ impl RedditClient {
     /// Fetch all saved items, newest first, following `after` pagination (Reddit
     /// caps any listing at ~1000). Inherent (no longer a port): only `sync`'s
     /// `Source::fetch` and the net tests call it, both within this crate.
-    async fn fetch_saved(&self) -> Result<Vec<ListingEntry>, SourceError> {
+    async fn fetch_saved(&self) -> Result<Vec<RedditListingEntry>, SourceError> {
         let username = self
             .username
             .as_deref()
             .context("no username configured (set REDDIT_USERNAME)")?;
         let endpoint = format!("{}/user/{}/saved.json", self.base, username);
-        let mut out: Vec<ListingEntry> = Vec::new();
+        let mut out: Vec<RedditListingEntry> = Vec::new();
         let mut after: Option<String> = None;
 
         loop {
@@ -145,8 +145,8 @@ impl RedditClient {
 impl PostInfo for RedditClient {
     /// Batch-fetch Thing data by fullname via `/api/info.json` (100 per request).
     /// Returns the entries that exist.
-    async fn info(&self, fullnames: &[String]) -> Result<Vec<ListingEntry>, SourceError> {
-        let mut out: Vec<ListingEntry> = Vec::new();
+    async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError> {
+        let mut out: Vec<RedditListingEntry> = Vec::new();
         let chunks: Vec<&[String]> = fullnames.chunks(100).collect();
         let endpoint = format!("{}/api/info.json", self.base);
         for (i, chunk) in chunks.iter().enumerate() {

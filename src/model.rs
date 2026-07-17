@@ -11,32 +11,32 @@ use crate::source::{host_matches, push_prefixed, push_tag, push_tags, BookmarkDr
 /// A Reddit "Listing" envelope (`{ "kind": "Listing", "data": { ... } }`).
 #[derive(Debug, Deserialize)]
 pub struct RedditListing {
-    pub data: ListingPage,
+    pub data: RedditListingPage,
 }
 
 /// One page of a listing: the children plus the cursor for the next page.
 #[derive(Debug, Deserialize)]
-pub struct ListingPage {
+pub struct RedditListingPage {
     /// Fullname to pass as `after` for the next page; `null` at the end.
     #[serde(default)]
     pub after: Option<String>,
     #[serde(default)]
-    pub children: Vec<ListingEntry>,
+    pub children: Vec<RedditListingEntry>,
 }
 
 /// A single entry in a listing: `kind` is `t3` (post) or `t1` (comment), and
 /// `fields` holds its payload.
 #[derive(Debug, Clone, Deserialize)]
-pub struct ListingEntry {
+pub struct RedditListingEntry {
     pub kind: String,
     #[serde(rename = "data")]
-    pub fields: EntryFields,
+    pub fields: RedditEntryFields,
 }
 
 /// The union of the fields we care about across posts and comments. Reddit
 /// returns many more; `serde` ignores the rest.
 #[derive(Debug, Default, Clone, Deserialize)]
-pub struct EntryFields {
+pub struct RedditEntryFields {
     /// Fullname, e.g. `t3_abc123`.
     #[serde(default)]
     pub name: Option<String>,
@@ -97,7 +97,7 @@ pub struct RedditSavedItem {
     pub media_type: Option<String>,
 }
 
-impl ListingEntry {
+impl RedditListingEntry {
     /// Convert a listing entry into a `RedditSavedItem`, or `None` if it is neither a
     /// post (`t3`) nor a comment (`t1`) or is missing the fields we need. `domain`
     /// is the reddit host used for the parent-thread link prepended to comments.
@@ -376,7 +376,7 @@ mod tests {
     }
 
     fn item(kind: &str, fields: serde_json::Value) -> RedditSavedItem {
-        let entry: ListingEntry =
+        let entry: RedditListingEntry =
             serde_json::from_value(serde_json::json!({ "kind": kind, "data": fields })).unwrap();
         entry.into_saved_item("old.reddit.com").unwrap()
     }
@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn non_post_non_comment_kinds_are_skipped() {
-        let entry: ListingEntry = serde_json::from_value(serde_json::json!({
+        let entry: RedditListingEntry = serde_json::from_value(serde_json::json!({
             "kind": "t5",
             "data": { "subreddit": "rust", "permalink": "/r/rust/" }
         }))

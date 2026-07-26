@@ -51,6 +51,9 @@ struct RedditPostMeta {
     /// `<blockquote>` (empty when there's nothing to quote). Used to retrofit existing
     /// bookmarks to the shape `sync` now writes.
     extended: String,
+    /// The raw `selftext`, i.e. the rebuilt notes before the `<blockquote>` wrapping —
+    /// the shape an older sync wrote. Lets the retrofit recognize its own past output.
+    selftext: String,
 }
 
 pub async fn run<P: BookmarkStore, R: PostInfo>(
@@ -119,14 +122,20 @@ impl CleanupPass for RedditCleanupPass<'_> {
 
         // Reshape the notes. Only for *post* bookmarks: `/api/info` is keyed by the post
         // fullname (`post_fullname`), so a comment's own body is never fetched — leave those
-        // notes alone. A non-empty rebuild from authoritative data (selftext wrapped in a
-        // <blockquote>, or a link post's external URL) replaces the stored notes. Otherwise
-        // (empty rebuild, or no entry this run) only drop a bare self-link an older sync
-        // wrote — never wipe genuine notes.
+        // notes alone. When we have authoritative data, retrofit the rebuild (selftext in a
+        // <blockquote>, or a link post's external URL) onto the stored notes *only* when
+        // those notes are ones the tool itself wrote (empty, the current rebuild, the raw
+        // pre-<blockquote> selftext, or a bare self-link an older sync left) — a hand-written
+        // annotation on a manually-saved bookmark is preserved. Without an entry this run,
+        // only drop a bare self-link; never wipe genuine notes.
         let note = if is_comment_url(&new_url) {
             bookmark.note.clone()
-        } else if let Some(rebuilt) = post.map(|p| p.extended.clone()).filter(|e| !e.is_empty()) {
-            rebuilt
+        } else if let Some(post) = post {
+            if note_is_tool_generated(&bookmark.note, &post.extended, &post.selftext, &new_url) {
+                post.extended.clone()
+            } else {
+                bookmark.note.clone()
+            }
         } else if is_self_link_notes(&bookmark.note, &new_url) {
             String::new()
         } else {
@@ -191,10 +200,11 @@ async fn fetch_post_info<R: PostInfo>(
             // always posts (`/api/info` is queried with post fullnames), so build the
             // post-shaped notes — selftext quoted, empty for an empty self-post, else the
             // external URL.
+            let selftext = entry.fields.selftext.clone().unwrap_or_default();
             let extended = crate::model::reddit_extended(
                 false,
                 "",
-                entry.fields.selftext.as_deref().unwrap_or_default(),
+                &selftext,
                 entry.fields.url.as_deref().unwrap_or_default(),
                 entry.fields.is_self,
                 None,
@@ -207,6 +217,7 @@ async fn fetch_post_info<R: PostInfo>(
                     title: entry.fields.title.filter(|s| !s.is_empty()),
                     created_utc: entry.fields.created_utc,
                     extended,
+                    selftext,
                 },
             );
         }
@@ -323,6 +334,19 @@ pub fn normalize_tags(url: &Url, existing: &[String], base_tag: &str, prefix: &s
         set.insert(format!("{prefix}{cased}"));
     }
     set.into_iter().collect()
+}
+
+/// Whether a post bookmark's stored `note` is one the tool itself wrote — so the
+/// authoritative `rebuilt` notes may safely replace it — rather than a hand-written
+/// annotation to preserve. Recognized tool shapes: empty, the current rebuild, the raw
+/// `selftext` from before the `<blockquote>` retrofit, or a bare self-link an older sync
+/// left in an empty self-post.
+fn note_is_tool_generated(note: &str, rebuilt: &str, selftext: &str, url: &Url) -> bool {
+    let trimmed = note.trim();
+    trimmed.is_empty()
+        || note == rebuilt
+        || (!selftext.trim().is_empty() && trimmed == selftext.trim())
+        || is_self_link_notes(note, url)
 }
 
 /// Whether `notes` is nothing but a Reddit link to the same post as `url` — the
@@ -762,6 +786,86 @@ mod loop_tests {
         );
         // Notes-only change: URL unchanged, so nothing is deleted.
         assert!(pinboard.deleted.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn preserves_hand_written_note_on_a_self_post() {
+        // A manually-saved self-post carries a hand-written annotation that is neither the
+        // authoritative rebuild nor the raw selftext. Even with /api/info present, cleanup
+        // must not clobber it with the <blockquote>-wrapped selftext. The www host forces a
+        // URL rewrite so an update is still emitted and we can observe the preserved note.
+        let pinboard = FakePinboard {
+            all: vec![PinboardBookmark {
+                url: "https://www.reddit.com/r/rust/comments/a/x/".into(),
+                description: "A real title".into(),
+                extended: "my own thoughts -- revisit this later".into(),
+                tags: "reddit subreddit:rust".into(),
+                time: String::new(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }
+            .try_into()
+            .unwrap()],
+            ..Default::default()
+        };
+        let reddit = FakeReddit {
+            info: vec![listing_entry(
+                "t3",
+                json!({ "name": "t3_a", "subreddit": "rust",
+                        "permalink": "/r/rust/comments/a/x/", "title": "A real title",
+                        "selftext": "the authoritative body text" }),
+            )],
+            ..Default::default()
+        };
+
+        run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
+            .await
+            .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].extended, "my own thoughts -- revisit this later");
+    }
+
+    #[tokio::test]
+    async fn retrofits_empty_note_from_authoritative_selftext() {
+        // A self-post saved with no notes gets the authoritative selftext, wrapped in a
+        // <blockquote> -- an empty stored note is recognizably tool-shaped, so the rebuild
+        // fills it in. The www host forces the URL rewrite that carries the write.
+        let pinboard = FakePinboard {
+            all: vec![PinboardBookmark {
+                url: "https://www.reddit.com/r/rust/comments/a/x/".into(),
+                description: "A real title".into(),
+                extended: String::new(),
+                tags: "reddit subreddit:rust".into(),
+                time: String::new(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }
+            .try_into()
+            .unwrap()],
+            ..Default::default()
+        };
+        let reddit = FakeReddit {
+            info: vec![listing_entry(
+                "t3",
+                json!({ "name": "t3_a", "subreddit": "rust",
+                        "permalink": "/r/rust/comments/a/x/", "title": "A real title",
+                        "selftext": "the body text" }),
+            )],
+            ..Default::default()
+        };
+
+        run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
+            .await
+            .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(
+            updated[0].extended,
+            "<blockquote>the body text</blockquote>"
+        );
     }
 
     #[tokio::test]

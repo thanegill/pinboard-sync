@@ -8,7 +8,10 @@
 /// titles) are plain text, not markup, so literal angle brackets (`Vec<String>`,
 /// `vector<T>`) are preserved verbatim rather than dropped as HTML tags. Literal `<`/`>`
 /// are escaped before parsing so scraper decodes entities without treating a `<...>`
-/// span as an element to strip.
+/// span as an element to strip. The `cleanup` path runs stored Pinboard titles through
+/// this too, so a stored title that happens to contain real markup is likewise kept
+/// verbatim rather than stripped — the deliberate cost of treating every title as plain
+/// text (see the `cleanup` tests).
 pub fn html_to_plain(s: &str) -> String {
     let escaped = s.replace('<', "&lt;").replace('>', "&gt;");
     let fragment = scraper::Html::parse_fragment(&escaped);

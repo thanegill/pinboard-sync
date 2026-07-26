@@ -573,6 +573,30 @@ mod loop_tests {
     }
 
     #[tokio::test]
+    async fn preserves_markup_in_stored_title() {
+        // A non-placeholder stored title carrying angle brackets / tag-like text is kept
+        // verbatim through cleanup, not stripped as HTML — the deliberate tradeoff of
+        // treating every title as plain text (html_to_plain escapes `<`/`>` before
+        // parsing). The www host still forces a rewrite so an update is emitted.
+        let pinboard = FakePinboard {
+            all: vec![bookmark(
+                "https://www.reddit.com/r/rust/comments/a/x/",
+                "Vec<String> vs <b>Box</b> in Rust",
+                "reddit subreddit:rust",
+            )],
+            ..Default::default()
+        };
+
+        run(&pinboard, None::<&FakeReddit>, &opts(), &pinboard.all)
+            .await
+            .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].description, "Vec<String> vs <b>Box</b> in Rust");
+    }
+
+    #[tokio::test]
     async fn dates_bookmark_by_created_utc_when_use_post_date() {
         // An already-normalized bookmark: only the date should change.
         let pinboard = FakePinboard {

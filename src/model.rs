@@ -27,22 +27,33 @@ pub struct RedditListingPage {
 /// Deserialize a listing's children, skipping (with a warning) any single entry that
 /// doesn't match `RedditListingEntry` so one malformed item can't discard a whole page. A
 /// body that isn't a JSON array of objects still fails, keeping an anti-bot HTML page
-/// a genuine error.
+/// a genuine error. A non-empty page where *every* child fails is also an error (a schema
+/// break) rather than a silently empty page.
 fn deserialize_lenient_children<'de, D>(
     deserializer: D,
 ) -> Result<Vec<RedditListingEntry>, D::Error>
 where
     D: Deserializer<'de>,
 {
+    use serde::de::Error as _;
+
     let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
-    Ok(raw
+    let raw_count = raw.len();
+    let children: Vec<RedditListingEntry> = raw
         .into_iter()
         .filter_map(|value| {
             serde_json::from_value::<RedditListingEntry>(value)
                 .map_err(|e| log::warn!("skipping malformed reddit listing entry: {e}"))
                 .ok()
         })
-        .collect())
+        .collect();
+    if raw_count > 0 && children.is_empty() {
+        return Err(D::Error::custom(format!(
+            "all {raw_count} reddit listing child(ren) failed to deserialize — \
+             the API response shape may have changed"
+        )));
+    }
+    Ok(children)
 }
 
 /// A single entry in a listing: `kind` is `t3` (post) or `t1` (comment), and
@@ -680,6 +691,35 @@ mod tests {
             listing.data.children[0].fields.name.as_deref(),
             Some("t3_a")
         );
+    }
+
+    #[test]
+    fn all_children_failing_is_an_error_not_a_silent_empty_page() {
+        // Both children lack the required `kind`, so a schema break drops every entry.
+        // A non-empty page that parses to zero items must error rather than silently
+        // yield an empty page (which would make sync exit 0 having imported nothing).
+        let result: Result<RedditListing, _> = serde_json::from_str(
+            r#"{
+                "kind": "Listing",
+                "data": {
+                    "children": [
+                        { "data": { "name": "t3_a" } },
+                        { "data": { "name": "t3_b" } }
+                    ]
+                }
+            }"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn genuinely_empty_children_is_ok() {
+        // An empty page is legitimate (nothing saved / end of listing): no error.
+        let listing: RedditListing = serde_json::from_str(
+            r#"{ "kind": "Listing", "data": { "after": null, "children": [] } }"#,
+        )
+        .unwrap();
+        assert!(listing.data.children.is_empty());
     }
 
     #[test]

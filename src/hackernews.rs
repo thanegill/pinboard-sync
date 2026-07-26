@@ -522,6 +522,18 @@ impl HackerNewsClient {
     }
 }
 
+/// Appends the `HN Link: <url>` back-link line to a note, skipping when the note already
+/// carries one. An empty note becomes the bare link.
+fn ensure_hn_link_note(note: &str, hn_link: &str) -> String {
+    if note.contains("HN Link:") {
+        note.to_string()
+    } else if note.is_empty() {
+        hn_link.to_string()
+    } else {
+        format!("{note}\n\n{hn_link}")
+    }
+}
+
 /// Re-shapes one favorited HN item bookmark: re-fetch via Algolia and re-derive the
 /// draft (stories rewrite to the article URL; comments/text posts update in place),
 /// preserving existing tags, privacy, and any note the user added by hand. A stored
@@ -551,7 +563,6 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         new.read_later = bookmark.read_later;
         // Keep the user's stored note, but make sure the regenerated `HN Link:`
         // back-link survives the re-shape (append it once, never duplicated).
-        // Mirrors how `HackerNewsLinkPass` composes notes.
         let generated_link = new
             .note
             .lines()
@@ -559,10 +570,8 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
             .map(str::to_string);
         if !bookmark.note.is_empty() {
             new.note = match generated_link {
-                Some(link) if !bookmark.note.contains("HN Link:") => {
-                    format!("{}\n\n{link}", bookmark.note)
-                }
-                _ => bookmark.note.clone(),
+                Some(link) => ensure_hn_link_note(&bookmark.note, &link),
+                None => bookmark.note.clone(),
             };
         }
         Ok(Some(new))
@@ -586,13 +595,7 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
         };
 
         let hn_link = format!("HN Link: https://news.ycombinator.com/item?id={id}");
-        let note = if bookmark.note.contains("HN Link:") {
-            bookmark.note.clone()
-        } else if bookmark.note.is_empty() {
-            hn_link
-        } else {
-            format!("{}\n\n{hn_link}", bookmark.note)
-        };
+        let note = ensure_hn_link_note(&bookmark.note, &hn_link);
 
         // Clean the title (arbitrary article bookmarks may carry HTML entities).
         let title = html_to_plain(&bookmark.title);
@@ -733,6 +736,18 @@ mod tests {
 
     fn url(s: &str) -> Url {
         Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn ensure_hn_link_note_appends_duplicates_and_handles_empty() {
+        let link = "HN Link: https://news.ycombinator.com/item?id=42";
+        assert_eq!(ensure_hn_link_note("", link), link);
+        assert_eq!(
+            ensure_hn_link_note("my note", link),
+            format!("my note\n\n{link}")
+        );
+        let already = format!("my note\n\n{link}");
+        assert_eq!(ensure_hn_link_note(&already, link), already);
     }
 
     #[test]

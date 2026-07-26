@@ -45,7 +45,7 @@ pub fn now_unix() -> i64 {
 /// to `now` (epoch) — the `use_post_date` backdate cap. Shared by `sync` (which clears
 /// out-of-cap dates) and `cleanup` ([`cleanup_date`]).
 pub fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
-    now - timestamp <= max_age_days as i64 * 86_400
+    now as i128 - timestamp as i128 <= max_age_days as i128 * 86_400
 }
 
 /// The creation time a `cleanup` re-write should set, honoring `use_post_date`, the age
@@ -112,6 +112,20 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         assert_eq!(rfc3339_to_unix("not a date"), None);
+    }
+
+    #[test]
+    fn within_age_cap_handles_extreme_values_without_overflow() {
+        let now = 1_700_000_000;
+        // A huge cap never treats any post as too old, and must not overflow.
+        assert!(within_age_cap(now, 0, u64::MAX));
+        assert!(within_age_cap(now, now, u64::MAX));
+        // Normal behavior is unchanged: 5 days in, 30-day cap holds; 60 days out fails.
+        assert!(within_age_cap(now, now - 5 * 86_400, 30));
+        assert!(!within_age_cap(now, now - 60 * 86_400, 30));
+        // A zero cap admits only same-instant posts.
+        assert!(within_age_cap(now, now, 0));
+        assert!(!within_age_cap(now, now - 1, 0));
     }
 
     #[test]

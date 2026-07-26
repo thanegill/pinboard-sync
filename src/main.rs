@@ -680,6 +680,19 @@ struct DateOverrides {
     stale_to_now: Option<bool>,
 }
 
+impl DateOverrides {
+    /// Let a date flag placed before the source subcommand (on `CleanupCmd`) take
+    /// effect, falling back to this per-source value. Mirrors sync's
+    /// `SyncOverrides::with_top_level_hook`.
+    fn with_top_level(self, top: &DateOverrides) -> DateOverrides {
+        DateOverrides {
+            use_post_date: top.use_post_date.or(self.use_post_date),
+            max_age_days: top.max_age_days.or(self.max_age_days),
+            stale_to_now: top.stale_to_now.or(self.stale_to_now),
+        }
+    }
+}
+
 impl DateSettings {
     fn resolve(
         over: &DateOverrides,
@@ -1209,10 +1222,10 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             }
             run.finish()
         }
-        (false, Some(CleanupSource::Reddit(args))) => run_cleanup_reddit(args, config).await,
-        (false, Some(CleanupSource::Github(args))) => run_cleanup_github(args, config).await,
+        (false, Some(CleanupSource::Reddit(args))) => run_cleanup_reddit(args, &over, config).await,
+        (false, Some(CleanupSource::Github(args))) => run_cleanup_github(args, &over, config).await,
         (false, Some(CleanupSource::Hackernews(args))) => {
-            run_cleanup_hackernews(args, config).await
+            run_cleanup_hackernews(args, &over, config).await
         }
         (false, None) => bail!("specify a source (e.g. `cleanup reddit`) or pass --all"),
     }
@@ -1234,8 +1247,12 @@ fn gh_cleanup_opts(
     }
 }
 
-async fn run_cleanup_github(args: GitHubCleanupArgs, config: &Config) -> Result<()> {
-    let over = args.dates.overrides();
+async fn run_cleanup_github(
+    args: GitHubCleanupArgs,
+    top: &DateOverrides,
+    config: &Config,
+) -> Result<()> {
+    let over = args.dates.overrides().with_top_level(top);
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let account = config::select_account(&config.github, args.account.as_deref())?;
     let opts = gh_cleanup_opts(&over, args.dry_run, account, config);
@@ -1265,7 +1282,11 @@ async fn cleanup_github_for(
     github::cleanup(pinboard, &client, &config, opts, bookmarks).await
 }
 
-async fn run_cleanup_reddit(args: RedditCleanupArgs, config: &Config) -> Result<()> {
+async fn run_cleanup_reddit(
+    args: RedditCleanupArgs,
+    top: &DateOverrides,
+    config: &Config,
+) -> Result<()> {
     // One pass over the Pinboard account's reddit bookmarks, using the selected (or
     // first, or implicit CLI/env) account's cookie + domain/tags.
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
@@ -1273,7 +1294,7 @@ async fn run_cleanup_reddit(args: RedditCleanupArgs, config: &Config) -> Result<
     cleanup_one_reddit(
         account,
         &args,
-        &args.dates.overrides(),
+        &args.dates.overrides().with_top_level(top),
         &pinboard,
         &bookmarks,
         config,
@@ -1323,12 +1344,16 @@ async fn cleanup_one_reddit(
     cleanup::run(pinboard, reddit.as_ref(), &opts, bookmarks).await
 }
 
-async fn run_cleanup_hackernews(args: HackernewsCleanupArgs, config: &Config) -> Result<()> {
+async fn run_cleanup_hackernews(
+    args: HackernewsCleanupArgs,
+    top: &DateOverrides,
+    config: &Config,
+) -> Result<()> {
     // One pass over the Pinboard account's HN bookmarks, using the selected (or
     // first, or implicit) account's tag config.
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let account = config::select_account(&config.hackernews, args.account.as_deref())?;
-    let over = args.dates.overrides();
+    let over = args.dates.overrides().with_top_level(top);
     cleanup_one_hackernews(
         account,
         args.dry_run,
@@ -1844,6 +1869,55 @@ mod tests {
             .with_top_level_hook(cmd.on_auth_failure.clone());
         let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("env-hook"));
+    }
+
+    /// Parse `cleanup <extra>` and return the top-level command.
+    fn parse_cleanup(extra: &[&str]) -> CleanupCmd {
+        use clap::Parser;
+        let mut argv = vec!["pinboard-sync", "cleanup"];
+        argv.extend_from_slice(extra);
+        match Cli::try_parse_from(argv).expect("parses").command {
+            Command::Cleanup(cmd) => cmd,
+            _ => panic!("expected `cleanup` command"),
+        }
+    }
+
+    #[test]
+    fn top_level_use_post_date_reaches_single_source_cleanup() {
+        // `--use-post-date` placed before the source subcommand must reach the
+        // cleanup pass; the per-source `dates` alone only sees a flag placed after.
+        let cmd = parse_cleanup(&["--use-post-date", "reddit", "alice"]);
+        assert_eq!(cmd.dates.use_post_date, Some(true));
+        let args = match &cmd.source {
+            Some(CleanupSource::Reddit(args)) => args.clone(),
+            _ => panic!("expected `cleanup reddit` args"),
+        };
+        assert_eq!(args.dates.use_post_date, None);
+
+        let over = args
+            .dates
+            .overrides()
+            .with_top_level(&cmd.dates.overrides());
+        assert_eq!(over.use_post_date, Some(true));
+    }
+
+    #[test]
+    fn per_source_cleanup_date_flag_falls_back_when_no_top_level() {
+        // A flag placed after the source subcommand still applies when the
+        // top-level `dates` is empty.
+        let cmd = parse_cleanup(&["reddit", "alice", "--use-post-date=false"]);
+        assert_eq!(cmd.dates.use_post_date, None);
+        let args = match &cmd.source {
+            Some(CleanupSource::Reddit(args)) => args.clone(),
+            _ => panic!("expected `cleanup reddit` args"),
+        };
+        assert_eq!(args.dates.use_post_date, Some(false));
+
+        let over = args
+            .dates
+            .overrides()
+            .with_top_level(&cmd.dates.overrides());
+        assert_eq!(over.use_post_date, Some(false));
     }
 
     /// Parse `sync reddit <extra>` and return the parsed source args.

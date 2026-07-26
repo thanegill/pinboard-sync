@@ -282,6 +282,14 @@ impl PinboardClient {
                 hi = mid - 1;
             }
         }
+
+        // The fixed params alone can push the URL over budget; then no prefix of the note
+        // is the cause of the overflow and the marker would only add bytes. Trim only when
+        // the marked result is actually shorter than the note, so an empty or tiny note
+        // isn't replaced by a fabricated "[truncated]" note.
+        if best + TRUNCATION_MARKER.len() >= extended.len() {
+            return extended.to_string();
+        }
         format!("{}{}", &extended[..best], TRUNCATION_MARKER)
     }
 
@@ -410,6 +418,21 @@ mod tests {
         let small = c.fit_extended(&c.url("posts/add"), FIXED, &huge, MIN_URL_BYTES);
         assert!(small.len() < big.len());
         assert!(url_len(&c, &small) <= MIN_URL_BYTES);
+    }
+
+    #[test]
+    fn note_untouched_when_fixed_params_alone_exceed_budget() {
+        let c = test_client();
+        // A budget the fixed params overrun on their own, so trimming the note can't help.
+        let budget = url_len(&c, "").saturating_sub(1);
+
+        assert_eq!(c.fit_extended(&c.url("posts/add"), FIXED, "", budget), "");
+
+        let tiny = "hi";
+        assert_eq!(
+            c.fit_extended(&c.url("posts/add"), FIXED, tiny, budget),
+            tiny
+        );
     }
 }
 

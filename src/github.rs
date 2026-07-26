@@ -248,12 +248,28 @@ impl Source for GitHubClient {
                 .json()
                 .await
                 .context("parsing github starred response")?;
-            out.extend(elements.into_iter().filter_map(|element| {
-                serde_json::from_value::<GitHubStarredRepo>(element)
-                    .map_err(|e| warn!("skipping malformed github starred element: {e}"))
-                    .ok()?
-                    .into_draft(&self.config)
-            }));
+            let element_count = elements.len();
+            let mut parsed = 0usize;
+            for element in elements {
+                match serde_json::from_value::<GitHubStarredRepo>(element) {
+                    Ok(starred) => {
+                        parsed += 1;
+                        out.extend(starred.into_draft(&self.config));
+                    }
+                    Err(e) => warn!("skipping malformed github starred element: {e}"),
+                }
+            }
+            // Skipping the odd bad element is fine, but a non-empty page where *every*
+            // element fails is a schema break (e.g. a renamed required field): erroring
+            // beats returning an empty success that makes `sync` exit 0 having imported
+            // nothing.
+            if element_count > 0 && parsed == 0 {
+                return Err(anyhow::anyhow!(
+                    "github starred page {page}: all {element_count} element(s) failed to \
+                     deserialize — the API response shape may have changed"
+                )
+                .into());
+            }
 
             match next {
                 Some(p) => page = p,
@@ -754,6 +770,41 @@ mod net_tests {
         let drafts = client.fetch().await.unwrap();
         assert_eq!(drafts.len(), 1);
         assert_eq!(drafts[0].bookmark.title, "a/one");
+    }
+
+    #[tokio::test]
+    async fn fetch_errors_when_a_whole_page_fails_to_parse() {
+        // A schema break (here: every element missing the `repo` object) drops every
+        // element. A non-empty page that parses to zero repos must error rather than
+        // return an empty success that makes sync exit 0 having imported nothing.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/starred"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "starred_at": "2023-01-02T03:04:05Z" },
+                { "starred_at": "2023-01-03T03:04:05Z" }
+            ])))
+            .mount(&server)
+            .await;
+
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+        assert!(matches!(client.fetch().await, Err(SourceError::Other(_))));
+    }
+
+    #[tokio::test]
+    async fn fetch_empty_page_is_ok() {
+        // A genuinely empty starred list is legitimate: no error, no drafts.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/starred"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&server)
+            .await;
+
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+        assert!(client.fetch().await.unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -171,15 +171,26 @@ impl PostInfo for RedditClient {
 }
 
 impl Source for RedditClient {
-    /// Fetch the saved listing and shape each post/comment into a draft.
+    /// Fetch the saved listing and shape each post/comment into a draft. A non-empty
+    /// listing that yields zero drafts is an error, not an empty success: it means every
+    /// entry was dropped (e.g. a renamed required subfield that still deserializes as
+    /// `None`), which would otherwise make `sync` exit 0 having imported nothing.
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
-        Ok(self
-            .fetch_saved()
-            .await?
+        let entries = self.fetch_saved().await?;
+        let entry_count = entries.len();
+        let drafts: Vec<BookmarkDraft> = entries
             .into_iter()
             .filter_map(|e| e.into_saved_item(&self.config.domain))
             .filter_map(|it| it.into_draft(&self.config))
-            .collect())
+            .collect();
+        if entry_count > 0 && drafts.is_empty() {
+            return Err(anyhow::anyhow!(
+                "all {entry_count} saved reddit entries were dropped (none yielded a \
+                 bookmark) — the saved-listing response shape may have changed"
+            )
+            .into());
+        }
+        Ok(drafts)
     }
 }
 
@@ -343,6 +354,72 @@ mod net_tests {
             ]
         );
         assert!(items[1].is_comment);
+    }
+
+    #[tokio::test]
+    async fn fetch_errors_when_a_non_empty_listing_yields_no_drafts() {
+        // Every entry deserializes (all fields are optional) but lacks the required
+        // subreddit/permalink, so all are dropped. A non-empty listing that produces
+        // zero drafts must error rather than silently import nothing.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/psophis/saved.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "kind": "Listing",
+                "data": { "after": null, "children": [
+                    { "kind": "t3", "data": { "name": "t3_a", "title": "A" } },
+                    { "kind": "t1", "data": { "name": "t1_b", "link_title": "B" } }
+                ] }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+        assert!(matches!(client.fetch().await, Err(SourceError::Other(_))));
+    }
+
+    #[tokio::test]
+    async fn fetch_keeps_a_good_entry_and_drops_a_schema_broken_sibling() {
+        // One entry is well-formed, the other is missing subreddit/permalink. The good
+        // one survives (and the bad one is warned + dropped), so fetch succeeds.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/psophis/saved.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "kind": "Listing",
+                "data": { "after": null, "children": [
+                    { "kind": "t3", "data": { "name": "t3_a", "subreddit": "rust",
+                      "permalink": "/r/rust/comments/a/x/", "title": "A" } },
+                    { "kind": "t3", "data": { "name": "t3_b", "title": "B" } }
+                ] }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+        let drafts = client.fetch().await.unwrap();
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(
+            drafts[0].bookmark.url.as_str(),
+            "https://old.reddit.com/r/rust/comments/a/x/"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_empty_listing_is_ok() {
+        // A genuinely empty saved listing (nothing saved) is a success, not an error.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/psophis/saved.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "kind": "Listing",
+                "data": { "after": null, "children": [] }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+        assert!(client.fetch().await.unwrap().is_empty());
     }
 
     #[tokio::test]

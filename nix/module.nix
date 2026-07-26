@@ -271,8 +271,13 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.environmentFile != null || setCredentialFiles != [ ] || settingsCredentialFiles != [ ];
-        message = "services.pinboard-sync: provide credentials via `environmentFile` (e.g. a sops-nix rendered template with PINBOARD_TOKEN), the per-credential `*File` options (e.g. `pinboardTokenFile`), or `*_file` paths inside the config account tables (e.g. `[pinboard].token_file`).";
+        # sync/cleanup always write to the Pinboard destination, so a resolvable Pinboard
+        # token is required regardless of which source credentials are set — otherwise the
+        # service enables and then fails on every timer fire with a missing-token error.
+        assertion =
+          pinboardTokenConfigured
+          && (cfg.environmentFile != null || setCredentialFiles != [ ] || settingsCredentialFiles != [ ]);
+        message = "services.pinboard-sync: a Pinboard token is required — set `pinboardTokenFile`, `environmentFile` (with PINBOARD_TOKEN), or `[pinboard].token_file`. Provide source credentials the same way (or as `*_file` paths in the config account tables).";
       }
       {
         assertion = !cfg.backup.enable || pinboardTokenConfigured;

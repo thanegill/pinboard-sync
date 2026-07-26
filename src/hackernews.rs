@@ -524,8 +524,9 @@ impl HackerNewsClient {
 
 /// Re-shapes one favorited HN item bookmark: re-fetch via Algolia and re-derive the
 /// draft (stories rewrite to the article URL; comments/text posts update in place),
-/// preserving existing tags, privacy, and any note the user added by hand (the
-/// reconstructed note is only used when the stored note is empty).
+/// preserving existing tags, privacy, and any note the user added by hand. A stored
+/// note is kept verbatim, but the regenerated `HN Link:` back-link is appended to it
+/// when absent so a hand-annotated story doesn't lose its discussion link.
 struct HackerNewsCleanupPass<'a> {
     items: HashMap<HackerNewsItemId, HackerNewsItem>,
     config: &'a HackernewsConfig,
@@ -548,8 +549,21 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         new.tags = tags;
         new.public = bookmark.public;
         new.read_later = bookmark.read_later;
+        // Keep the user's stored note, but make sure the regenerated `HN Link:`
+        // back-link survives the re-shape (append it once, never duplicated).
+        // Mirrors how `HackerNewsLinkPass` composes notes.
+        let generated_link = new
+            .note
+            .lines()
+            .find(|line| line.starts_with("HN Link:"))
+            .map(str::to_string);
         if !bookmark.note.is_empty() {
-            new.note = bookmark.note.clone();
+            new.note = match generated_link {
+                Some(link) if !bookmark.note.contains("HN Link:") => {
+                    format!("{}\n\n{link}", bookmark.note)
+                }
+                _ => bookmark.note.clone(),
+            };
         }
         Ok(Some(new))
     }
@@ -883,8 +897,20 @@ mod tests {
         );
     }
 
+    fn story_pass_items() -> HashMap<HackerNewsItemId, HackerNewsItem> {
+        let mut items = HashMap::new();
+        items.insert(
+            HackerNewsItemId::from(42u64),
+            item(json!({
+                "id": 42, "type": "story", "by": "alice",
+                "title": "Cool thing", "url": "https://example.com/x"
+            })),
+        );
+        items
+    }
+
     #[tokio::test]
-    async fn plan_preserves_user_supplied_note_while_merging_base_tags() {
+    async fn plan_appends_hn_link_to_user_note_while_merging_base_tags() {
         let stored = Bookmark {
             url: url("https://news.ycombinator.com/item?id=42"),
             title: "old title".into(),
@@ -894,14 +920,7 @@ mod tests {
             public: false,
             read_later: false,
         };
-        let mut items = HashMap::new();
-        items.insert(
-            HackerNewsItemId::from(42u64),
-            item(json!({
-                "id": 42, "type": "story", "by": "alice",
-                "title": "Cool thing", "url": "https://example.com/x"
-            })),
-        );
+        let items = story_pass_items();
         let config = HackernewsConfig::default();
         let pass = HackerNewsCleanupPass {
             items,
@@ -909,14 +928,69 @@ mod tests {
         };
 
         let planned = pass.plan(&stored).await.unwrap().unwrap();
-        // The user's note survives the re-shape rather than being replaced by the
-        // reconstructed `HN Link:` note.
-        assert_eq!(planned.note, "my own thoughts on this");
+        // The user's note survives the re-shape, and the regenerated `HN Link:`
+        // back-link is appended rather than clobbering it.
+        assert_eq!(
+            planned.note,
+            "my own thoughts on this\n\nHN Link: https://news.ycombinator.com/item?id=42"
+        );
         // The re-derived url/title still apply and the base tags still merge in.
         assert_eq!(planned.url.as_str(), "https://example.com/x");
         assert_eq!(planned.title, "Cool thing");
         assert!(planned.tags.contains(&"mine".to_string()));
         assert!(planned.tags.contains(&"hackernews".to_string()));
+    }
+
+    #[tokio::test]
+    async fn plan_does_not_duplicate_existing_hn_link_line() {
+        let stored = Bookmark {
+            url: url("https://news.ycombinator.com/item?id=42"),
+            title: "old title".into(),
+            note: "my note\n\nHN Link: https://news.ycombinator.com/item?id=42".into(),
+            tags: vec!["mine".into()],
+            timestamp: None,
+            public: false,
+            read_later: false,
+        };
+        let items = story_pass_items();
+        let config = HackernewsConfig::default();
+        let pass = HackerNewsCleanupPass {
+            items,
+            config: &config,
+        };
+
+        let planned = pass.plan(&stored).await.unwrap().unwrap();
+        // A note that already carries the back-link is left untouched.
+        assert_eq!(
+            planned.note,
+            "my note\n\nHN Link: https://news.ycombinator.com/item?id=42"
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_uses_generated_note_when_stored_note_empty() {
+        let stored = Bookmark {
+            url: url("https://news.ycombinator.com/item?id=42"),
+            title: "old title".into(),
+            note: String::new(),
+            tags: vec!["mine".into()],
+            timestamp: None,
+            public: false,
+            read_later: false,
+        };
+        let items = story_pass_items();
+        let config = HackernewsConfig::default();
+        let pass = HackerNewsCleanupPass {
+            items,
+            config: &config,
+        };
+
+        let planned = pass.plan(&stored).await.unwrap().unwrap();
+        // With no stored note, the reconstructed `HN Link:` note is used as-is.
+        assert_eq!(
+            planned.note,
+            "HN Link: https://news.ycombinator.com/item?id=42"
+        );
     }
 }
 

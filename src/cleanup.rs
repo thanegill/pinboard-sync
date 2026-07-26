@@ -313,9 +313,10 @@ pub fn normalize_tags(url: &Url, existing: &[String], base_tag: &str, prefix: &s
             raw.to_uppercase(),
         ];
         for form in &forms {
-            // Drop the bare subreddit tag in any case (but keep a literal "nsfw"),
-            // and the legacy prefixed forms.
-            if form != "nsfw" {
+            // Drop the bare subreddit tag in any case (but keep a literal "nsfw",
+            // and never drop the base tag when the subreddit is named like it, e.g.
+            // r/reddit), and the legacy prefixed forms.
+            if form != "nsfw" && form != base_tag {
                 set.remove(form);
             }
             set.remove(&format!("{prefix}{form}"));
@@ -473,6 +474,20 @@ mod tests {
         assert_eq!(
             tags,
             vec!["reddit".to_string(), "subreddit:news".to_string()]
+        );
+    }
+
+    #[test]
+    fn normalize_tags_keeps_base_tag_for_subreddit_named_like_it() {
+        let tags = normalize_tags(
+            &url("https://old.reddit.com/r/reddit/comments/x/"),
+            &[],
+            "reddit",
+            "subreddit:",
+        );
+        assert_eq!(
+            tags,
+            vec!["reddit".to_string(), "subreddit:reddit".to_string()]
         );
     }
 

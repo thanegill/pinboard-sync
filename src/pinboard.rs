@@ -126,15 +126,16 @@ impl BookmarkStore for PinboardClient {
             .await?;
         let wire: Vec<PinboardBookmark> =
             resp.json().await.context("parsing Pinboard posts/all")?;
-        // Skip (and warn on) any bookmark that can't be lifted into the domain type
-        // (unparseable `href` or `time`) rather than aborting the whole run for one bad
-        // entry.
+        // Skip (and warn on) any bookmark whose `href` doesn't parse as a URL rather than
+        // aborting the whole run for one bad entry. An unparseable `time` is not fatal —
+        // the conversion keeps the bookmark with no timestamp (see `Bookmark::try_from`)
+        // so it stays in the set sync dedups against.
         Ok(wire
             .into_iter()
             .filter_map(|b| {
                 let href = b.url.clone();
                 Bookmark::try_from(b)
-                    .map_err(|e| warn!("skipping bookmark {href}: {e}"))
+                    .map_err(|e| warn!("skipping bookmark with unparseable URL {href}: {e}"))
                     .ok()
             })
             .collect())
@@ -566,7 +567,7 @@ mod net_tests {
     }
 
     #[tokio::test]
-    async fn all_skips_bookmark_with_unparseable_time() {
+    async fn all_keeps_bookmark_with_unparseable_time() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/posts/all"))
@@ -579,12 +580,15 @@ mod net_tests {
             .mount(&server)
             .await;
 
-        // An unparseable (non-empty) time is skipped so a later cleanup rewrite can't
-        // silently reset its creation date to now; the valid bookmark still comes through.
+        // A bookmark whose (non-empty) time won't parse is kept with no timestamp, not
+        // dropped: dropping it would evict its URL from sync's dedup set and make the next
+        // `sync` re-add (and clobber) it. The valid bookmark still comes through too.
         let all = client(&server).all().await.unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].url.as_str(), "https://example.com/");
-        assert_eq!(all[0].timestamp, crate::timefmt::from_unix(1_577_836_800));
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].url.as_str(), "https://example.com/bad-time/");
+        assert_eq!(all[0].timestamp, None);
+        assert_eq!(all[1].url.as_str(), "https://example.com/");
+        assert_eq!(all[1].timestamp, crate::timefmt::from_unix(1_577_836_800));
     }
 
     #[tokio::test]

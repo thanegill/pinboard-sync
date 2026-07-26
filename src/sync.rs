@@ -142,6 +142,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn present_bookmark_with_unparseable_time_still_dedups() {
+        // Regression: a stored bookmark whose Pinboard `time` won't parse must remain in
+        // the dedup set. It reaches this path through `Bookmark::try_from` (timestamp
+        // becomes None), and its draft must count as already-present, not new — otherwise
+        // sync re-adds the URL and clobbers its date/title/tags/notes.
+        let reddit = FakeReddit {
+            saved: vec![post("t3_a", "/r/rust/comments/a/x/")],
+            ..Default::default()
+        };
+        let stored = Bookmark::try_from(crate::pinboard::PinboardBookmark {
+            url: "https://www.reddit.com/r/Rust/comments/a/x/".into(),
+            description: "T".into(),
+            extended: String::new(),
+            tags: String::new(),
+            time: "not a date".into(),
+            shared: "no".into(),
+            toread: "no".into(),
+        })
+        .unwrap();
+        assert_eq!(stored.timestamp, None);
+
+        let drafts = reddit.fetch().await.unwrap();
+        let new = filter_new(&reddit, drafts, &[stored]);
+        assert!(new.is_empty());
+    }
+
+    #[tokio::test]
     async fn dry_run_writes_nothing() {
         let reddit = FakeReddit {
             saved: vec![post("t3_a", "/r/rust/comments/a/x/")],

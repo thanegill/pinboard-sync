@@ -999,6 +999,7 @@ async fn open_pinboard(
 /// Write a verbatim snapshot of every Pinboard bookmark (raw `posts/all` JSON) to a
 /// file. Preserves exactly what Pinboard returns — no lossy conversion.
 async fn run_backup(cmd: BackupCmd, config: &Config) -> Result<()> {
+    check_backup_dir(&cmd.path)?;
     let pinboard = build_pinboard(cmd.pinboard_token, config)?;
     let body = pinboard
         .export_all()
@@ -1009,26 +1010,81 @@ async fn run_backup(cmd: BackupCmd, config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Atomically replace `path` with `body`. Guards a good backup two ways: it refuses a
-/// body that isn't a JSON array (a 2xx interstitial/proxy page or an empty response can
-/// pass `posts/all`'s status check), and it writes a sibling temp file then renames it
-/// over the target — an atomic swap, so a partial or failed write leaves the previous
-/// snapshot intact rather than truncating it.
+/// The directory `path` will be written into (`.` when `path` is bare).
+fn backup_dir(path: &Path) -> PathBuf {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
+}
+
+/// Fail fast if the destination directory is missing, before the ~5-minute rate-limited
+/// `posts/all` export, so a bad path doesn't waste the whole budget.
+fn check_backup_dir(path: &Path) -> Result<()> {
+    let dir = backup_dir(path);
+    if !dir.is_dir() {
+        bail!("backup directory {} does not exist", dir.display());
+    }
+    Ok(())
+}
+
+/// Atomically replace `path` with `body`. Guards a good backup: it refuses a body that
+/// doesn't parse as a JSON array (a 2xx interstitial/proxy page, an empty response, or a
+/// connection dropped mid-array can all pass `posts/all`'s status check), then writes a
+/// private, fsync'd temp file and renames it over the target — an atomic, durable swap, so
+/// a partial or crashed write leaves the previous snapshot intact rather than truncating
+/// it. The snapshot holds every private bookmark, so both files are created mode 0600.
 fn write_backup(path: &Path, body: &str) -> Result<()> {
-    if !body.trim_start().starts_with('[') {
+    if serde_json::from_str::<Vec<serde_json::Value>>(body).is_err() {
         bail!(
-            "Pinboard returned an unexpected non-JSON response ({} bytes); refusing to overwrite {}",
+            "Pinboard returned a non-JSON-array response ({} bytes); refusing to overwrite {}",
             body.len(),
             path.display()
         );
     }
+
+    let dir = backup_dir(path);
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("pinboard-backup");
-    let tmp = path.with_file_name(format!("{file_name}.tmp"));
-    std::fs::write(&tmp, body).with_context(|| format!("writing backup to {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+    let tmp = dir.join(format!(".{file_name}.tmp.{}", std::process::id()));
+
+    write_backup_tmp(&tmp, body)
+        .and_then(|()| {
+            std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+            sync_dir(&dir);
+            Ok(())
+        })
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+}
+
+/// Write `body` to a fresh mode-0600 file and fsync it, so the bytes are on disk before
+/// the caller renames it over the real target.
+fn write_backup_tmp(tmp: &Path, body: &str) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(tmp)
+        .with_context(|| format!("writing backup to {}", tmp.display()))?;
+    file.write_all(body.as_bytes())
+        .with_context(|| format!("writing backup to {}", tmp.display()))?;
+    file.sync_all()
+        .with_context(|| format!("flushing backup to {}", tmp.display()))
+}
+
+/// Best-effort fsync of the directory so the rename itself survives a crash.
+fn sync_dir(dir: &Path) {
+    if let Ok(handle) = std::fs::File::open(dir) {
+        let _ = handle.sync_all();
+    }
 }
 
 // --- doctor ------------------------------------------------------------------
@@ -1796,7 +1852,24 @@ mod tests {
             std::fs::read_to_string(&target).unwrap(),
             "[{\"href\":\"https://example.com/\"}]"
         );
-        assert!(!target.with_file_name("pinboard-backup.json.tmp").exists());
+        assert!(
+            std::fs::read_dir(&dir).unwrap().count() == 1,
+            "no temp left"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_backup_writes_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("write-backup-perms");
+        let target = dir.join("pinboard-backup.json");
+
+        write_backup(&target, "[]").unwrap();
+
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "backup must not be world-readable");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1806,12 +1879,23 @@ mod tests {
         let target = dir.join("pinboard-backup.json");
         std::fs::write(&target, "GOOD BACKUP").unwrap();
 
-        // A 200 that isn't a JSON array (proxy page, empty body) must not clobber it.
-        for bad in ["", "  ", "<html>Back off</html>"] {
+        // A 200 that isn't a JSON array (proxy page, empty body) or a connection dropped
+        // mid-array (a truncated array that still starts with `[`) must not clobber it.
+        for bad in [
+            "",
+            "  ",
+            "<html>Back off</html>",
+            "[{\"href\":\"https://example.com/\"}",
+        ] {
             let err = write_backup(&target, bad).unwrap_err();
             assert!(err.to_string().contains("non-JSON"), "got: {err}");
         }
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "GOOD BACKUP");
+        // A rejected write must leave no temp file behind either.
+        assert!(
+            std::fs::read_dir(&dir).unwrap().count() == 1,
+            "no temp left"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

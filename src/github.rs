@@ -380,11 +380,11 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         let Some((owner, repo)) = repo_root(&bookmark.url) else {
             return Ok(None);
         };
-        let canonical = canonical_repo_url(&bookmark.url).unwrap_or_else(|| bookmark.url.clone());
-
         // Default to the canonicalization, then refresh from the API when the repo
-        // still exists (a 404 keeps just the canonical URL).
-        let mut url = canonical.clone();
+        // still exists (a 404 keeps just the canonical URL). We already hold the
+        // parsed `(owner, repo)`, so build the canonical URL from them directly
+        // rather than re-validating the host/path through `canonical_repo_url`.
+        let mut url = Url::parse(&format!("https://github.com/{owner}/{repo}"))?;
         let mut title = html_to_plain(&bookmark.title);
         let mut note = bookmark.note.clone();
         let mut tags = bookmark.tags.clone();
@@ -462,27 +462,6 @@ fn refresh_tags(existing: Vec<String>, repo: &GitHubRepo, cfg: &GitHubConfig) ->
         push_prefixed(&mut tags, &cfg.lang_prefix, &lang.to_lowercase());
     }
     tags
-}
-
-/// Canonicalize a GitHub *repo-root* URL to `https://github.com/<owner>/<repo>`
-/// (forcing https, folding the `www.` host alias onto `github.com`, dropping a `.git`
-/// suffix, trailing slash, and any query/fragment). The host must be the `github.com`
-/// repo host (bare or `www.`); a subdomain such as `gist.github.com` is left untouched.
-/// Returns `Some(new)` only if it changed; `None` for a non-matching host, an
-/// already-canonical URL, or a deeper path (e.g. `/tree/...`, `/issues`).
-pub fn canonical_repo_url(url: &Url) -> Option<Url> {
-    if !is_repo_host(url.host_str()?) {
-        return None;
-    }
-    let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
-    // Only act on a bare owner/repo (don't mangle deeper links).
-    if segments.len() != 2 {
-        return None;
-    }
-    let owner = segments[0];
-    let repo = segments[1].strip_suffix(".git").unwrap_or(segments[1]);
-    let canonical = Url::parse(&format!("https://github.com/{owner}/{repo}")).ok()?;
-    (canonical != *url).then_some(canonical)
 }
 
 /// Extract the `page` number of the `rel="next"` link from a GitHub `Link` header,
@@ -606,40 +585,6 @@ mod tests {
             .into_draft(&cfg)
             .unwrap();
         assert_eq!(d.bookmark.tags, vec!["github-star", "account:work"]);
-    }
-
-    #[test]
-    fn canonical_repo_url_normalizes_repo_roots_only() {
-        // Scheme, .git, trailing slash, and query are all normalized; the owner/repo
-        // casing is preserved.
-        for u in [
-            "http://github.com/Owner/Repo",
-            "https://github.com/Owner/Repo/",
-            "https://github.com/Owner/Repo.git",
-            "https://github.com/Owner/Repo?tab=stars",
-            // The www. alias folds onto the bare host.
-            "https://www.github.com/Owner/Repo",
-        ] {
-            assert_eq!(
-                canonical_repo_url(&url(u)).map(String::from).as_deref(),
-                Some("https://github.com/Owner/Repo"),
-                "url: {u}"
-            );
-        }
-        // Already canonical → no change.
-        assert_eq!(canonical_repo_url(&url("https://github.com/o/r")), None);
-        // Non-GitHub, other subdomains, and deeper paths are left untouched.
-        assert_eq!(canonical_repo_url(&url("https://example.com/o/r")), None);
-        assert_eq!(
-            canonical_repo_url(&url("https://gist.github.com/user/abcd1234")),
-            None
-        );
-        assert_eq!(canonical_repo_url(&url("https://api.github.com/o/r")), None);
-        assert_eq!(
-            canonical_repo_url(&url("https://github.com/o/r/issues/5")),
-            None
-        );
-        assert_eq!(canonical_repo_url(&url("https://github.com/o")), None);
     }
 
     #[test]

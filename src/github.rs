@@ -266,9 +266,15 @@ impl Source for GitHubClient {
 
 impl UrlKey for GitHubClient {
     /// The generic host+path key, gated to github.com hosts so a non-github bookmark
-    /// never produces a key.
+    /// never produces a key. The `www.` alias is folded onto the bare host so a
+    /// `www.github.com/owner/repo` bookmark dedups against a `github.com/owner/repo`
+    /// star -- the same notion of "github repo host" canonicalization uses.
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        url_key(url).filter(|_| url.host_is("github.com"))
+        let key = url_key(url).filter(|_| url.host_is("github.com"))?;
+        Some(match key.strip_prefix("www.") {
+            Some(stripped) => stripped.to_string(),
+            None => key,
+        })
     }
 }
 
@@ -410,13 +416,20 @@ impl CleanupPass for GitHubCleanupPass<'_> {
     }
 }
 
-/// The `(owner, repo)` of a genuine repo-root URL: the host must be exactly
-/// `github.com` (not a subdomain) and the path exactly two non-empty segments,
-/// ignoring a trailing slash and an optional `.git` suffix. `None` for anything else
-/// -- a deep link (`/issues`, `/tree/...`), a gist or other subdomain, or a
-/// non-GitHub host -- which cleanup leaves untouched.
+/// Whether `host` is GitHub's repo web host: the bare `github.com` or its `www.`
+/// alias (the same pages). Other subdomains -- `gist.github.com`, `api.github.com`,
+/// `raw.githubusercontent.com` -- are distinct sites and are not repo hosts.
+fn is_repo_host(host: &str) -> bool {
+    matches!(host, "github.com" | "www.github.com")
+}
+
+/// The `(owner, repo)` of a genuine repo-root URL: the host must be the `github.com`
+/// repo host (bare or the `www.` alias, not another subdomain) and the path exactly
+/// two non-empty segments, ignoring a trailing slash and an optional `.git` suffix.
+/// `None` for anything else -- a deep link (`/issues`, `/tree/...`), a gist or other
+/// subdomain, or a non-GitHub host -- which cleanup leaves untouched.
 fn repo_root(url: &Url) -> Option<(String, String)> {
-    if url.host_str()? != "github.com" {
+    if !is_repo_host(url.host_str()?) {
         return None;
     }
     let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
@@ -447,12 +460,13 @@ fn refresh_tags(existing: Vec<String>, repo: &GitHubRepo, cfg: &GitHubConfig) ->
 }
 
 /// Canonicalize a GitHub *repo-root* URL to `https://github.com/<owner>/<repo>`
-/// (forcing https, dropping a `.git` suffix, trailing slash, and any query/fragment).
-/// The host must be exactly `github.com`; a subdomain such as `gist.github.com` is
-/// left untouched. Returns `Some(new)` only if it changed; `None` for a non-matching
-/// host, an already-canonical URL, or a deeper path (e.g. `/tree/...`, `/issues`).
+/// (forcing https, folding the `www.` host alias onto `github.com`, dropping a `.git`
+/// suffix, trailing slash, and any query/fragment). The host must be the `github.com`
+/// repo host (bare or `www.`); a subdomain such as `gist.github.com` is left untouched.
+/// Returns `Some(new)` only if it changed; `None` for a non-matching host, an
+/// already-canonical URL, or a deeper path (e.g. `/tree/...`, `/issues`).
 pub fn canonical_repo_url(url: &Url) -> Option<Url> {
-    if url.host_str()? != "github.com" {
+    if !is_repo_host(url.host_str()?) {
         return None;
     }
     let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
@@ -598,6 +612,8 @@ mod tests {
             "https://github.com/Owner/Repo/",
             "https://github.com/Owner/Repo.git",
             "https://github.com/Owner/Repo?tab=stars",
+            // The www. alias folds onto the bare host.
+            "https://www.github.com/Owner/Repo",
         ] {
             assert_eq!(
                 canonical_repo_url(&url(u)).map(String::from).as_deref(),
@@ -607,13 +623,13 @@ mod tests {
         }
         // Already canonical → no change.
         assert_eq!(canonical_repo_url(&url("https://github.com/o/r")), None);
-        // Non-GitHub, subdomains, and deeper paths are left untouched.
+        // Non-GitHub, other subdomains, and deeper paths are left untouched.
         assert_eq!(canonical_repo_url(&url("https://example.com/o/r")), None);
         assert_eq!(
             canonical_repo_url(&url("https://gist.github.com/user/abcd1234")),
             None
         );
-        assert_eq!(canonical_repo_url(&url("https://www.github.com/o/r")), None);
+        assert_eq!(canonical_repo_url(&url("https://api.github.com/o/r")), None);
         assert_eq!(
             canonical_repo_url(&url("https://github.com/o/r/issues/5")),
             None
@@ -636,14 +652,19 @@ mod tests {
             repo_root(&url("https://github.com/Owner/Repo/")),
             Some(("Owner".into(), "Repo".into()))
         );
-        // Deep links, subdomains, and non-GitHub hosts are not repo roots.
+        // The www. alias is the same repo host as the bare github.com.
+        assert_eq!(
+            repo_root(&url("https://www.github.com/Owner/Repo")),
+            Some(("Owner".into(), "Repo".into()))
+        );
+        // Deep links, other subdomains, and non-GitHub hosts are not repo roots.
         assert_eq!(repo_root(&url("https://github.com/o/r/issues/5")), None);
         assert_eq!(repo_root(&url("https://github.com/o/r/tree/main")), None);
         assert_eq!(
             repo_root(&url("https://gist.github.com/user/abcd1234")),
             None
         );
-        assert_eq!(repo_root(&url("https://www.github.com/o/r")), None);
+        assert_eq!(repo_root(&url("https://api.github.com/o/r")), None);
         assert_eq!(repo_root(&url("https://github.com/o")), None);
         assert_eq!(repo_root(&url("https://example.com/o/r")), None);
     }
@@ -668,10 +689,17 @@ mod tests {
             Some("github.com/o/r")
         );
         assert!(c.dedup_key(&url("https://example.com/o/r")).is_none());
-        // Subdomains of github.com are recognized too.
+        // The www. alias folds onto the bare host so it dedups against a github.com
+        // star with the same owner/repo.
         assert_eq!(
             c.dedup_key(&url("https://www.github.com/o/r")).as_deref(),
-            Some("www.github.com/o/r")
+            Some("github.com/o/r")
+        );
+        // Other subdomains keep their own host in the key (they are not repo stars).
+        assert_eq!(
+            c.dedup_key(&url("https://gist.github.com/user/abcd1234"))
+                .as_deref(),
+            Some("gist.github.com/user/abcd1234")
         );
     }
 }
@@ -950,6 +978,64 @@ mod net_tests {
         assert_eq!(
             pinboard.deleted.borrow().as_slice(),
             &["https://github.com/Owner/Repo.git/".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_folds_www_host_onto_github_com() {
+        use crate::pinboard::PinboardBookmark;
+        use crate::test_support::FakePinboard;
+
+        // A www.github.com repo root is the same site as github.com: it is looked up
+        // (owner/repo) and rewritten to the bare host, the old www URL deleted.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/Owner/Repo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "full_name": "Owner/Repo",
+                "html_url": "https://github.com/Owner/Repo"
+            })))
+            .mount(&server)
+            .await;
+
+        let pinboard = FakePinboard {
+            all: vec![PinboardBookmark {
+                url: "https://www.github.com/Owner/Repo".into(),
+                description: "Owner/Repo".into(),
+                extended: "https://github.com/Owner/Repo".into(),
+                tags: "github-star".into(),
+                time: "2020-01-01T00:00:00Z".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }
+            .try_into()
+            .unwrap()],
+            ..Default::default()
+        };
+        let bookmarks = pinboard.all.clone();
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+        cleanup(
+            &pinboard,
+            &client,
+            &GitHubConfig::default(),
+            &GitHubCleanupOpts {
+                dry_run: false,
+                use_post_date: false,
+                max_age_days: 30,
+                cleanup_stale_to_now: false,
+            },
+            &bookmarks,
+        )
+        .await
+        .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://github.com/Owner/Repo");
+        assert_eq!(
+            pinboard.deleted.borrow().as_slice(),
+            &["https://www.github.com/Owner/Repo".to_string()]
         );
     }
 

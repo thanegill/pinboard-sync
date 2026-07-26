@@ -38,22 +38,12 @@ where
     use serde::de::Error as _;
 
     let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
-    let raw_count = raw.len();
-    let children: Vec<RedditListingEntry> = raw
-        .into_iter()
-        .filter_map(|value| {
-            serde_json::from_value::<RedditListingEntry>(value)
-                .map_err(|e| log::warn!("skipping malformed reddit listing entry: {e}"))
-                .ok()
-        })
-        .collect();
-    if raw_count > 0 && children.is_empty() {
-        return Err(D::Error::custom(format!(
-            "all {raw_count} reddit listing child(ren) failed to deserialize — \
+    crate::source::deserialize_lenient(raw, "reddit listing entry", |count| {
+        D::Error::custom(format!(
+            "all {count} reddit listing child(ren) failed to deserialize — \
              the API response shape may have changed"
-        )));
-    }
-    Ok(children)
+        ))
+    })
 }
 
 /// A single entry in a listing: `kind` is `t3` (post) or `t1` (comment), and

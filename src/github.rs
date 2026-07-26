@@ -13,8 +13,8 @@ use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts};
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::send_retrying;
 use crate::source::{
-    extend_unique, push_prefixed, push_tags, url_key, BookmarkDraft, Source, SourceError, UrlExt,
-    UrlKey,
+    deserialize_lenient, extend_unique, push_prefixed, push_tags, url_key, BookmarkDraft, Source,
+    SourceError, UrlExt, UrlKey,
 };
 use url::Url;
 
@@ -243,32 +243,21 @@ impl Source for GitHubClient {
 
             // Deserialize element-by-element so one malformed repo is skipped with a
             // warning rather than discarding this page (and every earlier one). A body
-            // that isn't a JSON array at all still fails the whole page.
+            // that isn't a JSON array at all still fails the whole page; a non-empty page
+            // where every element fails is a schema break (see `deserialize_lenient`).
             let elements: Vec<serde_json::Value> = resp
                 .json()
                 .await
                 .context("parsing github starred response")?;
-            let element_count = elements.len();
-            let mut parsed = 0usize;
-            for element in elements {
-                match serde_json::from_value::<GitHubStarredRepo>(element) {
-                    Ok(starred) => {
-                        parsed += 1;
-                        out.extend(starred.into_draft(&self.config));
-                    }
-                    Err(e) => warn!("skipping malformed github starred element: {e}"),
-                }
-            }
-            // Skipping the odd bad element is fine, but a non-empty page where *every*
-            // element fails is a schema break (e.g. a renamed required field): erroring
-            // beats returning an empty success that makes `sync` exit 0 having imported
-            // nothing.
-            if element_count > 0 && parsed == 0 {
-                return Err(anyhow::anyhow!(
-                    "github starred page {page}: all {element_count} element(s) failed to \
-                     deserialize — the API response shape may have changed"
-                )
-                .into());
+            let repos: Vec<GitHubStarredRepo> =
+                deserialize_lenient(elements, "github starred element", |count| {
+                    SourceError::Other(anyhow::anyhow!(
+                        "github starred page {page}: all {count} element(s) failed to \
+                         deserialize — the API response shape may have changed"
+                    ))
+                })?;
+            for starred in repos {
+                out.extend(starred.into_draft(&self.config));
             }
 
             match next {

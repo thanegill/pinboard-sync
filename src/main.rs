@@ -96,7 +96,9 @@ struct SyncCmd {
     ///
     /// The `PINBOARD_SYNC_ON_AUTH_FAILURE` env var backs the per-source flag, not
     /// this one, so an explicit per-source `--on-auth-failure` outranks the env
-    /// var (`with_top_level_hook` prefers a present top-level value).
+    /// var (`with_top_level_hook` prefers a present top-level value). The `--all`
+    /// path, which has no per-source flag, reads that env var itself via
+    /// `on_auth_failure_from_env`.
     #[arg(long)]
     on_auth_failure: Option<String>,
     #[command(subcommand)]
@@ -454,6 +456,17 @@ fn load_config(flag: Option<String>) -> Result<Config> {
 
 // --- sync --------------------------------------------------------------------
 
+/// The `--all` path has no per-source `--on-auth-failure` flag to carry the hook,
+/// and the top-level flag deliberately doesn't bind `PINBOARD_SYNC_ON_AUTH_FAILURE`
+/// (so an explicit per-source flag can outrank the env var). So `--all` reads the
+/// env var here directly -- without it, the NixOS service (`sync --all`, hook via
+/// that env var only) would silently never fire the hook.
+fn on_auth_failure_from_env() -> Option<String> {
+    std::env::var("PINBOARD_SYNC_ON_AUTH_FAILURE")
+        .ok()
+        .filter(|v| !v.is_empty())
+}
+
 async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     let (jobs, ovr) = match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
@@ -463,7 +476,10 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
             }
             let ovr = SyncOverrides {
                 dry_run: cmd.dry_run,
-                on_auth_failure: cmd.on_auth_failure.clone(),
+                on_auth_failure: cmd
+                    .on_auth_failure
+                    .clone()
+                    .or_else(on_auth_failure_from_env),
                 ..SyncOverrides::default()
             };
             let mut jobs = Vec::new();
@@ -1510,8 +1526,8 @@ fn read_file_secret(path: &str) -> Option<String> {
     }
 }
 
-/// The auth-failure hook: CLI flag (with its env) → per-account override → per-source
-/// default → `[hooks]` global.
+/// The auth-failure hook: resolved flag/env (`ovr.on_auth_failure`) → per-account
+/// override → per-source default → `[hooks]` global.
 fn resolve_hook(
     flag: Option<String>,
     account_override: Option<&str>,
@@ -1753,6 +1769,35 @@ mod tests {
         };
         let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("refresh-cookie"));
+    }
+
+    #[test]
+    fn sync_all_falls_back_to_on_auth_failure_env_when_flag_absent() {
+        let _env = lock_on_auth_failure_env();
+        // The NixOS service runs `sync --all` with the hook supplied only via
+        // `PINBOARD_SYNC_ON_AUTH_FAILURE`. The top-level flag doesn't bind that env,
+        // so the `--all` arm must read it directly or the hook silently never fires.
+        std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
+        let cmd = parse_sync(&["--all"]);
+        assert_eq!(
+            cmd.on_auth_failure, None,
+            "top-level flag must not bind the env"
+        );
+
+        let ovr = SyncOverrides {
+            dry_run: cmd.dry_run,
+            on_auth_failure: cmd
+                .on_auth_failure
+                .clone()
+                .or_else(on_auth_failure_from_env),
+            reddit_username: Some("alice".into()),
+            reddit_cookie: Some("reddit_session=x".into()),
+            ..SyncOverrides::default()
+        };
+        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
+
+        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        assert_eq!(job.hook.as_deref(), Some("env-hook"));
     }
 
     #[test]

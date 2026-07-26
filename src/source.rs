@@ -131,6 +131,35 @@ impl UrlExt for Url {
     }
 }
 
+/// Deserialize each element of `values` into `T`, skipping (with a warning naming `what`)
+/// any element that fails, so one malformed item can't discard a whole page. A non-empty
+/// input where *every* element fails is treated as an error (a schema break, e.g. a renamed
+/// required field) rather than a silently empty result: `on_all_failed` builds that error in
+/// the caller's own error type. An empty input yields an empty vec. Shared by the GitHub
+/// starred fetch and the Reddit listing deserializer.
+pub fn deserialize_lenient<T, E>(
+    values: Vec<serde_json::Value>,
+    what: &str,
+    on_all_failed: impl FnOnce(usize) -> E,
+) -> Result<Vec<T>, E>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let count = values.len();
+    let parsed: Vec<T> = values
+        .into_iter()
+        .filter_map(|value| {
+            serde_json::from_value::<T>(value)
+                .map_err(|e| log::warn!("skipping malformed {what}: {e}"))
+                .ok()
+        })
+        .collect();
+    if count > 0 && parsed.is_empty() {
+        return Err(on_all_failed(count));
+    }
+    Ok(parsed)
+}
+
 /// A host+path dedup key for a URL: scheme and query/fragment dropped, host lowercased
 /// (by the `url` crate), path lowercased with any trailing slash removed — e.g.
 /// `https://GitHub.com/Owner/Repo/?tab=x` → `github.com/owner/repo`. Returns `None` for

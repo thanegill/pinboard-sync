@@ -476,7 +476,9 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
         }
         (false, Some(SyncSource::Reddit(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let ovr = args.into_overrides();
+            let ovr = args
+                .into_overrides()
+                .with_top_level_hook(cmd.on_auth_failure.clone());
             let jobs = build_jobs(&config.reddit, account.as_deref(), all, |a| {
                 build_reddit_job(a, &ovr, config)
             })?;
@@ -484,7 +486,9 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
         }
         (false, Some(SyncSource::Github(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let ovr = args.into_overrides();
+            let ovr = args
+                .into_overrides()
+                .with_top_level_hook(cmd.on_auth_failure.clone());
             let jobs = build_jobs(&config.github, account.as_deref(), all, |a| {
                 build_github_job(a, &ovr, config)
             })?;
@@ -492,7 +496,9 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
         }
         (false, Some(SyncSource::Hackernews(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let ovr = args.into_overrides();
+            let ovr = args
+                .into_overrides()
+                .with_top_level_hook(cmd.on_auth_failure.clone());
             let jobs = build_jobs(&config.hackernews, account.as_deref(), all, |a| {
                 build_hackernews_job(a, &ovr, config)
             })?;
@@ -543,6 +549,14 @@ struct SyncOverrides {
 }
 
 impl SyncOverrides {
+    /// Let a `--on-auth-failure` placed before the source subcommand (on
+    /// `SyncCmd`) take effect, falling back to the per-source value. Mirrors the
+    /// `--dry-run` merge in `run_sync`, which honors either placement too.
+    fn with_top_level_hook(mut self, on_auth_failure: Option<String>) -> Self {
+        self.on_auth_failure = on_auth_failure.or(self.on_auth_failure);
+        self
+    }
+
     /// The date-setting overrides this invocation supplies. `stale_to_now` is
     /// cleanup-only, so it is always `None` here.
     fn date_overrides(&self) -> DateOverrides {
@@ -1643,6 +1657,57 @@ mod tests {
         };
         let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("refresh-cookie"));
+    }
+
+    #[test]
+    fn top_level_on_auth_failure_reaches_single_source_hook() {
+        // `--on-auth-failure` placed before the source subcommand must reach the
+        // job just like the `--all` path; `into_overrides` alone only sees the
+        // per-source flag.
+        let cmd = parse_sync(&[
+            "--on-auth-failure",
+            "top-hook",
+            "reddit",
+            "--reddit-username",
+            "alice",
+            "--reddit-cookie",
+            "reddit_session=x",
+        ]);
+        let args = match &cmd.source {
+            Some(SyncSource::Reddit(args)) => args.clone(),
+            _ => panic!("expected `sync reddit` args"),
+        };
+        assert_eq!(args.on_auth_failure, None);
+
+        let ovr = args
+            .into_overrides()
+            .with_top_level_hook(cmd.on_auth_failure.clone());
+        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        assert_eq!(job.hook.as_deref(), Some("top-hook"));
+    }
+
+    #[test]
+    fn per_source_on_auth_failure_falls_back_when_no_top_level() {
+        let cmd = parse_sync(&[
+            "reddit",
+            "--reddit-username",
+            "alice",
+            "--reddit-cookie",
+            "reddit_session=x",
+            "--on-auth-failure",
+            "source-hook",
+        ]);
+        assert_eq!(cmd.on_auth_failure, None);
+        let args = match &cmd.source {
+            Some(SyncSource::Reddit(args)) => args.clone(),
+            _ => panic!("expected `sync reddit` args"),
+        };
+
+        let ovr = args
+            .into_overrides()
+            .with_top_level_hook(cmd.on_auth_failure.clone());
+        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        assert_eq!(job.hook.as_deref(), Some("source-hook"));
     }
 
     /// Parse `sync reddit <extra>` and return the parsed source args.

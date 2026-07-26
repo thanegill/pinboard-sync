@@ -39,4 +39,5 @@ htmd = "0.5"
 
 [dev-dependencies]
 http = "1"
+tokio = { version = "1", features = ["test-util"] }
 wiremock = "0.6"

@@ -31,6 +31,10 @@ const ALGOLIA_BASE: &str = "https://hn.algolia.com";
 const ITEM_BATCH: usize = 100;
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
+/// Cap on favorites pages followed via the "More" link (30 items per page, so this
+/// covers thousands of favorites). Bounds a malformed or looping "More" link so the
+/// scrape can't spin forever.
+const MAX_FAVORITES_PAGES: usize = 100;
 
 /// Tag vocabulary for HackerNews favorites. `tags` are applied to every bookmark
 /// (defaulting to `["hackernews"]`); the rest default to their built-in values, and
@@ -267,7 +271,25 @@ impl HackerNewsClient {
             "{}/favorites?id={}{}",
             self.base, self.username, suffix
         ));
+        let mut visited = HashSet::new();
+        let mut page = 0usize;
         while let Some(url) = next.take() {
+            page += 1;
+            if page > MAX_FAVORITES_PAGES {
+                warn!(
+                    "hn favorites for '{}': hit the {MAX_FAVORITES_PAGES}-page cap; \
+                     stopping (some favorites may be missing)",
+                    self.username
+                );
+                break;
+            }
+            if !visited.insert(url.clone()) {
+                warn!(
+                    "hn favorites for '{}': 'More' link looped back to {url}; stopping",
+                    self.username
+                );
+                break;
+            }
             let resp = send_retrying("hn favorites", MAX_RETRIES, RETRY_DELAY, || {
                 self.http.get(&url)
             })
@@ -281,7 +303,17 @@ impl HackerNewsClient {
                 )
                 .into());
             }
-            let (ids, more) = parse_favorite_ids(&body);
+            let (ids, more) = match parse_favorite_ids(&body) {
+                FavoritesPage::Recognized { ids, more } => (ids, more),
+                FavoritesPage::Unrecognized => {
+                    return Err(anyhow::anyhow!(
+                        "hn favorites for '{}' had no recognizable favorites structure \
+                         (page {page}); HN's markup may have changed",
+                        self.username
+                    )
+                    .into());
+                }
+            };
             out.extend(ids.into_iter().map(HackerNewsItemId::from));
             next = more.map(|href| self.resolve(&href));
             // Be gentle between page fetches.
@@ -685,21 +717,39 @@ impl From<&HackerNewsItemId> for Url {
 #[derive(Debug)]
 pub struct NotHnItemUrl;
 
+/// Outcome of parsing a favorites page. `Unrecognized` means the page had neither
+/// favorite rows nor the favorites-page marker: HN's markup likely changed, so the
+/// scrape should fail loudly rather than silently import nothing.
+enum FavoritesPage {
+    Recognized {
+        ids: Vec<String>,
+        more: Option<String>,
+    },
+    Unrecognized,
+}
+
 /// Parse a favorites page: the favorited item IDs (the `id` of each `tr.athing`
-/// row) and the "More" link href, if any. Pure, so it's unit-tested on sample HTML.
-fn parse_favorite_ids(html: &str) -> (Vec<String>, Option<String>) {
+/// row) and the "More" link href, if any. A page with no rows is only accepted as a
+/// (genuinely empty) favorites list when it carries HN's `<html op="favorites">`
+/// marker; otherwise it is [`FavoritesPage::Unrecognized`]. Pure, so it's unit-tested
+/// on sample HTML.
+fn parse_favorite_ids(html: &str) -> FavoritesPage {
     let doc = Html::parse_document(html);
     let row = Selector::parse("tr.athing").unwrap();
-    let ids = doc
+    let ids: Vec<String> = doc
         .select(&row)
         .filter_map(|e| e.value().attr("id").map(str::to_string))
         .collect();
+    let marker = Selector::parse(r#"html[op="favorites"]"#).unwrap();
+    if ids.is_empty() && doc.select(&marker).next().is_none() {
+        return FavoritesPage::Unrecognized;
+    }
     let more = Selector::parse("a.morelink").unwrap();
     let next = doc
         .select(&more)
         .next()
         .and_then(|e| e.value().attr("href").map(str::to_string));
-    (ids, next)
+    FavoritesPage::Recognized { ids, more: next }
 }
 
 /// The slug for a `Show/Ask/Tell/Launch HN:` title prefix (e.g. `Show HN:` →
@@ -879,9 +929,34 @@ mod tests {
               <tr class="athing comtr" id="222"><td>b</td></tr>
               <tr><td><a class="morelink" href="favorites?id=u&amp;p=2">More</a></td></tr>
             </table>"#;
-        let (ids, more) = parse_favorite_ids(html);
+        let FavoritesPage::Recognized { ids, more } = parse_favorite_ids(html) else {
+            panic!("expected a recognized favorites page");
+        };
         assert_eq!(ids, vec!["111", "222"]);
         assert_eq!(more.as_deref(), Some("favorites?id=u&p=2"));
+    }
+
+    #[test]
+    fn parse_favorite_ids_accepts_empty_list_with_marker() {
+        // A genuinely empty favorites list: no rows, but the favorites-page marker
+        // is present, so it is a recognized (empty) page, not a markup break.
+        let html = r#"<html op="favorites"><body><table id="hnmain"></table></body></html>"#;
+        let FavoritesPage::Recognized { ids, more } = parse_favorite_ids(html) else {
+            panic!("expected an empty favorites list to be recognized");
+        };
+        assert!(ids.is_empty());
+        assert_eq!(more, None);
+    }
+
+    #[test]
+    fn parse_favorite_ids_flags_markup_break() {
+        // A recognizable HTML page whose favorites structure is gone: no rows and no
+        // favorites marker means HN changed the markup.
+        let html = r#"<html op="news"><body><div>Nothing here.</div></body></html>"#;
+        assert!(matches!(
+            parse_favorite_ids(html),
+            FavoritesPage::Unrecognized
+        ));
     }
 
     #[test]
@@ -1278,5 +1353,98 @@ mod net_tests {
         assert!(!updated[0].tags.contains(&"find-hn".to_string()));
         assert!(updated[0].tags.contains(&"reading".to_string()));
         assert!(pinboard.deleted.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_errors_when_favorites_markup_breaks() {
+        // A recognizable page whose favorites structure is gone (no rows, no marker)
+        // must fail loudly rather than silently importing nothing.
+        let hn = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(
+                    r#"<html op="news"><body><div>Site moved.</div></body></html>"#,
+                ),
+            )
+            .mount(&hn)
+            .await;
+
+        let client = HackerNewsClient::with_base_urls(
+            "psophis".into(),
+            HackernewsConfig::default(),
+            hn.uri(),
+            "http://unused.invalid".into(),
+        );
+        let err = client.fetch().await.unwrap_err();
+        assert!(matches!(err, SourceError::Other(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn fetch_succeeds_on_genuinely_empty_favorites() {
+        // Both favorites pages are empty but carry the marker: a recognized empty
+        // list, so the fetch succeeds with no drafts (Algolia is never queried).
+        let hn = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<html op="favorites"><body><table id="hnmain"></table></body></html>"#,
+            ))
+            .mount(&hn)
+            .await;
+
+        let client = HackerNewsClient::with_base_urls(
+            "psophis".into(),
+            HackernewsConfig::default(),
+            hn.uri(),
+            "http://unused.invalid".into(),
+        );
+        let drafts = client.fetch().await.unwrap();
+        assert!(drafts.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn collect_ids_stops_at_the_page_cap() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use wiremock::{Request, Respond};
+
+        // Every page advertises a fresh "More" link, so only the page cap can stop
+        // the walk. `start_paused` makes the inter-page sleeps virtual.
+        struct PagingFavorites {
+            hits: Arc<AtomicUsize>,
+        }
+        impl Respond for PagingFavorites {
+            fn respond(&self, _req: &Request) -> ResponseTemplate {
+                let n = self.hits.fetch_add(1, Ordering::SeqCst);
+                let body = format!(
+                    r#"<html op="favorites"><table>
+                         <tr class="athing" id="{n}"><td>x</td></tr>
+                         <tr><td><a class="morelink" href="favorites?id=u&amp;p={next}">More</a></td></tr>
+                       </table></html>"#,
+                    next = n + 2,
+                );
+                ResponseTemplate::new(200).set_body_string(body)
+            }
+        }
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hn = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .respond_with(PagingFavorites { hits: hits.clone() })
+            .mount(&hn)
+            .await;
+
+        let client = HackerNewsClient::with_base_urls(
+            "u".into(),
+            HackernewsConfig::default(),
+            hn.uri(),
+            "http://unused.invalid".into(),
+        );
+        let mut ids = Vec::new();
+        client.collect_ids(false, &mut ids).await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), MAX_FAVORITES_PAGES);
+        assert_eq!(ids.len(), MAX_FAVORITES_PAGES);
     }
 }

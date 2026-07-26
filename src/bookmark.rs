@@ -72,7 +72,9 @@ impl Bookmark {
     /// The written fields where `new` differs from `self` (the stored bookmark), each as
     /// a `(label, rendered new value)` pair for the cleanup dry-run. Empty when nothing a
     /// write would change differs — so `cleanup` skips the bookmark. `timestamp` compares
-    /// by instant (a re-formatted but equivalent time isn't a change).
+    /// by instant (a re-formatted but equivalent time isn't a change). The `public` and
+    /// `read_later` flags are not compared: `cleanup` never re-shapes privacy, forcing them
+    /// to the stored values before diffing (see `cleanup_pass::run_pass`).
     pub fn diff(&self, new: &Bookmark) -> Vec<(&'static str, String)> {
         let mut changes = Vec::new();
         if new.url != self.url {
@@ -98,12 +100,6 @@ impl Bookmark {
                 .and_then(crate::timefmt::to_rfc3339)
                 .unwrap_or_default();
             changes.push(("date", value));
-        }
-        if new.public != self.public {
-            changes.push(("public", new.public.to_string()));
-        }
-        if new.read_later != self.read_later {
-            changes.push(("toread", new.read_later.to_string()));
         }
         changes
     }
@@ -159,28 +155,13 @@ mod tests {
     }
 
     #[test]
-    fn diff_reports_public_change() {
+    fn diff_ignores_privacy_flags() {
         let stored = bookmark();
         let planned = Bookmark {
             public: true,
-            ..bookmark()
-        };
-        assert_eq!(stored.diff(&planned), vec![("public", "true".to_string())]);
-    }
-
-    #[test]
-    fn diff_reports_read_later_change() {
-        let stored = bookmark();
-        let planned = Bookmark {
             read_later: true,
             ..bookmark()
         };
-        assert_eq!(stored.diff(&planned), vec![("toread", "true".to_string())]);
-    }
-
-    #[test]
-    fn diff_ignores_unchanged_privacy_flags() {
-        let stored = bookmark();
-        assert!(stored.diff(&bookmark()).is_empty());
+        assert!(stored.diff(&planned).is_empty());
     }
 }

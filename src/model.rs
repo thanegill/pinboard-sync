@@ -123,6 +123,11 @@ impl RedditListingEntry {
     /// Convert a listing entry into a `RedditSavedItem`, or `None` if it is neither a
     /// post (`t3`) nor a comment (`t1`) or is missing the fields we need. `domain`
     /// is the reddit host used for the parent-thread link prepended to comments.
+    ///
+    /// A post/comment missing `subreddit`/`permalink` is dropped *with a warning*: every
+    /// `RedditEntryFields` field is an optional default, so a renamed required subfield
+    /// still deserializes (as `None`) and slips past the listing's all-fail guard — the
+    /// warning keeps that silent loss visible.
     pub fn into_saved_item(self, domain: &str) -> Option<RedditSavedItem> {
         let is_comment = match self.kind.as_str() {
             "t1" => true,
@@ -130,8 +135,17 @@ impl RedditListingEntry {
             _ => return None,
         };
         let fields = self.fields;
-        let subreddit = fields.subreddit?;
-        let permalink = fields.permalink?;
+        let (subreddit, permalink) = match (fields.subreddit, fields.permalink) {
+            (Some(subreddit), Some(permalink)) => (subreddit, permalink),
+            _ => {
+                log::warn!(
+                    "skipping reddit {} entry: missing subreddit/permalink — \
+                     the saved-listing response shape may have changed",
+                    self.kind
+                );
+                return None;
+            }
+        };
         let fullname = fields.name.unwrap_or_default();
 
         let description = if is_comment {

@@ -640,6 +640,18 @@ struct SyncJob {
     max_age_days: u64,
 }
 
+impl SyncJob {
+    fn settings(&self) -> sync::JobSettings {
+        sync::JobSettings {
+            toread: self.toread,
+            shared: self.shared,
+            use_post_date: self.use_post_date,
+            max_age_days: self.max_age_days,
+            limit: self.limit,
+        }
+    }
+}
+
 /// A log/display label for a job: `source[account]`, or `source[default]` when no
 /// named account (an implicit CLI/env invocation).
 fn job_label<T: config::Named>(source: &str, account: Option<&T>) -> String {
@@ -915,29 +927,7 @@ async fn run_sync_jobs(
     let fetched = futures::future::join_all(jobs.iter().map(|job| async move {
         let drafts = job.client.fetch().await?;
         let fetched = drafts.len();
-        let mut new = sync::filter_new(&job.client, drafts, bookmarks);
-        for d in &mut new {
-            d.bookmark.read_later = job.toread;
-            d.bookmark.public = job.shared;
-            // Keep the source date only when dating is enabled and the post is within
-            // the age cap; otherwise clear it so the writer lets Pinboard use "now".
-            d.bookmark.timestamp = if job.use_post_date {
-                d.bookmark
-                    .timestamp
-                    .filter(|t| timefmt::within_age_cap(now, t.unix_timestamp(), job.max_age_days))
-            } else {
-                None
-            };
-        }
-        if job.limit > 0 && new.len() > job.limit {
-            debug!(
-                "{}: capping {} new at limit {}",
-                job.label,
-                new.len(),
-                job.limit
-            );
-            new.truncate(job.limit);
-        }
+        let new = sync::prepare_new_drafts(&job.client, drafts, bookmarks, &job.settings(), now);
         info!(
             "{}: fetched {fetched}, {} new after dedup",
             job.label,
@@ -948,17 +938,10 @@ async fn run_sync_jobs(
     .await;
 
     let mut run = AllRun::default();
-    let mut merged: Vec<BookmarkDraft> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut per_job: Vec<Vec<BookmarkDraft>> = Vec::new();
     for (job, result) in jobs.iter().zip(fetched) {
         match result {
-            Ok(drafts) => {
-                for draft in drafts {
-                    if seen.insert(draft.bookmark.url.clone()) {
-                        merged.push(draft);
-                    }
-                }
-            }
+            Ok(drafts) => per_job.push(drafts),
             // Surface the failure (firing the hook on ReauthRequired) but keep going.
             Err(e) => {
                 warn!("{}: fetch failed", job.label);
@@ -966,6 +949,7 @@ async fn run_sync_jobs(
             }
         }
     }
+    let merged = sync::merge_deduped(per_job);
 
     info!(
         "{} new bookmark(s) to write{}",

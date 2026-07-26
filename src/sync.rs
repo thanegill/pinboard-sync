@@ -28,6 +28,65 @@ pub fn filter_new<S: Source>(
         .collect()
 }
 
+/// The per-account write knobs resolved for one sync job: the flags stamped onto every
+/// new bookmark and the caps applied to the batch. Mirrors the resolved fields of a
+/// `SyncJob` so the per-job transform can run without the concrete client.
+#[derive(Debug, Clone, Copy)]
+pub struct JobSettings {
+    pub toread: bool,
+    pub shared: bool,
+    pub use_post_date: bool,
+    pub max_age_days: u64,
+    pub limit: usize,
+}
+
+/// The new drafts for one account, ready to write: those not already on Pinboard
+/// ([`filter_new`]), each stamped with the account's resolved `toread`/`shared` flags and
+/// post date (kept only when `use_post_date` is on and the post is within the age cap
+/// relative to `now`, else cleared so Pinboard defaults to "now"), and truncated to the
+/// per-job `limit` (0 = unlimited). `now` is a parameter so tests are deterministic.
+pub fn prepare_new_drafts<S: Source>(
+    source: &S,
+    drafts: Vec<BookmarkDraft>,
+    existing: &[Bookmark],
+    settings: &JobSettings,
+    now: i64,
+) -> Vec<BookmarkDraft> {
+    let mut new = filter_new(source, drafts, existing);
+    for d in &mut new {
+        d.bookmark.read_later = settings.toread;
+        d.bookmark.public = settings.shared;
+        d.bookmark.timestamp = if settings.use_post_date {
+            d.bookmark.timestamp.filter(|t| {
+                crate::timefmt::within_age_cap(now, t.unix_timestamp(), settings.max_age_days)
+            })
+        } else {
+            None
+        };
+    }
+    if settings.limit > 0 && new.len() > settings.limit {
+        new.truncate(settings.limit);
+    }
+    new
+}
+
+/// Flatten each job's prepared drafts into one write batch, keeping the first occurrence
+/// of any URL so the same link fetched by two accounts is written once (Pinboard writes
+/// `replace=yes`, so a duplicate would just clobber the first). Order is preserved: jobs
+/// in order, drafts in order within a job.
+pub fn merge_deduped(per_job: Vec<Vec<BookmarkDraft>>) -> Vec<BookmarkDraft> {
+    let mut merged: Vec<BookmarkDraft> = Vec::new();
+    let mut seen = HashSet::new();
+    for drafts in per_job {
+        for draft in drafts {
+            if seen.insert(draft.bookmark.url.clone()) {
+                merged.push(draft);
+            }
+        }
+    }
+    merged
+}
+
 /// Tally of a write pass: how many drafts were written vs. failed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WriteOutcome {
@@ -96,6 +155,23 @@ mod tests {
             "t3",
             json!({ "name": name, "subreddit": "rust", "permalink": permalink, "title": "T" }),
         )
+    }
+
+    fn post_at(name: &str, permalink: &str, created_utc: i64) -> crate::model::RedditListingEntry {
+        listing_entry(
+            "t3",
+            json!({ "name": name, "subreddit": "rust", "permalink": permalink, "title": "T", "created_utc": created_utc }),
+        )
+    }
+
+    fn settings(use_post_date: bool, max_age_days: u64, limit: usize) -> JobSettings {
+        JobSettings {
+            toread: false,
+            shared: false,
+            use_post_date,
+            max_age_days,
+            limit,
+        }
     }
 
     /// An existing Pinboard bookmark at `url` (other fields irrelevant to dedup).
@@ -249,6 +325,118 @@ mod tests {
         let outcome = write_drafts(&pinboard, &new, false).await;
         assert_eq!(outcome.written, 2);
         assert_eq!(pinboard.added.borrow().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn prepare_new_drafts_stamps_flags_and_clears_dates_outside_the_age_cap() {
+        let now = 1_700_000_000;
+        let reddit = FakeReddit {
+            saved: vec![
+                post_at("t3_recent", "/r/rust/comments/recent/", now - 5 * 86_400),
+                post_at("t3_old", "/r/rust/comments/old/", now - 60 * 86_400),
+            ],
+            ..Default::default()
+        };
+        let job = JobSettings {
+            toread: true,
+            shared: true,
+            use_post_date: true,
+            max_age_days: 30,
+            limit: 0,
+        };
+        let drafts = reddit.fetch().await.unwrap();
+        let new = prepare_new_drafts(&reddit, drafts, &[], &job, now);
+        assert_eq!(new.len(), 2);
+        // The resolved flags are stamped onto every new draft.
+        assert!(new
+            .iter()
+            .all(|d| d.bookmark.read_later && d.bookmark.public));
+        let find = |needle: &str| {
+            new.iter()
+                .find(|d| d.bookmark.url.as_str().contains(needle))
+                .unwrap()
+        };
+        // Within the cap: source date kept. Outside: cleared so Pinboard uses "now".
+        assert_eq!(
+            find("comments/recent")
+                .bookmark
+                .timestamp
+                .unwrap()
+                .unix_timestamp(),
+            now - 5 * 86_400
+        );
+        assert_eq!(find("comments/old").bookmark.timestamp, None);
+    }
+
+    #[tokio::test]
+    async fn prepare_new_drafts_clears_all_dates_when_use_post_date_off() {
+        let now = 1_700_000_000;
+        let reddit = FakeReddit {
+            saved: vec![post_at("t3_a", "/r/rust/comments/a/", now - 5 * 86_400)],
+            ..Default::default()
+        };
+        let new = prepare_new_drafts(
+            &reddit,
+            reddit.fetch().await.unwrap(),
+            &[],
+            &settings(false, 30, 0),
+            now,
+        );
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0].bookmark.timestamp, None);
+    }
+
+    #[tokio::test]
+    async fn prepare_new_drafts_truncates_to_the_per_job_limit() {
+        let reddit = FakeReddit {
+            saved: vec![
+                post("t3_a", "/r/rust/comments/a/"),
+                post("t3_b", "/r/rust/comments/b/"),
+                post("t3_c", "/r/rust/comments/c/"),
+            ],
+            ..Default::default()
+        };
+        // limit 0 means unlimited.
+        let all = prepare_new_drafts(
+            &reddit,
+            reddit.fetch().await.unwrap(),
+            &[],
+            &settings(false, 30, 0),
+            0,
+        );
+        assert_eq!(all.len(), 3);
+        // A positive limit caps the batch.
+        let capped = prepare_new_drafts(
+            &reddit,
+            reddit.fetch().await.unwrap(),
+            &[],
+            &settings(false, 30, 2),
+            0,
+        );
+        assert_eq!(capped.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn merge_deduped_writes_a_url_shared_across_jobs_once() {
+        // Two jobs each yield the same reddit post; merged it appears once, so the
+        // writer adds the URL a single time.
+        let reddit = FakeReddit {
+            saved: vec![post("t3_a", "/r/rust/comments/a/x/")],
+            ..Default::default()
+        };
+        let job = settings(false, 30, 0);
+        let one = prepare_new_drafts(&reddit, reddit.fetch().await.unwrap(), &[], &job, 0);
+        let two = prepare_new_drafts(&reddit, reddit.fetch().await.unwrap(), &[], &job, 0);
+        assert_eq!(one.len(), 1);
+        assert_eq!(two.len(), 1);
+
+        let merged = merge_deduped(vec![one, two]);
+        assert_eq!(merged.len(), 1);
+
+        let pinboard = FakePinboard::default();
+        let outcome = write_drafts(&pinboard, &merged, false).await;
+        assert_eq!(outcome.written, 1);
+        assert_eq!(pinboard.added.borrow().len(), 1);
     }
 
     #[tokio::test]

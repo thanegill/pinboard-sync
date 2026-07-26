@@ -116,14 +116,7 @@ impl PinboardClient {
 
 impl BookmarkStore for PinboardClient {
     async fn all(&self) -> Result<Vec<Bookmark>> {
-        let params = [
-            ("auth_token", self.auth_token.as_str()),
-            ("format", "json"),
-            ("meta", "no"),
-        ];
-        let resp = self
-            .get_with_backoff(&self.url("posts/all"), &params)
-            .await?;
+        let resp = self.get_posts_all("no").await?;
         let wire: Vec<PinboardBookmark> =
             resp.json().await.context("parsing Pinboard posts/all")?;
         // Skip (and warn on) any bookmark whose `href` doesn't parse as a URL rather than
@@ -292,6 +285,18 @@ impl PinboardClient {
         format!("{}{}", &extended[..best], TRUNCATION_MARKER)
     }
 
+    /// GET `posts/all` with the given `meta` flag (`"yes"` includes each entry's
+    /// `meta`/`hash`), retrying transient failures. Shared by [`BookmarkStore::all`], which
+    /// parses the JSON, and [`Self::export_all`], which returns the body verbatim.
+    async fn get_posts_all(&self, meta: &str) -> Result<reqwest::Response> {
+        let params = [
+            ("auth_token", self.auth_token.as_str()),
+            ("format", "json"),
+            ("meta", meta),
+        ];
+        self.get_with_backoff(&self.url("posts/all"), &params).await
+    }
+
     /// GET a Pinboard endpoint, retrying transient failures (network errors,
     /// HTTP 429, 5xx) with backoff. Errors on a non-success final status.
     async fn get_with_backoff(
@@ -318,14 +323,7 @@ impl PinboardClient {
     /// Unlike [`BookmarkStore::all`], this neither parses nor filters — it returns exactly
     /// what Pinboard sends, preserving `meta`/`hash` and any entries `all` would skip.
     pub async fn export_all(&self) -> Result<String> {
-        let params = [
-            ("auth_token", self.auth_token.as_str()),
-            ("format", "json"),
-            ("meta", "yes"),
-        ];
-        let resp = self
-            .get_with_backoff(&self.url("posts/all"), &params)
-            .await?;
+        let resp = self.get_posts_all("yes").await?;
         resp.text().await.context("reading Pinboard posts/all body")
     }
 

@@ -6,6 +6,7 @@
 //! fields happens at the write boundary in `pinboard::post_add`.
 
 use anyhow::{Context, Result};
+use log::warn;
 use time::OffsetDateTime;
 use url::Url;
 
@@ -22,9 +23,10 @@ pub struct Bookmark {
     pub title: String,
     pub note: String,
     pub tags: Vec<String>,
-    /// Creation time, or `None` when the source set none (an empty wire `time`). A
-    /// non-empty `time` that won't parse makes the whole bookmark skip on read rather
-    /// than silently becoming `None` (see [`BookmarkConversionError`]).
+    /// Creation time, or `None` when none was set (an empty wire `time`) or a non-empty
+    /// `time` that won't parse (logged on read). It stays `None` rather than dropping the
+    /// whole bookmark so the record remains visible to sync's dedup set (see the `TryFrom`
+    /// impl below).
     pub timestamp: Option<OffsetDateTime>,
     /// Whether the bookmark is public (Pinboard's `shared=yes`).
     pub public: bool,
@@ -32,32 +34,28 @@ pub struct Bookmark {
     pub read_later: bool,
 }
 
-/// Why a [`PinboardBookmark`] can't be lifted into the domain [`Bookmark`]. Both cases
-/// make `all()` skip (and warn on) the entry: a URL that won't parse, or a non-empty
-/// `time` that won't parse. The latter matters because a bookmark with an unknown
-/// creation date, if rewritten by `cleanup`, would have its date silently reset to now
-/// (`posts/add replace=yes` defaults `dt` to now when omitted).
-#[derive(Debug, thiserror::Error)]
-pub enum BookmarkConversionError {
-    #[error("unparseable URL: {0}")]
-    Url(#[from] url::ParseError),
-    #[error("unparseable creation time {0:?}")]
-    Time(String),
-}
-
 impl TryFrom<PinboardBookmark> for Bookmark {
-    type Error = BookmarkConversionError;
+    /// Fails only when the wire `href` doesn't parse as a URL; `all()` skips (and warns
+    /// on) such entries. A non-empty `time` that won't parse is *not* fatal: it becomes
+    /// `timestamp: None` (logged) so the bookmark stays in the set sync dedups against —
+    /// dropping it would make sync re-add the URL and reset its date/title/tags/notes.
+    type Error = url::ParseError;
     fn try_from(b: PinboardBookmark) -> Result<Self, Self::Error> {
+        let url = Url::parse(&b.url)?;
         let timestamp = if b.time.is_empty() {
             None
         } else {
-            Some(
-                crate::timefmt::parse_rfc3339(&b.time)
-                    .ok_or(BookmarkConversionError::Time(b.time))?,
-            )
+            let parsed = crate::timefmt::parse_rfc3339(&b.time);
+            if parsed.is_none() {
+                warn!(
+                    "bookmark {url}: unparseable creation time {:?}, dropping date",
+                    b.time
+                );
+            }
+            parsed
         };
         Ok(Bookmark {
-            url: Url::parse(&b.url)?,
+            url,
             title: b.description,
             note: b.extended,
             tags: b.tags.split_whitespace().map(String::from).collect(),
@@ -182,5 +180,39 @@ mod tests {
     fn diff_ignores_unchanged_privacy_flags() {
         let stored = bookmark();
         assert!(stored.diff(&bookmark()).is_empty());
+    }
+
+    fn wire(time: &str) -> PinboardBookmark {
+        PinboardBookmark {
+            url: "https://example.com/".into(),
+            description: "T".into(),
+            extended: String::new(),
+            tags: String::new(),
+            time: time.into(),
+            shared: "no".into(),
+            toread: "no".into(),
+        }
+    }
+
+    #[test]
+    fn unparseable_time_keeps_the_bookmark_with_no_timestamp() {
+        // A non-empty `time` that won't parse must NOT drop the record: it stays visible
+        // (as `timestamp: None`) so sync's dedup set still contains its URL.
+        let bookmark = Bookmark::try_from(wire("not a date")).unwrap();
+        assert_eq!(bookmark.url.as_str(), "https://example.com/");
+        assert_eq!(bookmark.timestamp, None);
+    }
+
+    #[test]
+    fn parseable_time_becomes_a_timestamp() {
+        let bookmark = Bookmark::try_from(wire("2020-01-01T00:00:00Z")).unwrap();
+        assert_eq!(bookmark.timestamp, crate::timefmt::from_unix(1_577_836_800));
+    }
+
+    #[test]
+    fn unparseable_url_is_the_only_fatal_conversion() {
+        let mut bad = wire("");
+        bad.url = "not a url".into();
+        assert!(Bookmark::try_from(bad).is_err());
     }
 }

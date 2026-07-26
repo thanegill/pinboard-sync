@@ -298,8 +298,11 @@ Dating is off by default; enable it per the resolution tiers above.
 file is the raw Pinboard `posts/all` JSON **verbatim** — no conversion — so it
 preserves everything the API returns (including each bookmark's `meta`/`hash`) and any
 entry the sync/cleanup path would skip. Diagnostics go to stderr; the snapshot is the
-file. The write is atomic (a temp file renamed over `<path>`) and a non-JSON response
-is refused rather than written, so a bad run can't clobber a good backup.
+file. The write is atomic and durable (a temp file, fsync'd, renamed over `<path>`) and a
+response that doesn't parse as a JSON array — a proxy page, an empty body, or a connection
+dropped mid-transfer — is refused rather than written, so a bad run can't clobber a good
+backup. The snapshot contains every private bookmark, so it is written mode `0600`
+(owner-only). The destination directory must already exist.
 
 ```sh
 pinboard-sync backup pinboard-backup.json

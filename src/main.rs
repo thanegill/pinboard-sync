@@ -1045,9 +1045,8 @@ fn write_backup(path: &Path, body: &str) -> Result<()> {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("pinboard-backup");
-    let tmp = dir.join(format!(".{file_name}.tmp.{}", std::process::id()));
-
-    write_backup_tmp(&tmp, body)
+    let (tmp, mut file) = create_backup_tmp(&dir, file_name)?;
+    write_backup_tmp(&tmp, &mut file, body)
         .and_then(|()| {
             std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
             sync_dir(&dir);
@@ -1058,19 +1057,66 @@ fn write_backup(path: &Path, body: &str) -> Result<()> {
         })
 }
 
-/// Write `body` to a fresh mode-0600 file and fsync it, so the bytes are on disk before
-/// the caller renames it over the real target.
-fn write_backup_tmp(tmp: &Path, body: &str) -> Result<()> {
-    use std::io::Write;
+/// Open `tmp` as a brand-new mode-0600 regular file. `create_new` (O_EXCL) never follows a
+/// pre-existing symlink and never reuses an existing file's contents or permissions, so the
+/// 0600 promise holds; a path that already exists errors with `AlreadyExists` instead.
+fn open_new_private(tmp: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
 
-    let mut file = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(tmp)
-        .with_context(|| format!("writing backup to {}", tmp.display()))?;
+}
+
+/// Create a fresh, private temp file next to the backup target and return it with its path.
+/// Each attempt mixes fresh entropy into the name, so a leftover temp from a crashed run
+/// (even one with this pid) can't be reused; `open_new_private` guarantees the file is new.
+fn create_backup_tmp(dir: &Path, file_name: &str) -> Result<(PathBuf, std::fs::File)> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let pid = std::process::id();
+
+    create_new_temp(dir, || {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let nonce = nanos ^ u128::from(COUNTER.fetch_add(1, Ordering::Relaxed));
+        format!(".{file_name}.tmp.{pid}.{nonce:x}")
+    })
+}
+
+/// Open a fresh private temp file in `dir`, drawing candidate names from `next_name` and
+/// retrying whenever the chosen path already exists (a leftover temp, a squatter). Bounded
+/// so a name generator that keeps yielding a colliding name can't spin forever.
+fn create_new_temp(
+    dir: &Path,
+    mut next_name: impl FnMut() -> String,
+) -> Result<(PathBuf, std::fs::File)> {
+    let mut last_err = None;
+    for _ in 0..100 {
+        let tmp = dir.join(next_name());
+        match open_new_private(&tmp) {
+            Ok(file) => return Ok((tmp, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(e),
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("creating backup temp file in {}", dir.display()));
+            }
+        }
+    }
+    Err(last_err.expect("loop ran at least once"))
+        .with_context(|| format!("creating a unique backup temp file in {}", dir.display()))
+}
+
+/// Write `body` to the already-opened temp `file` and fsync it, so the bytes are on disk
+/// before the caller renames it over the real target.
+fn write_backup_tmp(tmp: &Path, file: &mut std::fs::File, body: &str) -> Result<()> {
+    use std::io::Write;
+
     file.write_all(body.as_bytes())
         .with_context(|| format!("writing backup to {}", tmp.display()))?;
     file.sync_all()
@@ -1953,6 +1999,72 @@ mod tests {
         assert!(
             std::fs::read_dir(&dir).unwrap().count() == 1,
             "no temp left"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn backup_temp_refuses_to_reuse_a_preexisting_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("write-backup-squat");
+        let squatted = dir.join(".pinboard-backup.json.tmp.squatter");
+        std::fs::write(&squatted, "SECRET-LEAK").unwrap();
+        std::fs::set_permissions(&squatted, PermissionsExt::from_mode(0o644)).unwrap();
+
+        // create_new refuses a path that already exists rather than truncating it and
+        // inheriting its world-readable mode, so a squatted temp can't leak into a snapshot.
+        let err = open_new_private(&squatted).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&squatted).unwrap(), "SECRET-LEAK");
+        let mode = std::fs::metadata(&squatted).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o644, "existing file left untouched");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn backup_temp_does_not_follow_a_symlink() {
+        let dir = scratch_dir("write-backup-symlink");
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, "PRECIOUS").unwrap();
+        let link = dir.join(".pinboard-backup.json.tmp.link");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        // O_EXCL refuses the pre-existing symlink instead of following it and truncating
+        // the target.
+        let err = open_new_private(&link).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "PRECIOUS");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn create_new_temp_retries_past_a_colliding_name() {
+        let dir = scratch_dir("create-new-temp-retry");
+        std::fs::write(dir.join("taken"), "SQUAT").unwrap();
+
+        // First candidate collides with the pre-existing file; the loop must retry the
+        // fresh one rather than reuse or truncate "taken".
+        let mut names = ["taken", "fresh"].into_iter().map(str::to_string);
+        let (tmp, _file) = create_new_temp(&dir, || names.next().unwrap()).unwrap();
+
+        assert_eq!(tmp, dir.join("fresh"));
+        assert_eq!(std::fs::read_to_string(dir.join("taken")).unwrap(), "SQUAT");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn create_new_temp_gives_up_after_exhausting_attempts() {
+        let dir = scratch_dir("create-new-temp-exhaust");
+        std::fs::write(dir.join("always"), "SQUAT").unwrap();
+
+        // A generator that never yields a free name exhausts the bounded loop and surfaces
+        // the last AlreadyExists rather than spinning forever.
+        let err = create_new_temp(&dir, || "always".to_string()).unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::AlreadyExists)
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

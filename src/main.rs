@@ -1082,14 +1082,26 @@ fn create_backup_tmp(dir: &Path, file_name: &str) -> Result<(PathBuf, std::fs::F
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let pid = std::process::id();
 
-    let mut last_err = None;
-    for _ in 0..100 {
+    create_new_temp(dir, || {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let nonce = nanos ^ u128::from(COUNTER.fetch_add(1, Ordering::Relaxed));
-        let tmp = dir.join(format!(".{file_name}.tmp.{pid}.{nonce:x}"));
+        format!(".{file_name}.tmp.{pid}.{nonce:x}")
+    })
+}
+
+/// Open a fresh private temp file in `dir`, drawing candidate names from `next_name` and
+/// retrying whenever the chosen path already exists (a leftover temp, a squatter). Bounded
+/// so a name generator that keeps yielding a colliding name can't spin forever.
+fn create_new_temp(
+    dir: &Path,
+    mut next_name: impl FnMut() -> String,
+) -> Result<(PathBuf, std::fs::File)> {
+    let mut last_err = None;
+    for _ in 0..100 {
+        let tmp = dir.join(next_name());
         match open_new_private(&tmp) {
             Ok(file) => return Ok((tmp, file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(e),
@@ -1965,6 +1977,37 @@ mod tests {
         let err = open_new_private(&link).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "PRECIOUS");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn create_new_temp_retries_past_a_colliding_name() {
+        let dir = scratch_dir("create-new-temp-retry");
+        std::fs::write(dir.join("taken"), "SQUAT").unwrap();
+
+        // First candidate collides with the pre-existing file; the loop must retry the
+        // fresh one rather than reuse or truncate "taken".
+        let mut names = ["taken", "fresh"].into_iter().map(str::to_string);
+        let (tmp, _file) = create_new_temp(&dir, || names.next().unwrap()).unwrap();
+
+        assert_eq!(tmp, dir.join("fresh"));
+        assert_eq!(std::fs::read_to_string(dir.join("taken")).unwrap(), "SQUAT");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn create_new_temp_gives_up_after_exhausting_attempts() {
+        let dir = scratch_dir("create-new-temp-exhaust");
+        std::fs::write(dir.join("always"), "SQUAT").unwrap();
+
+        // A generator that never yields a free name exhausts the bounded loop and surfaces
+        // the last AlreadyExists rather than spinning forever.
+        let err = create_new_temp(&dir, || "always".to_string()).unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::AlreadyExists)
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

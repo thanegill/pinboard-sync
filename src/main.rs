@@ -93,7 +93,13 @@ struct SyncCmd {
     #[arg(long)]
     dry_run: bool,
     /// Shell command run when a source's credential needs refreshing (a 401/403).
-    #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
+    ///
+    /// The `PINBOARD_SYNC_ON_AUTH_FAILURE` env var backs the per-source flag, not
+    /// this one, so an explicit per-source `--on-auth-failure` outranks the env
+    /// var (`with_top_level_hook` prefers a present top-level value). The `--all`
+    /// path, which has no per-source flag, reads that env var itself via
+    /// `on_auth_failure_from_env`.
+    #[arg(long)]
     on_auth_failure: Option<String>,
     #[command(subcommand)]
     source: Option<SyncSource>,
@@ -450,6 +456,17 @@ fn load_config(flag: Option<String>) -> Result<Config> {
 
 // --- sync --------------------------------------------------------------------
 
+/// The `--all` path has no per-source `--on-auth-failure` flag to carry the hook,
+/// and the top-level flag deliberately doesn't bind `PINBOARD_SYNC_ON_AUTH_FAILURE`
+/// (so an explicit per-source flag can outrank the env var). So `--all` reads the
+/// env var here directly -- without it, the NixOS service (`sync --all`, hook via
+/// that env var only) would silently never fire the hook.
+fn on_auth_failure_from_env() -> Option<String> {
+    std::env::var("PINBOARD_SYNC_ON_AUTH_FAILURE")
+        .ok()
+        .filter(|v| !v.is_empty())
+}
+
 async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     let (jobs, ovr) = match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
@@ -459,7 +476,10 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
             }
             let ovr = SyncOverrides {
                 dry_run: cmd.dry_run,
-                on_auth_failure: cmd.on_auth_failure.clone(),
+                on_auth_failure: cmd
+                    .on_auth_failure
+                    .clone()
+                    .or_else(on_auth_failure_from_env),
                 ..SyncOverrides::default()
             };
             let mut jobs = Vec::new();
@@ -1536,8 +1556,8 @@ fn read_file_secret(path: &str) -> Option<String> {
     }
 }
 
-/// The auth-failure hook: CLI flag (with its env) → per-account override → per-source
-/// default → `[hooks]` global.
+/// The auth-failure hook: resolved flag/env (`ovr.on_auth_failure`) → per-account
+/// override → per-source default → `[hooks]` global.
 fn resolve_hook(
     flag: Option<String>,
     account_override: Option<&str>,
@@ -1574,6 +1594,16 @@ pub(crate) fn preview(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serializes tests that read or write `PINBOARD_SYNC_ON_AUTH_FAILURE`, since
+    /// the env var is process-global and clap reads it at parse time.
+    static ON_AUTH_FAILURE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_on_auth_failure_env() -> std::sync::MutexGuard<'static, ()> {
+        ON_AUTH_FAILURE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn first_nonempty_prefers_earlier_nonempty_candidates() {
@@ -1754,6 +1784,7 @@ mod tests {
 
     #[test]
     fn top_level_all_threads_on_auth_failure_into_the_hook() {
+        let _env = lock_on_auth_failure_env();
         // The `sync --all` path builds `SyncOverrides` itself (no `into_overrides`),
         // so the hook must be carried explicitly from the top-level flag.
         let cmd = parse_sync(&["--all", "--on-auth-failure", "refresh-cookie"]);
@@ -1771,7 +1802,37 @@ mod tests {
     }
 
     #[test]
+    fn sync_all_falls_back_to_on_auth_failure_env_when_flag_absent() {
+        let _env = lock_on_auth_failure_env();
+        // The NixOS service runs `sync --all` with the hook supplied only via
+        // `PINBOARD_SYNC_ON_AUTH_FAILURE`. The top-level flag doesn't bind that env,
+        // so the `--all` arm must read it directly or the hook silently never fires.
+        std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
+        let cmd = parse_sync(&["--all"]);
+        assert_eq!(
+            cmd.on_auth_failure, None,
+            "top-level flag must not bind the env"
+        );
+
+        let ovr = SyncOverrides {
+            dry_run: cmd.dry_run,
+            on_auth_failure: cmd
+                .on_auth_failure
+                .clone()
+                .or_else(on_auth_failure_from_env),
+            reddit_username: Some("alice".into()),
+            reddit_cookie: Some("reddit_session=x".into()),
+            ..SyncOverrides::default()
+        };
+        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
+
+        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        assert_eq!(job.hook.as_deref(), Some("env-hook"));
+    }
+
+    #[test]
     fn top_level_on_auth_failure_reaches_single_source_hook() {
+        let _env = lock_on_auth_failure_env();
         // `--on-auth-failure` placed before the source subcommand must reach the
         // job just like the `--all` path; `into_overrides` alone only sees the
         // per-source flag.
@@ -1799,6 +1860,7 @@ mod tests {
 
     #[test]
     fn per_source_on_auth_failure_falls_back_when_no_top_level() {
+        let _env = lock_on_auth_failure_env();
         let cmd = parse_sync(&[
             "reddit",
             "--reddit-username",
@@ -1819,6 +1881,69 @@ mod tests {
             .with_top_level_hook(cmd.on_auth_failure.clone());
         let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("source-hook"));
+    }
+
+    #[test]
+    fn explicit_per_source_on_auth_failure_beats_env() {
+        let _env = lock_on_auth_failure_env();
+        std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
+        let parsed = std::panic::catch_unwind(|| {
+            parse_sync(&[
+                "reddit",
+                "--reddit-username",
+                "alice",
+                "--reddit-cookie",
+                "reddit_session=x",
+                "--on-auth-failure",
+                "explicit-hook",
+            ])
+        });
+        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
+        let cmd = parsed.expect("parses");
+
+        // The env only backs the per-source flag, so the top level stays empty and
+        // the explicit per-source flag wins over the env value.
+        assert_eq!(cmd.on_auth_failure, None);
+        let args = match &cmd.source {
+            Some(SyncSource::Reddit(args)) => args.clone(),
+            _ => panic!("expected `sync reddit` args"),
+        };
+        assert_eq!(args.on_auth_failure.as_deref(), Some("explicit-hook"));
+
+        let ovr = args
+            .into_overrides()
+            .with_top_level_hook(cmd.on_auth_failure.clone());
+        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        assert_eq!(job.hook.as_deref(), Some("explicit-hook"));
+    }
+
+    #[test]
+    fn on_auth_failure_env_fills_per_source_when_flag_absent() {
+        let _env = lock_on_auth_failure_env();
+        std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
+        let parsed = std::panic::catch_unwind(|| {
+            parse_sync(&[
+                "reddit",
+                "--reddit-username",
+                "alice",
+                "--reddit-cookie",
+                "reddit_session=x",
+            ])
+        });
+        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
+        let cmd = parsed.expect("parses");
+
+        assert_eq!(cmd.on_auth_failure, None);
+        let args = match &cmd.source {
+            Some(SyncSource::Reddit(args)) => args.clone(),
+            _ => panic!("expected `sync reddit` args"),
+        };
+
+        let ovr = args
+            .into_overrides()
+            .with_top_level_hook(cmd.on_auth_failure.clone());
+        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        assert_eq!(job.hook.as_deref(), Some("env-hook"));
     }
 
     /// Parse `cleanup <extra>` and return the top-level command.

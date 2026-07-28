@@ -321,22 +321,28 @@ impl HackerNewsClient {
                 }
             };
             out.extend(ids.into_iter().map(HackerNewsItemId::from));
-            next = more.map(|href| self.resolve(&href));
+            next = more.and_then(|href| self.resolve(&href));
             // Be gentle between page fetches.
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
         Ok(())
     }
 
-    /// Resolve an HN "More" href (typically relative, e.g. `favorites?id=u&p=2`).
-    fn resolve(&self, href: &str) -> String {
-        if href.starts_with("http") {
-            href.to_string()
-        } else if let Some(rest) = href.strip_prefix('/') {
-            format!("{}/{}", self.base, rest)
-        } else {
-            format!("{}/{}", self.base, href)
+    /// Resolve an HN "More" href (typically relative, e.g. `favorites?id=u&p=2`)
+    /// against the favorites origin. Relative hrefs resolve against `base`; an
+    /// absolute href whose host differs from `base` is refused (returns `None`)
+    /// so a hostile favorites page can't steer the crawler at an arbitrary host.
+    fn resolve(&self, href: &str) -> Option<String> {
+        let base = Url::parse(&self.base).ok()?;
+        let resolved = base.join(href).ok()?;
+        if resolved.host_str() != base.host_str() {
+            warn!(
+                "hn favorites for '{}': ignoring 'More' link to foreign host {resolved}",
+                self.username
+            );
+            return None;
         }
+        Some(resolved.to_string())
     }
 
     /// Batch-fetch item details by ID from the Algolia HN search API, keyed by ID.
@@ -959,6 +965,33 @@ mod tests {
         };
         assert_eq!(ids, vec!["111", "222"]);
         assert_eq!(more.as_deref(), Some("favorites?id=u&p=2"));
+    }
+
+    #[test]
+    fn resolve_follows_same_host_but_refuses_foreign_host() {
+        let client = HackerNewsClient::with_base_urls(
+            "u".to_string(),
+            HackernewsConfig::default(),
+            "https://news.ycombinator.com".to_string(),
+            "https://hn.algolia.com".to_string(),
+        );
+        // Relative "More" links resolve against the favorites origin.
+        assert_eq!(
+            client.resolve("favorites?id=u&p=2").as_deref(),
+            Some("https://news.ycombinator.com/favorites?id=u&p=2")
+        );
+        // An absolute same-host link is followed.
+        assert_eq!(
+            client
+                .resolve("https://news.ycombinator.com/favorites?id=u&p=3")
+                .as_deref(),
+            Some("https://news.ycombinator.com/favorites?id=u&p=3")
+        );
+        // A hostile absolute "More" link to a foreign host is refused (SSRF guard).
+        assert_eq!(
+            client.resolve("http://169.254.169.254/latest/meta-data/"),
+            None
+        );
     }
 
     #[test]

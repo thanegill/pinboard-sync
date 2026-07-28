@@ -1,9 +1,15 @@
 //! The shared `cleanup` driver. Each source describes how to re-shape one bookmark
-//! (a [`CleanupPass`]); this module owns the loop common to all of them: diff the
-//! planned end-state against the stored bookmark, skip when nothing changed, render
-//! the dry-run lines, write via [`BookmarkStore::apply_update`] (deleting the old URL on a rewrite),
-//! and tally. `run_pass` returns the number of bookmarks that failed (logged and
-//! skipped) so a caller running several passes can aggregate and bail once.
+//! (a [`CleanupPass`]); this module owns the loop common to all of them: plan every
+//! bookmark's end-state, then group the plans by their target URL and write each group.
+//! A lone plan is diffed against its stored bookmark, skipped when nothing changed, and
+//! written via [`BookmarkStore::apply_update`] (deleting the old URL on a rewrite). Two or
+//! more plans landing on one URL are a collision: they are field-merged (see
+//! [`merge_bookmarks`]) into a single record written via [`BookmarkStore::apply_merge`],
+//! which deletes the absorbed URLs. `run_pass` renders the dry-run lines, tallies, and
+//! returns the number of bookmarks that failed (logged and skipped) so a caller running
+//! several passes can aggregate and bail once.
+
+use std::collections::HashMap;
 
 use anyhow::Result;
 use log::{debug, error, info};
@@ -39,6 +45,12 @@ pub trait CleanupPass {
 /// changed bookmark (deleting the old URL when it changed), or prints the diff under
 /// `dry_run`. `noun` names the source in the scan log. Returns the count that failed
 /// to update.
+///
+/// Two phases so that several bookmarks whose plans normalize to the *same* URL don't
+/// clobber each other: phase 1 plans every bookmark (resolving date + privacy), phase 2
+/// groups the plans by target URL and writes each group. A lone group is a normal
+/// rewrite; a group of more than one is field-merged (see [`merge_bookmarks`]) into a
+/// single bookmark that absorbs the others.
 pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     pinboard: &P,
     bookmarks: &[Bookmark],
@@ -57,6 +69,8 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     let now = OffsetDateTime::now_utc();
     let mut changed = 0usize;
     let mut failed = 0usize;
+
+    let mut planned_pairs: Vec<(&Bookmark, Bookmark)> = Vec::new();
     for bookmark in bookmarks {
         let mut planned = match pass.plan(bookmark).await {
             Ok(Some(p)) => p,
@@ -86,41 +100,117 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
         planned.public = bookmark.public;
         planned.read_later = bookmark.read_later;
 
-        // The written fields that differ; empty means nothing a write would change.
-        let changes = bookmark.diff(&planned);
-        if changes.is_empty() {
+        planned_pairs.push((bookmark, planned));
+    }
+
+    // First-appearance order of the groups (and snapshot order within each group).
+    let mut group_order: Vec<&url::Url> = Vec::new();
+    let mut groups: HashMap<&url::Url, Vec<(&Bookmark, &Bookmark)>> = HashMap::new();
+    for pair in &planned_pairs {
+        let (original, planned) = (pair.0, &pair.1);
+        let key = &planned.url;
+        if !groups.contains_key(key) {
+            group_order.push(key);
+        }
+        groups.entry(key).or_default().push((original, planned));
+    }
+
+    for key in group_order {
+        let group = groups.remove(key).expect("key came from group_order");
+        if group.len() == 1 {
+            let (original, planned) = group[0];
+            // The written fields that differ; empty means nothing a write would change.
+            let changes = original.diff(planned);
+            if changes.is_empty() {
+                continue;
+            }
+            let url_changed = planned.url != original.url;
+
+            if dry_run {
+                changed += 1;
+                println!("[dry-run] {}", original.url);
+                for (label, value) in &changes {
+                    println!("          {label:<6}-> {value}");
+                }
+                continue;
+            }
+
+            // `planned` carries the stored `public`/`read_later` and the driver-resolved
+            // `timestamp`, so it's the complete write model.
+            // Log and skip a single failed update so the rest of the pass still runs.
+            match pinboard
+                .apply_update(planned, url_changed.then_some(&original.url))
+                .await
+            {
+                Ok(()) => {
+                    changed += 1;
+                    debug!(
+                        "updated {} -> {} [{}]",
+                        original.url,
+                        planned.url,
+                        planned.tags.join(" ")
+                    );
+                }
+                Err(e) => {
+                    failed += 1;
+                    error!("updating bookmark {}: {e:#}", original.url);
+                }
+            }
             continue;
         }
-        let url_changed = planned.url != bookmark.url;
+
+        // Field-merge and delete the absorbed URLs so a later run sees a single bookmark at
+        // the target and converges.
+        let target_url = group[0].1.url.clone();
+        // The primary keeps its own privacy at the target: the member already resident at
+        // the target URL, else (a brand-new URL) the first in stable order.
+        let primary = group
+            .iter()
+            .find(|(original, _)| original.url == target_url)
+            .map(|(_, planned)| *planned)
+            .unwrap_or(group[0].1);
+        let plans: Vec<&Bookmark> = group.iter().map(|(_, planned)| *planned).collect();
+        let merged = merge_bookmarks(&plans, primary);
+        let target = &merged.url;
+
+        let mut old_urls: Vec<&url::Url> = Vec::new();
+        for (original, _) in &group {
+            if original.url != *target && !old_urls.contains(&&original.url) {
+                old_urls.push(&original.url);
+            }
+        }
 
         if dry_run {
             changed += 1;
-            println!("[dry-run] {}", bookmark.url);
-            for (label, value) in &changes {
-                println!("          {label:<6}-> {value}");
+            println!("[dry-run] {target}");
+            println!("          {:<6}-> {}", "title", merged.title);
+            let note_value = if merged.note.is_empty() {
+                "(removed)"
+            } else {
+                &merged.note
+            };
+            println!("          {:<6}-> {note_value}", "notes");
+            println!("          {:<6}-> [{}]", "tags", merged.tags.join(" "));
+            if let Some(date) = merged.timestamp.and_then(crate::timefmt::to_rfc3339) {
+                println!("          {:<6}-> {date}", "date");
+            }
+            println!("          {:<6}-> {}", "public", merged.public);
+            println!("          {:<6}-> {}", "toread", merged.read_later);
+            for old in &old_urls {
+                println!("          absorb {old}");
             }
             continue;
         }
 
-        // `planned` now carries the stored `public`/`read_later` and the driver-resolved
-        // `timestamp`, so it's the complete write model.
-        // Log and skip a single failed update so the rest of the pass still runs.
-        match pinboard
-            .apply_update(&planned, url_changed.then_some(&bookmark.url))
-            .await
-        {
+        match pinboard.apply_merge(&merged, &old_urls).await {
             Ok(()) => {
                 changed += 1;
-                debug!(
-                    "updated {} -> {} [{}]",
-                    bookmark.url,
-                    planned.url,
-                    planned.tags.join(" ")
-                );
+                let absorbed: Vec<String> = old_urls.iter().map(|u| u.to_string()).collect();
+                debug!("merged {target} <- [{}]", absorbed.join(" "));
             }
             Err(e) => {
                 failed += 1;
-                error!("updating bookmark {}: {e:#}", bookmark.url);
+                error!("updating bookmark {target}: {e:#}");
             }
         }
     }
@@ -131,6 +221,52 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
         info!("done: updated {changed} bookmark(s)");
     }
     failed
+}
+
+/// Field-merge the PLANNED bookmarks of a collision group (all sharing `url`, given in
+/// stable order) into one bookmark. Tags are an order-preserving union (first occurrence
+/// wins, case-sensitive); notes are the distinct non-empty notes joined by a blank line;
+/// title is the first non-empty; timestamp the earliest present. The privacy flags come
+/// from `primary` (the member that stays at the target URL, else the first in order), never
+/// OR'd across the group, so an absorbed bookmark can't widen the survivor's privacy.
+fn merge_bookmarks(group: &[&Bookmark], primary: &Bookmark) -> Bookmark {
+    let url = group[0].url.clone();
+
+    let mut tags: Vec<String> = Vec::new();
+    for b in group {
+        for tag in &b.tags {
+            if !tags.contains(tag) {
+                tags.push(tag.clone());
+            }
+        }
+    }
+
+    let mut notes: Vec<&str> = Vec::new();
+    for b in group {
+        if !b.note.is_empty() && !notes.contains(&b.note.as_str()) {
+            notes.push(&b.note);
+        }
+    }
+    let note = notes.join("\n\n");
+
+    let title = group
+        .iter()
+        .map(|b| b.title.as_str())
+        .find(|t| !t.is_empty())
+        .unwrap_or_default()
+        .to_string();
+
+    let timestamp = group.iter().filter_map(|b| b.timestamp).min();
+
+    Bookmark {
+        url,
+        title,
+        note,
+        tags,
+        timestamp,
+        public: primary.public,
+        read_later: primary.read_later,
+    }
 }
 
 #[cfg(test)]
@@ -246,6 +382,144 @@ mod tests {
         assert!(!updated[0].shared && !updated[0].toread);
         // The old URL is deleted after the rewrite.
         assert_eq!(*pinboard.deleted.borrow(), vec!["https://old/".to_string()]);
+    }
+
+    #[test]
+    fn merge_bookmarks_applies_field_rules() {
+        let ts_early = crate::timefmt::from_unix(1_000);
+        let ts_late = crate::timefmt::from_unix(2_000);
+        let a = Bookmark {
+            url: u("https://collide/"),
+            title: String::new(),
+            note: "from A".into(),
+            tags: vec!["x".into(), "shared".into()],
+            timestamp: ts_late,
+            public: false,
+            read_later: true,
+        };
+        let b = Bookmark {
+            url: u("https://collide/"),
+            title: "Title B".into(),
+            note: "from B".into(),
+            tags: vec!["shared".into(), "y".into()],
+            timestamp: ts_early,
+            public: true,
+            read_later: false,
+        };
+        let c = Bookmark {
+            url: u("https://collide/"),
+            title: "Title C".into(),
+            // A duplicate of B's note must not be repeated in the join.
+            note: "from B".into(),
+            tags: vec!["z".into()],
+            timestamp: None,
+            public: false,
+            read_later: false,
+        };
+
+        // Primary is A (resident at the target); its privacy is kept verbatim, not OR'd,
+        // even though B is public.
+        let merged = merge_bookmarks(&[&a, &b, &c], &a);
+        assert_eq!(merged.url.as_str(), "https://collide/");
+        // Order-preserving, case-sensitive union across the group.
+        assert_eq!(merged.tags, vec!["x", "shared", "y", "z"]);
+        // Distinct non-empty notes in order, joined by a blank line.
+        assert_eq!(merged.note, "from A\n\nfrom B");
+        // First non-empty title.
+        assert_eq!(merged.title, "Title B");
+        // Earliest present timestamp.
+        assert_eq!(merged.timestamp, ts_early);
+        // Privacy taken from the primary (A), not OR'd: A is private, so the merge is too.
+        assert!(!merged.public);
+        assert!(merged.read_later);
+    }
+
+    #[test]
+    fn merge_bookmarks_passes_a_single_note_through() {
+        let a = Bookmark {
+            note: "only note".into(),
+            ..bookmark("https://collide/")
+        };
+        let b = Bookmark {
+            note: String::new(),
+            ..bookmark("https://collide/")
+        };
+        let merged = merge_bookmarks(&[&a, &b], &a);
+        assert_eq!(merged.note, "only note");
+    }
+
+    #[tokio::test]
+    async fn colliding_rewrites_are_field_merged() {
+        // Two stored bookmarks whose plans land on the same URL: A normalizes onto B's URL
+        // and B stays put. The driver must field-merge them into one record at that URL and
+        // delete A's old URL, rather than clobbering either.
+        let mut stored_a = bookmark("https://old-a/");
+        stored_a.tags = vec!["x".into()];
+        stored_a.note = "from A".into();
+        let mut stored_b = bookmark("https://collide/");
+        stored_b.tags = vec!["y".into()];
+        stored_b.note = "from B".into();
+        let books = vec![stored_a, stored_b];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            if bookmark.url.as_str().contains("old-a") {
+                Ok(Some(Bookmark {
+                    url: u("https://collide/"),
+                    ..unchanged_plan(bookmark)
+                }))
+            } else {
+                Ok(Some(unchanged_plan(bookmark)))
+            }
+        });
+        let pinboard = FakePinboard::default();
+
+        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(failed, 0);
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://collide/");
+        // Union in snapshot order: A's tags first, then B's.
+        assert_eq!(updated[0].tags, vec!["x".to_string(), "y".to_string()]);
+        assert!(updated[0].extended.contains("from A"));
+        assert!(updated[0].extended.contains("from B"));
+        // Only A's old URL is absorbed; the shared target is not deleted.
+        assert_eq!(
+            *pinboard.deleted.borrow(),
+            vec!["https://old-a/".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn colliding_rewrite_keeps_resident_privacy_not_widened() {
+        // A (public) normalizes onto B's URL; B (private) is the resident survivor. The merge
+        // must keep B's privacy: an absorbed public bookmark can't widen the survivor to public.
+        let mut stored_a = bookmark("https://old-a/");
+        stored_a.public = true;
+        let mut stored_b = bookmark("https://collide/");
+        stored_b.public = false;
+        let books = vec![stored_a, stored_b];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            if bookmark.url.as_str().contains("old-a") {
+                Ok(Some(Bookmark {
+                    url: u("https://collide/"),
+                    ..unchanged_plan(bookmark)
+                }))
+            } else {
+                Ok(Some(unchanged_plan(bookmark)))
+            }
+        });
+        let pinboard = FakePinboard::default();
+
+        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(failed, 0);
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://collide/");
+        // Not widened: the resident private bookmark stays private.
+        assert!(!updated[0].shared);
     }
 
     #[tokio::test]

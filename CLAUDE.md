@@ -32,8 +32,11 @@ sync write loop is in [`src/sync.rs`](src/sync.rs). **Every `cleanup` source sha
 driver** ([`src/cleanup_pass.rs`](src/cleanup_pass.rs)): a source implements
 `CleanupPass::plan` (the desired end-state for one bookmark, as a `Bookmark` — `None` to
 skip, `Err` for a per-item failure), and `run_pass` owns the loop common to all of them:
-diff the planned `Bookmark` against the stored one, skip unchanged, render the dry-run
-lines, write via `apply_update` (deleting the old URL on a rewrite), and tally. The
+plan every bookmark, group the plans by target URL, then diff each plan against the stored
+one, skip unchanged, render the dry-run lines, write via `apply_update` (deleting the old
+URL on a rewrite), and tally. Colliding rewrites — several bookmarks normalizing to one URL
+— are field-merged into a single record via `apply_merge` (which deletes the absorbed URLs)
+rather than clobbering each other. The
 per-source planners live in [`src/cleanup.rs`](src/cleanup.rs) (reddit),
 [`src/github.rs`](src/github.rs), and [`src/hackernews.rs`](src/hackernews.rs).
 

@@ -134,6 +134,24 @@ pub trait BookmarkStore {
         }
         Ok(())
     }
+
+    /// Write a merged bookmark that absorbs one or more colliding bookmarks: `update` the
+    /// merged record at its URL, then `delete` every absorbed `old_urls` entry that isn't
+    /// the merge target. Deleting the absorbed URLs is what makes a later cleanup run see a
+    /// single bookmark at the target and converge.
+    async fn apply_merge(&self, update: &Bookmark, old_urls: &[&Url]) -> Result<()> {
+        self.update(update)
+            .await
+            .with_context(|| format!("updating merged bookmark {}", update.url))?;
+        for old in old_urls {
+            if **old != update.url {
+                self.delete(old)
+                    .await
+                    .with_context(|| format!("deleting absorbed URL {old}"))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -71,15 +71,17 @@ pub fn prepare_new_drafts<S: Source>(
 }
 
 /// Flatten each job's prepared drafts into one write batch, keeping the first occurrence
-/// of any URL so the same link fetched by two accounts is written once (Pinboard writes
-/// `replace=yes`, so a duplicate would just clobber the first). Order is preserved: jobs
-/// in order, drafts in order within a job.
+/// of any `dedup_key` so two drafts the dedup logic treats as one item are written once
+/// (matching [`filter_new`]'s existing-key check — otherwise two fresh drafts whose URLs
+/// differ byte-for-byte but share a key, e.g. two HN favorites of the same article stored
+/// as `http://x` vs `https://x`, would each be written on a first-time run). Order is
+/// preserved: jobs in order, drafts in order within a job.
 pub fn merge_deduped(per_job: Vec<Vec<BookmarkDraft>>) -> Vec<BookmarkDraft> {
     let mut merged: Vec<BookmarkDraft> = Vec::new();
     let mut seen = HashSet::new();
     for drafts in per_job {
         for draft in drafts {
-            if seen.insert(draft.bookmark.url.clone()) {
+            if seen.insert(draft.dedup_key.clone()) {
                 merged.push(draft);
             }
         }
@@ -437,6 +439,54 @@ mod tests {
         let outcome = write_drafts(&pinboard, &merged, false).await;
         assert_eq!(outcome.written, 1);
         assert_eq!(pinboard.added.borrow().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn merge_deduped_collapses_drafts_sharing_a_dedup_key_with_differing_urls() {
+        // Regression: two fresh drafts in one batch that share a dedup_key but whose URLs
+        // differ byte-for-byte (e.g. two HN favorites of the same article stored as
+        // http vs https) must collapse to one write — matching filter_new's existing-key
+        // check, so a first-time run doesn't create two bookmarks for one item.
+        let draft = |url: &str, key: &str| BookmarkDraft {
+            bookmark: Bookmark {
+                url: Url::parse(url).unwrap(),
+                title: "T".into(),
+                note: String::new(),
+                tags: vec![],
+                timestamp: None,
+                public: false,
+                read_later: false,
+            },
+            dedup_key: key.into(),
+        };
+        let merged = merge_deduped(vec![
+            vec![draft("http://example.com/x", "hn:1")],
+            vec![draft("https://example.com/x", "hn:1")],
+        ]);
+        assert_eq!(merged.len(), 1);
+        // The first occurrence is kept.
+        assert_eq!(merged[0].bookmark.url.as_str(), "http://example.com/x");
+    }
+
+    #[tokio::test]
+    async fn merge_deduped_keeps_drafts_with_distinct_dedup_keys() {
+        let draft = |url: &str, key: &str| BookmarkDraft {
+            bookmark: Bookmark {
+                url: Url::parse(url).unwrap(),
+                title: "T".into(),
+                note: String::new(),
+                tags: vec![],
+                timestamp: None,
+                public: false,
+                read_later: false,
+            },
+            dedup_key: key.into(),
+        };
+        let merged = merge_deduped(vec![
+            vec![draft("https://a.test/", "hn:1")],
+            vec![draft("https://b.test/", "hn:2")],
+        ]);
+        assert_eq!(merged.len(), 2);
     }
 
     #[tokio::test]

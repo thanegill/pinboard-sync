@@ -1386,6 +1386,7 @@ async fn cleanup_one_reddit(
         fix_titles: !args.no_titles,
         base_tag: reddit_config.tags.first().cloned().unwrap_or_default(),
         subreddit_tag_prefix: reddit_config.subreddit_prefix.clone(),
+        nsfw_tag: reddit_config.nsfw.clone(),
         domain: reddit_config.domain.clone(),
         use_post_date: dates.use_post_date,
         max_age_days: dates.max_age_days,

@@ -6,9 +6,11 @@
 //! The cookie authenticates the private saved listing; the username (non-secret)
 //! selects whose saves to read.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::Context;
+use log::warn;
 use serde::de::DeserializeOwned;
 use url::Url;
 
@@ -27,6 +29,11 @@ const REDDIT_BASE: &str = "https://old.reddit.com";
 /// Retry budget for transient failures on Reddit requests.
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
+/// Backstop against a malformed `after` cursor that never nulls out. Reddit caps any
+/// listing near 1000 items at 100 per page, so this covers a full saved listing many
+/// times over -- it only bounds a response that keeps returning a non-null cursor; the
+/// cursor-repeat case is caught by the `visited` guard.
+const MAX_SAVED_PAGES: u32 = 100;
 
 /// Reddit `/api/info` lookups by fullname (used by `cleanup` for over_18/title).
 #[allow(async_fn_in_trait)]
@@ -112,8 +119,18 @@ impl RedditClient {
         let endpoint = format!("{}/user/{}/saved.json", self.base, username);
         let mut out: Vec<RedditListingEntry> = Vec::new();
         let mut after: Option<String> = None;
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut page: u32 = 0;
 
         loop {
+            page += 1;
+            if page > MAX_SAVED_PAGES {
+                warn!(
+                    "reddit saved for '{username}': hit the {MAX_SAVED_PAGES}-page cap; \
+                     stopping (some saved items may be missing)"
+                );
+                break;
+            }
             let after_ref = after.as_deref();
             let resp = send_retrying("saved listing", MAX_RETRIES, RETRY_DELAY, || {
                 let mut req = self
@@ -131,7 +148,16 @@ impl RedditClient {
             out.extend(listing.data.children);
 
             match listing.data.after {
-                Some(a) if got > 0 => after = Some(a),
+                Some(a) if got > 0 => {
+                    if !visited.insert(a.clone()) {
+                        warn!(
+                            "reddit saved for '{username}': 'after' cursor looped back to \
+                             {a}; stopping"
+                        );
+                        break;
+                    }
+                    after = Some(a);
+                }
                 _ => break,
             }
             // Be gentle with Reddit's rate limit between pages.
@@ -354,6 +380,31 @@ mod net_tests {
             ]
         );
         assert!(items[1].is_comment);
+    }
+
+    #[tokio::test]
+    async fn fetch_saved_terminates_when_after_cursor_loops() {
+        // A pathological listing that keeps returning the same non-null `after` with a
+        // non-empty page would loop forever without the visited-cursor guard. It must
+        // stop after re-seeing the cursor rather than hanging / growing `out` unbounded.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/psophis/saved.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "kind": "Listing",
+                "data": { "after": "t3_loop", "children": [
+                    { "kind": "t3", "data": { "name": "t3_loop", "subreddit": "rust",
+                      "permalink": "/r/rust/comments/1/x/", "title": "1" } }
+                ] }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+        // Page 1 (no cursor) records the cursor; page 2 (after=t3_loop) re-sees it and
+        // breaks, so exactly two pages are fetched.
+        let entries = client.fetch_saved().await.unwrap();
+        assert_eq!(entries.len(), 2);
     }
 
     #[tokio::test]

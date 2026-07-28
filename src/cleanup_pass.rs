@@ -5,9 +5,12 @@
 //! written via [`BookmarkStore::apply_update`] (deleting the old URL on a rewrite). Two or
 //! more plans landing on one URL are a collision: they are field-merged (see
 //! [`merge_bookmarks`]) into a single record written via [`BookmarkStore::apply_merge`],
-//! which deletes the absorbed URLs. `run_pass` renders the dry-run lines, tallies, and
-//! returns the number of bookmarks that failed (logged and skipped) so a caller running
-//! several passes can aggregate and bail once.
+//! which deletes the absorbed URLs. A rewrite's old URL is never deleted when it is
+//! itself the target of another planned write in the same pass, so colliding/chained
+//! rewrites can't clobber each other's record and the pass is order-independent.
+//! `run_pass` renders the dry-run lines, tallies, and returns the number of bookmarks
+//! that failed (logged and skipped) so a caller running several passes can aggregate and
+//! bail once.
 
 use std::collections::HashMap;
 
@@ -51,6 +54,12 @@ pub trait CleanupPass {
 /// groups the plans by target URL and writes each group. A lone group is a normal
 /// rewrite; a group of more than one is field-merged (see [`merge_bookmarks`]) into a
 /// single bookmark that absorbs the others.
+///
+/// A rewrite's old URL is only deleted when it is not itself the target of another
+/// planned write in the pass: if bookmark X normalizes onto a URL that is bookmark Y's
+/// stored URL while Y moves elsewhere, Y's delete would otherwise remove the record X
+/// just wrote there. Precomputing the set of all target URLs and refusing to delete any
+/// of them makes the pass order-independent.
 pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     pinboard: &P,
     bookmarks: &[Bookmark],
@@ -115,6 +124,11 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
         groups.entry(key).or_default().push((original, planned));
     }
 
+    // Every group's target URL. A rewrite's old URL is never deleted when it is one of
+    // these, because some other planned write owns that URL; deleting it would clobber
+    // that write's record. This keeps the pass order-independent.
+    let targets: std::collections::HashSet<&url::Url> = group_order.iter().copied().collect();
+
     for key in group_order {
         let group = groups.remove(key).expect("key came from group_order");
         if group.len() == 1 {
@@ -124,7 +138,10 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             if changes.is_empty() {
                 continue;
             }
+            // Delete the old URL only when it changed and no other planned write targets
+            // it; otherwise that write's record lives there and must not be removed.
             let url_changed = planned.url != original.url;
+            let delete_old = url_changed && !targets.contains(&original.url);
 
             if dry_run {
                 changed += 1;
@@ -139,7 +156,7 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             // `timestamp`, so it's the complete write model.
             // Log and skip a single failed update so the rest of the pass still runs.
             match pinboard
-                .apply_update(planned, url_changed.then_some(&original.url))
+                .apply_update(planned, delete_old.then_some(&original.url))
                 .await
             {
                 Ok(()) => {
@@ -173,9 +190,14 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
         let merged = merge_bookmarks(&plans, primary);
         let target = &merged.url;
 
+        // Absorbed URLs to delete: an original that is neither the target nor another
+        // planned write's target (deleting the latter would clobber that write's record).
         let mut old_urls: Vec<&url::Url> = Vec::new();
         for (original, _) in &group {
-            if original.url != *target && !old_urls.contains(&&original.url) {
+            if original.url != *target
+                && !targets.contains(&original.url)
+                && !old_urls.contains(&&original.url)
+            {
                 old_urls.push(&original.url);
             }
         }
@@ -488,6 +510,46 @@ mod tests {
             *pinboard.deleted.borrow(),
             vec!["https://old-a/".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn chained_rewrite_does_not_delete_another_writes_target() {
+        // X at old-a rewrites to collide-b; Y at collide-b rewrites to new-z. X's target is
+        // Y's stored URL, so Y's post-rewrite delete of collide-b would clobber X's record.
+        // The pass must leave collide-b (a planned target) undeleted, in either order.
+        async fn run_in_order(books: Vec<Bookmark>) {
+            let pass = FakePass(|bookmark: &Bookmark| {
+                let next = if bookmark.url.as_str().contains("old-a") {
+                    "https://collide-b/"
+                } else {
+                    "https://new-z/"
+                };
+                Ok(Some(Bookmark {
+                    url: u(next),
+                    ..unchanged_plan(bookmark)
+                }))
+            });
+            let pinboard = FakePinboard::default();
+
+            let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+            assert_eq!(failed, 0);
+
+            let updated = pinboard.updated.borrow();
+            let mut written: Vec<&str> = updated.iter().map(|c| c.url.as_str()).collect();
+            written.sort_unstable();
+            assert_eq!(written, vec!["https://collide-b/", "https://new-z/"]);
+
+            let deleted = pinboard.deleted.borrow();
+            // old-a is deleted (no other write targets it); collide-b is X's target and
+            // must survive Y's rewrite.
+            assert!(deleted.contains(&"https://old-a/".to_string()));
+            assert!(!deleted.contains(&"https://collide-b/".to_string()));
+        }
+
+        let x = bookmark("https://old-a/");
+        let y = bookmark("https://collide-b/");
+        run_in_order(vec![x.clone(), y.clone()]).await;
+        run_in_order(vec![y, x]).await;
     }
 
     #[tokio::test]

@@ -171,7 +171,13 @@ impl HackerNewsItem {
         let (url, dedup_key) = match article.as_deref() {
             Some(u) => match Url::parse(u) {
                 Ok(parsed) => {
-                    let key = url_key(&parsed).unwrap_or_else(|| parsed.to_string());
+                    // An article URL that is itself an HN item permalink (e.g. a meta
+                    // post) must key on `hn:<id>` to match how the stored bookmark reads
+                    // back through `HackerNewsClient::dedup_key`; a generic host+path key
+                    // would drop the id query and re-add the bookmark every sync.
+                    let key = HackerNewsItemId::try_from(&parsed)
+                        .map(|id| format!("hn:{id}"))
+                        .unwrap_or_else(|_| url_key(&parsed).unwrap_or_else(|| parsed.to_string()));
                     (parsed, key)
                 }
                 Err(e) => {
@@ -819,6 +825,25 @@ mod tests {
             d.bookmark.tags,
             vec!["hackernews", "author:hackernews:alice"]
         );
+    }
+
+    #[test]
+    fn story_whose_article_url_is_an_hn_item_keys_on_the_id() {
+        // A meta post whose submitted article URL is itself an HN item permalink. The
+        // draft is bookmarked at that URL, so its dedup key must match how the stored
+        // bookmark reads back through `HackerNewsClient::dedup_key` (`hn:<id>`) — a
+        // generic host+path key drops the `id` query and re-adds it every sync.
+        let article = "https://news.ycombinator.com/item?id=999";
+        let d = item(json!({
+            "id": 42, "type": "story", "by": "alice",
+            "title": "Meta post", "url": article
+        }))
+        .into_draft(&HackernewsConfig::default())
+        .unwrap();
+        assert_eq!(d.bookmark.url.as_str(), article);
+        assert_eq!(d.dedup_key, "hn:999");
+        let client = HackerNewsClient::new("u".into(), HackernewsConfig::default()).unwrap();
+        assert_eq!(client.dedup_key(&d.bookmark.url).as_deref(), Some("hn:999"));
     }
 
     #[test]

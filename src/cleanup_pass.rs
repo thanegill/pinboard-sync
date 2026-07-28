@@ -1,9 +1,13 @@
 //! The shared `cleanup` driver. Each source describes how to re-shape one bookmark
-//! (a [`CleanupPass`]); this module owns the loop common to all of them: diff the
-//! planned end-state against the stored bookmark, skip when nothing changed, render
-//! the dry-run lines, write via [`BookmarkStore::apply_update`] (deleting the old URL on a rewrite),
-//! and tally. `run_pass` returns the number of bookmarks that failed (logged and
-//! skipped) so a caller running several passes can aggregate and bail once.
+//! (a [`CleanupPass`]); this module owns the loop common to all of them: plan every
+//! bookmark's end-state, then group the plans by their target URL and write each group.
+//! A lone plan is diffed against its stored bookmark, skipped when nothing changed, and
+//! written via [`BookmarkStore::apply_update`] (deleting the old URL on a rewrite). Two or
+//! more plans landing on one URL are a collision: they are field-merged (see
+//! [`merge_bookmarks`]) into a single record written via [`BookmarkStore::apply_merge`],
+//! which deletes the absorbed URLs. `run_pass` renders the dry-run lines, tallies, and
+//! returns the number of bookmarks that failed (logged and skipped) so a caller running
+//! several passes can aggregate and bail once.
 
 use std::collections::HashMap;
 
@@ -66,7 +70,6 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     let mut changed = 0usize;
     let mut failed = 0usize;
 
-    // Phase 1: plan every bookmark, keeping the original alongside its resolved plan.
     let mut planned_pairs: Vec<(&Bookmark, Bookmark)> = Vec::new();
     for bookmark in bookmarks {
         let mut planned = match pass.plan(bookmark).await {
@@ -100,22 +103,22 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
         planned_pairs.push((bookmark, planned));
     }
 
-    // Phase 2: group the plans by target URL, preserving first-appearance order of the
-    // groups (and snapshot order within each group).
-    let mut group_order: Vec<String> = Vec::new();
-    let mut groups: HashMap<String, Vec<(&Bookmark, Bookmark)>> = HashMap::new();
-    for (original, planned) in planned_pairs {
-        let key = planned.url.to_string();
-        if !groups.contains_key(&key) {
-            group_order.push(key.clone());
+    // First-appearance order of the groups (and snapshot order within each group).
+    let mut group_order: Vec<&url::Url> = Vec::new();
+    let mut groups: HashMap<&url::Url, Vec<(&Bookmark, &Bookmark)>> = HashMap::new();
+    for pair in &planned_pairs {
+        let (original, planned) = (pair.0, &pair.1);
+        let key = &planned.url;
+        if !groups.contains_key(key) {
+            group_order.push(key);
         }
         groups.entry(key).or_default().push((original, planned));
     }
 
-    for key in &group_order {
+    for key in group_order {
         let group = groups.remove(key).expect("key came from group_order");
         if group.len() == 1 {
-            let (original, planned) = &group[0];
+            let (original, planned) = group[0];
             // The written fields that differ; empty means nothing a write would change.
             let changes = original.diff(planned);
             if changes.is_empty() {
@@ -156,18 +159,17 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             continue;
         }
 
-        // A collision: two or more bookmarks whose plans land on the same URL. Field-merge
-        // them into one record at that URL and delete the others' old URLs, so a later run
-        // sees a single bookmark there and converges.
+        // Field-merge and delete the absorbed URLs so a later run sees a single bookmark at
+        // the target and converges.
         let target_url = group[0].1.url.clone();
         // The primary keeps its own privacy at the target: the member already resident at
         // the target URL, else (a brand-new URL) the first in stable order.
         let primary = group
             .iter()
             .find(|(original, _)| original.url == target_url)
-            .map(|(_, planned)| planned)
-            .unwrap_or(&group[0].1);
-        let plans: Vec<&Bookmark> = group.iter().map(|(_, planned)| planned).collect();
+            .map(|(_, planned)| *planned)
+            .unwrap_or(group[0].1);
+        let plans: Vec<&Bookmark> = group.iter().map(|(_, planned)| *planned).collect();
         let merged = merge_bookmarks(&plans, primary);
         let target = &merged.url;
 

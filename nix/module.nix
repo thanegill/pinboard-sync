@@ -38,6 +38,12 @@ let
   # `token_file` (HackerNews is public). These satisfy the binary's `resolve_secret`
   # ladder without `environmentFile` or a `*File` option, so they count toward the
   # credentials assertion. Only the enabled/rendered accounts (post-`pruneAccounts`).
+  #
+  # Unlike the `*File` options (systemd LoadCredential) and `environmentFile`, which
+  # systemd reads as root before dropping privileges, these paths are opened by the
+  # binary itself as the transient DynamicUser, so the secret they point at must be
+  # readable by that user (e.g. sops mode 0444) — a root-owned 0400 secret passes the
+  # assertion but fails to read at runtime. See the `settings` option description.
   settingsCredentialFiles =
     lib.optional ((configSettings.pinboard.token_file or null) != null) configSettings.pinboard.token_file
     ++ lib.filter (p: p != null) (
@@ -131,6 +137,18 @@ in
         world-readable Nix store. Provide those via `environmentFile`, the
         per-credential `*File` options below, or as sops-nix `*_file` *paths* inside
         account tables (paths are not secret).
+
+        Caveat for the in-table `*_file` form (`[pinboard].token_file`, a reddit
+        account `cookie_file`, a github account `token_file`): the binary opens that
+        path itself, running as the service's transient `DynamicUser`, so the secret
+        it points at must be *readable by that user* (e.g. a sops-nix secret with
+        `mode = "0444"`, or an owning group the service belongs to). A default
+        `0400`/root-owned secret is unreadable this way: the config still builds and
+        the assertions still pass, but every timer fire fails to read it and surfaces
+        as a missing-credential error. This differs from `environmentFile` and the
+        dedicated `*File` options below, which systemd reads *as root* (via
+        `EnvironmentFile`/`LoadCredential`) before dropping privileges — for a
+        root-owned `0400` sops secret, prefer those.
 
         Each account may carry `enable = false` (default `true`) to keep it in the
         config but leave it out of the sync/cleanup runs; the flag is stripped before

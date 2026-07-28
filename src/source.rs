@@ -165,12 +165,19 @@ where
 
 /// A host+path dedup key for a URL: scheme and query/fragment dropped, host lowercased
 /// (by the `url` crate), path lowercased with any trailing slash removed — e.g.
-/// `https://GitHub.com/Owner/Repo/?tab=x` → `github.com/owner/repo`. Returns `None` for
-/// a URL without a host.
+/// `https://GitHub.com/Owner/Repo/?tab=x` → `github.com/owner/repo`. Dropping the query
+/// is deliberate canonicalization; the exception is a non-source domain whose identity
+/// lives in the query string (e.g. YouTube `watch?v=…`), for which
+/// [`crate::domains::dedup_key_suffix`] appends a query-derived suffix so distinct
+/// resources don't collapse to one key. Returns `None` for a URL without a host.
 pub fn url_key(url: &Url) -> Option<String> {
     let host = url.host_str()?;
     let path = url.path().trim_end_matches('/').to_ascii_lowercase();
-    Some(format!("{host}{path}"))
+    let mut key = format!("{host}{path}");
+    if let Some(suffix) = crate::domains::dedup_key_suffix(host, &path, url) {
+        key.push_str(&suffix);
+    }
+    Some(key)
 }
 
 #[cfg(test)]
@@ -236,6 +243,20 @@ mod tests {
         assert_eq!(
             url_key(&url("http://news.ycombinator.com/item?id=42")).as_deref(),
             Some("news.ycombinator.com/item")
+        );
+    }
+
+    #[test]
+    fn url_key_delegates_to_domains_for_query_significant_hosts() {
+        // Two YouTube videos differing only in `?v=` must not collapse to one key
+        // (the domains rule appends the id); a GitHub `?tab=` still drops the query.
+        assert_ne!(
+            url_key(&url("https://www.youtube.com/watch?v=AAAAAAAAAAA")),
+            url_key(&url("https://www.youtube.com/watch?v=BBBBBBBBBBB"))
+        );
+        assert_eq!(
+            url_key(&url("https://github.com/owner/repo?tab=stars")),
+            url_key(&url("https://github.com/owner/repo?tab=issues"))
         );
     }
 }

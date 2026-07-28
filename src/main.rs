@@ -4,6 +4,7 @@ mod bookmark;
 mod cleanup;
 mod cleanup_pass;
 mod config;
+mod domains;
 mod github;
 mod hackernews;
 mod htmltext;

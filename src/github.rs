@@ -1,7 +1,7 @@
 //! The GitHub source: reads the authenticated user's starred repositories
 //! (`/user/starred`, token-authenticated) and shapes each into a Pinboard draft.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -22,6 +22,11 @@ const UA: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"))
 const API_BASE: &str = "https://api.github.com";
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
+/// Backstop against a malformed `Link: rel="next"` chain that never terminates.
+/// At GitHub's default 30 results per page this covers hundreds of thousands of stars,
+/// far beyond any real account -- it is only a backstop against a `Link` header that
+/// increments forever; the per-page repeat case is caught by the `visited` guard.
+const MAX_STARRED_PAGES: u32 = 10_000;
 
 /// Tag vocabulary for GitHub stars. `tags` are applied to every bookmark
 /// (defaulting to `["github-star"]`); `lang_prefix` defaults to its built-in value,
@@ -209,8 +214,20 @@ impl Source for GitHubClient {
         let endpoint = format!("{}/user/starred", self.base);
         let mut out = Vec::new();
         let mut page: u32 = 1;
+        let mut visited = HashSet::new();
 
         loop {
+            if page > MAX_STARRED_PAGES {
+                warn!(
+                    "github starred: hit the {MAX_STARRED_PAGES}-page cap; \
+                     stopping (some stars may be missing)"
+                );
+                break;
+            }
+            if !visited.insert(page) {
+                warn!("github starred: 'next' link looped back to page {page}; stopping");
+                break;
+            }
             let resp = send_retrying("github starred", MAX_RETRIES, RETRY_DELAY, || {
                 // The star+json media type makes each element `{ starred_at, repo }`, so
                 // we can date each bookmark by when it was starred.
@@ -710,6 +727,35 @@ mod net_tests {
             crate::timefmt::parse_rfc3339("2023-01-02T03:04:05Z")
         );
         assert_eq!(drafts[1].bookmark.title, "b/two");
+    }
+
+    #[tokio::test]
+    async fn fetch_terminates_when_next_link_loops_back() {
+        // A malformed `Link: rel="next"` that points back to the same page must not
+        // loop forever: the visited-page guard breaks out after the repeat.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/starred"))
+            .and(query_param("page", "1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header(
+                        "link",
+                        format!("<{}/user/starred?page=1>; rel=\"next\"", server.uri()).as_str(),
+                    )
+                    .set_body_json(json!([
+                        { "starred_at": "2023-01-02T03:04:05Z",
+                          "repo": { "full_name": "a/one", "html_url": "https://github.com/a/one" } }
+                    ])),
+            )
+            .mount(&server)
+            .await;
+
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+        let drafts = client.fetch().await.unwrap();
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].bookmark.title, "a/one");
     }
 
     #[tokio::test]

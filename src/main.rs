@@ -1268,13 +1268,24 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             }
             run.finish()
         }
-        (false, Some(CleanupSource::Reddit(args))) => run_cleanup_reddit(args, &over, config).await,
-        (false, Some(CleanupSource::Github(args))) => run_cleanup_github(args, &over, config).await,
+        (false, Some(CleanupSource::Reddit(args))) => {
+            run_cleanup_reddit(args, cmd.dry_run, &over, config).await
+        }
+        (false, Some(CleanupSource::Github(args))) => {
+            run_cleanup_github(args, cmd.dry_run, &over, config).await
+        }
         (false, Some(CleanupSource::Hackernews(args))) => {
-            run_cleanup_hackernews(args, &over, config).await
+            run_cleanup_hackernews(args, cmd.dry_run, &over, config).await
         }
         (false, None) => bail!("specify a source (e.g. `cleanup reddit`) or pass --all"),
     }
+}
+
+/// A cleanup pass runs dry when `--dry-run` is given either before the source
+/// subcommand (top-level `CleanupCmd::dry_run`) or after it (the per-source args),
+/// mirroring how `run_sync` honors the flag on both sides of the subcommand.
+fn cleanup_dry_run(top_dry_run: bool, source_dry_run: bool) -> bool {
+    top_dry_run || source_dry_run
 }
 
 /// Resolve the tiered date settings for a github cleanup pass.
@@ -1295,13 +1306,19 @@ fn gh_cleanup_opts(
 
 async fn run_cleanup_github(
     args: GitHubCleanupArgs,
+    top_dry_run: bool,
     top: &DateOverrides,
     config: &Config,
 ) -> Result<()> {
     let over = args.dates.overrides().with_top_level(top);
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let account = config::select_account(&config.github, args.account.as_deref())?;
-    let opts = gh_cleanup_opts(&over, args.dry_run, account, config);
+    let opts = gh_cleanup_opts(
+        &over,
+        cleanup_dry_run(top_dry_run, args.dry_run),
+        account,
+        config,
+    );
     cleanup_github_for(&pinboard, &bookmarks, account, args.github_token, &opts).await
 }
 
@@ -1329,10 +1346,12 @@ async fn cleanup_github_for(
 }
 
 async fn run_cleanup_reddit(
-    args: RedditCleanupArgs,
+    mut args: RedditCleanupArgs,
+    top_dry_run: bool,
     top: &DateOverrides,
     config: &Config,
 ) -> Result<()> {
+    args.dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     // One pass over the Pinboard account's reddit bookmarks, using the selected (or
     // first, or implicit CLI/env) account's cookie + domain/tags.
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
@@ -1392,6 +1411,7 @@ async fn cleanup_one_reddit(
 
 async fn run_cleanup_hackernews(
     args: HackernewsCleanupArgs,
+    top_dry_run: bool,
     top: &DateOverrides,
     config: &Config,
 ) -> Result<()> {
@@ -1402,7 +1422,7 @@ async fn run_cleanup_hackernews(
     let over = args.dates.overrides().with_top_level(top);
     cleanup_one_hackernews(
         account,
-        args.dry_run,
+        cleanup_dry_run(top_dry_run, args.dry_run),
         args.link_discussions,
         args.link_tag,
         &over,
@@ -1993,6 +2013,46 @@ mod tests {
             .overrides()
             .with_top_level(&cmd.dates.overrides());
         assert_eq!(over.use_post_date, Some(false));
+    }
+
+    /// The `dry_run` field of a parsed per-source cleanup args struct.
+    fn source_dry_run(source: &CleanupSource) -> bool {
+        match source {
+            CleanupSource::Reddit(args) => args.dry_run,
+            CleanupSource::Github(args) => args.dry_run,
+            CleanupSource::Hackernews(args) => args.dry_run,
+        }
+    }
+
+    #[test]
+    fn top_level_dry_run_reaches_single_source_cleanup() {
+        // `--dry-run` placed before the source subcommand must make the pass dry,
+        // even though the per-source args default `dry_run` to false. Regression:
+        // the single-source arms once passed only `args.dry_run`, so a `--dry-run`
+        // before the subcommand silently performed live writes.
+        for name in ["reddit", "github", "hackernews"] {
+            let cmd = parse_cleanup(&["--dry-run", name]);
+            assert!(cmd.dry_run, "top-level --dry-run parsed for {name}");
+            let source = cmd.source.expect("a source subcommand");
+            assert!(
+                !source_dry_run(&source),
+                "per-source dry_run defaults off for {name}"
+            );
+            assert!(
+                cleanup_dry_run(cmd.dry_run, source_dry_run(&source)),
+                "effective dry_run true for `cleanup --dry-run {name}`"
+            );
+        }
+    }
+
+    #[test]
+    fn per_source_dry_run_still_applies_without_top_level() {
+        // A `--dry-run` placed after the source subcommand still makes the pass dry.
+        let cmd = parse_cleanup(&["github", "--dry-run"]);
+        assert!(!cmd.dry_run);
+        let source = cmd.source.expect("a source subcommand");
+        assert!(source_dry_run(&source));
+        assert!(cleanup_dry_run(cmd.dry_run, source_dry_run(&source)));
     }
 
     /// Parse `sync reddit <extra>` and return the parsed source args.

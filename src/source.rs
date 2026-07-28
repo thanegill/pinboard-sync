@@ -88,10 +88,13 @@ pub fn push_prefixed(tags: &mut Vec<String>, prefix: &str, value: &str) {
     }
 }
 
-/// Append each tag in `add` that isn't already in `tags` (order-preserving).
+/// Append each non-empty tag in `add` that isn't already in `tags` (order-preserving).
+/// Empty tags are skipped for parity with [`push_tag`] (empty = the tag is disabled):
+/// stored tags derive via `split_whitespace` and so can never contain `""`, so emitting
+/// one would make a cleanup plan diff against storage on every run and never converge.
 pub fn extend_unique(tags: &mut Vec<String>, add: &[String]) {
     for tag in add {
-        if !tags.contains(tag) {
+        if !tag.is_empty() && !tags.contains(tag) {
             tags.push(tag.clone());
         }
     }
@@ -182,6 +185,16 @@ mod tests {
         push_prefixed(&mut tags, "y:", "   "); // all whitespace → skipped
         push_prefixed(&mut tags, "", "v"); // empty prefix → skipped
         assert_eq!(tags, vec!["lang:Jupyter-Notebook", "x:spaced-out"]);
+    }
+
+    #[test]
+    fn extend_unique_skips_empty_and_duplicate_tags() {
+        let tags = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let mut acc = tags(&["reddit"]);
+        // An empty base tag (config `tags = [""]`) must not add a literal "" — stored
+        // tags can never contain one, so it would diff against storage forever.
+        extend_unique(&mut acc, &tags(&["", "reddit", "rust"]));
+        assert_eq!(acc, tags(&["reddit", "rust"]));
     }
 
     fn url(s: &str) -> Url {

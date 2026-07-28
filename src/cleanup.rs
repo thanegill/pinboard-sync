@@ -142,14 +142,23 @@ impl CleanupPass for RedditCleanupPass<'_> {
             bookmark.note.clone()
         };
 
+        // `/api/info` is keyed by the post fullname, so `post` for a comment bookmark is the
+        // *parent thread's* meta; its `created_utc` is the thread-creation time, not the
+        // comment's. Never re-date a comment by it -- leave a None candidate so the driver
+        // keeps the comment's stored timestamp (as with its notes above).
+        let timestamp = if is_comment_url(&new_url) {
+            None
+        } else {
+            post.and_then(|p| p.created_utc)
+                .and_then(|s| crate::timefmt::from_unix(s as i64))
+        };
+
         Ok(Some(Bookmark {
             url: new_url,
             title,
             note,
             tags,
-            timestamp: post
-                .and_then(|p| p.created_utc)
-                .and_then(|s| crate::timefmt::from_unix(s as i64)),
+            timestamp,
             public: bookmark.public,
             read_later: bookmark.read_later,
         }))
@@ -918,6 +927,51 @@ mod loop_tests {
             .unwrap();
 
         // Nothing changed (notes preserved, URL/title/tags already current), so no write.
+        assert!(pinboard.updated.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn use_post_date_leaves_comment_timestamp_untouched() {
+        // A comment bookmark under `use_post_date`: /api/info is keyed by the parent post
+        // (post_fullname → t3), so its `created_utc` is the *thread* creation time, not the
+        // comment's. That must not be applied to the comment — its stored date stays.
+        let pinboard = FakePinboard {
+            all: vec![PinboardBookmark {
+                url: "https://old.reddit.com/r/rust/comments/a/x/c/".into(),
+                description: "Parent title".into(),
+                extended: "my comment note".into(),
+                tags: "reddit subreddit:rust reddit-comment".into(),
+                time: "2019-01-01T00:00:00Z".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }
+            .try_into()
+            .unwrap()],
+            ..Default::default()
+        };
+        let reddit = FakeReddit {
+            info: vec![listing_entry(
+                "t3",
+                json!({ "name": "t3_a", "subreddit": "rust",
+                        "permalink": "/r/rust/comments/a/x/", "title": "Parent title",
+                        "over_18": false, "created_utc": 1_700_000_000 }),
+            )],
+            ..Default::default()
+        };
+        let opts = RedditCleanupOpts {
+            use_post_date: true,
+            max_age_days: 1_000_000,
+            mark_nsfw: false,
+            fix_titles: false,
+            ..opts()
+        };
+
+        run(&pinboard, Some(&reddit), &opts, &pinboard.all)
+            .await
+            .unwrap();
+
+        // Only the date could have changed, and the fix keeps the comment's own date, so
+        // nothing is written. Without the guard the thread's created_utc would leak in.
         assert!(pinboard.updated.borrow().is_empty());
     }
 

@@ -21,6 +21,9 @@ pub struct RedditCleanupOpts {
     pub fix_titles: bool,
     pub base_tag: String,
     pub subreddit_tag_prefix: String,
+    /// NSFW marker tag (the configurable `reddit.tag_nsfw`, default `nsfw`; empty
+    /// disables the marker). Matches what `sync` tags NSFW posts with.
+    pub nsfw_tag: String,
     /// Reddit host that URLs are rewritten to (default `old.reddit.com`).
     pub domain: String,
     /// Re-date bookmarks to the source post date (within the age cap).
@@ -105,11 +108,16 @@ impl CleanupPass for RedditCleanupPass<'_> {
             &bookmark.tags,
             &opts.base_tag,
             &opts.subreddit_tag_prefix,
+            &opts.nsfw_tag,
         );
         let post = post_fullname(&new_url).and_then(|f| self.info.get(&f));
 
-        if opts.mark_nsfw && post.is_some_and(|p| p.over_18) && !tags.iter().any(|t| t == "nsfw") {
-            tags.push("nsfw".to_string());
+        if opts.mark_nsfw
+            && !opts.nsfw_tag.is_empty()
+            && post.is_some_and(|p| p.over_18)
+            && !tags.iter().any(|t| t == &opts.nsfw_tag)
+        {
+            tags.push(opts.nsfw_tag.clone());
             tags.sort();
         }
 
@@ -318,7 +326,13 @@ fn is_comment_url(url: &Url) -> bool {
 /// Normalize a bookmark's tags: ensure the base tag, derive `subreddit:<sub>` from
 /// the URL (casing per [`cased_subreddit`]), and strip bare/legacy/duplicate
 /// subreddit forms. Returns a sorted, de-duplicated list.
-pub fn normalize_tags(url: &Url, existing: &[String], base_tag: &str, prefix: &str) -> Vec<String> {
+pub fn normalize_tags(
+    url: &Url,
+    existing: &[String],
+    base_tag: &str,
+    prefix: &str,
+    nsfw_tag: &str,
+) -> Vec<String> {
     let mut set: BTreeSet<String> = existing.iter().cloned().collect();
     set.insert(base_tag.to_string());
     set.remove(prefix); // bare "subreddit:"
@@ -333,10 +347,10 @@ pub fn normalize_tags(url: &Url, existing: &[String], base_tag: &str, prefix: &s
             raw.to_uppercase(),
         ];
         for form in &forms {
-            // Drop the bare subreddit tag in any case (but keep a literal "nsfw",
+            // Drop the bare subreddit tag in any case (but keep the NSFW marker,
             // and never drop the base tag when the subreddit is named like it, e.g.
             // r/reddit), and the legacy prefixed forms.
-            if form != "nsfw" && form != base_tag {
+            if form != nsfw_tag && form != base_tag {
                 set.remove(form);
             }
             set.remove(&format!("{prefix}{form}"));
@@ -489,6 +503,7 @@ mod tests {
             &existing,
             "reddit",
             "subreddit:",
+            "nsfw",
         );
         assert_eq!(
             tags,
@@ -503,6 +518,7 @@ mod tests {
             &["subreddit:NEWS".to_string(), "NEWS".to_string()],
             "reddit",
             "subreddit:",
+            "nsfw",
         );
         assert_eq!(
             tags,
@@ -517,6 +533,7 @@ mod tests {
             &[],
             "reddit",
             "subreddit:",
+            "nsfw",
         );
         assert_eq!(
             tags,
@@ -546,6 +563,7 @@ mod loop_tests {
             fix_titles: true,
             base_tag: "reddit".into(),
             subreddit_tag_prefix: "subreddit:".into(),
+            nsfw_tag: "nsfw".into(),
             domain: "old.reddit.com".into(),
             use_post_date: false,
             max_age_days: 30,
@@ -618,6 +636,78 @@ mod loop_tests {
             *pinboard.deleted.borrow(),
             vec!["https://www.reddit.com/r/NEWS/comments/abc/x/".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn marks_nsfw_with_configured_tag_not_literal_nsfw() {
+        // With reddit.tag_nsfw = "adult", cleanup must apply the configured marker (as
+        // sync does), never a second literal "nsfw". The www host forces a URL rewrite so
+        // the write is emitted; the post has no marker yet, so cleanup adds one.
+        let pinboard = FakePinboard {
+            all: vec![bookmark(
+                "https://www.reddit.com/r/NEWS/comments/abc/x/",
+                "A real title",
+                "reddit subreddit:news",
+            )],
+            ..Default::default()
+        };
+        let reddit = FakeReddit {
+            info: vec![listing_entry(
+                "t3",
+                json!({ "name": "t3_abc", "subreddit": "NEWS",
+                        "permalink": "/r/NEWS/comments/abc/x/", "title": "A real title",
+                        "over_18": true }),
+            )],
+            ..Default::default()
+        };
+        let opts = RedditCleanupOpts {
+            fix_titles: false,
+            nsfw_tag: "adult".into(),
+            ..opts()
+        };
+
+        run(&pinboard, Some(&reddit), &opts, &pinboard.all)
+            .await
+            .unwrap();
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert!(updated[0].tags.contains(&"adult".to_string()));
+        assert!(!updated[0].tags.contains(&"nsfw".to_string()));
+    }
+
+    #[tokio::test]
+    async fn configured_nsfw_tag_is_idempotent() {
+        // A post already carrying the configured "adult" marker (what sync wrote) and
+        // otherwise normalized must not be rewritten to add a duplicate/literal marker.
+        let pinboard = FakePinboard {
+            all: vec![bookmark(
+                "https://old.reddit.com/r/NEWS/comments/abc/x/",
+                "A real title",
+                "reddit subreddit:news adult",
+            )],
+            ..Default::default()
+        };
+        let reddit = FakeReddit {
+            info: vec![listing_entry(
+                "t3",
+                json!({ "name": "t3_abc", "subreddit": "NEWS",
+                        "permalink": "/r/NEWS/comments/abc/x/", "title": "A real title",
+                        "over_18": true }),
+            )],
+            ..Default::default()
+        };
+        let opts = RedditCleanupOpts {
+            fix_titles: false,
+            nsfw_tag: "adult".into(),
+            ..opts()
+        };
+
+        run(&pinboard, Some(&reddit), &opts, &pinboard.all)
+            .await
+            .unwrap();
+
+        assert!(pinboard.updated.borrow().is_empty());
     }
 
     #[tokio::test]

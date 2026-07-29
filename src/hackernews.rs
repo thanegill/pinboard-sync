@@ -580,7 +580,10 @@ fn hn_link_marker_id(note: &str) -> Option<HackerNewsItemId> {
 /// Appends the `HN Link: <url>` back-link line to a note, skipping when the note already
 /// carries one. An empty note becomes the bare link.
 fn ensure_hn_link_note(note: &str, hn_link: &str) -> String {
-    if note.contains("HN Link:") {
+    if note
+        .lines()
+        .any(|line| line.trim_start().starts_with("HN Link:"))
+    {
         note.to_string()
     } else if note.is_empty() {
         hn_link.to_string()
@@ -838,6 +841,23 @@ mod tests {
         );
         let already = format!("my note\n\n{link}");
         assert_eq!(ensure_hn_link_note(&already, link), already);
+    }
+
+    #[test]
+    fn ensure_hn_link_note_matches_only_a_marker_line_not_mid_prose() {
+        let link = "HN Link: https://news.ycombinator.com/item?id=42";
+
+        // "HN Link:" appearing mid-prose is not a marker line, so the back-link is
+        // appended rather than the note being treated as already-linked.
+        let prose = "better than the HN Link: thread I saw earlier";
+        assert_eq!(
+            ensure_hn_link_note(prose, link),
+            format!("{prose}\n\n{link}")
+        );
+
+        // A real marker line (even with leading whitespace) is left unchanged.
+        let with_marker = format!("my note\n\n  {link}");
+        assert_eq!(ensure_hn_link_note(&with_marker, link), with_marker);
     }
 
     #[test]

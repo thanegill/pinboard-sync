@@ -41,10 +41,13 @@ pub struct JobSettings {
 }
 
 /// The new drafts for one account, ready to write: those not already on Pinboard
-/// ([`filter_new`]), each stamped with the account's resolved `toread`/`shared` flags and
-/// post date (kept only when `use_post_date` is on and the post is within the age cap
-/// relative to `now`, else cleared so Pinboard defaults to "now"), and truncated to the
-/// per-job `limit` (0 = unlimited). `now` is a parameter so tests are deterministic.
+/// ([`filter_new`]) and collapsed so each `dedup_key` appears once (keep-first, matching
+/// the cross-job [`merge_deduped`] so `limit` counts distinct items rather than letting
+/// duplicate-key drafts consume slots), each stamped with the account's resolved
+/// `toread`/`shared` flags and post date (kept only when `use_post_date` is on and the
+/// post is within the age cap relative to `now`, else cleared so Pinboard defaults to
+/// "now"), and truncated to the per-job `limit` (0 = unlimited). `now` is a parameter so
+/// tests are deterministic.
 pub fn prepare_new_drafts<S: Source>(
     source: &S,
     drafts: Vec<BookmarkDraft>,
@@ -53,6 +56,8 @@ pub fn prepare_new_drafts<S: Source>(
     now: i64,
 ) -> Vec<BookmarkDraft> {
     let mut new = filter_new(source, drafts, existing);
+    let mut seen = HashSet::new();
+    new.retain(|d| seen.insert(d.dedup_key.clone()));
     for d in &mut new {
         d.bookmark.read_later = settings.toread;
         d.bookmark.public = settings.shared;
@@ -416,6 +421,42 @@ mod tests {
             0,
         );
         assert_eq!(capped.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn prepare_new_drafts_dedups_within_the_batch_before_applying_the_limit() {
+        // Regression: two drafts sharing a dedup_key must collapse to one BEFORE the
+        // limit truncation, so `limit` counts distinct items. Otherwise the duplicate
+        // consumes a slot and crowds out a genuinely new item (which merge_deduped then
+        // drops when it collapses the pair across jobs).
+        let draft = |url: &str, key: &str| BookmarkDraft {
+            bookmark: Bookmark {
+                url: Url::parse(url).unwrap(),
+                title: "T".into(),
+                note: String::new(),
+                tags: vec![],
+                timestamp: None,
+                public: false,
+                read_later: false,
+            },
+            dedup_key: key.into(),
+        };
+        let drafts = vec![
+            draft("http://example.com/x", "k"),
+            draft("https://example.com/x", "k"),
+            draft("https://distinct.test/", "kB"),
+        ];
+        let new = prepare_new_drafts(
+            &FakeReddit::default(),
+            drafts,
+            &[],
+            &settings(false, 30, 2),
+            0,
+        );
+        let keys: Vec<&str> = new.iter().map(|d| d.dedup_key.as_str()).collect();
+        assert_eq!(keys, vec!["k", "kB"]);
+        // The kept duplicate is the first occurrence.
+        assert_eq!(new[0].bookmark.url.as_str(), "http://example.com/x");
     }
 
     #[tokio::test]

@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use time::OffsetDateTime;
 
 use crate::bookmark::{Bookmark, BookmarkStore};
@@ -80,10 +80,14 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     let mut failed = 0usize;
 
     let mut planned_pairs: Vec<(&Bookmark, Bookmark)> = Vec::new();
+    let mut skipped_urls: std::collections::HashSet<&url::Url> = std::collections::HashSet::new();
     for bookmark in bookmarks {
         let mut planned = match pass.plan(bookmark).await {
             Ok(Some(p)) => p,
-            Ok(None) => continue,
+            Ok(None) => {
+                skipped_urls.insert(&bookmark.url);
+                continue;
+            }
             // Log and skip a single failed plan so the rest of the pass still runs.
             Err(e) => {
                 failed += 1;
@@ -131,6 +135,15 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
 
     for key in group_order {
         let group = groups.remove(key).expect("key came from group_order");
+        // The target URL is occupied by a bookmark whose plan returned `None`: it is a
+        // non-participating resident that stays put, and writing this group there
+        // (replace=yes) would clobber its record. Leave the rewriting bookmark(s) at their
+        // old URLs. Disjoint from the `targets` delete-guard: a skipped URL is never a
+        // planned target or origin.
+        if skipped_urls.contains(key) {
+            warn!("skipping cleanup write to {key}: occupied by an unchanged bookmark");
+            continue;
+        }
         if group.len() == 1 {
             let (original, planned) = group[0];
             // The written fields that differ; empty means nothing a write would change.
@@ -559,6 +572,37 @@ mod tests {
         let y = bookmark("https://collide-b/");
         run_in_order(vec![x.clone(), y.clone()]).await;
         run_in_order(vec![y, x]).await;
+    }
+
+    #[tokio::test]
+    async fn rewrite_onto_skipped_resident_is_refused() {
+        // A's plan returns None (it stays put at T with its own record); B rewrites onto T.
+        // T is not a planned target, so the delete-guard doesn't cover it; the skipped-URL
+        // guard must refuse B's write there rather than clobber A's title/note/tags.
+        let stored_a = bookmark("https://collide/");
+        let mut stored_b = bookmark("https://old-b/");
+        stored_b.tags = vec!["y".into()];
+        stored_b.note = "from B".into();
+        let books = vec![stored_a, stored_b];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            if bookmark.url.as_str().contains("collide") {
+                Ok(None)
+            } else {
+                Ok(Some(Bookmark {
+                    url: u("https://collide/"),
+                    ..unchanged_plan(bookmark)
+                }))
+            }
+        });
+        let pinboard = FakePinboard::default();
+
+        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(failed, 0);
+        // A (the skipped resident) is neither updated nor deleted; B's clobbering rewrite
+        // onto T is refused, so nothing is written at all.
+        assert!(pinboard.updated.borrow().is_empty());
+        assert!(pinboard.deleted.borrow().is_empty());
     }
 
     #[tokio::test]

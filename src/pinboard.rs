@@ -261,6 +261,13 @@ impl PinboardClient {
             return extended.to_string();
         }
 
+        // Fixed params alone exceed budget: the note isn't the overflow cause and the
+        // marker would only add bytes. Leave the note intact (the full request may still
+        // fit Pinboard's real limit; if not, the normal retry path handles it).
+        if url_len("") > budget {
+            return extended.to_string();
+        }
+
         // Binary-search the char-boundary offsets for the longest prefix that, with
         // the marker appended, still fits. (URL-encoding expands bytes unevenly, so we
         // measure rather than compute a byte budget.)
@@ -283,10 +290,8 @@ impl PinboardClient {
             }
         }
 
-        // The fixed params alone can push the URL over budget; then no prefix of the note
-        // is the cause of the overflow and the marker would only add bytes. Trim only when
-        // the marked result is actually shorter than the note, so an empty or tiny note
-        // isn't replaced by a fabricated "[truncated]" note.
+        // Trim only when the marked result is actually shorter than the note, so a note
+        // barely over budget isn't replaced by a longer, fabricated "[truncated]" note.
         if best + TRUNCATION_MARKER.len() >= extended.len() {
             return extended.to_string();
         }
@@ -432,6 +437,16 @@ mod tests {
         assert_eq!(
             c.fit_extended(&c.url("posts/add"), FIXED, tiny, budget),
             tiny
+        );
+
+        // A note longer than the 15-byte marker must survive intact too: since the fixed
+        // params alone overrun the budget, trimming or marking it can't help, so replacing
+        // it with the marker would be silent data loss.
+        let long = "A full paragraph of notes that is well past the marker length.";
+        assert!(long.len() > TRUNCATION_MARKER.len());
+        assert_eq!(
+            c.fit_extended(&c.url("posts/add"), FIXED, long, budget),
+            long
         );
     }
 }

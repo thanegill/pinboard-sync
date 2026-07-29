@@ -178,16 +178,8 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
 
         // Field-merge and delete the absorbed URLs so a later run sees a single bookmark at
         // the target and converges.
-        let target_url = group[0].1.url.clone();
-        // The primary keeps its own privacy at the target: the member already resident at
-        // the target URL, else (a brand-new URL) the first in stable order.
-        let primary = group
-            .iter()
-            .find(|(original, _)| original.url == target_url)
-            .map(|(_, planned)| *planned)
-            .unwrap_or(group[0].1);
         let plans: Vec<&Bookmark> = group.iter().map(|(_, planned)| *planned).collect();
-        let merged = merge_bookmarks(&plans, primary);
+        let merged = merge_bookmarks(&plans);
         let target = &merged.url;
 
         // Absorbed URLs to delete: an original that is neither the target nor another
@@ -248,10 +240,11 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
 /// Field-merge the PLANNED bookmarks of a collision group (all sharing `url`, given in
 /// stable order) into one bookmark. Tags are an order-preserving union (first occurrence
 /// wins, case-sensitive); notes are the distinct non-empty notes joined by a blank line;
-/// title is the first non-empty; timestamp the earliest present. The privacy flags come
-/// from `primary` (the member that stays at the target URL, else the first in order), never
-/// OR'd across the group, so an absorbed bookmark can't widen the survivor's privacy.
-fn merge_bookmarks(group: &[&Bookmark], primary: &Bookmark) -> Bookmark {
+/// title is the first non-empty; timestamp the earliest present. Privacy never widens:
+/// the merge is `public` only if every merged member is public (a single private member
+/// keeps it private), and `read_later` if any member is, so a merge can never republish a
+/// private bookmark as public.
+fn merge_bookmarks(group: &[&Bookmark]) -> Bookmark {
     let url = group[0].url.clone();
 
     let mut tags: Vec<String> = Vec::new();
@@ -286,8 +279,8 @@ fn merge_bookmarks(group: &[&Bookmark], primary: &Bookmark) -> Bookmark {
         note,
         tags,
         timestamp,
-        public: primary.public,
-        read_later: primary.read_later,
+        public: group.iter().all(|b| b.public),
+        read_later: group.iter().any(|b| b.read_later),
     }
 }
 
@@ -439,9 +432,7 @@ mod tests {
             read_later: false,
         };
 
-        // Primary is A (resident at the target); its privacy is kept verbatim, not OR'd,
-        // even though B is public.
-        let merged = merge_bookmarks(&[&a, &b, &c], &a);
+        let merged = merge_bookmarks(&[&a, &b, &c]);
         assert_eq!(merged.url.as_str(), "https://collide/");
         // Order-preserving, case-sensitive union across the group.
         assert_eq!(merged.tags, vec!["x", "shared", "y", "z"]);
@@ -451,8 +442,9 @@ mod tests {
         assert_eq!(merged.title, "Title B");
         // Earliest present timestamp.
         assert_eq!(merged.timestamp, ts_early);
-        // Privacy taken from the primary (A), not OR'd: A is private, so the merge is too.
+        // Privacy never widens: A is private, so the merge is private even though B is public.
         assert!(!merged.public);
+        // read_later is the OR across the group: A wants it, so the merge does too.
         assert!(merged.read_later);
     }
 
@@ -466,8 +458,25 @@ mod tests {
             note: String::new(),
             ..bookmark("https://collide/")
         };
-        let merged = merge_bookmarks(&[&a, &b], &a);
+        let merged = merge_bookmarks(&[&a, &b]);
         assert_eq!(merged.note, "only note");
+    }
+
+    #[test]
+    fn merge_bookmarks_public_absorbing_private_stays_private() {
+        // A public member absorbing a private one must not leak the private content as
+        // public: privacy is the AND across the group, so one private member wins.
+        let public = Bookmark {
+            public: true,
+            ..bookmark("https://collide/")
+        };
+        let private = Bookmark {
+            public: false,
+            ..bookmark("https://collide/")
+        };
+        assert!(!merge_bookmarks(&[&public, &private]).public);
+        // Order-independent: private first is equally private.
+        assert!(!merge_bookmarks(&[&private, &public]).public);
     }
 
     #[tokio::test]
@@ -581,6 +590,36 @@ mod tests {
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].url, "https://collide/");
         // Not widened: the resident private bookmark stays private.
+        assert!(!updated[0].shared);
+    }
+
+    #[tokio::test]
+    async fn colliding_new_url_privacy_never_widened() {
+        // Neither member is resident at the target: both normalize to a brand-new URL, so
+        // the pass has no resident to inherit privacy from. The first in order is public and
+        // the second private; privacy must be the AND across the group (private wins), not
+        // the first member's, so the private member's content is never republished public.
+        let mut stored_a = bookmark("https://old-a/");
+        stored_a.public = true;
+        let mut stored_b = bookmark("https://old-b/");
+        stored_b.public = false;
+        let books = vec![stored_a, stored_b];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Some(Bookmark {
+                url: u("https://new/"),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(failed, 0);
+
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://new/");
+        // The public member sorts first, but the private member keeps the merge private.
         assert!(!updated[0].shared);
     }
 

@@ -469,7 +469,7 @@ fn on_auth_failure_from_env() -> Option<String> {
 }
 
 async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
-    let (jobs, ovr) = match (cmd.all, cmd.source) {
+    let (jobs, ovr, prebuilt_failures) = match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
             if !config.has_accounts() {
@@ -483,17 +483,8 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
                     .or_else(on_auth_failure_from_env),
                 ..SyncOverrides::default()
             };
-            let mut jobs = Vec::new();
-            for acct in &config.reddit {
-                jobs.push(build_reddit_job(Some(acct), &ovr, config)?);
-            }
-            for acct in &config.github {
-                jobs.push(build_github_job(Some(acct), &ovr, config)?);
-            }
-            for acct in &config.hackernews {
-                jobs.push(build_hackernews_job(Some(acct), &ovr, config)?);
-            }
-            (jobs, ovr)
+            let (jobs, prebuilt_failures) = build_all_jobs(config, &ovr);
+            (jobs, ovr, prebuilt_failures)
         }
         (false, Some(SyncSource::Reddit(args))) => {
             let (account, all) = (args.account.clone(), args.all);
@@ -503,7 +494,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
             let jobs = build_jobs(&config.reddit, account.as_deref(), all, |a| {
                 build_reddit_job(a, &ovr, config)
             })?;
-            (jobs, ovr)
+            (jobs, ovr, 0)
         }
         (false, Some(SyncSource::Github(args))) => {
             let (account, all) = (args.account.clone(), args.all);
@@ -513,7 +504,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
             let jobs = build_jobs(&config.github, account.as_deref(), all, |a| {
                 build_github_job(a, &ovr, config)
             })?;
-            (jobs, ovr)
+            (jobs, ovr, 0)
         }
         (false, Some(SyncSource::Hackernews(args))) => {
             let (account, all) = (args.account.clone(), args.all);
@@ -523,7 +514,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
             let jobs = build_jobs(&config.hackernews, account.as_deref(), all, |a| {
                 build_hackernews_job(a, &ovr, config)
             })?;
-            (jobs, ovr)
+            (jobs, ovr, 0)
         }
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
     };
@@ -531,7 +522,43 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     let (pinboard, bookmarks) = open_pinboard(ovr.pinboard_token.clone(), config).await?;
     // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
     // after it (per-source); honor either placement. (`--verbose` is global.)
-    run_sync_jobs(jobs, &pinboard, &bookmarks, ovr.dry_run || cmd.dry_run).await
+    run_sync_jobs(
+        jobs,
+        prebuilt_failures,
+        &pinboard,
+        &bookmarks,
+        ovr.dry_run || cmd.dry_run,
+    )
+    .await
+}
+
+/// Build one job per configured account across every source for `sync --all`,
+/// isolating build failures: an account whose required secret won't resolve is
+/// reported and counted rather than aborting the whole run, so the healthy
+/// accounts still sync. Returns the buildable jobs and the count of accounts
+/// that failed to build, which the caller threads into the run's exit code.
+fn build_all_jobs(config: &Config, ovr: &SyncOverrides) -> (Vec<SyncJob>, usize) {
+    let mut jobs = Vec::new();
+    let mut run = AllRun::default();
+    for acct in &config.reddit {
+        match build_reddit_job(Some(acct), ovr, config) {
+            Ok(job) => jobs.push(job),
+            Err(e) => run.record(Err(e)),
+        }
+    }
+    for acct in &config.github {
+        match build_github_job(Some(acct), ovr, config) {
+            Ok(job) => jobs.push(job),
+            Err(e) => run.record(Err(e)),
+        }
+    }
+    for acct in &config.hackernews {
+        match build_hackernews_job(Some(acct), ovr, config) {
+            Ok(job) => jobs.push(job),
+            Err(e) => run.record(Err(e)),
+        }
+    }
+    (jobs, run.failed)
 }
 
 /// Build one job per account: every account when `all`, else the named (or first,
@@ -935,6 +962,7 @@ fn build_hackernews_job(
 /// merged, de-duplicated drafts to Pinboard sequentially (writes are rate-limited).
 async fn run_sync_jobs(
     jobs: Vec<SyncJob>,
+    prebuilt_failures: usize,
     pinboard: &PinboardClient,
     bookmarks: &[Bookmark],
     dry_run: bool,
@@ -958,7 +986,9 @@ async fn run_sync_jobs(
     }))
     .await;
 
-    let mut run = AllRun::default();
+    let mut run = AllRun {
+        failed: prebuilt_failures,
+    };
     let mut per_job: Vec<Vec<BookmarkDraft>> = Vec::new();
     for (job, result) in jobs.iter().zip(fetched) {
         match result {
@@ -1791,6 +1821,30 @@ mod tests {
         };
         let job = build_hackernews_job(None, &ovr, &Config::default()).expect("builds");
         assert_wired(&job);
+    }
+
+    /// `sync --all`'s build phase must isolate a per-account build failure so the
+    /// healthy accounts still yield jobs. Here a GitHub account with no resolvable
+    /// token (no inline token, no `token_file`, and no `GITHUB_TOKEN` in the test
+    /// environment) fails to build; it must be counted, not abort the whole run.
+    #[test]
+    fn build_all_jobs_isolates_a_failing_account() {
+        let config = Config {
+            reddit: vec![RedditAccount {
+                username: Some("alice".into()),
+                cookie: Some("reddit_session=x".into()),
+                ..Default::default()
+            }],
+            github: vec![GitHubAccount::default()],
+            ..Default::default()
+        };
+        let (jobs, prebuilt_failures) = build_all_jobs(&config, &SyncOverrides::default());
+        assert_eq!(jobs.len(), 1, "healthy reddit account still builds");
+        assert_eq!(jobs[0].label, "reddit[alice]");
+        assert!(
+            prebuilt_failures >= 1,
+            "the tokenless github account is counted, not aborted"
+        );
     }
 
     /// Parse `sync <extra>` (no source subcommand) and return the top-level command.

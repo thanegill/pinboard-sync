@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use log::warn;
+use log::{debug, warn};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
@@ -566,6 +566,17 @@ impl HackerNewsClient {
     }
 }
 
+/// The HN item id referenced by a note's `HN Link: <url>` back-link marker, if the note
+/// carries one whose URL is an HN item permalink. Sync writes this marker pointing at the
+/// bookmark's own discussion, so it identifies the true source item independently of the
+/// bookmark's URL.
+fn hn_link_marker_id(note: &str) -> Option<HackerNewsItemId> {
+    note.lines()
+        .find_map(|line| line.trim().strip_prefix("HN Link:"))
+        .and_then(|rest| Url::parse(rest.trim()).ok())
+        .and_then(|url| HackerNewsItemId::try_from(&url).ok())
+}
+
 /// Appends the `HN Link: <url>` back-link line to a note, skipping when the note already
 /// carries one. An empty note becomes the bare link.
 fn ensure_hn_link_note(note: &str, hn_link: &str) -> String {
@@ -591,8 +602,25 @@ struct HackerNewsCleanupPass<'a> {
 impl CleanupPass for HackerNewsCleanupPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
         // The pass is filtered to HN item URLs, so this matches.
-        let id = HackerNewsItemId::try_from(&bookmark.url).ok();
-        let Some(item) = id.and_then(|id| self.items.get(&id)) else {
+        let Ok(url_id) = HackerNewsItemId::try_from(&bookmark.url) else {
+            return Ok(None);
+        };
+        // A meta-post whose submitted article URL is itself an HN item permalink is
+        // stored AT that linked item's URL, but its note's `HN Link:` marker points at
+        // the meta-post's own discussion (a different id). Reading the URL as the item id
+        // would fetch and re-shape the *wrong* item (rewriting title/tags, and the URL if
+        // it's an external article), so leave such a bookmark untouched.
+        if let Some(marker_id) = hn_link_marker_id(&bookmark.note) {
+            if marker_id != url_id {
+                debug!(
+                    "cleanup HN: leaving {} unchanged; its note's HN Link marker \
+                     references item {marker_id}, not the URL's item {url_id} (meta-post)",
+                    bookmark.url
+                );
+                return Ok(None);
+            }
+        }
+        let Some(item) = self.items.get(&url_id) else {
             return Ok(None);
         };
         // Re-derive the bookmark from the fresh item (url/title/note/date), then preserve
@@ -1113,6 +1141,40 @@ mod tests {
             planned.note,
             "my note\n\nHN Link: https://news.ycombinator.com/item?id=42"
         );
+    }
+
+    #[tokio::test]
+    async fn plan_skips_meta_post_whose_url_is_a_different_hn_item() {
+        // A favorited meta-post: item 42 whose submitted article URL is itself an HN
+        // item permalink (item 999). Sync stored it AT item?id=999 with item 42's note
+        // carrying the `HN Link:` marker to item 42. Reading the URL as item 999 and
+        // re-shaping it would corrupt the bookmark as the wrong item, so cleanup must
+        // leave it unchanged rather than rewrite its url/title/tags.
+        let stored = Bookmark {
+            url: url("https://news.ycombinator.com/item?id=999"),
+            title: "Meta post".into(),
+            note: "HN Link: https://news.ycombinator.com/item?id=42".into(),
+            tags: vec!["hackernews".into()],
+            timestamp: None,
+            public: false,
+            read_later: false,
+        };
+        // The fetched item 999 is a *different* item (an external article) that a
+        // re-shape would rewrite the bookmark to.
+        let mut items = HashMap::new();
+        items.insert(
+            HackerNewsItemId::from(999u64),
+            item(json!({
+                "id": 999, "type": "story", "by": "somebody",
+                "title": "Unrelated article", "url": "https://elsewhere.example/a"
+            })),
+        );
+        let config = HackernewsConfig::default();
+        let pass = HackerNewsCleanupPass {
+            items,
+            config: &config,
+        };
+        assert!(pass.plan(&stored).await.unwrap().is_none());
     }
 
     #[tokio::test]

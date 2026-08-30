@@ -1421,6 +1421,33 @@ mod tests {
     }
 
     #[test]
+    fn merge_bookmarks_tag_union_is_case_sensitive() {
+        // Pinboard treats tags case-sensitively, so `Rust` and `rust` are two tags and the
+        // union must keep both. Folding them would silently drop one of the user's.
+        let mut first = bookmark("https://t/");
+        first.tags = vec!["Rust".into()];
+        let mut second = bookmark("https://t/");
+        second.tags = vec!["rust".into(), "Rust".into()];
+
+        assert_eq!(
+            merge_bookmarks(&[&first, &second]).tags,
+            vec!["Rust".to_string(), "rust".to_string()]
+        );
+    }
+
+    #[test]
+    fn merge_bookmarks_does_not_lead_an_empty_note_with_a_blank_line() {
+        // A survivor with no note contributes nothing to lead with, so the first real block
+        // must start the note rather than being pushed down by a separator.
+        let mut empty = bookmark("https://t/");
+        empty.note = String::new();
+        let mut has_note = bookmark("https://t/");
+        has_note.note = "only note".into();
+
+        assert_eq!(merge_bookmarks(&[&empty, &has_note]).note, "only note");
+    }
+
+    #[test]
     fn merge_bookmarks_applies_field_rules() {
         let ts_early = crate::timefmt::from_unix(1_000);
         let ts_late = crate::timefmt::from_unix(2_000);
@@ -1683,6 +1710,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_converged_check_uses_the_incumbents_stored_record_not_its_plan() {
+        // The guard asks "does the account already hold what this merge produces?", so it
+        // has to compare the *stored* record. Comparing the incumbent's plan instead makes
+        // the merge look converged the moment it equals its own plan — which it does by
+        // construction — and the incumbent's pending change is silently dropped.
+        let mut sitting = bookmark("https://collide/");
+        sitting.title = "stale".into();
+        let mover = bookmark("https://x/mover");
+        let other = bookmark("https://x/other");
+        let books = vec![sitting, mover, other];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            let target = match bookmark.url.as_str() {
+                // Keeps the mover's URL a target, so it can't be absorbed and `old_urls`
+                // stays empty — the only way to reach the guard.
+                "https://x/other" => "https://x/mover",
+                _ => "https://collide/",
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: u(target),
+                title: "fresh".into(),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.write_failed, 0);
+        let updated = pinboard.updated.borrow();
+        let merged = updated
+            .iter()
+            .find(|call| call.url == "https://collide/")
+            .expect("the incumbent's own change must still be written");
+        assert_eq!(merged.description, "fresh");
+    }
+
+    #[tokio::test]
     async fn a_converged_incumbent_merge_is_not_rewritten_every_run() {
         // The incumbent half of the converged-state guard. The bookmark at the target
         // already holds everything the merge produces, and the mover's old URL is another
@@ -1812,6 +1883,11 @@ mod tests {
         assert_eq!(
             (second_outcome.changed, second_outcome.write_failed),
             (2, 0)
+        );
+        assert_eq!(
+            *pinboard.all_calls.borrow(),
+            0,
+            "the run reads `posts/all` once, before the passes — never from inside one"
         );
         let ops = pinboard.ops.borrow();
         assert!(

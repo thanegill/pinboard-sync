@@ -412,6 +412,60 @@ mod write_outcome_tests {
     }
 
     #[tokio::test]
+    async fn a_merge_never_deletes_its_own_target() {
+        // The merged record is written to the target, so deleting that URL as "absorbed"
+        // would undo the write. Callers build `old_urls` excluding it, but this is a public
+        // default method and the guard is what makes it safe to call with anything.
+        let pinboard = FakePinboard::default();
+        let target = Url::parse("https://target/").unwrap();
+        let absorbed = Url::parse("https://absorbed/").unwrap();
+
+        let outcome = pinboard
+            .apply_merge(&at("https://target/"), &[&target, &absorbed])
+            .await;
+
+        assert!(outcome.error.is_none());
+        assert_eq!(outcome.deleted, vec![absorbed]);
+        assert_eq!(
+            *pinboard.deleted.borrow(),
+            vec!["https://absorbed/".to_string()],
+            "the target must not even be attempted"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_failed_delete_is_reported_even_though_one_error_is_returned() {
+        // Each absorbed URL fails for its own reason, and only the first is carried out to
+        // the caller — so the rest have to reach the log rather than vanishing.
+        let pinboard = FakePinboard {
+            fail_delete_urls: ["https://a/".to_string(), "https://b/".to_string()]
+                .into_iter()
+                .collect(),
+            ..FakePinboard::default()
+        };
+        let a = Url::parse("https://a/").unwrap();
+        let b = Url::parse("https://b/").unwrap();
+        let c = Url::parse("https://c/").unwrap();
+
+        let outcome = pinboard
+            .apply_merge(&at("https://target/"), &[&a, &b, &c])
+            .await;
+
+        assert!(outcome.wrote);
+        assert!(outcome.error.is_some(), "the caller still sees a failure");
+        assert_eq!(outcome.deleted, vec![c], "and the one that worked landed");
+        assert_eq!(
+            *pinboard.deleted.borrow(),
+            vec![
+                "https://a/".to_string(),
+                "https://b/".to_string(),
+                "https://c/".to_string()
+            ],
+            "every absorbed URL is still attempted"
+        );
+    }
+
+    #[tokio::test]
     async fn a_failed_delete_does_not_strand_the_remaining_absorbed_urls() {
         // Absorbed URLs are independent. Abandoning the rest on the first failure leaves
         // more duplicate records behind than necessary, and the caller still has to know
@@ -458,6 +512,30 @@ mod write_outcome_tests {
 mod cleanup_store_tests {
     use super::*;
     use crate::test_support::FakePinboard;
+
+    #[tokio::test]
+    async fn all_answers_from_the_view_without_fetching() {
+        // `posts/all` is rate-limited to one call per five minutes, so a second one inside
+        // a run would fail it. The store answers from the view it already has — and that
+        // view reflects this run's writes, which a re-fetch would not.
+        let pinboard = FakePinboard::default();
+        let store = CleanupStore::new(
+            &pinboard,
+            AccountView::new(vec![at("https://a/", "seed")]),
+            false,
+        );
+        store.update(&at("https://a/", "written")).await.unwrap();
+
+        let all = store.all().await.unwrap();
+
+        assert_eq!(
+            *pinboard.all_calls.borrow(),
+            0,
+            "must not reach the network"
+        );
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].note, "written", "and must reflect this run's writes");
+    }
 
     fn at(url: &str, note: &str) -> Bookmark {
         Bookmark {
@@ -651,6 +729,21 @@ mod tests {
             public: false,
             read_later: false,
         }
+    }
+
+    #[test]
+    fn diff_compares_timestamps_by_instant_not_by_rendering() {
+        // The same moment written in two zones renders differently but is not a change;
+        // treating it as one would rewrite the bookmark every run.
+        let mut stored = bookmark();
+        stored.timestamp = crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z");
+        let mut plan = stored.clone();
+        plan.timestamp = crate::timefmt::parse_rfc3339("2020-01-01T01:00:00+01:00");
+        assert_eq!(stored.timestamp, plan.timestamp);
+        assert!(
+            stored.diff(&plan).is_empty(),
+            "an equivalent time in another offset is not a change"
+        );
     }
 
     #[test]

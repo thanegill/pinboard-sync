@@ -434,9 +434,11 @@ mod write_outcome_tests {
     }
 
     #[tokio::test]
-    async fn every_failed_delete_is_reported_even_though_one_error_is_returned() {
-        // Each absorbed URL fails for its own reason, and only the first is carried out to
-        // the caller — so the rest have to reach the log rather than vanishing.
+    async fn a_merge_returns_the_first_delete_error_and_still_tries_the_rest() {
+        // Only one error can be carried out to the caller, and it is the *first* — later
+        // ones are logged instead. Asserting which one it is matters: the caller reports it
+        // verbatim, so keeping the last would name a different URL than the one that first
+        // went wrong.
         let pinboard = FakePinboard {
             fail_delete_urls: ["https://a/".to_string(), "https://b/".to_string()]
                 .into_iter()
@@ -452,7 +454,11 @@ mod write_outcome_tests {
             .await;
 
         assert!(outcome.wrote);
-        assert!(outcome.error.is_some(), "the caller still sees a failure");
+        let reported = outcome.error.expect("the caller still sees a failure");
+        assert!(
+            format!("{reported:#}").contains("https://a/"),
+            "the first failure is the one reported, not the last: {reported:#}"
+        );
         assert_eq!(outcome.deleted, vec![c], "and the one that worked landed");
         assert_eq!(
             *pinboard.deleted.borrow(),

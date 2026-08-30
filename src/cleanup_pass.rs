@@ -100,14 +100,17 @@ pub trait CleanupPass {
 pub struct PassOutcome {
     /// Bookmarks written, or under `dry_run` that would be.
     pub changed: usize,
-    /// Under `dry_run`, the preview exactly as printed. Kept rather than only written to
-    /// stdout so it can be asserted on: a preview is the one thing an operator reads before
-    /// letting this tool loose on their account, and while it was a bare `println!` the
-    /// whole of it could be deleted with every test still green.
+    /// Under `dry_run`, the per-bookmark preview lines as printed (not the closing tally).
+    /// Kept rather than only written to stdout so it can be asserted on: a preview is the
+    /// one thing an operator reads before letting this tool loose on their account, and
+    /// while it was a bare `println!` the whole of it could be deleted with every test
+    /// still green.
     pub preview: Vec<String>,
-    /// Rewrites this pass declined to make: either the target must not be written at all
-    /// (see [`Refusal`]) or a single plan was held back because its visibility disagreed
-    /// with the record staying there. Not a failure — leaving them alone is the safe
+    /// Rewrites this pass declined to make: the target must not be written at all (see
+    /// [`Refusal`]), or a plan was held back over visibility — because it disagreed with
+    /// the record staying at its target, or because nothing is staying there and the plans
+    /// heading for it disagreed with each other, in which case every one of them is held
+    /// back. Not a failure — leaving them alone is the safe
     /// outcome — but it is work that did not happen, so it is reported rather than only
     /// logged per-item.
     ///
@@ -374,11 +377,6 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         .map(|(original, _)| &original.url)
         .collect();
 
-    // Every group's target URL. A rewrite's old URL is never deleted when it is one of
-    // these, because some other planned write owns that URL; deleting it would clobber
-    // that write's record. This keeps the pass order-independent.
-    let targets: std::collections::HashSet<&url::Url> = group_order.iter().copied().collect();
-
     // Resolve every group's resident once, before any write. A resident is a record the
     // live view holds at a group's target that this pass neither planned (a bookmark is
     // never a resident of its own plan — merging with itself would resurrect what the plan
@@ -478,6 +476,17 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             .entry(mover)
             .or_insert(Refusal::OccupiedByRefused);
     }
+
+    // The URLs a planned write still owns. A rewrite's old URL is never deleted when it is
+    // one of these, because that write's record will live there and deleting it would
+    // clobber it. Settled *after* the visibility partition: a group every member was held
+    // back from owns nothing, and leaving its key here would strand a bookmark moving away
+    // from that URL at both its old and new URL, silently and for good.
+    let targets: std::collections::HashSet<&url::Url> = group_order
+        .iter()
+        .filter(|key| !groups[*key].is_empty())
+        .copied()
+        .collect();
 
     // A group whose target is occupied won't move, so its *own* URL stays occupied too —
     // and a second group heading there would replace the record the refusal just saved.
@@ -671,9 +680,6 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
                 let absorbed: Vec<String> = write.deleted.iter().map(|u| u.to_string()).collect();
                 debug!("merged {target} <- [{}]", absorbed.join(" "));
             }
-            // A merge can half-apply: the record is written and an absorbed URL survives.
-            // Say which, because "updating {target} failed" would send the operator after
-            // a record that is actually fine.
             // Half-applied: the merged record landed and an absorbed URL survived. Count
             // the change, exactly as the rewrite path does — the account did change — and
             // name what is actually wrong, since "merging into {target} failed" would send
@@ -2989,6 +2995,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_group_emptied_by_a_refusal_no_longer_protects_its_url() {
+        // The delete-guard exists because "some other planned write owns that URL". When a
+        // refusal empties a group, nobody owns its target any more — so a bookmark moving
+        // away from that URL must delete its old record. Leaving the guard in place strands
+        // the bookmark at both URLs, silently and for good: the next run refuses the same
+        // pair, protects the same URL, and finds the copy already converged.
+        let mut leaving = bookmark("https://t/");
+        leaving.public = false;
+        let mut public_peer = bookmark("https://a/");
+        public_peer.public = true;
+        let mut private_peer = bookmark("https://b/");
+        private_peer.public = false;
+        let books = vec![leaving, public_peer, private_peer];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            let target = match bookmark.url.as_str() {
+                "https://t/" => "https://u/",
+                _ => "https://t/",
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: u(target),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.refused, 2, "the disagreeing peers stay put");
+        assert_eq!(
+            *pinboard.deleted.borrow(),
+            vec!["https://t/".to_string()],
+            "and the bookmark that did move must not be left behind at its old URL"
+        );
+    }
+
+    #[tokio::test]
     async fn colliding_peers_that_disagree_are_all_refused() {
         // Neither member is stored at the target: both normalize to a brand-new URL, so
         // there is no record whose visibility the others should defer to. Merging anyway
@@ -3060,8 +3109,14 @@ mod tests {
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].url, "https://new/");
-        assert!(updated[0].shared);
-        assert_eq!(updated[0].extended, "from A\n\nfrom B");
+        assert!(
+            updated[0].shared,
+            "agreeing peers keep the visibility they share"
+        );
+        // Both notes survive. *Which leads* is first-appearance order in the slice, which
+        // the user has no way to see or control, so it is not something to pin here.
+        assert!(updated[0].extended.contains("from A"));
+        assert!(updated[0].extended.contains("from B"));
         assert_eq!(pinboard.deleted.borrow().len(), 2);
     }
 
@@ -3196,6 +3251,39 @@ mod tests {
                 "          public-> false",
                 "          toread-> false",
                 "          absorb https://mover/",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_previews_a_refused_target() {
+        // The other refusal branch: the whole group is refused because its target holds a
+        // record the pass couldn't read. Rendered against the *target*, where the mismatch
+        // branch renders against the mover — two call sites, and only one had a test.
+        let books = vec![bookmark("https://mover/"), bookmark("https://unreadable/")];
+        let pass = FakePass(|bookmark: &Bookmark| match bookmark.url.as_str() {
+            "https://unreadable/" => Err(item_error()),
+            _ => Ok(Plan::Bookmark(Bookmark {
+                url: u("https://unreadable/"),
+                ..unchanged_plan(bookmark)
+            })),
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, true),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.refused, 1);
+        assert_eq!(
+            outcome.preview,
+            vec![
+                "[dry-run] https://unreadable/",
+                "          (refused: occupied by a bookmark this pass could not read)",
             ]
         );
     }

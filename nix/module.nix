@@ -73,7 +73,10 @@ let
   # `%d` in the `<VAR>_FILE` values expands to the unit's credentials directory
   # ($CREDENTIALS_DIRECTORY), a private tmpfs the DynamicUser can read even though it
   # can't read the root-owned source path directly.
-  mkService = description: schedule: args: {
+  #
+  # `extraServiceConfig` is merged over the hardening last, so a unit that needs more
+  # (the backup timer's `StateDirectory`) adds it without reaching around the factory.
+  mkService = { description, schedule, args, extraServiceConfig ? { } }: {
     inherit description;
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
@@ -103,7 +106,7 @@ let
       EnvironmentFile = cfg.environmentFile;
     } // lib.optionalAttrs (setCredentialFiles != [ ]) {
       LoadCredential = map (c: "${c.credential}:${toString cfg.${c.option}}") setCredentialFiles;
-    };
+    } // extraServiceConfig;
   };
 in
 {
@@ -311,23 +314,28 @@ in
     # needed; `--all` runs every account left in the generated config (disabled
     # accounts were pruned above).
     systemd.services.pinboard-sync =
-      lib.mkIf cfg.sync.enable (
-        mkService "Sync saved/favorited items to Pinboard" cfg.sync.schedule [ "sync" "--all" ]
-      );
+      lib.mkIf cfg.sync.enable (mkService {
+        description = "Sync saved/favorited items to Pinboard";
+        schedule = cfg.sync.schedule;
+        args = [ "sync" "--all" ];
+      });
 
     systemd.services.pinboard-sync-cleanup =
-      lib.mkIf cfg.cleanup.enable (
-        mkService "Normalize existing Pinboard bookmarks" cfg.cleanup.schedule [ "cleanup" "--all" ]
-      );
+      lib.mkIf cfg.cleanup.enable (mkService {
+        description = "Normalize existing Pinboard bookmarks";
+        schedule = cfg.cleanup.schedule;
+        args = [ "cleanup" "--all" ];
+      });
 
     # `StateDirectory` gives the hardened service its one writable location
     # (`/var/lib/pinboard-sync`), which `backup.path` is asserted to live under.
     systemd.services.pinboard-sync-backup =
-      lib.mkIf cfg.backup.enable (
-        lib.recursiveUpdate
-          (mkService "Back up all Pinboard bookmarks" cfg.backup.schedule [ "backup" cfg.backup.path ])
-          { serviceConfig.StateDirectory = "pinboard-sync"; }
-      );
+      lib.mkIf cfg.backup.enable (mkService {
+        description = "Back up all Pinboard bookmarks";
+        schedule = cfg.backup.schedule;
+        args = [ "backup" cfg.backup.path ];
+        extraServiceConfig.StateDirectory = "pinboard-sync";
+      });
 
     # Fire a missed run on next boot (the machine may be asleep/off at the scheduled
     # instant — especially for the weekly cleanup).

@@ -42,6 +42,17 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **A GitHub rate limit is now recognised as one, and stops the pass instead of being
+  spent one bookmark at a time.** GitHub answers both its primary and secondary rate
+  limits with a `403` or `429` — the same statuses a permission denial uses — so this
+  previously surfaced as `github repo returned 403 Forbidden: {…}` once per bookmark,
+  reading like a token problem. It is now identified by its headers
+  (`x-ratelimit-remaining: 0`, or a `retry-after`) and reported with the reset instant:
+  `GitHub rate limit exhausted; it resets at 2026-08-30T15:00:00Z`. Since every remaining
+  lookup would fail identically, `cleanup` stops there rather than spending a doomed
+  request per bookmark — still writing the bookmarks it had already planned, and still
+  exiting non-zero. No `--on-auth-failure` hook fires: waiting, not a new credential, is
+  what clears a quota.
 - **`cleanup` no longer fails the whole run because one bookmark could not be looked
   up.** A per-item lookup failure is logged and skipped, every other bookmark is still
   cleaned up, and the run exits zero. Previously any single failure made the run exit

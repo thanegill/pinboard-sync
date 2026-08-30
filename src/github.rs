@@ -814,6 +814,92 @@ mod net_tests {
     use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    /// End to end: a rate limit part-way through stops the pass rather than spending a
+    /// doomed request on every remaining bookmark, while keeping the work already done.
+    #[tokio::test]
+    async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
+        use crate::pinboard::PinboardBookmark;
+        use crate::test_support::FakePinboard;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/old/name"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "full_name": "new/name",
+                "html_url": "https://github.com/new/name",
+                "description": "Still here",
+                "language": "Rust"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/limited/repo"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .insert_header("x-ratelimit-remaining", "0")
+                    .insert_header("x-ratelimit-reset", "1788102000")
+                    .set_body_string(r#"{"message":"API rate limit exceeded"}"#),
+            )
+            .mount(&server)
+            .await;
+        // The point of the test: this one must never be requested. An unmounted path
+        // would not prove it — wiremock answers those with a 404, which `repo()` reads as
+        // a deleted repo and skips silently — so assert zero calls explicitly. The
+        // expectation is checked when the server drops.
+        Mock::given(method("GET"))
+            .and(path("/repos/never/looked"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let stored = |url: &str, title: &str| {
+            PinboardBookmark {
+                url: url.into(),
+                description: title.into(),
+                extended: "notes".into(),
+                tags: "github-star".into(),
+                time: "2020-01-01T00:00:00Z".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }
+            .try_into()
+            .unwrap()
+        };
+        let pinboard = FakePinboard {
+            all: vec![
+                stored("https://github.com/old/name", "old/name"),
+                stored("https://github.com/limited/repo", "limited/repo"),
+                stored("https://github.com/never/looked", "never/looked"),
+            ],
+            ..Default::default()
+        };
+        let bookmarks = pinboard.all.clone();
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+
+        let err = cleanup(
+            &pinboard,
+            &client,
+            &GitHubConfig::default(),
+            &GitHubCleanupOpts {
+                dry_run: false,
+                use_post_date: false,
+                max_age_days: 30,
+                cleanup_stale_to_now: false,
+            },
+            &bookmarks,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("rate limit"), "{err}");
+        // The repo read before the limit is still rewritten — the work isn't thrown away.
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://github.com/new/name");
+    }
+
     /// GitHub answers an exhausted primary quota with 403 (not 429) and
     /// `x-ratelimit-remaining: 0`. That must not read as a permission problem.
     #[tokio::test]

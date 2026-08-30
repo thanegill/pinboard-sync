@@ -11,7 +11,9 @@
 //! disagrees with it about visibility does not join: that one is refused and left where it
 //! is, while the rest of the group merges. The exception is a bookmark that is itself
 //! planned to move *away* from the target — it is not what stays there, so it neither leads
-//! the merge nor blocks it; its own plan is what preserves it. A rewrite's old URL is never
+//! the merge nor blocks it; its own plan is what preserves it. With no record staying at a
+//! target, the plans must still agree with each other about `public`, or none of them
+//! writes — a merge never picks a visibility. A rewrite's old URL is never
 //! deleted when it is itself the target of another planned write in the same pass, so
 //! colliding/chained rewrites can't clobber each other's record. Every refusal decided
 //! before the first write is closed under [`propagate_refusals`], which makes that much
@@ -98,9 +100,11 @@ pub trait CleanupPass {
 pub struct PassOutcome {
     /// Bookmarks written, or under `dry_run` that would be.
     pub changed: usize,
-    /// Abandoned rewrites, because their target must not be written — see [`Refusal`] for
-    /// the reasons. Not a failure — leaving them alone is the safe outcome — but it is work
-    /// that did not happen, so it is reported rather than only logged per-item.
+    /// Rewrites this pass declined to make: either the target must not be written at all
+    /// (see [`Refusal`]) or a single plan was held back because its visibility disagreed
+    /// with the record staying there. Not a failure — leaving them alone is the safe
+    /// outcome — but it is work that did not happen, so it is reported rather than only
+    /// logged per-item.
     ///
     /// Counted per *group* when the target itself is untouchable (one refusal however many
     /// bookmarks were heading there) and per *plan* when a single member is held back over
@@ -393,26 +397,36 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     // would let one mismatched duplicate freeze an unrelated bookmark's cleanup for good.
     // Settled here, ahead of the fixpoint, because a refused mover keeps its own URL
     // occupied exactly like a group refused for an unreadable target.
-    let mut refused_movers: Vec<(url::Url, &url::Url, bool, bool)> = Vec::new();
+    let mut refused_movers: Vec<(url::Url, &url::Url, bool, Option<bool>)> = Vec::new();
     for key in &group_order {
         if untouchable.contains_key(*key) {
             continue;
         }
         let members = &groups[key];
-        let staying = match residents.get(key) {
-            Some(resident) => resident.public,
-            None => match incumbent_of(members, key) {
-                Some(at) => members[at].1.public,
-                // Nothing is stored at this target, so there is no visibility to match and
-                // the plans merge as peers.
-                None => continue,
-            },
+        // What the joining plans have to agree with. A record that stays at the target sets
+        // it. With none — a target nothing occupies, or one whose occupant is itself moving
+        // away — there is nothing to defer to, so the plans need only agree with *each
+        // other*; when they don't, no member may write, because merging would then pick a
+        // visibility on the user's behalf with nothing to justify the choice.
+        let staying = residents
+            .get(key)
+            .map(|resident| resident.public)
+            .or_else(|| incumbent_of(members, key).map(|at| members[at].1.public));
+        let agreed = match staying {
+            Some(public) => Some(public),
+            None => members
+                .first()
+                .map(|(_, planned)| planned.public)
+                .filter(|first| members.iter().all(|(_, p)| p.public == *first)),
         };
         let members = groups.get_mut(key).expect("key came from group_order");
-        let (kept, refused): (Vec<_>, Vec<_>) = members
-            .iter()
-            .copied()
-            .partition(|(_, planned)| planned.public == staying);
+        let (kept, refused): (Vec<_>, Vec<_>) = match agreed {
+            Some(public) => members
+                .iter()
+                .copied()
+                .partition(|(_, planned)| planned.public == public),
+            None => (Vec::new(), members.clone()),
+        };
         if refused.is_empty() {
             continue;
         }
@@ -426,17 +440,29 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     for (mover, target, mover_public, staying) in refused_movers {
         outcome.refused += 1;
         let describe = |public| if public { "public" } else { "private" };
-        warn!(
-            "not merging {mover} into {target}: it is {}, but {target} is {}",
-            describe(mover_public),
-            describe(staying)
-        );
+        match staying {
+            Some(staying) => warn!(
+                "not merging {mover} into {target}: it is {}, but {target} is {}",
+                describe(mover_public),
+                describe(staying)
+            ),
+            None => warn!(
+                "not merging {mover} into {target}: the bookmarks moving there disagree \
+                 about whether it should be public, and nothing is stored at {target} to \
+                 settle it"
+            ),
+        }
         if dry_run {
             println!("[dry-run] {mover}");
-            println!(
-                "          (refused: would merge into {target}, which is {})",
-                describe(staying)
-            );
+            let reason = match staying {
+                Some(staying) => {
+                    format!("would merge into {target}, which is {}", describe(staying))
+                }
+                None => format!(
+                    "would merge into {target} with bookmarks that disagree about visibility"
+                ),
+            };
+            println!("          (refused: {reason})");
         }
         // The mover didn't move, so its own URL is still occupied and no other rewrite may
         // land there.
@@ -2651,13 +2677,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn colliding_new_url_privacy_never_widened() {
-        // Neither member is resident at the target: both normalize to a brand-new URL, so
-        // the pass has no resident to inherit privacy from. The first in order is public and
-        // the second private; privacy must be the AND across the group (private wins), not
-        // the first member's, so the private member's content is never republished public.
+    async fn colliding_peers_that_disagree_are_all_refused() {
+        // Neither member is stored at the target: both normalize to a brand-new URL, so
+        // there is no record whose visibility the others should defer to. Merging anyway
+        // would have to pick one — and picking the private one silently unshares a bookmark
+        // the user chose to share, then deletes it. With nothing to prefer, none of them
+        // may write.
         let mut stored_a = bookmark("https://old-a/");
         stored_a.public = true;
+        stored_a.note = "public note".into();
         let mut stored_b = bookmark("https://old-b/");
         stored_b.public = false;
         let books = vec![stored_a, stored_b];
@@ -2679,12 +2707,50 @@ mod tests {
         )
         .await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
+        assert_eq!(outcome.refused, 2, "neither peer may write");
+        assert!(pinboard.updated.borrow().is_empty());
+        assert!(
+            pinboard.deleted.borrow().is_empty(),
+            "and neither is absorbed — the public one must not vanish"
+        );
+    }
 
+    #[tokio::test]
+    async fn colliding_peers_that_agree_still_merge() {
+        // The mirror: peers that agree have nothing to arbitrate, so the merge runs exactly
+        // as before. Without this, refusing on disagreement could be over-applied and no
+        // test would notice.
+        let mut stored_a = bookmark("https://old-a/");
+        stored_a.public = true;
+        stored_a.note = "from A".into();
+        let mut stored_b = bookmark("https://old-b/");
+        stored_b.public = true;
+        stored_b.note = "from B".into();
+        let books = vec![stored_a, stored_b];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                url: u("https://new/"),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.refused, 0);
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].url, "https://new/");
-        // The public member sorts first, but the private member keeps the merge private.
-        assert!(!updated[0].shared);
+        assert!(updated[0].shared);
+        assert_eq!(updated[0].extended, "from A\n\nfrom B");
+        assert_eq!(pinboard.deleted.borrow().len(), 2);
     }
 
     #[tokio::test]

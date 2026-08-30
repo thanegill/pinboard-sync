@@ -75,7 +75,8 @@ All notable changes to this project are documented here. The format is based on
   and its title, date and to-read state survive — it is the record that stays at that URL.
   (Its title survives if it has one, and its date if that date parsed; an absorbed
   bookmark's `to-read` flag is discarded rather than OR'd in, so a merge can never set
-  to-read on a record the user had already cleared.) So the article keeps the user's title, notes and tags, gains the generated
+  to-read on a record the user had already cleared — that last one only when a record
+  *is* staying; bookmarks colliding onto a fresh URL still OR it.) So the article keeps the user's title, notes and tags, gains the generated
   `HN Link:` line and HN tags, and the now-redundant HN item bookmark is absorbed —
   one record, nothing lost, and the pass converges. Nothing changes when the article is
   not separately bookmarked: the usual rewrite still happens.
@@ -96,7 +97,11 @@ All notable changes to this project are documented here. The format is based on
   their notes into one record, so it would have to either publish a private annotation or
   unshare a bookmark the user chose to share, and neither is this tool's call to make.
   Only the disagreeing bookmark is held back — the record it was heading for still gets its
-  own cleanup, and any other bookmarks merging in still merge. A refusal protects the held-
+  own cleanup, and any other bookmarks merging in still merge. When *nothing* is stored at
+  the target there is no record to defer to, so the bookmarks moving there must agree with
+  each other instead, and if they don't, none of them is written. Previously a public
+  bookmark colliding with a private one onto a fresh URL was merged into a private record
+  and then deleted — silently unshared, with the run reporting success. A refusal protects the held-
   back bookmark's own URL as well, so a second rewrite heading there can't overwrite the
   record the refusal just preserved. The same now applies when a rewrite *fails*: the
   record stranded at its old URL is marked occupied and the refusal is re-propagated, where

@@ -85,7 +85,10 @@ exclusive by construction (a bookmark is excluded from its own plan's residency,
 merge its stored record back in and resurrect what the plan removed). Whichever it is goes
 first, so its title, note and tag order are the base the others extend, and its `read_later`
 and `timestamp` are restored afterwards — `merge_bookmarks`'s any()/earliest rules are meant
-for peers, so without that a merge would re-date a bookmark even with dating off. For an
+for peers, so without that a merge would re-date a bookmark even with dating off. The date
+restore falls back to the merge's earliest when the survivor's own is `None` (absent or
+unparseable on read), since writing `None` omits `dt` and lets `replace=yes` re-date the
+record to today. For an
 incumbent it is the *plan* that leads and the *plan's* state that is restored, since the plan
 is this pass's intended end-state for that record. **Resident and incumbent get identical
 treatment on purpose**: whether the occupant happens to fall inside the pass's own slice is
@@ -93,12 +96,18 @@ an implementation detail the user cannot see, and it decided whether their bookm
 protected. A GitHub rename where both names are starred goes down the incumbent path, and
 that is the common case, not the rare one.
 
-Two targets have no record that stays, and both fall back to `merge_bookmarks`'s raw peer
-rules (`public` if all, `read_later` if any, earliest date): a URL nothing occupies, and one
-whose occupant is itself planned to move *away*. The second is safe only because that
-occupant's own plan writes it to its new URL — and if that write is refused the fixpoint
-refuses the group heading here too, while if it *fails* the write loop marks the URL occupied
-and re-closes the refusal set. Nothing else protects it, so don't remove any of the three.
+Two targets have no record that stays, and both fall back to `merge_bookmarks`'s peer rules
+for `read_later` (if any) and the date (earliest): a URL nothing occupies, and one whose
+occupant is itself planned to move *away*. The second is safe only because that occupant's
+own plan writes it to its new URL — and if that write is refused the fixpoint refuses the
+group heading here too, while if it *fails* the write loop marks the URL occupied and
+re-closes the refusal set. Nothing else protects it, so don't remove any of the three.
+
+**`public` is the exception: peers must agree, or none of them writes.** There is no record
+to defer to, so `merge_bookmarks`'s all()-rule would be the tool picking a visibility with
+nothing to justify the choice — and picking "private" silently unshares a bookmark the user
+chose to share and then deletes it. The rule is therefore uniform: a merge never decides
+visibility, whether the target holds a record or not.
 
 Targets can be `untouchable`: nothing is written there, the rewrite is refused and
 counted in `PassOutcome::refused`. A target the pass **could not read** — a failed lookup, or
@@ -113,9 +122,12 @@ still marked occupied, though, so a third bookmark rewriting onto it is refused 
 
 Every refusal propagates — whatever didn't move keeps its own URL occupied — through
 `propagate_refusals`, a fixpoint because each refusal can occupy the URL that refuses the
-next. **Call it after anything that strands a record, not just before the first write.** It
-runs once up front, which is what makes pre-write refusals order-independent (and why the
-visibility check runs before it), and again after every failed write. Propagating a failure
+next. **Call it after any failure that leaves a record stranded at a URL another group could
+target** — not after every error: a *half-applied* write (the record landed, a delete failed)
+strands nothing, because the record is at its new URL and the old one is gone or is a URL no
+plan may write. It runs once up front, which is what makes pre-write refusals
+order-independent (and why the visibility check runs before it), and again after a write that
+did not land. Propagating a failure
 is not optional politeness: refusing a group without closing over *its* members strands them
 in turn, so protecting one record costs several. A write failure is still order-dependent in
 one respect — groups already written can't be recalled — which is why it stays a failure

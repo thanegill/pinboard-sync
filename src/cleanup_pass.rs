@@ -579,8 +579,9 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
 
 /// Field-merge the PLANNED bookmarks of a collision group (all sharing `url`, given in
 /// stable order) into one bookmark. Tags are an order-preserving union (first occurrence
-/// wins, case-sensitive); notes are the distinct non-empty notes joined by a blank line;
-/// title is the first non-empty; timestamp the earliest present. Privacy never widens:
+/// wins, case-sensitive); the note is the first member's verbatim, extended with whichever
+/// blank-line-separated blocks of the later members it doesn't already hold; title is the
+/// first non-empty; timestamp the earliest present. Privacy never widens:
 /// the merge is `public` only if every merged member is public (a single private member
 /// keeps it private), and `read_later` if any member is, so a merge can never republish a
 /// private bookmark as public.
@@ -596,19 +597,28 @@ fn merge_bookmarks(group: &[&Bookmark]) -> Bookmark {
         }
     }
 
-    // Dedup by the blank-line-separated blocks this join produces, not by whole note, so
-    // that re-merging an already-merged note is a no-op. Comparing whole notes let "R"
-    // plus "M" become "R\n\nM", which on the next run no longer equals "M" and grew to
-    // "R\n\nM\n\nM" — unbounded for any group whose old URL is never absorbed.
-    let mut notes: Vec<&str> = Vec::new();
-    for b in group {
+    // The first member's note is the base, carried byte for byte: it is the record that
+    // stays, and its spacing is the user's. Later members contribute only the
+    // blank-line-separated blocks the base doesn't already have. Blocks are compared
+    // trimmed so re-merging an already-merged note is a no-op even when the base ends in a
+    // newline, which otherwise re-splits as a block the plain comparison can't recognise —
+    // and any group whose old URL is never absorbed re-merges every run.
+    let mut note = group[0].note.clone();
+    for b in &group[1..] {
         for block in b.note.split("\n\n") {
-            if !block.is_empty() && !notes.contains(&block) {
-                notes.push(block);
+            let candidate = block.trim();
+            if candidate.is_empty() || note.split("\n\n").any(|have| have.trim() == candidate) {
+                continue;
             }
+            if !note.is_empty() {
+                note.push_str("\n\n");
+            }
+            // The raw block, not the trimmed candidate: its indentation is the user's
+            // writing (a 4-space Markdown code block, say), and Pinboard renders the note
+            // as markup. Only the *comparison* trims.
+            note.push_str(block);
         }
     }
-    let note = notes.join("\n\n");
 
     let title = group
         .iter()
@@ -1149,6 +1159,59 @@ mod tests {
         // Second run: the resident now holds the merged note, the mover still holds "M".
         let twice = merge_bookmarks(&[&once, &mover]);
         assert_eq!(twice.note, "R\n\nM", "the note must not grow on re-merge");
+    }
+
+    #[test]
+    fn merge_bookmarks_keeps_the_first_note_byte_for_byte() {
+        // The first member is the record that stays, so its note is carried verbatim: a
+        // hand-written note's own spacing is the user's, not ours to normalize. Splitting
+        // it into blocks and rejoining them collapsed a deliberate run of blank lines and
+        // dropped its trailing whitespace.
+        let mut resident = bookmark("https://t/");
+        resident.note = "one\n\n\n\ntwo  ".into();
+        let mut mover = bookmark("https://t/");
+        mover.note = "three".into();
+
+        let once = merge_bookmarks(&[&resident, &mover]);
+        assert_eq!(once.note, "one\n\n\n\ntwo  \n\nthree");
+
+        // And re-merging that unusual shape still has to settle, or the note grows every
+        // run for any group whose old URL is never absorbed.
+        let twice = merge_bookmarks(&[&once, &mover]);
+        assert_eq!(twice.note, once.note, "the note must not grow on re-merge");
+    }
+
+    #[test]
+    fn merge_bookmarks_keeps_a_later_members_block_verbatim() {
+        // Carrying the first member's note byte for byte is only half of it: an absorbed
+        // member's blocks are the user's writing too. Comparing them trimmed is what makes
+        // re-merging settle, but appending them trimmed dedents a Markdown code block —
+        // Pinboard renders notes as markup, so that changes what the note says.
+        let mut resident = bookmark("https://t/");
+        resident.note = "A".into();
+        let mut mover = bookmark("https://t/");
+        mover.note = "    let x = 1;\n    let y = 2;".into();
+
+        let once = merge_bookmarks(&[&resident, &mover]);
+        assert_eq!(once.note, "A\n\n    let x = 1;\n    let y = 2;");
+        let twice = merge_bookmarks(&[&once, &mover]);
+        assert_eq!(twice.note, once.note, "the note must not grow on re-merge");
+    }
+
+    #[test]
+    fn merge_bookmarks_settles_when_a_note_ends_in_a_newline() {
+        // A base ending in a newline puts three newlines before the appended block, which
+        // splits as a block with a leading newline rather than the block itself. Comparing
+        // blocks trimmed is what keeps that from re-appending forever.
+        let mut resident = bookmark("https://t/");
+        resident.note = "base\n".into();
+        let mut mover = bookmark("https://t/");
+        mover.note = "extra".into();
+
+        let once = merge_bookmarks(&[&resident, &mover]);
+        assert_eq!(once.note, "base\n\n\nextra");
+        let twice = merge_bookmarks(&[&once, &mover]);
+        assert_eq!(twice.note, once.note, "the note must not grow on re-merge");
     }
 
     #[test]

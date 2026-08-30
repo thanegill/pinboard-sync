@@ -11,9 +11,12 @@
 //! disagrees with it about visibility does not join: that one is refused and left where it
 //! is, while the rest of the group merges. The exception is a bookmark that is itself
 //! planned to move *away* from the target — it is not what stays there, so it neither leads
-//! the merge nor blocks it; its own plan is what preserves it. A rewrite's old URL is never deleted when it is
-//! itself the target of another planned write in the same pass, so colliding/chained
-//! rewrites can't clobber each other's record and the pass is order-independent.
+//! the merge nor blocks it; its own plan is what preserves it. A rewrite's old URL is never
+//! deleted when it is itself the target of another planned write in the same pass, so
+//! colliding/chained rewrites can't clobber each other's record. Every refusal decided
+//! before the first write is closed under [`propagate_refusals`], which makes that much
+//! order-independent; a write that *fails* re-closes it too, but only over the groups not
+//! yet written, so a failed run is the one case where order shows.
 //! `run_pass` renders the dry-run lines and tallies into a [`PassOutcome`], which decides
 //! on its own whether the run failed — see [`PassOutcome::into_result`].
 
@@ -137,6 +140,10 @@ enum Refusal {
     /// the mover stayed is logged where it is actionable, at the point of refusal, and what
     /// the *next* group needs to know is only that the URL is still taken.
     OccupiedByRefused,
+    /// The target holds a bookmark whose own rewrite was attempted and *failed*, so it is
+    /// still there. Distinct from [`Refusal::OccupiedByRefused`] because the operator's
+    /// problem is different: something is wrong with the writes, not with the plan.
+    WriteFailed,
 }
 
 impl Refusal {
@@ -144,6 +151,7 @@ impl Refusal {
         match self {
             Refusal::Unreadable => "occupied by a bookmark this pass could not read",
             Refusal::OccupiedByRefused => "occupied by a rewrite that was itself refused",
+            Refusal::WriteFailed => "occupied by a bookmark whose own rewrite failed",
         }
     }
 }
@@ -435,29 +443,11 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
 
     // A group whose target is occupied won't move, so its *own* URL stays occupied too —
     // and a second group heading there would replace the record the refusal just saved.
-    // Settled before any write so the outcome doesn't depend on group order, and iterated
-    // to a fixpoint because each refusal can occupy the URL that refuses the next.
-    loop {
-        let newly_occupied: Vec<url::Url> = group_order
-            .iter()
-            .filter(|key| untouchable.contains_key(**key))
-            .filter_map(|key| groups.get(*key))
-            .flatten()
-            .map(|(original, _)| original.url.clone())
-            .filter(|url| !untouchable.contains_key(url))
-            .collect();
-        if newly_occupied.is_empty() {
-            break;
-        }
-        untouchable.extend(
-            newly_occupied
-                .into_iter()
-                .map(|url| (url, Refusal::OccupiedByRefused)),
-        );
-    }
+    // Settled before any write so the outcome doesn't depend on group order.
+    propagate_refusals(&group_order, &groups, &mut untouchable);
 
-    for key in group_order {
-        let group = groups.remove(key).expect("key came from group_order");
+    for key in &group_order {
+        let group = groups.remove(*key).expect("key came from group_order");
         // The target must not be written, so leave the rewriting bookmark(s) at their old
         // URLs. Separate from the `targets` delete-guard below — that protects a URL some
         // *plan* writes to, this one a URL no plan may land on.
@@ -517,13 +507,14 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
                     outcome.write_failed += 1;
                     error!("updating bookmark {}: {e:#}", original.url);
                     // The move didn't happen, so the record is still at its old URL and a
-                    // later group heading there would overwrite it. The pre-write fixpoint
-                    // can't know this, so protect it now — later groups only, which is why
-                    // a failed write is still reported as a failure rather than a refusal.
+                    // later group heading there would overwrite it. Protect it and re-close
+                    // the refusal set — groups after this one only, which is why a failed
+                    // write stays a failure rather than becoming a refusal.
                     if url_changed {
                         untouchable
                             .entry(original.url.clone())
-                            .or_insert(Refusal::OccupiedByRefused);
+                            .or_insert(Refusal::WriteFailed);
+                        propagate_refusals(&group_order, &groups, &mut untouchable);
                     }
                 }
             }
@@ -537,20 +528,24 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // the others extend. For an incumbent that is its *plan*, not its stored record —
         // the plan is this pass's intended end-state for it, and merging its stored record
         // back in would resurrect exactly what the plan removed.
-        let incumbent = incumbent_of(&group, key);
-        // The tail filter below drops index `incumbent` unconditionally, which would lose a
-        // member outright if both could be `Some`. They can't — an incumbent's stored URL is
-        // this key, so the key is in `planned_originals`, which `residents` excludes — but
-        // that proof spans a hundred lines, so assert it where it is relied on.
-        debug_assert!(resident.is_none() || incumbent.is_none());
-        let survivor = resident.or_else(|| incumbent.map(|at| group[at].1));
+        // A member is only lifted out of the tail when it is itself the survivor, so the two
+        // can't disagree about which index to drop — the alternative, filtering by
+        // `incumbent` independently of which branch `survivor` took, would silently lose a
+        // member if both were ever `Some`.
+        let (survivor, lifted) = match resident {
+            Some(resident) => (Some(resident), None),
+            None => match incumbent_of(&group, key) {
+                Some(at) => (Some(group[at].1), Some(at)),
+                None => (None, None),
+            },
+        };
         let plans: Vec<&Bookmark> = survivor
             .into_iter()
             .chain(
                 group
                     .iter()
                     .enumerate()
-                    .filter(|(at, _)| Some(*at) != incumbent)
+                    .filter(|(at, _)| Some(*at) != lifted)
                     .map(|(_, (_, planned))| *planned),
             )
             .collect();
@@ -588,7 +583,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // there is nothing to absorb — otherwise a converged state would rewrite itself
         // every run. Compared against the *stored* record, which for an incumbent is not
         // the plan that led the merge.
-        let stored_at_target = resident.or_else(|| incumbent.map(|at| group[at].0));
+        let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].0));
         if stored_at_target.is_some_and(|stored| stored.diff(&merged).is_empty())
             && old_urls.is_empty()
         {
@@ -635,12 +630,17 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
                 outcome.write_failed += 1;
                 error!("merging into {target}: {e:#}");
                 // Nothing was written and nothing absorbed, so every member is still at its
-                // own URL — see the single-plan path above.
-                for old in &old_urls {
-                    untouchable
-                        .entry((*old).clone())
-                        .or_insert(Refusal::OccupiedByRefused);
+                // own URL — see the single-plan path above. Every member, not `old_urls`:
+                // that list deliberately excludes URLs another group targets, which are
+                // precisely the ones in danger here.
+                for (original, _) in &group {
+                    if original.url != *target {
+                        untouchable
+                            .entry(original.url.clone())
+                            .or_insert(Refusal::WriteFailed);
+                    }
                 }
+                propagate_refusals(&group_order, &groups, &mut untouchable);
             }
         }
     }
@@ -657,6 +657,40 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         );
     }
     outcome
+}
+
+/// Close `untouchable` under "a group whose target is untouchable doesn't move, so its
+/// members keep their own URLs occupied". Iterated to a fixpoint because each refusal can
+/// occupy the URL that refuses the next, which is what makes the result independent of the
+/// order groups are written in.
+///
+/// Called once before any write, and again after each failed write — a failure strands its
+/// group exactly as a refusal does, and leaving that un-propagated is worse than not
+/// protecting the stranded record at all: it refuses a group whose own members are then
+/// left unprotected in turn, trading one lost record for several.
+fn propagate_refusals(
+    group_order: &[&url::Url],
+    groups: &HashMap<&url::Url, Vec<(&Bookmark, &Bookmark)>>,
+    untouchable: &mut HashMap<url::Url, Refusal>,
+) {
+    loop {
+        let newly_occupied: Vec<url::Url> = group_order
+            .iter()
+            .filter(|key| untouchable.contains_key(**key))
+            .filter_map(|key| groups.get(*key))
+            .flatten()
+            .map(|(original, _)| original.url.clone())
+            .filter(|url| !untouchable.contains_key(url))
+            .collect();
+        if newly_occupied.is_empty() {
+            break;
+        }
+        untouchable.extend(
+            newly_occupied
+                .into_iter()
+                .map(|url| (url, Refusal::OccupiedByRefused)),
+        );
+    }
 }
 
 /// The index within `members` of the group's *incumbent*: the member whose stored URL is
@@ -1620,6 +1654,156 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_mismatched_member_drops_out_while_the_rest_of_the_group_merges() {
+        // The point of refusing per member rather than per group: two bookmarks head for the
+        // resident, one agreeing about visibility and one not. The agreeing one still merges;
+        // only the other is held back. Every other mismatch test leaves a group of one, which
+        // takes the single-plan path and so never exercises this at all.
+        let mut resident = bookmark("https://other/resident");
+        resident.public = true;
+        resident.note = "resident note".into();
+        resident.tags = vec!["rt".into()];
+        let mut agreeing = bookmark("https://x/ok");
+        agreeing.public = true;
+        agreeing.note = "ok note".into();
+        agreeing.tags = vec!["okt".into()];
+        let mut disagreeing = bookmark("https://x/secret");
+        disagreeing.public = false;
+        disagreeing.note = "SECRET".into();
+        disagreeing.tags = vec!["secrett".into()];
+        let slice = vec![agreeing.clone(), disagreeing.clone()];
+        let all = vec![agreeing, disagreeing, resident];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                url: u("https://other/resident"),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &all, false),
+            &slice,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.refused, 1, "only the private one is held back");
+        assert_eq!(outcome.changed, 1);
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].extended, "resident note\n\nok note");
+        assert_eq!(updated[0].tags, vec!["rt".to_string(), "okt".to_string()]);
+        assert!(updated[0].shared);
+        assert!(
+            !updated[0].extended.contains("SECRET"),
+            "the held-back bookmark's note must not reach a public record"
+        );
+        assert_eq!(
+            *pinboard.deleted.borrow(),
+            vec!["https://x/ok".to_string()],
+            "only the bookmark that actually merged is absorbed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_merge_protects_a_member_another_group_targets() {
+        // The merge fails, so M never left `m/`. G is heading there. Protecting only the
+        // URLs the merge would have *absorbed* misses M entirely — those are exactly the
+        // URLs no other group targets, so the protection covers only cases that were never
+        // in danger, while the one case that loses data is filtered out of it.
+        let mut stranded = bookmark("https://m/");
+        stranded.title = "M original".into();
+        let other = bookmark("https://n/");
+        let taker = bookmark("https://g/");
+        let books = vec![stranded, other, taker];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            let target = match bookmark.url.as_str() {
+                "https://g/" => "https://m/",
+                _ => "https://collide/",
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: u(target),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard {
+            fail_update_urls: ["https://collide/".to_string()].into_iter().collect(),
+            ..FakePinboard::default()
+        };
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.write_failed, 1);
+        assert!(
+            !pinboard
+                .updated
+                .borrow()
+                .iter()
+                .any(|call| call.url == "https://m/"),
+            "a record stranded by a failed merge must not be overwritten"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_refusal_propagates_like_any_other() {
+        // A's move fails, so `a/` is occupied and P1+P2 are refused there — which means P1
+        // and P2 never moved either, and H1/H2 are heading for *their* URLs. Without
+        // re-closing the refusal set, protecting A costs two records instead of saving one:
+        // strictly worse than not protecting it at all.
+        let books = vec![
+            bookmark("https://a/"),
+            bookmark("https://p1/"),
+            bookmark("https://p2/"),
+            bookmark("https://h1/"),
+            bookmark("https://h2/"),
+        ];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            let target = match bookmark.url.as_str() {
+                "https://a/" => "https://b/",
+                "https://p1/" | "https://p2/" => "https://a/",
+                "https://h1/" => "https://p1/",
+                _ => "https://p2/",
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: u(target),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard {
+            fail_update_urls: ["https://b/".to_string()].into_iter().collect(),
+            ..FakePinboard::default()
+        };
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.write_failed, 1);
+        let updated = pinboard.updated.borrow();
+        for stranded in ["https://p1/", "https://p2/"] {
+            assert!(
+                !updated.iter().any(|call| call.url == stranded),
+                "{stranded} never moved, so nothing may be written over it"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn a_failed_move_protects_the_record_it_left_behind() {
         // Y fails to move to its new URL, so its record is still sitting at the old one.
         // A is heading there. Refusals are settled before any write, so nothing had marked
@@ -2184,6 +2368,9 @@ mod tests {
         let pass = FakePass(move |bookmark: &Bookmark| {
             Ok(Plan::Bookmark(Bookmark {
                 url: target.clone(),
+                // A real change, so a test asserting "nothing was written" is asserting the
+                // refusal and not merely that the plan was a no-op.
+                title: "refreshed".into(),
                 ..unchanged_plan(bookmark)
             }))
         });
@@ -2205,15 +2392,30 @@ mod tests {
         sitting.public = true;
         let mut mover = bookmark("https://github.com/old/name");
         mover.public = false;
+        mover.note = "private annotation".into();
         let pinboard = FakePinboard::default();
 
         let outcome = run_rename_collision(&pinboard, sitting, mover).await;
         assert_eq!(outcome.refused, 1);
+        let updated = pinboard.updated.borrow();
+        assert_eq!(
+            updated.len(),
+            1,
+            "the bookmark that stays still gets its plan"
+        );
+        assert_eq!(updated[0].url, "https://github.com/new/name");
         assert!(
-            pinboard.updated.borrow().is_empty(),
+            updated[0].shared,
             "a public bookmark must not be silently unshared by a collision"
         );
-        assert!(pinboard.deleted.borrow().is_empty());
+        assert!(
+            !updated[0].extended.contains("private annotation"),
+            "and the held-back bookmark's note must not reach it"
+        );
+        assert!(
+            pinboard.deleted.borrow().is_empty(),
+            "the held-back bookmark must not be absorbed"
+        );
     }
 
     #[tokio::test]
@@ -2271,7 +2473,12 @@ mod tests {
                     ..unchanged_plan(bookmark)
                 }))
             } else {
-                Ok(Plan::Bookmark(unchanged_plan(bookmark)))
+                // A real change, so "B was not merged into" is not confused with
+                // "B had nothing to write".
+                Ok(Plan::Bookmark(Bookmark {
+                    title: "refreshed".into(),
+                    ..unchanged_plan(bookmark)
+                }))
             }
         });
         let pinboard = FakePinboard::default();
@@ -2286,7 +2493,10 @@ mod tests {
         .await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         assert_eq!(outcome.refused, 1);
-        assert!(pinboard.updated.borrow().is_empty());
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1, "B still gets its own plan");
+        assert_eq!(updated[0].url, "https://collide/");
+        assert!(!updated[0].shared, "B is not widened by the held-back A");
         assert!(
             pinboard.deleted.borrow().is_empty(),
             "the refused mover must not be deleted"

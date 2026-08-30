@@ -98,8 +98,12 @@ All notable changes to this project are documented here. The format is based on
   Only the disagreeing bookmark is held back — the record it was heading for still gets its
   own cleanup, and any other bookmarks merging in still merge. A refusal protects the held-
   back bookmark's own URL as well, so a second rewrite heading there can't overwrite the
-  record the refusal just preserved; the same now applies when a rewrite *fails* partway,
-  which previously left the stranded record open to being overwritten by a later one.
+  record the refusal just preserved. The same now applies when a rewrite *fails*: the
+  record stranded at its old URL is marked occupied and the refusal is re-propagated, where
+  before it was left open to being overwritten by a later rewrite — a silent loss of a
+  bookmark that had merely failed to move. That protection only covers rewrites not yet
+  written when the failure happens, which is why a failed write is still reported as a
+  failure and not as a refusal.
 
   `cleanup --all` runs the three sources over one account in turn, and each of them
   writes. All three now share a **live** view of the account rather than one snapshot

@@ -97,8 +97,8 @@ Two targets have no record that stays, and both fall back to `merge_bookmarks`'s
 rules (`public` if all, `read_later` if any, earliest date): a URL nothing occupies, and one
 whose occupant is itself planned to move *away*. The second is safe only because that
 occupant's own plan writes it to its new URL — and if that write is refused the fixpoint
-refuses the group heading here too, while if it *fails* the write loop marks the URL
-occupied on the spot. Nothing else protects it, so don't remove any of the three.
+refuses the group heading here too, while if it *fails* the write loop marks the URL occupied
+and re-closes the refusal set. Nothing else protects it, so don't remove any of the three.
 
 Targets can be `untouchable`: nothing is written there, the rewrite is refused and
 counted in `PassOutcome::refused`. A target the pass **could not read** — a failed lookup, or
@@ -106,15 +106,25 @@ one a halt stopped it short of — because what is stored there may be stale. An
 a single plan whose **`public` doesn't match** the record that stays at its target drops out
 of that group: a merge fuses their notes into one record and would have to either publish a
 private annotation or unshare a bookmark the user chose to share, and the tool picks neither,
-in either direction. **Only that plan is refused, not the group** — the record that stays
-usually has a plan of its own, and blocking it too would let one mismatched duplicate freeze
-an unrelated bookmark's cleanup for good. Every refusal propagates — whatever didn't move
-keeps its own URL occupied — iterated to a fixpoint before any write so the result is
-order-independent, which is why the visibility check runs *before* that fixpoint.
+in either direction. **Only that plan is refused, not the group it targets** — the record
+that stays usually has a plan of its own, and blocking it too would let one mismatched
+duplicate freeze an unrelated bookmark's cleanup for good. The held-back plan's *own* URL is
+still marked occupied, though, so a third bookmark rewriting onto it is refused in turn.
 
-The mismatch reaches the driver as `Refusal::OccupiedByRefused`, not a reason of its own:
-what a later group needs to know is that the URL is still taken, and *why* the mover stayed
-is logged where it is actionable, naming both URLs and both visibilities.
+Every refusal propagates — whatever didn't move keeps its own URL occupied — through
+`propagate_refusals`, a fixpoint because each refusal can occupy the URL that refuses the
+next. **Call it after anything that strands a record, not just before the first write.** It
+runs once up front, which is what makes pre-write refusals order-independent (and why the
+visibility check runs before it), and again after every failed write. Propagating a failure
+is not optional politeness: refusing a group without closing over *its* members strands them
+in turn, so protecting one record costs several. A write failure is still order-dependent in
+one respect — groups already written can't be recalled — which is why it stays a failure
+rather than becoming a refusal.
+
+A mismatch reaches the driver as `Refusal::OccupiedByRefused` and a failed write as
+`Refusal::WriteFailed`; the distinction is for the operator, since one means the plan
+disagrees with the account and the other that something is wrong with the writes. *Why* a
+mover stayed is logged at the point of refusal, naming both URLs and both visibilities.
 
 Together those are what let the converged-state guard use `diff` (which ignores
 `public`/`read_later`), but by two different mechanisms — `public` because a disagreeing

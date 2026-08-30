@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use log::warn;
 use serde::Deserialize;
 
+use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Plan};
 use crate::htmltext::{blockquote, html_to_plain};
@@ -277,6 +278,15 @@ impl GitHubClient {
 
 impl Source for GitHubClient {
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
+        self.fetch_capturing(&mut RawSink::disabled()).await
+    }
+}
+
+impl GitHubClient {
+    /// [`Source::fetch`], pushing each `/user/starred` page body to `sink` as it arrives
+    /// so `backup` gets the verbatim response — including the ~75 repo fields
+    /// [`GitHubStarredRepo`] doesn't keep — out of the same traversal.
+    async fn fetch_capturing(&self, sink: &mut RawSink) -> Result<Vec<BookmarkDraft>, SourceError> {
         let endpoint = format!("{}/user/starred", self.base);
         let mut out = Vec::new();
         let mut page: u32 = 1;
@@ -288,6 +298,9 @@ impl Source for GitHubClient {
                     "github starred: hit the {MAX_STARRED_PAGES}-page cap; \
                      stopping (some stars may be missing)"
                 );
+                sink.mark_truncated(format!(
+                    "github starred stopped at the {MAX_STARRED_PAGES}-page cap"
+                ));
                 break;
             }
             if !visited.insert(page) {
@@ -332,10 +345,13 @@ impl Source for GitHubClient {
             // warning rather than discarding this page (and every earlier one). A body
             // that isn't a JSON array at all still fails the whole page; a non-empty page
             // where every element fails is a schema break (see `deserialize_lenient`).
-            let elements: Vec<serde_json::Value> = resp
-                .json()
+            let body = resp
+                .text()
                 .await
-                .context("parsing github starred response")?;
+                .context("reading github starred response")?;
+            sink.push("", RawKind::Json, &body);
+            let elements: Vec<serde_json::Value> =
+                serde_json::from_str(&body).context("parsing github starred response")?;
             let repos: Vec<GitHubStarredRepo> =
                 deserialize_lenient(elements, "github starred element", |count| {
                     SourceError::Other(anyhow::anyhow!(
@@ -353,6 +369,19 @@ impl Source for GitHubClient {
             }
         }
         Ok(out)
+    }
+}
+
+impl BackupSource for GitHubClient {
+    async fn dump(&self) -> Result<BackupDump, SourceError> {
+        let mut sink = RawSink::collecting();
+        let drafts = self.fetch_capturing(&mut sink).await?;
+        let (raw, truncated) = sink.into_parts();
+        Ok(BackupDump {
+            raw,
+            records: Ok(drafts.iter().map(ExportBookmark::from).collect()),
+            truncated,
+        })
     }
 }
 
@@ -1596,5 +1625,85 @@ mod net_tests {
         assert_eq!(updated[0].extended, "<blockquote>A thing</blockquote>");
         // Nothing else changed, so no delete (URL is unchanged).
         assert!(pinboard.deleted.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dump_keeps_the_fields_the_typed_shape_drops() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/starred"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "starred_at": "2023-01-02T03:04:05Z",
+                  "repo": {
+                      "full_name": "a/one",
+                      "html_url": "https://github.com/a/one",
+                      "language": "Rust",
+                      // None of these survive into `GitHubStarredRepo`; a backup of the
+                      // typed struct would lose them, so the raw body is what we keep.
+                      "stargazers_count": 1234,
+                      "license": { "spdx_id": "MIT" },
+                      "topics": ["cli", "rust"],
+                  } }
+            ])))
+            .mount(&server)
+            .await;
+
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+        let dump = client.dump().await.unwrap();
+
+        let raw: serde_json::Value =
+            serde_json::from_str(&dump.raw[0].body).expect("the captured body is the API's JSON");
+        assert_eq!(raw[0]["repo"]["stargazers_count"], 1234);
+        assert_eq!(raw[0]["repo"]["license"]["spdx_id"], "MIT");
+        assert_eq!(raw[0]["repo"]["topics"][1], "rust");
+
+        // The normalized half comes from the same traversal, so both describe one instant.
+        let records = dump.records.expect("normalization succeeded");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].url, "https://github.com/a/one");
+    }
+
+    #[tokio::test]
+    async fn dump_captures_every_page_in_order() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/starred"))
+            .and(query_param("page", "1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header(
+                        "link",
+                        format!("<{}/user/starred?page=2>; rel=\"next\"", server.uri()).as_str(),
+                    )
+                    .set_body_json(json!([
+                        { "starred_at": "2023-01-02T03:04:05Z",
+                          "repo": { "full_name": "a/one", "html_url": "https://github.com/a/one" } }
+                    ])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user/starred"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "starred_at": "2023-01-03T03:04:05Z",
+                  "repo": { "full_name": "b/two", "html_url": "https://github.com/b/two" } }
+            ])))
+            .mount(&server)
+            .await;
+
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+        let dump = client.dump().await.unwrap();
+        assert_eq!(dump.raw.len(), 2, "one captured body per page");
+
+        // GitHub's pages are arrays, so they flatten into one array of repos.
+        let bodies: Vec<&str> = dump.raw.iter().map(|p| p.body.as_str()).collect();
+        let (merged, _) = crate::backup::merge_json_pages(&bodies).unwrap();
+        let items = merged.as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["repo"]["full_name"], "a/one");
+        assert_eq!(items[1]["repo"]["full_name"], "b/two");
     }
 }

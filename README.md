@@ -134,8 +134,10 @@ pinboard-sync cleanup hackernews      # rewrite HN item URLs to the linked artic
 # Validate the Pinboard token + every configured account's credentials
 pinboard-sync doctor
 
-# Back up every bookmark to a file (raw Pinboard JSON, verbatim)
-pinboard-sync backup pinboard-backup.json
+# Snapshot every service to a directory (full API responses + normalized items)
+pinboard-sync backup --all --out ~/snapshots/pinboard-sync
+pinboard-sync backup pinboard --out DIR    # just the Pinboard account
+pinboard-sync backup reddit main --out DIR # just one source account
 ```
 
 `cleanup reddit` only contacts Reddit when marking NSFW or fixing placeholder titles
@@ -210,6 +212,62 @@ isn't treated as a change), and supports `--dry-run` to preview every change fir
   article bookmarks carrying the marker tag (`find-hn` by default, override with
   `--link-tag`), it looks each up on HN by URL and adds the discussion link to the
   notes.
+
+## What `backup` does
+
+Where `sync` and `cleanup` *write to Pinboard*, `backup` only reads: it snapshots every
+service to a directory, so nothing depends on Pinboard — or on the sources — still having
+your data. It matters because the sync path is deliberately lossy. Each wire struct keeps
+only the fields it needs, so a starred repo arrives with ~80 fields and `sync` uses five;
+Reddit caps a saved listing near 1000 items; and Pinboard's own copy of a long note may
+already be truncated to fit its API's URL budget.
+
+```
+<dir>/raw/pinboard.json                      # posts/all with meta=yes, every field
+<dir>/raw/reddit-main.json                   # every saved.json page envelope
+<dir>/raw/github-personal.json               # every /user/starred entry
+<dir>/raw/hackernews-me.json                 # every Algolia response
+<dir>/raw/hackernews-me-favorites.html       # the scraped favorites pages
+<dir>/normalized/<same stems>.json           # the same items as domain bookmarks
+<dir>/manifest.json                          # run timestamp, version, per-file counts
+```
+
+- **`raw/` keeps every field.** Bodies are captured as text *before* any parsing, during
+  the same traversal that builds the normalized half — so the two halves always describe
+  one instant, and nothing the typed read path drops is lost. It is not a byte-for-byte
+  copy: merging a service's pages into one file means re-serializing, which sorts each
+  object's keys. Same fields, same values, different bytes.
+- **Pages are merged per service.** A response that is itself a JSON array flattens into
+  one array of items (GitHub, Pinboard); anything else is kept whole as one element per
+  page (Reddit's `Listing` envelope, Algolia's `{"hits": […]}`). HackerNews' favorites are
+  scraped HTML, so they land as `.html` with the pages concatenated behind marker comments.
+- **`normalized/` is one uniform shape** across every service — `url`, `title`, `note`,
+  `tags`, `timestamp`, `public`, `read_later`, and each source's `dedup_key`.
+- **Each run replaces the previous snapshot in place.** There are no timestamped run
+  directories and nothing is pruned, so point a real backup tool (git, borg, Time Machine)
+  at the directory if you want history. Every file is written atomically at mode 0600 —
+  a snapshot holds all your private bookmarks — and a body that doesn't parse, or isn't a
+  JSON array, is rejected rather than allowed to overwrite a good snapshot.
+- **`manifest.json` is written last and says whether the run was complete.** Per-file
+  atomicity isn't *run* atomicity, so the manifest carries `complete: false` and names the
+  `failed` targets when any target failed. Each file also records **its own**
+  `generated_at`, and a narrowed run merges into the existing manifest rather than
+  replacing it — so after `backup pinboard`, the other targets' files are still described,
+  with their older timestamps visible. Entries always describe what is on disk *now*, even
+  for a target that failed after writing; a file that isn't a trustworthy snapshot carries
+  its own `unusable` reason, which survives later runs of other targets; and entries are
+  dropped when their file goes away. Each reports either `items` or `pages`, never both,
+  because an envelope stream's element count is a page count (10 pages of Reddit saves is
+  not 10 saves). One writer at a time per directory — concurrent runs race.
+- **A truncated fetch is a failure, not a quiet overwrite.** Each source has a page cap as
+  a runaway-pagination backstop; hitting it means the snapshot is only part of the account,
+  so the target is reported failed and lands in the manifest's `failed` list rather than
+  silently replacing a complete snapshot with a partial one.
+- **The directory comes from `--out DIR` or `[backup].directory`**, with no built-in
+  default. `backup <target>` narrows a run to one service (or one account); `--all` covers
+  the Pinboard account plus every configured source account. Backing up a source never
+  contacts Pinboard, so those targets need no Pinboard token.
+- `--dry-run` prints the file plan without writing, but still performs the full fetch.
 
 ## Config file and multiple accounts
 
@@ -294,25 +352,6 @@ With `use_post_date`, a bookmark's creation date (Pinboard's `dt`) is set to the
   and don't trigger a needless re-write.
 
 Dating is off by default; enable it per the resolution tiers above.
-
-## Backing up
-
-`pinboard-sync backup <path>` writes a snapshot of every bookmark to `<path>`. The
-file is the raw Pinboard `posts/all` JSON **verbatim** — no conversion — so it
-preserves everything the API returns (including each bookmark's `meta`/`hash`) and any
-entry the sync/cleanup path would skip. Diagnostics go to stderr; the snapshot is the
-file. The write is atomic and durable (a temp file, fsync'd, renamed over `<path>`) and a
-response that doesn't parse as a JSON array — a proxy page, an empty body, or a connection
-dropped mid-transfer — is refused rather than written, so a bad run can't clobber a good
-backup. The snapshot contains every private bookmark, so it is written mode `0600`
-(owner-only). The destination directory must already exist.
-
-```sh
-pinboard-sync backup pinboard-backup.json
-```
-
-It needs only the Pinboard token (`--pinboard-token`, `$PINBOARD_TOKEN`, or
-`[pinboard]`). Run it on a schedule via the NixOS `backup` timer (see below).
 
 ## Shell completions and example config
 
@@ -400,9 +439,9 @@ template, read as root — never in the store), running on a timer under a harde
     # sync.schedule = "*:0/30";               # sync timer; default every 30 minutes
     cleanup.enable = true;                   # also normalize existing bookmarks…
     # cleanup.schedule = "weekly";           # …on its own timer; default weekly
-    backup.enable = true;                    # also snapshot all bookmarks to a file…
+    backup.enable = true;                    # also snapshot every service to disk…
     # backup.schedule = "daily";             # …on its own timer; default daily
-    # backup.path = "/var/lib/pinboard-sync/pinboard-backup.json";  # default location
+    # backup.directory = "/var/lib/pinboard-sync/backup";  # default location
   };
 }
 ```

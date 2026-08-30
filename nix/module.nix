@@ -59,7 +59,7 @@ let
     || (configSettings.pinboard.token_file or null) != null;
 
   # The service runs as a transient `DynamicUser`, which can only write to its own
-  # `StateDirectory`. `backup.path` must live under this dir; the snapshot is then
+  # `StateDirectory`. `backup.directory` must live under this dir; the snapshot is then
   # retrievable by root (the state dir sits under the 0700 `/var/lib/private`).
   stateDir = "/var/lib/pinboard-sync";
 
@@ -73,7 +73,10 @@ let
   # `%d` in the `<VAR>_FILE` values expands to the unit's credentials directory
   # ($CREDENTIALS_DIRECTORY), a private tmpfs the DynamicUser can read even though it
   # can't read the root-owned source path directly.
-  mkService = description: schedule: args: {
+  #
+  # `extraServiceConfig` is merged over the hardening last, so a unit that needs more
+  # (the backup timer's `StateDirectory`) adds it without reaching around the factory.
+  mkService = { description, schedule, args, extraServiceConfig ? { } }: {
     inherit description;
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
@@ -103,7 +106,7 @@ let
       EnvironmentFile = cfg.environmentFile;
     } // lib.optionalAttrs (setCredentialFiles != [ ]) {
       LoadCredential = map (c: "${c.credential}:${toString cfg.${c.option}}") setCredentialFiles;
-    };
+    } // extraServiceConfig;
   };
 in
 {
@@ -180,7 +183,7 @@ in
     };
 
     backup = {
-      enable = lib.mkEnableOption "a timer backing up all Pinboard bookmarks to a file";
+      enable = lib.mkEnableOption "a timer snapshotting every source and the Pinboard account to disk";
       schedule = lib.mkOption {
         type = lib.types.str;
         default = "daily";
@@ -190,15 +193,22 @@ in
           when `backup.enable = true`.
         '';
       };
-      path = lib.mkOption {
+      directory = lib.mkOption {
         type = lib.types.str;
-        default = "${stateDir}/pinboard-backup.json";
+        default = "${stateDir}/backup";
         description = ''
-          File the backup is written to (replaced atomically each run), as raw Pinboard
-          `posts/all` JSON. Must live under `${stateDir}` — the service runs as a
-          transient `DynamicUser` and can only write to its `StateDirectory`. The
-          snapshot is readable by root (retrieve it with a root-run job); the state dir
-          sits under the 0700 `/var/lib/private`.
+          Directory the snapshot is written to. Holds `raw/` (each service's API
+          responses verbatim, including everything the parsed read path drops),
+          `normalized/` (the same items as domain bookmarks), and `manifest.json`.
+
+          Each run **replaces** the previous snapshot in place — there are no timestamped
+          run directories and nothing is pruned, so point a real backup tool at this path
+          if you want history.
+
+          Must live under `${stateDir}` — the service runs as a transient `DynamicUser`
+          and can only write to its `StateDirectory`. The snapshot is readable by root
+          (retrieve it with a root-run job); the state dir sits under the 0700
+          `/var/lib/private`.
         '';
       };
     };
@@ -299,11 +309,11 @@ in
       }
       {
         assertion = !cfg.backup.enable || pinboardTokenConfigured;
-        message = "services.pinboard-sync: backup.enable needs a Pinboard token — set `pinboardTokenFile`, `environmentFile` (with PINBOARD_TOKEN), or `[pinboard].token_file`. Source-only credentials (e.g. a reddit cookie) don't satisfy `backup`.";
+        message = "services.pinboard-sync: backup.enable needs a Pinboard token — set `pinboardTokenFile`, `environmentFile` (with PINBOARD_TOKEN), or `[pinboard].token_file`. The timer runs `backup --all`, which covers the Pinboard account as well as the sources; without a token it would run but silently omit Pinboard, so this is required rather than warned about. (Backing up a *source* on its own, e.g. `backup reddit`, needs no Pinboard token.)";
       }
       {
-        assertion = !cfg.backup.enable || lib.hasPrefix "${stateDir}/" cfg.backup.path;
-        message = "services.pinboard-sync: backup.path must be under ${stateDir} — the service runs as a transient DynamicUser and can only write to its StateDirectory.";
+        assertion = !cfg.backup.enable || lib.hasPrefix "${stateDir}/" cfg.backup.directory;
+        message = "services.pinboard-sync: backup.directory must be under ${stateDir} — the service runs as a transient DynamicUser and can only write to its StateDirectory.";
       }
     ];
 
@@ -311,23 +321,30 @@ in
     # needed; `--all` runs every account left in the generated config (disabled
     # accounts were pruned above).
     systemd.services.pinboard-sync =
-      lib.mkIf cfg.sync.enable (
-        mkService "Sync saved/favorited items to Pinboard" cfg.sync.schedule [ "sync" "--all" ]
-      );
+      lib.mkIf cfg.sync.enable (mkService {
+        description = "Sync saved/favorited items to Pinboard";
+        schedule = cfg.sync.schedule;
+        args = [ "sync" "--all" ];
+      });
 
     systemd.services.pinboard-sync-cleanup =
-      lib.mkIf cfg.cleanup.enable (
-        mkService "Normalize existing Pinboard bookmarks" cfg.cleanup.schedule [ "cleanup" "--all" ]
-      );
+      lib.mkIf cfg.cleanup.enable (mkService {
+        description = "Normalize existing Pinboard bookmarks";
+        schedule = cfg.cleanup.schedule;
+        args = [ "cleanup" "--all" ];
+      });
 
     # `StateDirectory` gives the hardened service its one writable location
-    # (`/var/lib/pinboard-sync`), which `backup.path` is asserted to live under.
+    # (`/var/lib/pinboard-sync`), which `backup.directory` is asserted to live under.
     systemd.services.pinboard-sync-backup =
-      lib.mkIf cfg.backup.enable (
-        lib.recursiveUpdate
-          (mkService "Back up all Pinboard bookmarks" cfg.backup.schedule [ "backup" cfg.backup.path ])
-          { serviceConfig.StateDirectory = "pinboard-sync"; }
-      );
+      lib.mkIf cfg.backup.enable (mkService {
+        description = "Back up every source and the Pinboard account to disk";
+        schedule = cfg.backup.schedule;
+        # `--out` tops the directory resolution tier, so this option wins over any
+        # `settings.backup.directory` in the rendered config.
+        args = [ "backup" "--all" "--out" cfg.backup.directory ];
+        extraServiceConfig.StateDirectory = "pinboard-sync";
+      });
 
     # Fire a missed run on next boot (the machine may be asleep/off at the scheduled
     # instant — especially for the weekly cleanup).

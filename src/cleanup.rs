@@ -5,10 +5,10 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 
 use crate::bookmark::{Bookmark, BookmarkStore};
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts};
+use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Plan};
 use crate::htmltext::html_to_plain;
 use crate::model::{cased_subreddit, reddit_key};
 use crate::reddit::PostInfo;
@@ -73,7 +73,7 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
 
     let info = fetch_post_info(reddit, opts, &reddit_bms).await?;
     let pass = RedditCleanupPass { info, opts };
-    let failed = run_pass(
+    run_pass(
         pinboard,
         &reddit_bms,
         opts.dry_run,
@@ -81,11 +81,8 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
         opts.date_opts(),
         &pass,
     )
-    .await;
-    if failed > 0 {
-        bail!("{failed} bookmark(s) failed to update");
-    }
-    Ok(())
+    .await
+    .into_result()
 }
 
 /// Re-shapes one reddit bookmark: normalize the URL/tags, then apply the authoritative
@@ -96,7 +93,7 @@ struct RedditCleanupPass<'a> {
 }
 
 impl CleanupPass for RedditCleanupPass<'_> {
-    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
         let opts = self.opts;
         // The stored URL is already a parsed `Url` (and a reddit one — the pass is filtered
         // to those); normalize it, falling back to the original when nothing changed.
@@ -161,7 +158,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
                 .and_then(|s| crate::timefmt::from_unix(s as i64))
         };
 
-        Ok(Some(Bookmark {
+        Ok(Plan::Bookmark(Bookmark {
             url: new_url,
             title,
             note,

@@ -8,17 +8,17 @@
 //! which deletes the absorbed URLs. A rewrite's old URL is never deleted when it is
 //! itself the target of another planned write in the same pass, so colliding/chained
 //! rewrites can't clobber each other's record and the pass is order-independent.
-//! `run_pass` renders the dry-run lines, tallies, and returns the number of bookmarks
-//! that failed (logged and skipped) so a caller running several passes can aggregate and
-//! bail once.
+//! `run_pass` renders the dry-run lines and tallies into a [`PassOutcome`], which decides
+//! on its own whether the run failed — see [`PassOutcome::into_result`].
 
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use log::{debug, error, info, warn};
 use time::OffsetDateTime;
 
 use crate::bookmark::{Bookmark, BookmarkStore};
+use crate::source::SourceError;
 
 /// The `use_post_date` policy applied uniformly across a pass: whether to re-date by
 /// the source date, the backdate age cap, and whether to push stale (older-than-cap)
@@ -30,24 +30,137 @@ pub struct DateOpts {
     pub stale_to_now: bool,
 }
 
+/// What a pass decided about one bookmark. [`Plan::Unchanged`] and [`Plan::Skipped`]
+/// both mean "write nothing", but they say opposite things about the *source*: the
+/// first is an answer from it, the second is a bookmark the pass never asked about.
+/// Only the first is evidence the source is reachable, which is what lets the driver
+/// tell one dead link apart from an outage.
+pub enum Plan {
+    /// The bookmark's desired end-state; the driver diffs it and writes what changed.
+    Bookmark(Bookmark),
+    /// The source answered, and nothing about this bookmark needs to change.
+    Unchanged,
+    /// Not this pass's bookmark — a deep link, a foreign URL, a locally-filtered case.
+    /// No lookup was made, so this says nothing about whether the source is up.
+    Skipped,
+}
+
+#[cfg(test)]
+impl Plan {
+    /// The planned bookmark, or `None` for the two write-nothing variants.
+    pub fn bookmark(self) -> Option<Bookmark> {
+        match self {
+            Plan::Bookmark(bookmark) => Some(bookmark),
+            Plan::Unchanged | Plan::Skipped => None,
+        }
+    }
+}
+
 /// How a source re-shapes one bookmark during `cleanup`.
 #[allow(async_fn_in_trait)]
 pub trait CleanupPass {
-    /// The end-state for `bookmark` as a [`Bookmark`], or `None` to leave it unchanged
-    /// outright. `Err` marks a per-item failure (logged and counted; the pass continues
-    /// with the next bookmark). The plan's `src_date` is the *candidate* source date; the
-    /// driver resolves the final date from it via the pass's [`DateOpts`], and always
-    /// takes `shared`/`toread` from the stored bookmark — so those two fields on the
+    /// The end-state for `bookmark` as a [`Plan`] — distinguishing an answer from the
+    /// source ([`Plan::Bookmark`], [`Plan::Unchanged`]) from a bookmark this pass does
+    /// not handle ([`Plan::Skipped`]), which the driver needs to tell one dead link
+    /// apart from an unreachable source.
+    /// [`SourceError::Other`] marks a per-item failure (logged and counted; the
+    /// pass continues with the next bookmark), while [`SourceError::ReauthRequired`]
+    /// stops the pass — a dead credential fails every remaining lookup too. A plan's
+    /// `timestamp` is the *candidate* source date; the driver resolves the final date
+    /// from it via the pass's [`DateOpts`], and always takes `public`/`read_later` from
+    /// the stored bookmark — so those two fields on the
     /// returned `Bookmark` are ignored. The driver still skips an unchanged plan (one
     /// whose fields all match `bookmark`), so a pass can return the computed end-state
     /// without checking for changes itself.
-    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>>;
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError>;
+}
+
+/// What one pass did. The two failure counts are kept apart because they mean
+/// different things: a `plan` failure is one link we could not read from the source,
+/// while a write failure is the destination itself refusing us.
+/// `must_use` because the whole design rests on [`PassOutcome::into_result`] being the
+/// one place the exit code is decided — dropping an outcome silently discards every
+/// failure it recorded.
+#[must_use]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PassOutcome {
+    /// Bookmarks written, or under `dry_run` that would be.
+    pub changed: usize,
+    /// Rewrites abandoned because their target URL belongs to a bookmark this pass
+    /// produced no plan for. Not a failure — refusing is the safe outcome — but it is
+    /// work that did not happen, so it is reported rather than only logged per-item.
+    pub refused: usize,
+    /// Bookmarks the source gave an answer for — the evidence that it is reachable.
+    /// Excludes [`Plan::Skipped`], which never asked it anything.
+    pub reached: usize,
+    /// Bookmarks whose `plan` failed to read the source.
+    pub plan_failed: usize,
+    /// Bookmarks whose write to the store failed.
+    pub write_failed: usize,
+    /// Set when a dead credential stopped planning partway.
+    pub reauth: Option<String>,
+}
+
+impl PassOutcome {
+    /// The run's verdict. A link we could not look up is *not* a failed run: it is
+    /// logged, skipped, and every other bookmark is still cleaned up, so one
+    /// permanently dead URL cannot wedge a scheduled service into a failed state
+    /// forever. Three things do fail the run — a dead credential, a write we could not
+    /// make (the destination is what we sync *to*), and lookups failing in the
+    /// *majority*, which is an outage wearing a per-item disguise.
+    ///
+    /// The majority test rather than "every lookup failed" because a `plan` failure can
+    /// no longer be one dead link: every permanent per-item condition reaches the driver
+    /// as a [`Plan`] (a deleted or blocked repo is [`Plan::Bookmark`], a URL the pass
+    /// does not handle is [`Plan::Skipped`]). What is left in `plan_failed` is rate
+    /// limits, post-retry 5xx, and network trouble — a handful is a blip worth riding
+    /// out, but most of them failing means most of the work silently did not happen.
+    ///
+    /// The `max(1)` floor keeps that promise for a pass with a tiny population: the
+    /// discussion-link pass strips its own marker tag, so it steadily looks up one or two
+    /// bookmarks, and without the floor a single hiccup there would be a "majority" and
+    /// would wedge the service all over again. One failed lookup is always survivable.
+    pub fn into_result(self) -> Result<()> {
+        if let Some(message) = self.reauth {
+            // The credential is the headline, but it must not bury what else went wrong
+            // before it: those counts are the only record once this returns.
+            let mut also = Vec::new();
+            if self.plan_failed > 0 {
+                also.push(format!("{} lookup(s)", self.plan_failed));
+            }
+            if self.write_failed > 0 {
+                also.push(format!("{} write(s)", self.write_failed));
+            }
+            if also.is_empty() {
+                bail!("{message}");
+            }
+            bail!("{message} (also failed: {})", also.join(", "));
+        }
+        if self.write_failed > 0 {
+            bail!("{} bookmark(s) failed to write", self.write_failed);
+        }
+        if self.plan_failed > self.reached.max(1) {
+            bail!(
+                "{} of {} lookup(s) failed — the source looks unreachable",
+                self.plan_failed,
+                self.plan_failed + self.reached
+            );
+        }
+        if self.plan_failed > 0 {
+            warn!(
+                "{} bookmark(s) skipped after a failed lookup; the rest were cleaned up",
+                self.plan_failed
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Run `pass` over `bookmarks` (already filtered to the source). Re-writes each
 /// changed bookmark (deleting the old URL when it changed), or prints the diff under
-/// `dry_run`. `noun` names the source in the scan log. Returns the count that failed
-/// to update.
+/// `dry_run`. `noun` names the source in the scan log. Never fails outright: every
+/// failure, including a dead credential, is tallied into the returned [`PassOutcome`],
+/// which the caller turns into a verdict.
 ///
 /// Two phases so that several bookmarks whose plans normalize to the *same* URL don't
 /// clobber each other: phase 1 plans every bookmark (resolving date + privacy), phase 2
@@ -67,7 +180,7 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     noun: &str,
     dates: DateOpts,
     pass: &C,
-) -> usize {
+) -> PassOutcome {
     // Dry-run output is consistently prefixed with `[dry-run]`.
     let dry_prefix = if dry_run { "[dry-run] " } else { "" };
     info!(
@@ -76,22 +189,41 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     );
 
     let now = OffsetDateTime::now_utc();
-    let mut changed = 0usize;
-    let mut failed = 0usize;
+    let mut outcome = PassOutcome::default();
 
     let mut planned_pairs: Vec<(&Bookmark, Bookmark)> = Vec::new();
     let mut skipped_urls: std::collections::HashSet<&url::Url> = std::collections::HashSet::new();
-    for bookmark in bookmarks {
+    for (index, bookmark) in bookmarks.iter().enumerate() {
         let mut planned = match pass.plan(bookmark).await {
-            Ok(Some(p)) => p,
-            Ok(None) => {
+            Ok(Plan::Bookmark(p)) => {
+                outcome.reached += 1;
+                p
+            }
+            Ok(Plan::Unchanged) => {
+                outcome.reached += 1;
                 skipped_urls.insert(&bookmark.url);
                 continue;
             }
-            // Log and skip a single failed plan so the rest of the pass still runs.
+            Ok(Plan::Skipped) => {
+                skipped_urls.insert(&bookmark.url);
+                continue;
+            }
+            // Every remaining lookup would fail the same way, so stop planning — but
+            // fall through to write the plans already made rather than discard them.
+            // This one and everything after it goes unplanned, so protect all of them:
+            // a record we never looked at must not be written over.
+            Err(SourceError::ReauthRequired(message)) => {
+                outcome.reauth = Some(message);
+                skipped_urls.extend(bookmarks[index..].iter().map(|b| &b.url));
+                break;
+            }
+            // Log and skip a single failed plan so the rest of the pass still runs. Its
+            // end-state is unknown, which makes it as untouchable as a skipped one —
+            // another bookmark rewriting onto its URL would clobber the record.
             Err(e) => {
-                failed += 1;
-                error!("updating bookmark {}: {e:#}", bookmark.url);
+                outcome.plan_failed += 1;
+                skipped_urls.insert(&bookmark.url);
+                error!("looking up bookmark {}: {e:#}", bookmark.url);
                 continue;
             }
         };
@@ -135,13 +267,15 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
 
     for key in group_order {
         let group = groups.remove(key).expect("key came from group_order");
-        // The target URL is occupied by a bookmark whose plan returned `None`: it is a
-        // non-participating resident that stays put, and writing this group there
+        // The target URL is occupied by a bookmark this pass produced no plan for —
+        // skipped, its lookup failed, or a dead credential stopped us before reaching it.
+        // Either way its end-state is unestablished, and writing this group there
         // (replace=yes) would clobber its record. Leave the rewriting bookmark(s) at their
-        // old URLs. Disjoint from the `targets` delete-guard: a skipped URL is never a
-        // planned target or origin.
+        // old URLs. This is a separate hazard from the `targets` delete-guard below: that
+        // one protects a URL some *plan* writes to, this one a URL no plan covers.
         if skipped_urls.contains(key) {
-            warn!("skipping cleanup write to {key}: occupied by an unchanged bookmark");
+            outcome.refused += 1;
+            warn!("skipping cleanup write to {key}: occupied by a bookmark this pass did not plan");
             continue;
         }
         if group.len() == 1 {
@@ -157,7 +291,7 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             let delete_old = url_changed && !targets.contains(&original.url);
 
             if dry_run {
-                changed += 1;
+                outcome.changed += 1;
                 println!("[dry-run] {}", original.url);
                 for (label, value) in &changes {
                     println!("          {label:<6}-> {value}");
@@ -173,7 +307,7 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
                 .await
             {
                 Ok(()) => {
-                    changed += 1;
+                    outcome.changed += 1;
                     debug!(
                         "updated {} -> {} [{}]",
                         original.url,
@@ -182,7 +316,7 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
                     );
                 }
                 Err(e) => {
-                    failed += 1;
+                    outcome.write_failed += 1;
                     error!("updating bookmark {}: {e:#}", original.url);
                 }
             }
@@ -208,7 +342,7 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
         }
 
         if dry_run {
-            changed += 1;
+            outcome.changed += 1;
             println!("[dry-run] {target}");
             println!("          {:<6}-> {}", "title", merged.title);
             let note_value = if merged.note.is_empty() {
@@ -231,23 +365,29 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
 
         match pinboard.apply_merge(&merged, &old_urls).await {
             Ok(()) => {
-                changed += 1;
+                outcome.changed += 1;
                 let absorbed: Vec<String> = old_urls.iter().map(|u| u.to_string()).collect();
                 debug!("merged {target} <- [{}]", absorbed.join(" "));
             }
             Err(e) => {
-                failed += 1;
+                outcome.write_failed += 1;
                 error!("updating bookmark {target}: {e:#}");
             }
         }
     }
 
     if dry_run {
-        println!("{dry_prefix}{changed} bookmark(s) would change.");
+        println!("{dry_prefix}{} bookmark(s) would change.", outcome.changed);
     } else {
-        info!("done: updated {changed} bookmark(s)");
+        info!("done: updated {} bookmark(s)", outcome.changed);
     }
-    failed
+    if outcome.refused > 0 {
+        warn!(
+            "{} rewrite(s) left in place: their target is a bookmark this pass did not plan",
+            outcome.refused
+        );
+    }
+    outcome
 }
 
 /// Field-merge the PLANNED bookmarks of a collision group (all sharing `url`, given in
@@ -310,10 +450,15 @@ mod tests {
 
     /// A `CleanupPass` whose `plan` is a closure, so each test scripts its own outcome.
     struct FakePass<F>(F);
-    impl<F: Fn(&Bookmark) -> Result<Option<Bookmark>>> CleanupPass for FakePass<F> {
-        async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
+    impl<F: Fn(&Bookmark) -> Result<Plan, SourceError>> CleanupPass for FakePass<F> {
+        async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
             (self.0)(bookmark)
         }
+    }
+
+    /// A per-item read failure: the kind that must not fail the whole run.
+    fn item_error() -> SourceError {
+        SourceError::Other(anyhow!("boom"))
     }
 
     fn bookmark(url: &str) -> Bookmark {
@@ -347,9 +492,9 @@ mod tests {
         let books = vec![bookmark("https://x/bad"), bookmark("https://x/good")];
         let pass = FakePass(|bookmark: &Bookmark| {
             if bookmark.url.as_str().contains("bad") {
-                Err(anyhow!("boom"))
+                Err(item_error())
             } else {
-                Ok(Some(Bookmark {
+                Ok(Plan::Bookmark(Bookmark {
                     title: "New".into(),
                     ..unchanged_plan(bookmark)
                 }))
@@ -357,8 +502,9 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
-        assert_eq!(failed, 1);
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.plan_failed, 1);
+        assert_eq!(outcome.write_failed, 0);
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].url, "https://x/good");
@@ -366,13 +512,245 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn none_plan_is_skipped() {
-        let books = vec![bookmark("https://x/")];
-        let pass = FakePass(|_: &Bookmark| Ok(None));
+    async fn one_unreachable_link_does_not_fail_the_run() {
+        // The heart of the policy: a single link we couldn't look up is logged, but the
+        // run still succeeds, because everything we *could* do, we did. The good ones
+        // outnumber it, so this stays clear of the majority-failure guard.
+        let books = vec![
+            bookmark("https://x/bad"),
+            bookmark("https://x/good-1"),
+            bookmark("https://x/good-2"),
+        ];
+        let pass = FakePass(|bookmark: &Bookmark| {
+            if bookmark.url.as_str().contains("bad") {
+                Err(item_error())
+            } else {
+                Ok(Plan::Bookmark(unchanged_plan(bookmark)))
+            }
+        });
         let pinboard = FakePinboard::default();
 
-        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
-        assert_eq!(failed, 0);
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert!(outcome.into_result().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_fails_the_run() {
+        // The destination is what we cannot sync to, so this one is fatal.
+        let books = vec![bookmark("https://x/")];
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                title: "New".into(),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let mut pinboard = FakePinboard::default();
+        pinboard.fail_update_urls.insert("https://x/".into());
+
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.write_failed, 1);
+        assert!(pinboard.updated.borrow().is_empty());
+        let err = outcome.into_result().unwrap_err();
+        assert!(err.to_string().contains("failed to write"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn every_plan_failing_fails_the_run() {
+        // Not one bad link but an unreachable source: nothing got through, so the run
+        // must not report success.
+        let books = vec![bookmark("https://x/one"), bookmark("https://x/two")];
+        let pass = FakePass(|_: &Bookmark| Err(item_error()));
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.plan_failed, 2);
+        let err = outcome.into_result().unwrap_err();
+        assert!(err.to_string().contains("2 of 2"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_lone_failed_lookup_never_fails_the_run() {
+        // A pass can have a tiny population — `cleanup hackernews --link-discussions`
+        // strips its own marker tag, so in the steady state it looks up one or two
+        // bookmarks. One transient hiccup there must not fail the run, or a single bad
+        // lookup wedges the scheduled service exactly as before.
+        let books = vec![bookmark("https://x/only")];
+        let pass = FakePass(|_: &Bookmark| Err(item_error()));
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!((outcome.reached, outcome.plan_failed), (0, 1));
+        assert!(outcome.into_result().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_majority_of_lookups_failing_fails_the_run() {
+        // Not one bad link but widespread trouble — a rate limit or an outage part-way
+        // through the run. Some lookups got through, so the source isn't flat down, but
+        // reporting success would hide most of the work never happening.
+        let books = vec![
+            bookmark("https://x/ok"),
+            bookmark("https://x/bad-1"),
+            bookmark("https://x/bad-2"),
+            bookmark("https://x/bad-3"),
+        ];
+        let pass = FakePass(|bookmark: &Bookmark| {
+            if bookmark.url.as_str().contains("bad") {
+                Err(item_error())
+            } else {
+                Ok(Plan::Unchanged)
+            }
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!((outcome.reached, outcome.plan_failed), (1, 3));
+        let err = outcome.into_result().unwrap_err();
+        assert!(err.to_string().contains("3 of 4"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn reauth_stops_planning_but_still_writes_what_was_planned() {
+        // A dead credential fails every remaining lookup, so stop rather than burn a
+        // request per bookmark — but the plans already made are good, so write them
+        // rather than throwing the work away.
+        let books = vec![
+            bookmark("https://x/one"),
+            bookmark("https://x/two"),
+            bookmark("https://x/three"),
+        ];
+        let planned = std::cell::Cell::new(0usize);
+        let pass = FakePass(|bookmark: &Bookmark| {
+            planned.set(planned.get() + 1);
+            if bookmark.url.as_str().ends_with("one") {
+                return Ok(Plan::Bookmark(Bookmark {
+                    title: "New".into(),
+                    ..unchanged_plan(bookmark)
+                }));
+            }
+            Err(SourceError::ReauthRequired("token expired".into()))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(planned.get(), 2, "should stop at the reauth failure");
+        let updated = pinboard.updated.borrow();
+        assert_eq!(
+            updated.len(),
+            1,
+            "the plan made before it died is still written"
+        );
+        assert_eq!(updated[0].url, "https://x/one");
+        let err = outcome.into_result().unwrap_err();
+        assert!(err.to_string().contains("token expired"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_reauth_alongside_failed_writes_reports_both() {
+        // Planning stops at the dead credential but the earlier plans are still written,
+        // so both failures can be real. Reporting only the credential would hide that
+        // writes were also being rejected.
+        let books = vec![bookmark("https://x/one"), bookmark("https://x/dead")];
+        let pass = FakePass(|bookmark: &Bookmark| {
+            if bookmark.url.as_str().ends_with("dead") {
+                return Err(SourceError::ReauthRequired("token expired".into()));
+            }
+            Ok(Plan::Bookmark(Bookmark {
+                title: "New".into(),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let mut pinboard = FakePinboard::default();
+        pinboard.fail_update_urls.insert("https://x/one".into());
+
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.write_failed, 1);
+        let err = outcome.into_result().unwrap_err().to_string();
+        assert!(err.contains("token expired"), "{err}");
+        assert!(err.contains("1 write(s)"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_reauth_does_not_hide_lookups_that_already_failed() {
+        // Ten lookups 5xx'd before the credential died; reporting only the credential
+        // would lose the fact that the source was already misbehaving.
+        let books = vec![
+            bookmark("https://x/bad"),
+            bookmark("https://x/dead"),
+            bookmark("https://x/never"),
+        ];
+        let pass = FakePass(|bookmark: &Bookmark| {
+            if bookmark.url.as_str().ends_with("dead") {
+                return Err(SourceError::ReauthRequired("token expired".into()));
+            }
+            Err(item_error())
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.plan_failed, 1);
+        let err = outcome.into_result().unwrap_err().to_string();
+        assert!(err.contains("token expired"), "{err}");
+        assert!(err.contains("1 lookup(s)"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn bookmarks_a_pass_skipped_do_not_count_as_reaching_the_source() {
+        // A skipped bookmark never touched the source, so it must not dilute the ratio:
+        // `cleanup github` skips deep links and gists without an API call, and those must
+        // not vouch for a source that is actually down. Two failures, to clear the
+        // one-failure floor and isolate what's being tested here.
+        let books = vec![
+            bookmark("https://x/not-mine-1"),
+            bookmark("https://x/not-mine-2"),
+            bookmark("https://x/not-mine-3"),
+            bookmark("https://x/mine-1"),
+            bookmark("https://x/mine-2"),
+        ];
+        let pass = FakePass(|bookmark: &Bookmark| {
+            if bookmark.url.as_str().contains("not-mine") {
+                Ok(Plan::Skipped)
+            } else {
+                Err(item_error())
+            }
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.reached, 0);
+        // "2 of 2", not "2 of 5": the three skipped bookmarks are not in the denominator,
+        // which is what stops them padding it into a passing ratio.
+        let err = outcome.into_result().unwrap_err();
+        assert!(err.to_string().contains("2 of 2"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_plan_counts_as_reaching_the_source() {
+        // The pass looked this one up and found nothing to do — that answer proves the
+        // source is up, so a separate failure is just one bad link.
+        let books = vec![bookmark("https://x/looked-up"), bookmark("https://x/bad")];
+        let pass = FakePass(|bookmark: &Bookmark| {
+            if bookmark.url.as_str().contains("bad") {
+                Err(item_error())
+            } else {
+                Ok(Plan::Unchanged)
+            }
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.reached, 1);
+        assert!(outcome.into_result().is_ok());
+    }
+
+    #[tokio::test]
+    async fn none_plan_is_skipped() {
+        let books = vec![bookmark("https://x/")];
+        let pass = FakePass(|_: &Bookmark| Ok(Plan::Skipped));
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());
     }
@@ -380,11 +758,11 @@ mod tests {
     #[tokio::test]
     async fn unchanged_plan_is_skipped() {
         let books = vec![bookmark("https://x/")];
-        let pass = FakePass(|bookmark: &Bookmark| Ok(Some(unchanged_plan(bookmark))));
+        let pass = FakePass(|bookmark: &Bookmark| Ok(Plan::Bookmark(unchanged_plan(bookmark))));
         let pinboard = FakePinboard::default();
 
-        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
-        assert_eq!(failed, 0);
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         assert!(pinboard.updated.borrow().is_empty());
     }
 
@@ -392,7 +770,7 @@ mod tests {
     async fn url_change_updates_and_deletes_old_preserving_privacy() {
         let books = vec![bookmark("https://old/")];
         let pass = FakePass(|bookmark: &Bookmark| {
-            Ok(Some(Bookmark {
+            Ok(Plan::Bookmark(Bookmark {
                 url: u("https://new/"),
                 title: "New".into(),
                 tags: vec!["x".into()],
@@ -401,8 +779,8 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
-        assert_eq!(failed, 0);
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].url, "https://new/");
@@ -507,18 +885,18 @@ mod tests {
 
         let pass = FakePass(|bookmark: &Bookmark| {
             if bookmark.url.as_str().contains("old-a") {
-                Ok(Some(Bookmark {
+                Ok(Plan::Bookmark(Bookmark {
                     url: u("https://collide/"),
                     ..unchanged_plan(bookmark)
                 }))
             } else {
-                Ok(Some(unchanged_plan(bookmark)))
+                Ok(Plan::Bookmark(unchanged_plan(bookmark)))
             }
         });
         let pinboard = FakePinboard::default();
 
-        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
-        assert_eq!(failed, 0);
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -546,15 +924,15 @@ mod tests {
                 } else {
                     "https://new-z/"
                 };
-                Ok(Some(Bookmark {
+                Ok(Plan::Bookmark(Bookmark {
                     url: u(next),
                     ..unchanged_plan(bookmark)
                 }))
             });
             let pinboard = FakePinboard::default();
 
-            let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
-            assert_eq!(failed, 0);
+            let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+            assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
             let updated = pinboard.updated.borrow();
             let mut written: Vec<&str> = updated.iter().map(|c| c.url.as_str()).collect();
@@ -587,9 +965,9 @@ mod tests {
 
         let pass = FakePass(|bookmark: &Bookmark| {
             if bookmark.url.as_str().contains("collide") {
-                Ok(None)
+                Ok(Plan::Skipped)
             } else {
-                Ok(Some(Bookmark {
+                Ok(Plan::Bookmark(Bookmark {
                     url: u("https://collide/"),
                     ..unchanged_plan(bookmark)
                 }))
@@ -597,11 +975,76 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
-        assert_eq!(failed, 0);
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         // A (the skipped resident) is neither updated nor deleted; B's clobbering rewrite
         // onto T is refused, so nothing is written at all.
         assert!(pinboard.updated.borrow().is_empty());
+        assert!(pinboard.deleted.borrow().is_empty());
+        // Abandoning B's rewrite is work not done, so it is counted rather than only logged.
+        assert_eq!(outcome.refused, 1);
+    }
+
+    #[tokio::test]
+    async fn rewrite_onto_a_bookmark_whose_lookup_failed_is_refused() {
+        // A failed lookup leaves us not knowing A's end-state, so it is just as much an
+        // untouchable resident as a skipped one. Without that, B's rewrite lands on A's
+        // URL with replace=yes and destroys A's record — and now that a failed lookup no
+        // longer fails the run, it would do so while reporting success.
+        let mut stored_a = bookmark("https://collide/");
+        stored_a.note = "hand written".into();
+        let stored_b = bookmark("https://old-b/");
+        let books = vec![stored_a, stored_b];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            if bookmark.url.as_str().contains("collide") {
+                Err(item_error())
+            } else {
+                Ok(Plan::Bookmark(Bookmark {
+                    url: u("https://collide/"),
+                    ..unchanged_plan(bookmark)
+                }))
+            }
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.plan_failed, 1);
+        assert!(
+            pinboard.updated.borrow().is_empty(),
+            "must not write over a bookmark whose own lookup failed"
+        );
+        assert!(pinboard.deleted.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rewrite_onto_a_bookmark_left_unplanned_by_reauth_is_refused() {
+        // Planning stops at the dead credential, so the third bookmark is never planned.
+        // It must still be protected: the first bookmark's rewrite targets its URL, and
+        // writing there would clobber a record we never even looked at.
+        let mover = bookmark("https://old-b/");
+        let dead = bookmark("https://dead/");
+        let mut resident = bookmark("https://collide/");
+        resident.note = "hand written".into();
+        let books = vec![mover, dead, resident];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            if bookmark.url.as_str().contains("dead") {
+                return Err(SourceError::ReauthRequired("token expired".into()));
+            }
+            Ok(Plan::Bookmark(Bookmark {
+                url: u("https://collide/"),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert!(outcome.reauth.is_some());
+        assert!(
+            pinboard.updated.borrow().is_empty(),
+            "must not write over a bookmark reauth left unplanned"
+        );
         assert!(pinboard.deleted.borrow().is_empty());
     }
 
@@ -617,18 +1060,18 @@ mod tests {
 
         let pass = FakePass(|bookmark: &Bookmark| {
             if bookmark.url.as_str().contains("old-a") {
-                Ok(Some(Bookmark {
+                Ok(Plan::Bookmark(Bookmark {
                     url: u("https://collide/"),
                     ..unchanged_plan(bookmark)
                 }))
             } else {
-                Ok(Some(unchanged_plan(bookmark)))
+                Ok(Plan::Bookmark(unchanged_plan(bookmark)))
             }
         });
         let pinboard = FakePinboard::default();
 
-        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
-        assert_eq!(failed, 0);
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -650,39 +1093,21 @@ mod tests {
         let books = vec![stored_a, stored_b];
 
         let pass = FakePass(|bookmark: &Bookmark| {
-            Ok(Some(Bookmark {
+            Ok(Plan::Bookmark(Bookmark {
                 url: u("https://new/"),
                 ..unchanged_plan(bookmark)
             }))
         });
         let pinboard = FakePinboard::default();
 
-        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
-        assert_eq!(failed, 0);
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].url, "https://new/");
         // The public member sorts first, but the private member keeps the merge private.
         assert!(!updated[0].shared);
-    }
-
-    #[tokio::test]
-    async fn apply_update_failure_is_logged_and_counted() {
-        let books = vec![bookmark("https://x/")];
-        // A desc-only change (URL unchanged, so no delete); the update itself fails.
-        let pass = FakePass(|bookmark: &Bookmark| {
-            Ok(Some(Bookmark {
-                title: "New".into(),
-                ..unchanged_plan(bookmark)
-            }))
-        });
-        let mut pinboard = FakePinboard::default();
-        pinboard.fail_update_urls.insert("https://x/".into());
-
-        let failed = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
-        assert_eq!(failed, 1);
-        assert!(pinboard.updated.borrow().is_empty());
     }
 
     #[tokio::test]
@@ -696,7 +1121,7 @@ mod tests {
             } else {
                 "new notes".into()
             };
-            Ok(Some(Bookmark {
+            Ok(Plan::Bookmark(Bookmark {
                 url: u(&format!("{}new", bookmark.url)),
                 title: "New".into(),
                 note,
@@ -715,8 +1140,8 @@ mod tests {
             max_age_days: 1_000_000,
             stale_to_now: false,
         };
-        let failed = run_pass(&pinboard, &books, true, "test", dates, &pass).await;
-        assert_eq!(failed, 0);
+        let outcome = run_pass(&pinboard, &books, true, "test", dates, &pass).await;
+        assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());
     }

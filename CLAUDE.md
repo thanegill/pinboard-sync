@@ -30,14 +30,50 @@ The flow is one pass: a source yields drafts → skip those already on Pinboard 
 write the rest. `main.rs` is CLI parsing + config/secret resolution + dispatch; the
 sync write loop is in [`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one
 driver** ([`src/cleanup_pass.rs`](src/cleanup_pass.rs)): a source implements
-`CleanupPass::plan` (the desired end-state for one bookmark, as a `Bookmark` — `None` to
-skip, `Err` for a per-item failure), and `run_pass` owns the loop common to all of them:
+`CleanupPass::plan` (the desired end-state for one bookmark, as a `Plan` — see below —
+with `Err` for a per-item failure), and `run_pass` owns the loop common to all of them:
 plan every bookmark, group the plans by target URL, then diff each plan against the stored
 one, skip unchanged, render the dry-run lines, write via `apply_update` (deleting the old
-URL on a rewrite), and tally. Colliding rewrites — several bookmarks normalizing to one URL
-— are field-merged into a single record via `apply_merge` (which deletes the absorbed URLs)
-rather than clobbering each other. The
-per-source planners live in [`src/cleanup.rs`](src/cleanup.rs) (reddit),
+URL on a rewrite), and tally into a `PassOutcome`. Colliding rewrites — several bookmarks
+normalizing to one URL — are field-merged into a single record via `apply_merge` (which
+deletes the absorbed URLs) rather than clobbering each other.
+
+**A failed lookup is not a failed run.** `PassOutcome` counts `plan_failed` (a link we
+couldn't read from the source) separately from `write_failed` (Pinboard refusing us, on
+either `apply_update` or `apply_merge`), and `PassOutcome::into_result` — the single place
+the exit code is decided — fails only on the latter, plus a dead credential and lookups
+failing in the **majority** (`plan_failed > reached.max(1)` — one failed lookup is always
+survivable, which matters for a pass whose steady-state population is one or two, like the
+discussion-link pass that strips its own marker tag). The majority test rather than "all
+of them" because a `plan` failure can no longer be one dead link: every permanent per-item
+condition now reaches the driver as a `Plan` (a deleted or blocked repo is a
+`Plan::Bookmark` keeping its canonical URL; a URL the pass doesn't handle is
+`Plan::Skipped`), leaving `plan_failed` to mean rate limits, post-retry 5xx, and network
+trouble. A handful of those is a blip worth riding out; most of them failing means most of
+the work silently did not happen. This is deliberate: `cleanup`
+runs as a scheduled service, and a permanently dead URL must not wedge it into a failed
+state forever. `SourceError::ReauthRequired` stops the pass (a dead credential fails every
+remaining lookup too) but the plans already made are still written — which is why `plan`
+returns `SourceError` rather than a flattened `anyhow::Error`. **Any bookmark *in the
+pass's slice* left without a plan — skipped, failed, or never reached because the
+credential died — joins `skipped_urls`**, so another bookmark rewriting onto its URL is
+refused (and counted in `PassOutcome::refused`) rather than clobbering a record whose
+end-state we never established. Note the limit: `run_pass` only sees the filtered slice,
+so a resident *outside* it is not protected — HN's item pass rewrites a story bookmark to
+its article URL, which is not an HN item URL and so never entered the slice.
+
+**`Plan` says whether the source was reached, not just whether to write.** `plan` returns
+`Plan::Bookmark` (an end-state), `Plan::Unchanged` (*the source answered*, nothing to do),
+or `Plan::Skipped` (not this pass's bookmark — no lookup made). The last two both write
+nothing but mean opposite things about the source's health, and only the first two count
+toward `PassOutcome::reached`. Without that split, the every-lookup-failed guard is
+worthless: `cleanup github` skips deep links and gists locally, and if those counted as
+successes a genuinely unreachable GitHub would look fine. Conversely HackerNews'
+`search_by_url` finding no discussion is `Unchanged`, not `Skipped` — the query ran. When
+a source runs several passes, each reaches its **own** verdict rather than pooling
+tallies, so a pass that can't fail can't vouch for one that can.
+
+The per-source planners live in [`src/cleanup.rs`](src/cleanup.rs) (reddit),
 [`src/github.rs`](src/github.rs), and [`src/hackernews.rs`](src/hackernews.rs).
 
 **`Bookmark` is service-agnostic; `PinboardBookmark` is the wire shape.** The domain

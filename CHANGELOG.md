@@ -55,6 +55,9 @@ All notable changes to this project are documented here. The format is based on
   and bookmarks the source was never asked about count on neither side of it — so passes
   that skip most of what they are handed (`cleanup github` ignores deep links and gists)
   can't pad it into looking healthy.
+- `cleanup github` treats a repo **blocked under the DMCA** (`451`) the same as a deleted
+  one: the bookmark keeps its URL canonicalization and the block is reported as a warning
+  rather than as a lookup error.
 - `--public` is now a value-taking flag: `--public` (= `true`) or `--public=false`.
   Previously it was a bare force-on switch that could not override a config-set `true`
   back to `false`; the new form can. `--limit` is likewise now an optional value (unset,

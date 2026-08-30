@@ -184,7 +184,8 @@ impl GitHubClient {
     }
 
     /// Look up a repo via `/repos/{owner}/{name}` (the API follows renames and
-    /// transfers, returning the current name/URL). `None` if it no longer exists.
+    /// transfers, returning the current name/URL). `None` if it is permanently
+    /// inaccessible — deleted or private (404), or blocked under the DMCA (451).
     async fn repo(&self, owner: &str, name: &str) -> Result<Option<GitHubRepo>, SourceError> {
         let endpoint = format!("{}/repos/{}/{}", self.base, owner, name);
         let resp = send_retrying("github repo", MAX_RETRIES, RETRY_DELAY, || {
@@ -198,6 +199,14 @@ impl GitHubClient {
             ));
         }
         if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        // Unlike a 404 the repo does still exist, so say so rather than skipping silently.
+        if status == reqwest::StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS {
+            warn!(
+                "github repo {owner}/{name} is blocked (451); keeping its stored title, \
+                 notes and tags"
+            );
             return Ok(None);
         }
         if !status.is_success() {
@@ -828,6 +837,33 @@ mod net_tests {
             client.fetch().await,
             Err(SourceError::ReauthRequired(_))
         ));
+    }
+
+    /// A repo lookup that can never succeed again reads as "gone", the same as a 404 —
+    /// no credential and no retry will clear either one.
+    #[tokio::test]
+    async fn repo_lookup_is_none_for_a_gone_repo() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/deleted/repo"))
+            .respond_with(ResponseTemplate::new(404).set_body_string(r#"{"message":"Not Found"}"#))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/blocked/repo"))
+            .respond_with(ResponseTemplate::new(451).set_body_string(
+                r#"{"message":"Repository access blocked","block":{"reason":"dmca"}}"#,
+            ))
+            .mount(&server)
+            .await;
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+
+        assert!(client.repo("deleted", "repo").await.unwrap().is_none());
+        assert!(
+            client.repo("blocked", "repo").await.unwrap().is_none(),
+            "a DMCA block is permanent, so it must not surface as an error"
+        );
     }
 
     #[tokio::test]

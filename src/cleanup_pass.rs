@@ -98,9 +98,13 @@ pub trait CleanupPass {
 pub struct PassOutcome {
     /// Bookmarks written, or under `dry_run` that would be.
     pub changed: usize,
-    /// Rewrites abandoned because their target must not be written — see [`Refusal`] for
-    /// the reasons. Not a failure — leaving it alone is the safe outcome — but it is work
+    /// Abandoned rewrites, because their target must not be written — see [`Refusal`] for
+    /// the reasons. Not a failure — leaving them alone is the safe outcome — but it is work
     /// that did not happen, so it is reported rather than only logged per-item.
+    ///
+    /// Counted per *group* when the target itself is untouchable (one refusal however many
+    /// bookmarks were heading there) and per *plan* when a single member is held back over
+    /// visibility, so this is a count of abandoned writes rather than of bookmarks.
     pub refused: usize,
     /// Bookmarks the source gave an answer for — the evidence that it is reachable.
     /// Excludes [`Plan::Skipped`], which never asked it anything.
@@ -466,6 +470,14 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // Anything already stored there joins the group rather than being replaced by it;
         // which member leads that merge is settled below.
         let resident = residents.get(key);
+        // The visibility partition can empty a group outright, when every plan heading here
+        // disagreed with the resident. Nothing is left to write, and returning here is what
+        // keeps `merge_bookmarks` from being handed an empty slice to index — today the
+        // survivor always supplies a first element, but that is a property of two distant
+        // pieces of code agreeing, and this pass has a history of one of them moving.
+        if group.is_empty() {
+            continue;
+        }
         if resident.is_none() && group.len() == 1 {
             let (original, planned) = group[0];
             // The written fields that differ; empty means nothing a write would change.
@@ -503,9 +515,17 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
                         planned.tags.join(" ")
                     );
                 }
+                // The rewrite can half-apply just as a merge can: the record landed at the
+                // new URL and only the old-URL delete failed. Count the change that really
+                // happened, and don't name the old URL as the thing that went wrong.
+                Some(e) if write.wrote => {
+                    outcome.changed += 1;
+                    outcome.write_failed += 1;
+                    error!("rewrote {} to {} but: {e:#}", original.url, planned.url);
+                }
                 Some(e) => {
                     outcome.write_failed += 1;
-                    error!("updating bookmark {}: {e:#}", original.url);
+                    error!("rewriting bookmark {}: {e:#}", original.url);
                     // The move didn't happen, so the record is still at its old URL and a
                     // later group heading there would overwrite it. Protect it and re-close
                     // the refusal set — groups after this one only, which is why a failed
@@ -652,7 +672,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     }
     if outcome.refused > 0 {
         warn!(
-            "{} rewrite(s) left in place: their target holds a bookmark this pass must not overwrite",
+            "{} rewrite(s) not made: their target holds a bookmark this pass must not overwrite",
             outcome.refused
         );
     }
@@ -1803,6 +1823,36 @@ mod tests {
             vec!["https://x/ok".to_string()],
             "only the bookmark that actually merged is absorbed"
         );
+    }
+
+    #[tokio::test]
+    async fn a_rewrite_whose_delete_fails_still_counts_as_written() {
+        // The rewrite landed at the new URL and only the old-URL delete failed, so the
+        // account did change. Reporting it as a plain failure under-counts a write that
+        // really happened and points the operator at the old URL, where nothing is wrong.
+        let books = vec![bookmark("https://old/")];
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                url: u("https://new/"),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard {
+            fail_delete_urls: ["https://old/".to_string()].into_iter().collect(),
+            ..FakePinboard::default()
+        };
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(pinboard.updated.borrow().len(), 1, "the write did land");
+        assert_eq!(outcome.changed, 1, "so it must be counted as a change");
+        assert_eq!(outcome.write_failed, 1, "and still fail the run");
     }
 
     #[tokio::test]

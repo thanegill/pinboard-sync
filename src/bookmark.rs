@@ -216,8 +216,13 @@ impl WriteOutcome {
         match result {
             Ok(()) => self.deleted.push(url.clone()),
             Err(e) => {
+                // Only the first error is carried out, since the caller reports one — but
+                // the later ones are separate failures with their own causes, so log them
+                // here rather than letting them vanish.
                 if self.error.is_none() {
                     self.error = Some(e);
+                } else {
+                    warn!("deleting absorbed URL {url}: {e:#}");
                 }
             }
         }

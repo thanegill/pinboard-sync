@@ -60,16 +60,28 @@ records *which* of the two it was as a `Halt`, and `into_result` maps them to di
 `SourceError`s so `main` fires the auth-failure hook for `Halt::Reauth` only — no
 credential change clears a rate limit.
 
-**No bookmark is written over unless this pass planned it.** `run_pass` takes the account's
-*whole* bookmark set (`residents`) alongside the slice it plans, and seeds `skipped_urls`
-with every resident outside that slice; the plan loop then adds the in-slice ones it turns
-out not to plan — skipped, failed, or never reached because the pass halted. A rewrite
-whose target URL is in that set is refused (and counted in `PassOutcome::refused`) rather
-than landing `replace=yes` on a record whose end-state was never established. The full set
-is needed because **a plan can target a URL its own filter excludes**: HN's item pass
-rewrites a story bookmark to its *article* URL, which is not an HN item URL and so was
-never in the slice — checking residency against the slice alone silently destroyed a
-separately-saved article's notes and tags.
+**No bookmark is ever replaced by a plan that isn't about it.** `run_pass` takes the
+account's *whole* bookmark set (`residents`) alongside the slice it plans, because **a plan
+can target a URL its own filter excludes**: HN's item pass rewrites a story bookmark to its
+*article* URL, which is not an HN item URL and so was never in the slice. Checking
+residency against the slice alone silently destroyed a separately-saved article's notes and
+tags.
+
+Bookmarks the pass produces no plan for are split by whether their stored record is the
+final word on them. **`mergeable`** — outside the slice, or `Plan::Skipped`/`Unchanged` —
+means we deliberately didn't plan it, so what is stored is current: a plan landing on that
+URL takes the resident in as a participant in the same `merge_bookmarks` collision merge
+(resident first, so its title wins), and the mover's old URL is absorbed. Pinboard holds one
+record per URL, so the end state there *must* be a single bookmark; merging is what makes
+that lossless and convergent. The resident's `read_later` and `timestamp` are restored after
+the merge — it is the record that stays, and `merge_bookmarks`'s any()/earliest rules are
+for two *plans*, so without that a merge would re-date a bookmark even with dating off.
+`public` is deliberately **not** restored: never-widen outranks it, because the mover's
+notes land on this record and a private member's annotation must not be republished. **`untouchable`** — the lookup failed, or a dead credential
+halted the pass first — means we couldn't establish its state, so nothing is written there
+at all; the rewrite is refused and counted in `PassOutcome::refused`. That refusal
+propagates: a refused group doesn't move, so its own URL stays occupied and becomes
+untouchable too, iterated to a fixpoint before any write so the result is order-independent.
 
 **`Plan` says whether the source was reached, not just whether to write.** `plan` returns
 `Plan::Bookmark` (an end-state), `Plan::Unchanged` (*the source answered*, nothing to do),

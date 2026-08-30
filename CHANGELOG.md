@@ -67,16 +67,20 @@ All notable changes to this project are documented here. The format is based on
   also bookmarked on its own, the rewrite landed on it with `replace=yes` and replaced the
   user's title, notes and tags with the generated ones. The guard that prevents exactly
   this for other collisions only knew about bookmarks in the pass's own slice, and an
-  article URL is not an HN item URL, so it never saw them. `cleanup` now checks the target
-  against every bookmark in the account: if something is already there that this pass did
-  not plan, the rewrite is left in place and reported instead of overwriting. Nothing
-  changes when the article is not separately bookmarked — the usual rewrite still happens.
-  One consequence is deliberate: a legacy bookmark stored at an HN *item* URL whose
-  article `sync` has since saved separately is now left alone rather than collapsed into
-  it, so the pair persists and each run reports one rewrite left in place. Collapsing it
-  previously worked only by overwriting the article's record, which is the data loss this
-  fixes; telling that apart from a genuine collision needs the pass to say "this resident
-  is the same item", which it cannot yet express.
+  article URL is not an HN item URL, so it never saw them.
+  `cleanup` now checks the target against **every** bookmark in the account. Since
+  Pinboard holds one record per URL, a bookmark already sitting at the target joins the
+  same field-merge that colliding rewrites already use: tags are unioned, distinct notes
+  are kept, and the resident's title, date and to-read state survive — it is the record
+  that stays at that URL. Privacy is the exception: it is never *widened*, so a private
+  bookmark merging in makes the result private rather than publishing its notes. So the
+  article keeps the user's title, notes and tags, gains the generated
+  `HN Link:` line and HN tags, and the now-redundant HN item bookmark is absorbed —
+  one record, nothing lost, and the pass converges. Nothing changes when the article is
+  not separately bookmarked: the usual rewrite still happens.
+  A target whose record this pass *could not read* — its lookup failed, or a dead
+  credential stopped the pass before reaching it — is still left strictly alone, since
+  what is stored there may be stale.
 - **`cleanup` now fires the `--on-auth-failure` hook**, which previously only `sync` did.
   An expired credential during `cleanup` exited non-zero but ran no hook, so anyone using
   it to be told "re-copy your reddit_session" was silently not told when the expiry

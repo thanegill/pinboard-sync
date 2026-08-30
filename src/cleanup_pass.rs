@@ -775,7 +775,7 @@ fn merge_bookmarks(group: &[&Bookmark]) -> Bookmark {
 mod tests {
     use super::*;
     use crate::bookmark::{AccountState, AccountView, CleanupStore};
-    use crate::test_support::FakePinboard;
+    use crate::test_support::{FakePinboard, Op};
     use anyhow::anyhow;
     use url::Url;
 
@@ -1650,6 +1650,103 @@ mod tests {
                 .iter()
                 .any(|call| call.url == "https://collide/"),
             "a converged incumbent merge must not rewrite itself every run"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_view_never_drifts_from_the_account() {
+        // The view is what every later pass plans against, and nothing ever checks it back
+        // against Pinboard mid-run. So a missed, doubled or mis-ordered recording raises no
+        // error at all — it surfaces one pass later as a plan built on an account that never
+        // existed. Run a mixed workload twice over one store and assert the view still
+        // equals the account rebuilt from the writes that actually landed.
+        let seed = vec![
+            bookmark("https://a/old"),
+            bookmark("https://b/mover"),
+            bookmark("https://r/resident"),
+            bookmark("https://c/mover"),
+            bookmark("https://d/blocked"),
+            bookmark("https://f/fail"),
+            bookmark("https://e/mover"),
+        ];
+        // Two different passes, as `cleanup --all` really runs: the second plans against
+        // what the first left, and reuses a URL the first retired.
+        let first_pass = FakePass(|bookmark: &Bookmark| {
+            let target = match bookmark.url.as_str() {
+                // A plain rewrite, whose old URL is deleted.
+                "https://a/old" => "https://a/new",
+                // A merge onto a resident, absorbing the mover's URL.
+                "https://b/mover" => "https://r/resident",
+                // A rewrite refused because its target could not be read.
+                "https://c/mover" => "https://d/blocked",
+                // A write Pinboard rejects, so the view must *not* record it.
+                "https://f/fail" => "https://f/moved",
+                "https://d/blocked" => return Err(item_error()),
+                _ => return Ok(Plan::Skipped),
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: u(target),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let second_pass = FakePass(|bookmark: &Bookmark| {
+            let target = match bookmark.url.as_str() {
+                "https://a/new" => "https://a/newer",
+                // Onto the URL the first pass retired — a real `--all` shape, and the one
+                // that catches a delete which drops the record but leaves its slot behind.
+                "https://e/mover" => "https://a/old",
+                _ => return Ok(Plan::Skipped),
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: u(target),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard {
+            fail_update_urls: ["https://f/moved".to_string()].into_iter().collect(),
+            ..FakePinboard::default()
+        };
+        let store = store(&pinboard, &seed, false);
+
+        // The resident is held out of the first slice, so `b/mover` is a genuine resident
+        // merge rather than a collision between two plans.
+        let first: Vec<Bookmark> = seed
+            .iter()
+            .filter(|b| b.url.as_str() != "https://r/resident")
+            .cloned()
+            .collect();
+        let first_outcome = run_pass(&store, &first, "test", NO_DATING, &first_pass).await;
+        // The second pass plans against whatever the first left behind — which is the whole
+        // reason the view has to be right.
+        let second = store.snapshot();
+        let second_outcome = run_pass(&store, &second, "test", NO_DATING, &second_pass).await;
+
+        // Pin the workload: an invariant test that silently stopped exercising these would
+        // keep passing while checking nothing.
+        assert_eq!(
+            (
+                first_outcome.changed,
+                first_outcome.refused,
+                first_outcome.plan_failed,
+                first_outcome.write_failed
+            ),
+            (2, 1, 1, 1),
+            "the first pass must make a rewrite, a merge, a refusal, a failed lookup and a \
+             rejected write"
+        );
+        assert_eq!(
+            (second_outcome.changed, second_outcome.write_failed),
+            (2, 0)
+        );
+        let ops = pinboard.ops.borrow();
+        assert!(
+            ops.iter().any(|op| matches!(op, Op::Delete(_))),
+            "and deletes have to reach the store, or the replay side is trivial: {ops:?}"
+        );
+        assert_eq!(
+            store.snapshot(),
+            crate::test_support::replay(&seed, &ops),
+            "the view diverged from the account the writes actually produced"
         );
     }
 

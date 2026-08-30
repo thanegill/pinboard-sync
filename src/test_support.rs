@@ -85,6 +85,33 @@ pub struct UpdateCall {
     pub dt: String,
 }
 
+/// A call that actually changed the account. `added`/`updated`/`deleted` record every
+/// *attempt*; this records only the ones that succeeded, which is what the account can be
+/// rebuilt from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Op {
+    Write(Bookmark),
+    Delete(Url),
+}
+
+/// Rebuild the account from `seed` plus the ops that landed. Deliberately a plain `Vec`
+/// rather than an [`crate::bookmark::AccountView`]: a replay built from the type under test
+/// would reproduce that type's own bug on both sides of the comparison and prove nothing.
+/// Assumes `seed` has no duplicate URLs, as `posts/all` normally does not.
+pub fn replay(seed: &[Bookmark], ops: &[Op]) -> Vec<Bookmark> {
+    let mut account = seed.to_vec();
+    for op in ops {
+        match op {
+            Op::Write(b) => match account.iter().position(|held| held.url == b.url) {
+                Some(at) => account[at] = b.clone(),
+                None => account.push(b.clone()),
+            },
+            Op::Delete(url) => account.retain(|held| held.url != *url),
+        }
+    }
+    account
+}
+
 #[derive(Default)]
 pub struct FakePinboard {
     pub all: Vec<Bookmark>,
@@ -101,6 +128,8 @@ pub struct FakePinboard {
     /// way to reach the half-applied case where the write landed and an absorbed URL
     /// survived.
     pub fail_delete_urls: HashSet<String>,
+    /// The successful writes and deletes, interleaved in call order — see [`replay`].
+    pub ops: RefCell<Vec<Op>>,
 }
 
 impl BookmarkStore for FakePinboard {
@@ -119,6 +148,7 @@ impl BookmarkStore for FakePinboard {
             shared: b.public,
             dt: bookmark_dt(b),
         });
+        self.ops.borrow_mut().push(Op::Write(b.clone()));
         Ok(())
     }
     async fn update(&self, b: &Bookmark) -> Result<()> {
@@ -134,6 +164,7 @@ impl BookmarkStore for FakePinboard {
             toread: b.read_later,
             dt: bookmark_dt(b),
         });
+        self.ops.borrow_mut().push(Op::Write(b.clone()));
         Ok(())
     }
     async fn delete(&self, url: &Url) -> Result<()> {
@@ -141,6 +172,7 @@ impl BookmarkStore for FakePinboard {
         if self.fail_delete_urls.contains(url.as_str()) {
             anyhow::bail!("fake delete failure for {url}");
         }
+        self.ops.borrow_mut().push(Op::Delete(url.clone()));
         Ok(())
     }
 }

@@ -1801,7 +1801,6 @@ fn resolve_hackernews_cleanup_config(
     Ok(hn_config)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn cleanup_one_hackernews<S: BookmarkStore + AccountState>(
     account: Option<&HackernewsAccount>,
     link_discussions: bool,

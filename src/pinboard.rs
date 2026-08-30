@@ -268,6 +268,19 @@ impl PinboardClient {
             if parsed.result_code != "done" {
                 return Err(anyhow!("Pinboard posts/add failed: {}", parsed.result_code));
             }
+            // Warn once the trim is final, not inside the retry: a note Pinboard keeps
+            // rejecting is re-trimmed at each halved budget, and warning per attempt reads
+            // like several different notes were cut. Worth saying at all because the stored
+            // note is now shorter than the one `cleanup` planned, so a later merge sees a
+            // block it doesn't recognise and can re-append it.
+            if extended.len() < b.note.len() {
+                warn!(
+                    "note trimmed to fit the request URL for {}: {} bytes -> {}",
+                    b.url,
+                    b.note.len(),
+                    extended.len()
+                );
+            }
             return Ok(());
         }
     }
@@ -333,18 +346,6 @@ impl PinboardClient {
         if best + TRUNCATION_MARKER.len() >= extended.len() {
             return extended.to_string();
         }
-        // Worth a warning rather than a silent trim: the stored note is now shorter than
-        // the one `cleanup` planned, so a later merge sees a block it doesn't recognise
-        // and can re-append it.
-        warn!(
-            "note trimmed to fit the request URL for {}: {} bytes -> {}",
-            fixed
-                .iter()
-                .find(|(name, _)| *name == "url")
-                .map_or("(unknown url)", |(_, value)| value),
-            extended.len(),
-            best + TRUNCATION_MARKER.len()
-        );
         format!("{}{}", &extended[..best], TRUNCATION_MARKER)
     }
 

@@ -437,6 +437,7 @@ pub async fn cleanup<P: BookmarkStore>(
     run_pass(
         pinboard,
         &gh_bms,
+        bookmarks,
         opts.dry_run,
         "github",
         opts.date_opts(),

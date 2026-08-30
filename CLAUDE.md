@@ -58,13 +58,18 @@ plans already made are still written — which is why `plan`
 returns `SourceError` rather than a flattened `anyhow::Error`. `PassOutcome::halted`
 records *which* of the two it was as a `Halt`, and `into_result` maps them to different
 `SourceError`s so `main` fires the auth-failure hook for `Halt::Reauth` only — no
-credential change clears a rate limit. **Any bookmark *in the
-pass's slice* left without a plan — skipped, failed, or never reached because the pass
-halted — joins `skipped_urls`**, so another bookmark rewriting onto its URL is
-refused (and counted in `PassOutcome::refused`) rather than clobbering a record whose
-end-state we never established. Note the limit: `run_pass` only sees the filtered slice,
-so a resident *outside* it is not protected — HN's item pass rewrites a story bookmark to
-its article URL, which is not an HN item URL and so never entered the slice.
+credential change clears a rate limit.
+
+**No bookmark is written over unless this pass planned it.** `run_pass` takes the account's
+*whole* bookmark set (`residents`) alongside the slice it plans, and seeds `skipped_urls`
+with every resident outside that slice; the plan loop then adds the in-slice ones it turns
+out not to plan — skipped, failed, or never reached because the pass halted. A rewrite
+whose target URL is in that set is refused (and counted in `PassOutcome::refused`) rather
+than landing `replace=yes` on a record whose end-state was never established. The full set
+is needed because **a plan can target a URL its own filter excludes**: HN's item pass
+rewrites a story bookmark to its *article* URL, which is not an HN item URL and so was
+never in the slice — checking residency against the slice alone silently destroyed a
+separately-saved article's notes and tags.
 
 **`Plan` says whether the source was reached, not just whether to write.** `plan` returns
 `Plan::Bookmark` (an end-state), `Plan::Unchanged` (*the source answered*, nothing to do),

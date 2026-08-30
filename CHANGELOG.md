@@ -42,6 +42,21 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **`cleanup hackernews` no longer destroys a separately saved article bookmark.** A
+  favorited HN *story* is rewritten to the article it links to — but if that article was
+  also bookmarked on its own, the rewrite landed on it with `replace=yes` and replaced the
+  user's title, notes and tags with the generated ones. The guard that prevents exactly
+  this for other collisions only knew about bookmarks in the pass's own slice, and an
+  article URL is not an HN item URL, so it never saw them. `cleanup` now checks the target
+  against every bookmark in the account: if something is already there that this pass did
+  not plan, the rewrite is left in place and reported instead of overwriting. Nothing
+  changes when the article is not separately bookmarked — the usual rewrite still happens.
+  One consequence is deliberate: a legacy bookmark stored at an HN *item* URL whose
+  article `sync` has since saved separately is now left alone rather than collapsed into
+  it, so the pair persists and each run reports one rewrite left in place. Collapsing it
+  previously worked only by overwriting the article's record, which is the data loss this
+  fixes; telling that apart from a genuine collision needs the pass to say "this resident
+  is the same item", which it cannot yet express.
 - **`cleanup` now fires the `--on-auth-failure` hook**, which previously only `sync` did.
   An expired credential during `cleanup` exited non-zero but ran no hook, so anyone using
   it to be told "re-copy your reddit_session" was silently not told when the expiry

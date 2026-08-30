@@ -197,6 +197,12 @@ impl PassOutcome {
 /// failure, including a dead credential, is tallied into the returned [`PassOutcome`],
 /// which the caller turns into a verdict.
 ///
+/// `residents` is the *whole* account, not just the slice being planned. A plan can
+/// target a URL outside its own filter — HackerNews rewrites a story bookmark to its
+/// article, which is by definition not an HN item URL — and writing there is
+/// `replace=yes` over a record this pass never planned. Checking residency against the
+/// slice alone cannot see those, so they are read from the full set.
+///
 /// Two phases so that several bookmarks whose plans normalize to the *same* URL don't
 /// clobber each other: phase 1 plans every bookmark (resolving date + privacy), phase 2
 /// groups the plans by target URL and writes each group. A lone group is a normal
@@ -208,9 +214,10 @@ impl PassOutcome {
 /// stored URL while Y moves elsewhere, Y's delete would otherwise remove the record X
 /// just wrote there. Precomputing the set of all target URLs and refusing to delete any
 /// of them makes the pass order-independent.
-pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
+pub async fn run_pass<'a, P: BookmarkStore, C: CleanupPass>(
     pinboard: &P,
-    bookmarks: &[Bookmark],
+    bookmarks: &'a [Bookmark],
+    residents: &'a [Bookmark],
     dry_run: bool,
     noun: &str,
     dates: DateOpts,
@@ -227,7 +234,14 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     let mut outcome = PassOutcome::default();
 
     let mut planned_pairs: Vec<(&Bookmark, Bookmark)> = Vec::new();
-    let mut skipped_urls: std::collections::HashSet<&url::Url> = std::collections::HashSet::new();
+    // Seeded with every bookmark this pass will never plan because it isn't in the
+    // slice; the loop below adds the in-slice ones it turns out not to plan either.
+    let in_slice: std::collections::HashSet<&url::Url> = bookmarks.iter().map(|b| &b.url).collect();
+    let mut skipped_urls: std::collections::HashSet<&url::Url> = residents
+        .iter()
+        .map(|b| &b.url)
+        .filter(|url| !in_slice.contains(url))
+        .collect();
     for (index, bookmark) in bookmarks.iter().enumerate() {
         let mut planned = match pass.plan(bookmark).await {
             Ok(Plan::Bookmark(p)) => {
@@ -304,6 +318,25 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
     // these, because some other planned write owns that URL; deleting it would clobber
     // that write's record. This keeps the pass order-independent.
     let targets: std::collections::HashSet<&url::Url> = group_order.iter().copied().collect();
+
+    // A group whose target is occupied won't move, so its *own* URL stays occupied too —
+    // and a second group heading there would replace the record the refusal just saved.
+    // Settled before any write so the outcome doesn't depend on group order, and iterated
+    // to a fixpoint because each refusal can occupy the URL that refuses the next.
+    loop {
+        let newly_occupied: Vec<&url::Url> = group_order
+            .iter()
+            .filter(|key| skipped_urls.contains(**key))
+            .filter_map(|key| groups.get(*key))
+            .flatten()
+            .map(|(original, _)| &original.url)
+            .filter(|url| !skipped_urls.contains(*url))
+            .collect();
+        if newly_occupied.is_empty() {
+            break;
+        }
+        skipped_urls.extend(newly_occupied);
+    }
 
     for key in group_order {
         let group = groups.remove(key).expect("key came from group_order");
@@ -542,7 +575,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.plan_failed, 1);
         assert_eq!(outcome.write_failed, 0);
         let updated = pinboard.updated.borrow();
@@ -570,7 +603,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert!(outcome.into_result().is_ok());
     }
 
@@ -587,7 +620,7 @@ mod tests {
         let mut pinboard = FakePinboard::default();
         pinboard.fail_update_urls.insert("https://x/".into());
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.write_failed, 1);
         assert!(pinboard.updated.borrow().is_empty());
         let err = outcome.into_result().unwrap_err();
@@ -602,7 +635,7 @@ mod tests {
         let pass = FakePass(|_: &Bookmark| Err(item_error()));
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.plan_failed, 2);
         let err = outcome.into_result().unwrap_err();
         assert!(err.to_string().contains("2 of 2"), "{err}");
@@ -618,7 +651,7 @@ mod tests {
         let pass = FakePass(|_: &Bookmark| Err(item_error()));
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!((outcome.reached, outcome.plan_failed), (0, 1));
         assert!(outcome.into_result().is_ok());
     }
@@ -643,7 +676,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!((outcome.reached, outcome.plan_failed), (1, 3));
         let err = outcome.into_result().unwrap_err();
         assert!(err.to_string().contains("3 of 4"), "{err}");
@@ -672,7 +705,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(planned.get(), 2, "should stop at the rate limit");
         assert_eq!(
             outcome.halted,
@@ -706,7 +739,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(planned.get(), 2, "should stop at the reauth failure");
         let updated = pinboard.updated.borrow();
         assert_eq!(
@@ -737,7 +770,7 @@ mod tests {
         let mut pinboard = FakePinboard::default();
         pinboard.fail_update_urls.insert("https://x/one".into());
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.write_failed, 1);
         let err = outcome.into_result().unwrap_err().to_string();
         assert!(err.contains("token expired"), "{err}");
@@ -761,7 +794,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.plan_failed, 1);
         let err = outcome.into_result().unwrap_err().to_string();
         assert!(err.contains("token expired"), "{err}");
@@ -790,7 +823,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.reached, 0);
         // "2 of 2", not "2 of 5": the three skipped bookmarks are not in the denominator,
         // which is what stops them padding it into a passing ratio.
@@ -812,7 +845,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.reached, 1);
         assert!(outcome.into_result().is_ok());
     }
@@ -823,7 +856,7 @@ mod tests {
         let pass = FakePass(|_: &Bookmark| Ok(Plan::Skipped));
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());
@@ -835,7 +868,7 @@ mod tests {
         let pass = FakePass(|bookmark: &Bookmark| Ok(Plan::Bookmark(unchanged_plan(bookmark))));
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         assert!(pinboard.updated.borrow().is_empty());
     }
@@ -853,7 +886,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -969,7 +1002,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
         let updated = pinboard.updated.borrow();
@@ -1005,7 +1038,8 @@ mod tests {
             });
             let pinboard = FakePinboard::default();
 
-            let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+            let outcome =
+                run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
             assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
             let updated = pinboard.updated.borrow();
@@ -1024,6 +1058,91 @@ mod tests {
         let y = bookmark("https://collide-b/");
         run_in_order(vec![x.clone(), y.clone()]).await;
         run_in_order(vec![y, x]).await;
+    }
+
+    #[tokio::test]
+    async fn a_refused_rewrite_leaves_its_own_record_protected() {
+        // A's move is refused, so A stays put at its stored URL — which means that URL is
+        // occupied after all, and B's rewrite onto it would replace the very record the
+        // refusal just saved.
+        let mut a = bookmark("https://x/a");
+        a.note = "A's notes".into();
+        let b = bookmark("https://x/b");
+        let outsider = bookmark("https://other/r");
+        let slice = vec![a.clone(), b.clone()];
+        let all = vec![a, b, outsider];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            let target = match bookmark.url.as_str().ends_with("/a") {
+                true => "https://other/r",
+                false => "https://x/a",
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: u(target),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &slice, &all, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.refused, 2, "both rewrites must be refused");
+        assert!(
+            pinboard.updated.borrow().is_empty(),
+            "A's record must survive its own refusal: {:?}",
+            pinboard.updated.borrow()
+        );
+    }
+
+    #[tokio::test]
+    async fn rewrite_onto_a_resident_outside_the_slice_is_refused() {
+        // A plan can target a URL its own filter would have excluded — HackerNews
+        // rewrites a story bookmark to its article — so the resident sitting there is
+        // invisible to a residency check that only looks at the slice.
+        let mover = bookmark("https://x/mine");
+        let mut outsider = bookmark("https://other/resident");
+        outsider.note = "hand written".into();
+        let slice = vec![mover.clone()];
+        let all = vec![mover, outsider];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                url: u("https://other/resident"),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &slice, &all, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.refused, 1);
+        assert!(pinboard.updated.borrow().is_empty());
+        assert!(pinboard.deleted.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_rewrite_onto_an_unoccupied_url_still_goes_through() {
+        // The other half of the guard: protecting residents must not block the ordinary
+        // rewrite onto a URL nobody has bookmarked.
+        let mover = bookmark("https://x/mine");
+        let slice = vec![mover.clone()];
+        let all = vec![mover];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                url: u("https://other/vacant"),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &slice, &all, false, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.refused, 0);
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://other/vacant");
+        assert_eq!(
+            *pinboard.deleted.borrow(),
+            vec!["https://x/mine".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -1049,7 +1168,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         // A (the skipped resident) is neither updated nor deleted; B's clobbering rewrite
         // onto T is refused, so nothing is written at all.
@@ -1082,7 +1201,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.plan_failed, 1);
         assert!(
             pinboard.updated.borrow().is_empty(),
@@ -1113,7 +1232,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert!(matches!(outcome.halted, Some(Halt::Reauth(_))));
         assert!(
             pinboard.updated.borrow().is_empty(),
@@ -1144,7 +1263,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
         let updated = pinboard.updated.borrow();
@@ -1174,7 +1293,7 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
         let updated = pinboard.updated.borrow();
@@ -1214,7 +1333,7 @@ mod tests {
             max_age_days: 1_000_000,
             stale_to_now: false,
         };
-        let outcome = run_pass(&pinboard, &books, true, "test", dates, &pass).await;
+        let outcome = run_pass(&pinboard, &books, &books, true, "test", dates, &pass).await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());

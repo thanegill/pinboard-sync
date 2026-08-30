@@ -76,6 +76,7 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
     run_pass(
         pinboard,
         &reddit_bms,
+        bookmarks,
         opts.dry_run,
         "reddit",
         opts.date_opts(),

@@ -1543,6 +1543,9 @@ fn handle_source_err(e: SourceError, hook: Option<&str>) -> anyhow::Error {
             run_auth_failure_hook(hook, &msg);
             anyhow!("{msg}")
         }
+        // Deliberately no hook: no credential change clears a rate limit, so waking the
+        // operator to rotate a token would send them after the wrong problem.
+        SourceError::RateLimited(msg) => anyhow!("{msg}"),
         SourceError::Other(e) => e,
     }
 }

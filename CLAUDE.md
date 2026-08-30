@@ -52,11 +52,15 @@ condition now reaches the driver as a `Plan` (a deleted or blocked repo is a
 trouble. A handful of those is a blip worth riding out; most of them failing means most of
 the work silently did not happen. This is deliberate: `cleanup`
 runs as a scheduled service, and a permanently dead URL must not wedge it into a failed
-state forever. `SourceError::ReauthRequired` stops the pass (a dead credential fails every
-remaining lookup too) but the plans already made are still written — which is why `plan`
-returns `SourceError` rather than a flattened `anyhow::Error`. **Any bookmark *in the
-pass's slice* left without a plan — skipped, failed, or never reached because the
-credential died — joins `skipped_urls`**, so another bookmark rewriting onto its URL is
+state forever. `SourceError::ReauthRequired` and `SourceError::RateLimited` stop the pass
+(a dead credential and an exhausted quota both fail every remaining lookup too) but the
+plans already made are still written — which is why `plan`
+returns `SourceError` rather than a flattened `anyhow::Error`. `PassOutcome::halted`
+records *which* of the two it was as a `Halt` so that when the auth-failure hook is
+eventually wired into `cleanup` it can fire for `Halt::Reauth` only — no credential change
+clears a rate limit. Nothing discriminates the two variants today. **Any bookmark *in the
+pass's slice* left without a plan — skipped, failed, or never reached because the pass
+halted — joins `skipped_urls`**, so another bookmark rewriting onto its URL is
 refused (and counted in `PassOutcome::refused`) rather than clobbering a record whose
 end-state we never established. Note the limit: `run_pass` only sees the filtered slice,
 so a resident *outside* it is not protected — HN's item pass rewrites a story bookmark to
@@ -171,6 +175,21 @@ exits non-zero; `SourceError::Other` (transient/parse) doesn't. HackerNews is pu
 and never re-auths. Both clients send through `http::send_retrying`
 ([`src/http.rs`](src/http.rs)), which backs off on network errors / 429 / 5xx but
 returns other statuses as-is.
+
+**`SourceError::RateLimited` is the third case, and deliberately not either of those.**
+GitHub answers both its primary and secondary rate limits with a **403 or 429** — the
+same statuses a real permission denial uses — so `github::rate_limit_message` matches on
+the headers instead: `x-ratelimit-remaining: 0` (with `x-ratelimit-reset` for the
+instant) or a `retry-after`. It must not become `ReauthRequired` (no credential change
+clears a quota, and firing the hook would send the operator after the wrong problem) nor
+a permanent skip like the `451` arm. Retrying is not the answer either: `send_retrying`'s
+2s-linear backoff over 4 attempts totals ~12s, while a primary limit resets up to an hour
+out and GitHub asks for a minute on secondary limits, so it would only fail more slowly.
+The 403 form isn't retried; the **429** form still is, by the shared 429/5xx predicate, and
+those ~12s are simply wasted before the response is read — harmless, and the reason a
+`rate_limit_message` unit test uses a synthesized `HeaderMap` rather than a 429 over
+wiremock. Stopping the pass is the response instead. Reddit's 403, by contrast, only ever
+means a dead cookie, so it maps straight to `ReauthRequired`.
 
 **Pinboard field names are inverted.** In `posts/add`, `description` is the *title*
 and `extended` is the notes (delicious backcompat). Bookmarks are written

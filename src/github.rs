@@ -143,6 +143,59 @@ impl GitHubRepo {
     }
 }
 
+/// The operator-facing explanation if `resp` is GitHub refusing us for rate limiting,
+/// else `None`.
+///
+/// Needed because GitHub answers *both* its primary and secondary rate limits with a
+/// `403` or a `429`, the same statuses a genuine permission denial uses — so the status
+/// alone cannot tell them apart. The headers can: an exhausted primary quota zeroes
+/// `x-ratelimit-remaining` and dates the reset in `x-ratelimit-reset`, while a secondary
+/// limit carries `retry-after`. Getting this wrong in either direction is costly, so it
+/// matches only on those signatures: a false positive would stop a pass over an ordinary
+/// permission error, a false negative leaves the operator chasing a token problem.
+fn rate_limit_message(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    body: &str,
+) -> Option<String> {
+    if status != reqwest::StatusCode::FORBIDDEN && status != reqwest::StatusCode::TOO_MANY_REQUESTS
+    {
+        return None;
+    }
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+
+    if let Some(retry_after) = header("retry-after") {
+        // RFC 7231 allows an HTTP-date here as well as delta-seconds, so only call it a
+        // duration once it parses as one.
+        return Some(match retry_after.parse::<u64>() {
+            Ok(seconds) => format!("GitHub rate limit hit; retry after {seconds}s"),
+            Err(_) => format!("GitHub rate limit hit; retry after {retry_after}"),
+        });
+    }
+    if header("x-ratelimit-remaining") == Some("0") {
+        let reset = header("x-ratelimit-reset")
+            .and_then(|value| value.parse::<i64>().ok())
+            .and_then(crate::timefmt::from_unix)
+            .and_then(crate::timefmt::to_rfc3339);
+        return Some(match reset {
+            Some(at) => format!("GitHub rate limit exhausted; it resets at {at}"),
+            None => "GitHub rate limit exhausted".to_string(),
+        });
+    }
+    // A secondary limit need carry neither header — the docs' guidance is then simply
+    // "wait at least one minute" — so its error message is the only thing left to go on.
+    if body.to_lowercase().contains("secondary rate limit") {
+        return Some("GitHub secondary rate limit hit; wait a minute before retrying".to_string());
+    }
+    None
+}
+
 /// Reads a user's starred repos via a personal access token.
 pub struct GitHubClient {
     http: reqwest::Client,
@@ -210,7 +263,11 @@ impl GitHubClient {
             return Ok(None);
         }
         if !status.is_success() {
+            let headers = resp.headers().clone();
             let body = resp.text().await.unwrap_or_default();
+            if let Some(message) = rate_limit_message(status, &headers, &body) {
+                return Err(SourceError::RateLimited(message));
+            }
             return Err(anyhow::anyhow!("github repo returned {status}: {}", body.trim()).into());
         }
         let repo: GitHubRepo = resp.json().await.context("parsing github repo response")?;
@@ -261,7 +318,11 @@ impl Source for GitHubClient {
                 .and_then(|v| v.to_str().ok())
                 .and_then(parse_link_next);
             if !status.is_success() {
+                let headers = resp.headers().clone();
                 let body = resp.text().await.unwrap_or_default();
+                if let Some(message) = rate_limit_message(status, &headers, &body) {
+                    return Err(SourceError::RateLimited(message));
+                }
                 return Err(
                     anyhow::anyhow!("github starred returned {status}: {}", body.trim()).into(),
                 );
@@ -517,6 +578,70 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Header-level cases for [`rate_limit_message`], kept off the network: a 429 through
+    /// `send_retrying` would spend the full retry budget (~12s) before the body is ever
+    /// read, which is too slow to pay on every `cargo test`.
+    fn headers(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
+        let mut map = reqwest::header::HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                reqwest::header::HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn retry_after_as_a_date_is_not_rendered_as_seconds() {
+        // RFC 7231 allows an HTTP-date, which must not be suffixed into "…GMTs".
+        let message = rate_limit_message(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            &headers(&[("retry-after", "Sun, 30 Aug 2026 15:00:00 GMT")]),
+            "",
+        )
+        .expect("retry-after marks a rate limit");
+        assert!(!message.contains("GMTs"), "{message}");
+        assert!(message.contains("Sun, 30 Aug 2026"), "{message}");
+    }
+
+    #[test]
+    fn retry_after_as_seconds_reads_as_a_duration() {
+        let message = rate_limit_message(
+            reqwest::StatusCode::FORBIDDEN,
+            &headers(&[("retry-after", "60")]),
+            "",
+        )
+        .expect("retry-after marks a rate limit");
+        assert!(message.contains("60s"), "{message}");
+    }
+
+    #[test]
+    fn a_success_is_never_a_rate_limit() {
+        // The status gate matters: a 200 carrying an exhausted budget is the *last*
+        // request that succeeded, not a refusal.
+        assert_eq!(
+            rate_limit_message(
+                reqwest::StatusCode::OK,
+                &headers(&[("x-ratelimit-remaining", "0")]),
+                "",
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unrelated_403_body_is_not_a_rate_limit() {
+        assert_eq!(
+            rate_limit_message(
+                reqwest::StatusCode::FORBIDDEN,
+                &headers(&[("x-ratelimit-remaining", "4999")]),
+                r#"{"message":"Must have admin rights to Repository."}"#,
+            ),
+            None
+        );
+    }
+
     fn repo(value: serde_json::Value) -> GitHubRepo {
         serde_json::from_value(value).unwrap()
     }
@@ -688,6 +813,192 @@ mod net_tests {
     use serde_json::json;
     use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// End to end: a rate limit part-way through stops the pass rather than spending a
+    /// doomed request on every remaining bookmark, while keeping the work already done.
+    #[tokio::test]
+    async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
+        use crate::pinboard::PinboardBookmark;
+        use crate::test_support::FakePinboard;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/old/name"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "full_name": "new/name",
+                "html_url": "https://github.com/new/name",
+                "description": "Still here",
+                "language": "Rust"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/limited/repo"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .insert_header("x-ratelimit-remaining", "0")
+                    .insert_header("x-ratelimit-reset", "1788102000")
+                    .set_body_string(r#"{"message":"API rate limit exceeded"}"#),
+            )
+            .mount(&server)
+            .await;
+        // The point of the test: this one must never be requested. An unmounted path
+        // would not prove it — wiremock answers those with a 404, which `repo()` reads as
+        // a deleted repo and skips silently — so assert zero calls explicitly. The
+        // expectation is checked when the server drops.
+        Mock::given(method("GET"))
+            .and(path("/repos/never/looked"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let stored = |url: &str, title: &str| {
+            PinboardBookmark {
+                url: url.into(),
+                description: title.into(),
+                extended: "notes".into(),
+                tags: "github-star".into(),
+                time: "2020-01-01T00:00:00Z".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }
+            .try_into()
+            .unwrap()
+        };
+        let pinboard = FakePinboard {
+            all: vec![
+                stored("https://github.com/old/name", "old/name"),
+                stored("https://github.com/limited/repo", "limited/repo"),
+                stored("https://github.com/never/looked", "never/looked"),
+            ],
+            ..Default::default()
+        };
+        let bookmarks = pinboard.all.clone();
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+
+        let err = cleanup(
+            &pinboard,
+            &client,
+            &GitHubConfig::default(),
+            &GitHubCleanupOpts {
+                dry_run: false,
+                use_post_date: false,
+                max_age_days: 30,
+                cleanup_stale_to_now: false,
+            },
+            &bookmarks,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("rate limit"), "{err}");
+        // The repo read before the limit is still rewritten — the work isn't thrown away.
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://github.com/new/name");
+    }
+
+    /// GitHub answers an exhausted primary quota with 403 (not 429) and
+    /// `x-ratelimit-remaining: 0`. That must not read as a permission problem.
+    #[tokio::test]
+    async fn repo_lookup_reports_an_exhausted_rate_limit_with_its_reset() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .insert_header("x-ratelimit-remaining", "0")
+                    // 2026-08-30T15:00:00Z
+                    .insert_header("x-ratelimit-reset", "1788102000")
+                    .set_body_string(r#"{"message":"API rate limit exceeded"}"#),
+            )
+            .mount(&server)
+            .await;
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+
+        let err = client.repo("o", "r").await.unwrap_err();
+        assert!(
+            matches!(err, SourceError::RateLimited(_)),
+            "expected a rate-limit error, got {err:?}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("rate limit"), "{message}");
+        assert!(message.contains("2026-08-30"), "{message}");
+    }
+
+    /// GitHub's docs make both headers optional on a secondary limit — "Otherwise, wait
+    /// for at least one minute before retrying" — leaving the body's error message as the
+    /// only signal. Missing it drops us back to the per-bookmark 403 this exists to fix.
+    #[tokio::test]
+    async fn a_secondary_rate_limit_is_recognised_by_its_message_alone() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r"))
+            .respond_with(ResponseTemplate::new(403).set_body_string(
+                r#"{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}"#,
+            ))
+            .mount(&server)
+            .await;
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+
+        let err = client.repo("o", "r").await.unwrap_err();
+        assert!(
+            matches!(err, SourceError::RateLimited(_)),
+            "expected a rate-limit error, got {err:?}"
+        );
+    }
+
+    /// A 403 without the rate-limit signature is a real permission denial and must stay
+    /// an ordinary error — mapping it to a rate limit would stop the pass wrongly.
+    #[tokio::test]
+    async fn a_plain_403_is_not_treated_as_a_rate_limit() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .insert_header("x-ratelimit-remaining", "4999")
+                    .set_body_string(r#"{"message":"Must have admin rights"}"#),
+            )
+            .mount(&server)
+            .await;
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+
+        let err = client.repo("o", "r").await.unwrap_err();
+        assert!(
+            matches!(err, SourceError::Other(_)),
+            "expected an ordinary error, got {err:?}"
+        );
+    }
+
+    /// Secondary rate limits carry `retry-after` and need not zero the remaining count.
+    #[tokio::test]
+    async fn a_secondary_rate_limit_is_recognised_by_retry_after() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .insert_header("retry-after", "60")
+                    .set_body_string(r#"{"message":"exceeded a secondary rate limit"}"#),
+            )
+            .mount(&server)
+            .await;
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+
+        let err = client.repo("o", "r").await.unwrap_err();
+        assert!(
+            matches!(err, SourceError::RateLimited(_)),
+            "expected a rate-limit error, got {err:?}"
+        );
+        assert!(err.to_string().contains("60s"), "{err}");
+    }
 
     #[tokio::test]
     async fn fetch_paginates_via_link_header_and_sends_token() {

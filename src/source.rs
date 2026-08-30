@@ -14,17 +14,23 @@ pub enum SourceError {
     /// The service rejected the request (401/403); a credential needs refreshing.
     #[error("re-authentication required: {0}")]
     ReauthRequired(String),
+    /// The service is refusing further requests until a reset. Distinct from
+    /// [`SourceError::ReauthRequired`] because no credential change fixes it, so it must
+    /// not fire the auth-failure hook — but it is alike in that every *remaining* request
+    /// would fail the same way, so a caller should stop rather than work through them.
+    #[error("rate limited: {0}")]
+    RateLimited(String),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
 
 impl SourceError {
-    /// Flatten into a plain `anyhow::Error`: the re-auth message on its own (without
-    /// the variant's prefix) or the inner error unwrapped. Used by the cleanup paths,
-    /// which surface failures as `anyhow` and don't fire the auth-failure hook.
+    /// Flatten into a plain `anyhow::Error`: the re-auth or rate-limit message on its own
+    /// (without the variant's prefix) or the inner error unwrapped. Used by the cleanup
+    /// paths, which surface failures as `anyhow` and don't fire the auth-failure hook.
     pub fn into_anyhow(self) -> anyhow::Error {
         match self {
-            SourceError::ReauthRequired(m) => anyhow::anyhow!(m),
+            SourceError::ReauthRequired(m) | SourceError::RateLimited(m) => anyhow::anyhow!(m),
             SourceError::Other(e) => e,
         }
     }

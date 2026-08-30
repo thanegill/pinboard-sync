@@ -205,6 +205,7 @@ async fn fetch_post_info<R: PostInfo>(
         SourceError::ReauthRequired(m) => {
             anyhow!("{m}\nSet a fresh REDDIT_COOKIE (reddit_session) and retry.")
         }
+        SourceError::RateLimited(m) => anyhow!("{m}"),
         SourceError::Other(e) => e,
     })?;
     for entry in entries {

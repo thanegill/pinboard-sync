@@ -64,8 +64,9 @@ pub trait CleanupPass {
     /// not handle ([`Plan::Skipped`]), which the driver needs to tell one dead link
     /// apart from an unreachable source.
     /// [`SourceError::Other`] marks a per-item failure (logged and counted; the
-    /// pass continues with the next bookmark), while [`SourceError::ReauthRequired`]
-    /// stops the pass — a dead credential fails every remaining lookup too. A plan's
+    /// pass continues with the next bookmark), while [`SourceError::ReauthRequired`] and
+    /// [`SourceError::RateLimited`] stop the pass — a dead credential and an exhausted
+    /// quota both fail every remaining lookup too. A plan's
     /// `timestamp` is the *candidate* source date; the driver resolves the final date
     /// from it via the pass's [`DateOpts`], and always takes `public`/`read_later` from
     /// the stored bookmark — so those two fields on the
@@ -97,32 +98,60 @@ pub struct PassOutcome {
     pub plan_failed: usize,
     /// Bookmarks whose write to the store failed.
     pub write_failed: usize,
-    /// Set when a dead credential stopped planning partway.
-    pub reauth: Option<String>,
+    /// Set when the source told us to stop partway. See [`Halt`].
+    pub halted: Option<Halt>,
+}
+
+/// Why a pass stopped planning early: the source said something that makes every
+/// *remaining* lookup fail the same way, so working through them would only spend
+/// requests to collect identical errors.
+///
+/// Two variants rather than one message because only one of them is an auth problem.
+/// Nothing discriminates them *yet* — `into_result` reports either the same way — but the
+/// `--on-auth-failure` hook does not currently reach `cleanup` at all (see the follow-up
+/// issue for wiring it), and when it does it must fire for [`Halt::Reauth`] only: no
+/// credential change clears a rate limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Halt {
+    /// A credential needs refreshing.
+    Reauth(String),
+    /// The service is refusing requests until a reset; no credential change helps.
+    RateLimited(String),
+}
+
+impl Halt {
+    /// The operator-facing explanation, without a variant prefix.
+    fn message(&self) -> &str {
+        match self {
+            Halt::Reauth(message) | Halt::RateLimited(message) => message,
+        }
+    }
 }
 
 impl PassOutcome {
     /// The run's verdict. A link we could not look up is *not* a failed run: it is
     /// logged, skipped, and every other bookmark is still cleaned up, so one
     /// permanently dead URL cannot wedge a scheduled service into a failed state
-    /// forever. Three things do fail the run — a dead credential, a write we could not
-    /// make (the destination is what we sync *to*), and lookups failing in the
-    /// *majority*, which is an outage wearing a per-item disguise.
+    /// forever. Three things do fail the run — a [`Halt`] (a dead credential or a rate
+    /// limit), a write we could not make (the destination is what we sync *to*), and
+    /// lookups failing in the *majority*, which is an outage wearing a per-item disguise.
     ///
     /// The majority test rather than "every lookup failed" because a `plan` failure can
     /// no longer be one dead link: every permanent per-item condition reaches the driver
     /// as a [`Plan`] (a deleted or blocked repo is [`Plan::Bookmark`], a URL the pass
-    /// does not handle is [`Plan::Skipped`]). What is left in `plan_failed` is rate
-    /// limits, post-retry 5xx, and network trouble — a handful is a blip worth riding
-    /// out, but most of them failing means most of the work silently did not happen.
+    /// does not handle is [`Plan::Skipped`]), and a recognised rate limit is a [`Halt`].
+    /// What is left in `plan_failed` is post-retry 5xx, network trouble, and throttling a
+    /// source did not label — a handful is a blip worth riding out, but most of them
+    /// failing means most of the work silently did not happen.
     ///
     /// The `max(1)` floor keeps that promise for a pass with a tiny population: the
     /// discussion-link pass strips its own marker tag, so it steadily looks up one or two
     /// bookmarks, and without the floor a single hiccup there would be a "majority" and
     /// would wedge the service all over again. One failed lookup is always survivable.
     pub fn into_result(self) -> Result<()> {
-        if let Some(message) = self.reauth {
-            // The credential is the headline, but it must not bury what else went wrong
+        if let Some(halt) = &self.halted {
+            let message = halt.message();
+            // Why we stopped is the headline, but it must not bury what else went wrong
             // before it: those counts are the only record once this returns.
             let mut also = Vec::new();
             if self.plan_failed > 0 {
@@ -213,7 +242,12 @@ pub async fn run_pass<P: BookmarkStore, C: CleanupPass>(
             // This one and everything after it goes unplanned, so protect all of them:
             // a record we never looked at must not be written over.
             Err(SourceError::ReauthRequired(message)) => {
-                outcome.reauth = Some(message);
+                outcome.halted = Some(Halt::Reauth(message));
+                skipped_urls.extend(bookmarks[index..].iter().map(|b| &b.url));
+                break;
+            }
+            Err(SourceError::RateLimited(message)) => {
+                outcome.halted = Some(Halt::RateLimited(message));
                 skipped_urls.extend(bookmarks[index..].iter().map(|b| &b.url));
                 break;
             }
@@ -607,6 +641,40 @@ mod tests {
         assert_eq!((outcome.reached, outcome.plan_failed), (1, 3));
         let err = outcome.into_result().unwrap_err();
         assert!(err.to_string().contains("3 of 4"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_stops_the_pass_like_a_dead_credential() {
+        // Being rate limited fails every remaining lookup just as a dead credential does,
+        // so stop rather than spend one doomed request per bookmark — while still writing
+        // the plans already made.
+        let books = vec![
+            bookmark("https://x/one"),
+            bookmark("https://x/limited"),
+            bookmark("https://x/never"),
+        ];
+        let planned = std::cell::Cell::new(0usize);
+        let pass = FakePass(|bookmark: &Bookmark| {
+            planned.set(planned.get() + 1);
+            if bookmark.url.as_str().ends_with("one") {
+                return Ok(Plan::Bookmark(Bookmark {
+                    title: "New".into(),
+                    ..unchanged_plan(bookmark)
+                }));
+            }
+            Err(SourceError::RateLimited("resets at 14:23".into()))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
+        assert_eq!(planned.get(), 2, "should stop at the rate limit");
+        assert_eq!(
+            outcome.halted,
+            Some(Halt::RateLimited("resets at 14:23".into()))
+        );
+        assert_eq!(pinboard.updated.borrow().len(), 1);
+        let err = outcome.into_result().unwrap_err().to_string();
+        assert!(err.contains("resets at 14:23"), "{err}");
     }
 
     #[tokio::test]
@@ -1040,7 +1108,7 @@ mod tests {
         let pinboard = FakePinboard::default();
 
         let outcome = run_pass(&pinboard, &books, false, "test", NO_DATING, &pass).await;
-        assert!(outcome.reauth.is_some());
+        assert!(matches!(outcome.halted, Some(Halt::Reauth(_))));
         assert!(
             pinboard.updated.borrow().is_empty(),
             "must not write over a bookmark reauth left unplanned"

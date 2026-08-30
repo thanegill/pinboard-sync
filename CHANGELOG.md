@@ -78,7 +78,10 @@ All notable changes to this project are documented here. The format is based on
   to-read on a record the user had already cleared — that last one only when a record
   *is* staying; bookmarks colliding onto a fresh URL still OR it.) So the article keeps the user's title, notes and tags, gains the generated
   `HN Link:` line and HN tags, and the now-redundant HN item bookmark is absorbed —
-  one record, nothing lost, and the pass converges. Nothing changes when the article is
+  one record, nothing lost, and the pass converges — with one exception: a merged note
+  long enough that Pinboard's API rejects the request URL is stored truncated, and the
+  next run no longer recognizes the truncated block, so that bookmark is rewritten every
+  run and its note grows. The trim is now logged when it happens. Nothing changes when the article is
   not separately bookmarked: the usual rewrite still happens.
 
   The same protection covers a collision between two bookmarks the pass *did* plan — a

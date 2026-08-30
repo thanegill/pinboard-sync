@@ -1789,6 +1789,10 @@ mod tests {
         )
         .await;
         assert_eq!(outcome.write_failed, 0);
+        assert_eq!(
+            outcome.refused, 0,
+            "nothing here is refused — it is settled"
+        );
         assert!(
             !pinboard
                 .updated
@@ -2823,6 +2827,10 @@ mod tests {
         )
         .await;
         assert!(matches!(outcome.halted, Some(Halt::Reauth(_))));
+        assert_eq!(
+            outcome.refused, 1,
+            "and the rewrite is reported, not just dropped"
+        );
         assert!(
             pinboard.updated.borrow().is_empty(),
             "must not write over a bookmark reauth left unplanned"

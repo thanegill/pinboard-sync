@@ -72,8 +72,10 @@ All notable changes to this project are documented here. The format is based on
   Pinboard holds one record per URL, a bookmark already sitting at the target joins the
   same field-merge that colliding rewrites already use: tags are unioned, the resident's
   note is kept **byte for byte** and extended only with what the incoming bookmarks add,
-  and the resident's title, date and to-read state survive — it is the record that stays
-  at that URL. So the article keeps the user's title, notes and tags, gains the generated
+  and its title, date and to-read state survive — it is the record that stays at that URL.
+  (Its title survives if it has one, and its date if that date parsed; an absorbed
+  bookmark's `to-read` flag is discarded rather than OR'd in, so a merge can never set
+  to-read on a record the user had already cleared.) So the article keeps the user's title, notes and tags, gains the generated
   `HN Link:` line and HN tags, and the now-redundant HN item bookmark is absorbed —
   one record, nothing lost, and the pass converges. Nothing changes when the article is
   not separately bookmarked: the usual rewrite still happens.
@@ -89,12 +91,15 @@ All notable changes to this project are documented here. The format is based on
   and reporting the rewrite as left in place (now shown in `--dry-run` too, not only
   logged). A target whose record this pass *could not read* — its lookup failed, or a dead
   credential stopped the pass before reaching it — is left strictly alone, since what is
-  stored there may be stale. And a target whose public/private state differs from the
-  bookmark(s) moving onto it is left alone too, in either direction: merging fuses their
-  notes into one record, so it would have to either publish a private annotation or
+  stored there may be stale. And a bookmark whose public/private state differs from the
+  record at the URL it is moving to is left where it is, in either direction: merging fuses
+  their notes into one record, so it would have to either publish a private annotation or
   unshare a bookmark the user chose to share, and neither is this tool's call to make.
-  A refusal protects the refused bookmark's own URL as well, so a second rewrite heading
-  there can't overwrite the record the refusal just preserved.
+  Only the disagreeing bookmark is held back — the record it was heading for still gets its
+  own cleanup, and any other bookmarks merging in still merge. A refusal protects the held-
+  back bookmark's own URL as well, so a second rewrite heading there can't overwrite the
+  record the refusal just preserved; the same now applies when a rewrite *fails* partway,
+  which previously left the stranded record open to being overwritten by a later one.
 
   `cleanup --all` runs the three sources over one account in turn, and each of them
   writes. All three now share a **live** view of the account rather than one snapshot

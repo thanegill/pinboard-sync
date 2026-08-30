@@ -91,21 +91,36 @@ is this pass's intended end-state for that record. **Resident and incumbent get 
 treatment on purpose**: whether the occupant happens to fall inside the pass's own slice is
 an implementation detail the user cannot see, and it decided whether their bookmark was
 protected. A GitHub rename where both names are starred goes down the incumbent path, and
-that is the common case, not the rare one. Only a collision onto a URL nothing occupies
-falls back to `merge_bookmarks`'s raw peer rules (`public` if all, `read_later` if any,
-earliest date).
+that is the common case, not the rare one.
 
-Two kinds of target are `untouchable`: nothing is written there, the rewrite is refused and
-counted in `PassOutcome::refused`. One the pass **could not read** — a failed lookup, or one
-a halt stopped it short of — because what is stored there may be stale. One whose **`public`
-doesn't match** the record that stays there, because a merge fuses their notes into one
-record and would have to either publish a private annotation or unshare a bookmark the user
-chose to share; the tool picks neither, in either direction. Both refusals propagate — a
-refused group doesn't move, so it keeps its own URL occupied — iterated to a fixpoint before
-any write so the result is order-independent. The visibility check therefore runs *before*
-that fixpoint, and it is what lets the converged-state guard use `diff` (which ignores
-`public`/`read_later`): the guard only fires when something is already stored at the target,
-and a merge onto it reaches the write only when both flags already match.
+Two targets have no record that stays, and both fall back to `merge_bookmarks`'s raw peer
+rules (`public` if all, `read_later` if any, earliest date): a URL nothing occupies, and one
+whose occupant is itself planned to move *away*. The second is safe only because that
+occupant's own plan writes it to its new URL — and if that write is refused the fixpoint
+refuses the group heading here too, while if it *fails* the write loop marks the URL
+occupied on the spot. Nothing else protects it, so don't remove any of the three.
+
+Targets can be `untouchable`: nothing is written there, the rewrite is refused and
+counted in `PassOutcome::refused`. A target the pass **could not read** — a failed lookup, or
+one a halt stopped it short of — because what is stored there may be stale. And, separately,
+a single plan whose **`public` doesn't match** the record that stays at its target drops out
+of that group: a merge fuses their notes into one record and would have to either publish a
+private annotation or unshare a bookmark the user chose to share, and the tool picks neither,
+in either direction. **Only that plan is refused, not the group** — the record that stays
+usually has a plan of its own, and blocking it too would let one mismatched duplicate freeze
+an unrelated bookmark's cleanup for good. Every refusal propagates — whatever didn't move
+keeps its own URL occupied — iterated to a fixpoint before any write so the result is
+order-independent, which is why the visibility check runs *before* that fixpoint.
+
+The mismatch reaches the driver as `Refusal::OccupiedByRefused`, not a reason of its own:
+what a later group needs to know is that the URL is still taken, and *why* the mover stayed
+is logged where it is actionable, naming both URLs and both visibilities.
+
+Together those are what let the converged-state guard use `diff` (which ignores
+`public`/`read_later`), but by two different mechanisms — `public` because a disagreeing
+member never joins, `read_later` because it is *restored* from the surviving record
+afterwards. Members are free to disagree about `read_later`, so removing that restore would
+let the merge's any()-rule flip it on.
 
 **`Plan` says whether the source was reached, not just whether to write.** `plan` returns
 `Plan::Bookmark` (an end-state), `Plan::Unchanged` (*the source answered*, nothing to do),

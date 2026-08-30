@@ -74,9 +74,12 @@ impl Bookmark {
     /// write would change differs — so `cleanup` skips the bookmark. `timestamp` compares
     /// by instant (a re-formatted but equivalent time isn't a change). The `public` and
     /// `read_later` flags are not compared, because on the paths that call this they
-    /// cannot differ: a single plan carries the stored values, forced there before diffing,
-    /// and a merge onto a record already stored at the target reaches the write only when
-    /// every member already matches it (see `cleanup_pass::run_pass`).
+    /// cannot differ, though for different reasons. A single plan carries the stored values,
+    /// forced there before diffing. In a merge, `public` is enforced — a member that
+    /// disagrees with the record staying at the target is refused and never joins — while
+    /// `read_later` is *restored* from that record afterwards, because members are free to
+    /// disagree about it and the merge's any()-rule would otherwise flip it on. See
+    /// `cleanup_pass::run_pass`.
     pub fn diff(&self, new: &Bookmark) -> Vec<(&'static str, String)> {
         let mut changes = Vec::new();
         if new.url != self.url {

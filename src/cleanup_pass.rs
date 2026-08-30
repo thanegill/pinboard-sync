@@ -7,9 +7,11 @@
 //! [`merge_bookmarks`]) into a single record written via [`BookmarkStore::apply_merge`],
 //! which deletes the absorbed URLs. A bookmark already stored at the target joins that
 //! merge as well — Pinboard holds one record per URL, so the end state there has to be a
-//! single bookmark, and merging keeps what it had instead of replacing it — unless it and
-//! the plans moving onto it disagree about visibility, which is refused rather than
-//! resolved (see [`Refusal`]). A rewrite's old URL is never deleted when it is
+//! single bookmark, and merging keeps what it had instead of replacing it. A plan that
+//! disagrees with it about visibility does not join: that one is refused and left where it
+//! is, while the rest of the group merges. The exception is a bookmark that is itself
+//! planned to move *away* from the target — it is not what stays there, so it neither leads
+//! the merge nor blocks it; its own plan is what preserves it. A rewrite's old URL is never deleted when it is
 //! itself the target of another planned write in the same pass, so colliding/chained
 //! rewrites can't clobber each other's record and the pass is order-independent.
 //! `run_pass` renders the dry-run lines and tallies into a [`PassOutcome`], which decides
@@ -130,13 +132,11 @@ enum Refusal {
     /// The target holds a record this pass could not read — a failed lookup, or one a halt
     /// stopped it short of — so what is stored there may be stale.
     Unreadable,
-    /// The target belongs to a group that was itself refused, so it never moved and its
-    /// URL is still occupied.
+    /// The target holds a bookmark whose own rewrite was refused, so it never moved and its
+    /// URL is still occupied. A visibility mismatch reaches the driver this way: the reason
+    /// the mover stayed is logged where it is actionable, at the point of refusal, and what
+    /// the *next* group needs to know is only that the URL is still taken.
     OccupiedByRefused,
-    /// The target holds a readable record, but it and the plan(s) moving onto it disagree
-    /// about visibility, and a merge would have to pick one — publishing a private note or
-    /// unsharing a public bookmark.
-    VisibilityMismatch,
 }
 
 impl Refusal {
@@ -144,9 +144,6 @@ impl Refusal {
         match self {
             Refusal::Unreadable => "occupied by a bookmark this pass could not read",
             Refusal::OccupiedByRefused => "occupied by a rewrite that was itself refused",
-            Refusal::VisibilityMismatch => {
-                "occupied by a bookmark whose public/private state differs from the rewrite's"
-            }
         }
     }
 }
@@ -373,34 +370,68 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         .filter_map(|key| store.resident(key).map(|resident| (*key, resident)))
         .collect();
 
-    // A merge fuses the members' notes and tags into one record, so it can only run when
-    // every member agrees with the record that stays there about who may read it. Widening
+    // A merge fuses the members' notes and tags into one record, so a bookmark may only
+    // join when it agrees with the record that stays there about who may read it. Widening
     // would publish a private member's annotation; narrowing would unshare a bookmark the
-    // user chose to share. Neither is ours to decide, so refuse and leave them alone.
-    // Settled here, ahead of the fixpoint, because a group refused for this reason stays
-    // parked at its own URL exactly like one refused for an unreadable target.
-    // Collected before extending so an already-refused target keeps its own, more specific
-    // reason rather than being relabelled a mismatch.
-    let mismatched: Vec<url::Url> = group_order
-        .iter()
-        .filter(|key| !untouchable.contains_key(**key))
-        .filter_map(|key| {
-            let members = &groups[*key];
-            let staying = match residents.get(key) {
-                Some(resident) => resident.public,
-                None => members[incumbent_of(members, key)?].1.public,
-            };
-            members
+    // user chose to share. Neither is ours to decide, so the disagreeing bookmark drops out
+    // of the group and stays where it is.
+    //
+    // Only that bookmark, not the whole group: the record that stays usually has a plan of
+    // its own, which has nothing to do with the mover's visibility, and blocking that too
+    // would let one mismatched duplicate freeze an unrelated bookmark's cleanup for good.
+    // Settled here, ahead of the fixpoint, because a refused mover keeps its own URL
+    // occupied exactly like a group refused for an unreadable target.
+    let mut refused_movers: Vec<(url::Url, &url::Url, bool, bool)> = Vec::new();
+    for key in &group_order {
+        if untouchable.contains_key(*key) {
+            continue;
+        }
+        let members = &groups[key];
+        let staying = match residents.get(key) {
+            Some(resident) => resident.public,
+            None => match incumbent_of(members, key) {
+                Some(at) => members[at].1.public,
+                // Nothing is stored at this target, so there is no visibility to match and
+                // the plans merge as peers.
+                None => continue,
+            },
+        };
+        let members = groups.get_mut(key).expect("key came from group_order");
+        let (kept, refused): (Vec<_>, Vec<_>) = members
+            .iter()
+            .copied()
+            .partition(|(_, planned)| planned.public == staying);
+        if refused.is_empty() {
+            continue;
+        }
+        refused_movers.extend(
+            refused
                 .iter()
-                .any(|(_, planned)| planned.public != staying)
-                .then(|| (*key).clone())
-        })
-        .collect();
-    untouchable.extend(
-        mismatched
-            .into_iter()
-            .map(|url| (url, Refusal::VisibilityMismatch)),
-    );
+                .map(|(original, planned)| (original.url.clone(), *key, planned.public, staying)),
+        );
+        *members = kept;
+    }
+    for (mover, target, mover_public, staying) in refused_movers {
+        outcome.refused += 1;
+        let describe = |public| if public { "public" } else { "private" };
+        warn!(
+            "not merging {mover} into {target}: it is {}, but {target} is {}",
+            describe(mover_public),
+            describe(staying)
+        );
+        if dry_run {
+            println!("[dry-run] {mover}");
+            println!(
+                "          (refused: would merge into {target}, which is {})",
+                describe(staying)
+            );
+        }
+        // The mover didn't move, so its own URL is still occupied and no other rewrite may
+        // land there.
+        untouchable
+            .entry(mover)
+            .or_insert(Refusal::OccupiedByRefused);
+    }
 
     // A group whose target is occupied won't move, so its *own* URL stays occupied too —
     // and a second group heading there would replace the record the refusal just saved.
@@ -437,13 +468,13 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             // is part of what the operator is previewing.
             if dry_run {
                 println!("[dry-run] {key}");
-                println!("          {:<6}-> {}", "refused", reason.explain());
+                println!("          (refused: {})", reason.explain());
             }
             continue;
         }
-        // A resident sitting at the target joins the group. Pinboard keys on URL, so the
-        // end state there has to be one record, and merging keeps what the resident had
-        // instead of replacing it — it goes in first, so its title wins.
+        // Pinboard keys on URL, so the end state at this target has to be one record.
+        // Anything already stored there joins the group rather than being replaced by it;
+        // which member leads that merge is settled below.
         let resident = residents.get(key);
         if resident.is_none() && group.len() == 1 {
             let (original, planned) = group[0];
@@ -485,6 +516,15 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
                 Some(e) => {
                     outcome.write_failed += 1;
                     error!("updating bookmark {}: {e:#}", original.url);
+                    // The move didn't happen, so the record is still at its old URL and a
+                    // later group heading there would overwrite it. The pre-write fixpoint
+                    // can't know this, so protect it now — later groups only, which is why
+                    // a failed write is still reported as a failure rather than a refusal.
+                    if url_changed {
+                        untouchable
+                            .entry(original.url.clone())
+                            .or_insert(Refusal::OccupiedByRefused);
+                    }
                 }
             }
             continue;
@@ -498,6 +538,11 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // the plan is this pass's intended end-state for it, and merging its stored record
         // back in would resurrect exactly what the plan removed.
         let incumbent = incumbent_of(&group, key);
+        // The tail filter below drops index `incumbent` unconditionally, which would lose a
+        // member outright if both could be `Some`. They can't — an incumbent's stored URL is
+        // this key, so the key is in `planned_originals`, which `residents` excludes — but
+        // that proof spans a hundred lines, so assert it where it is relied on.
+        debug_assert!(resident.is_none() || incumbent.is_none());
         let survivor = resident.or_else(|| incumbent.map(|at| group[at].1));
         let plans: Vec<&Bookmark> = survivor
             .into_iter()
@@ -522,7 +567,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             // `None` means the stored date was absent or wouldn't parse, and writing it
             // back omits `dt` entirely — under `replace=yes` Pinboard then re-dates the
             // record to now. Keep the earliest date the merge found instead of losing the
-            // record's age; before this path such a resident was never written at all.
+            // record's age; before this path such a bookmark was refused, never written.
             merged.timestamp = survivor.timestamp.or(merged.timestamp);
         }
         let target = &merged.url;
@@ -589,6 +634,13 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             Some(e) => {
                 outcome.write_failed += 1;
                 error!("merging into {target}: {e:#}");
+                // Nothing was written and nothing absorbed, so every member is still at its
+                // own URL — see the single-plan path above.
+                for old in &old_urls {
+                    untouchable
+                        .entry((*old).clone())
+                        .or_insert(Refusal::OccupiedByRefused);
+                }
             }
         }
     }
@@ -1518,6 +1570,149 @@ mod tests {
         assert!(
             !updated[0].toread,
             "the resident's reading state survives the merge"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_converged_incumbent_merge_is_not_rewritten_every_run() {
+        // The incumbent half of the converged-state guard. The bookmark at the target
+        // already holds everything the merge produces, and the mover's old URL is another
+        // plan's target so it can't be absorbed — so the group re-merges every run and must
+        // recognise that there is nothing left to write.
+        let mut sitting = bookmark("https://collide/");
+        sitting.note = "settled".into();
+        let mover = bookmark("https://x/mover");
+        let other = bookmark("https://x/other");
+        let books = vec![sitting, mover, other];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            let target = match bookmark.url.path() {
+                // `other` heads for the mover's URL, which keeps the mover's URL a target
+                // and so protects it from being deleted as absorbed.
+                "/other" => "https://x/mover",
+                _ => "https://collide/",
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: u(target),
+                note: "settled".into(),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.write_failed, 0);
+        assert!(
+            !pinboard
+                .updated
+                .borrow()
+                .iter()
+                .any(|call| call.url == "https://collide/"),
+            "a converged incumbent merge must not rewrite itself every run"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_move_protects_the_record_it_left_behind() {
+        // Y fails to move to its new URL, so its record is still sitting at the old one.
+        // A is heading there. Refusals are settled before any write, so nothing had marked
+        // that URL — and `replace=yes` would overwrite Y with A, losing Y from the account
+        // entirely: never written to its new URL, and clobbered at its old one.
+        let mut stranded = bookmark("https://collide/");
+        stranded.title = "Y original".into();
+        let mover = bookmark("https://a/");
+        let books = vec![stranded, mover];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            let target = match bookmark.url.as_str() {
+                "https://collide/" => "https://elsewhere/",
+                _ => "https://collide/",
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: u(target),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard {
+            fail_update_urls: ["https://elsewhere/".to_string()].into_iter().collect(),
+            ..FakePinboard::default()
+        };
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.write_failed, 1);
+        assert_eq!(
+            outcome.refused, 1,
+            "the URL the failed move left occupied must refuse the next rewrite"
+        );
+        assert!(
+            !pinboard
+                .updated
+                .borrow()
+                .iter()
+                .any(|call| call.url == "https://collide/"),
+            "a record stranded by a failed write must not be overwritten"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_visibility_mismatch_refuses_only_the_mover() {
+        // The record that stays usually has a plan of its own, and that plan has nothing to
+        // do with the mover's visibility. Refusing the whole group would let one mismatched
+        // duplicate freeze an unrelated bookmark's cleanup for good — every run, with no
+        // way out short of the user editing a visibility by hand.
+        let mut sitting = bookmark("https://github.com/new/name");
+        sitting.public = false;
+        sitting.title = "stale".into();
+        let mut mover = bookmark("https://github.com/old/name");
+        mover.public = true;
+        let target = sitting.url.clone();
+        let books = vec![mover, sitting];
+        let pass = FakePass(move |bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                url: target.clone(),
+                title: "fresh".into(),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.refused, 1, "only the mover is refused");
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://github.com/new/name");
+        assert_eq!(
+            updated[0].description, "fresh",
+            "the bookmark that stays still gets its own cleanup"
+        );
+        assert!(
+            !updated[0].shared,
+            "and it is not merged with, so its visibility is untouched"
+        );
+        assert!(
+            pinboard.deleted.borrow().is_empty(),
+            "the refused mover must not be absorbed"
         );
     }
 

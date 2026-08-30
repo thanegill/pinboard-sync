@@ -91,8 +91,10 @@ and would have to either publish a private annotation or unshare a bookmark the 
 share; the tool picks neither. Both refusals propagate — a refused group doesn't move, so it
 keeps its own URL occupied — iterated to a fixpoint before any write so the result is
 order-independent. The visibility check therefore runs *before* that fixpoint, and it is what
-lets the converged-state guard use `diff` (which ignores `public`/`read_later`): a merge that
-reaches the write can't have changed either flag.
+lets the converged-state guard use `diff` (which ignores `public`/`read_later`): that guard
+only fires when there *is* a resident, and a merge onto a resident reaches the write only
+when both flags already match it. Two colliding **plans** with no resident are a different
+case and keep `merge_bookmarks`'s own rules (`public` only if all, `read_later` if any).
 
 **`Plan` says whether the source was reached, not just whether to write.** `plan` returns
 `Plan::Bookmark` (an end-state), `Plan::Unchanged` (*the source answered*, nothing to do),

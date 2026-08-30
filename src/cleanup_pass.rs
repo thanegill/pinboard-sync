@@ -72,9 +72,11 @@ pub trait CleanupPass {
     /// [`SourceError::RateLimited`] stop the pass — a dead credential and an exhausted
     /// quota both fail every remaining lookup too. A plan's
     /// `timestamp` is the *candidate* source date; the driver resolves the final date
-    /// from it via the pass's [`DateOpts`], and always takes `public`/`read_later` from
-    /// the stored bookmark — so those two fields on the
-    /// returned `Bookmark` are ignored. The driver still skips an unchanged plan (one
+    /// from it via the pass's [`DateOpts`], and takes `public`/`read_later` from the
+    /// stored bookmark — so those two fields on the returned `Bookmark` are ignored. (That
+    /// holds of each plan; the record *written* for a group of colliding plans still
+    /// follows [`merge_bookmarks`]'s rules across their stored flags.) The driver still
+    /// skips an unchanged plan (one
     /// whose fields all match `bookmark`), so a pass can return the computed end-state
     /// without checking for changes itself.
     async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError>;
@@ -91,11 +93,9 @@ pub trait CleanupPass {
 pub struct PassOutcome {
     /// Bookmarks written, or under `dry_run` that would be.
     pub changed: usize,
-    /// Rewrites abandoned because their target URL belongs to a bookmark this pass could
-    /// not read — a failed lookup, or one a halt stopped it short of. (A target the pass
-    /// simply didn't plan is merged with, not refused.) Not a failure — leaving it alone
-    /// is the safe outcome — but it is work that did not happen, so it is reported rather
-    /// than only logged per-item.
+    /// Rewrites abandoned because their target must not be written — see [`Refusal`] for
+    /// the reasons. Not a failure — leaving it alone is the safe outcome — but it is work
+    /// that did not happen, so it is reported rather than only logged per-item.
     pub refused: usize,
     /// Bookmarks the source gave an answer for — the evidence that it is reachable.
     /// Excludes [`Plan::Skipped`], which never asked it anything.
@@ -379,19 +379,15 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     // share. Neither is ours to decide, so refuse and leave both records alone. Settled
     // here, ahead of the fixpoint, because a group refused for this reason stays parked at
     // its own URL exactly like one refused for an unreadable target.
-    let mismatched: Vec<url::Url> = residents
-        .iter()
-        .filter(|(key, resident)| {
-            groups[*key]
-                .iter()
-                .any(|(_, planned)| planned.public != resident.public)
-        })
-        .map(|(key, _)| (*key).clone())
-        .collect();
     untouchable.extend(
-        mismatched
-            .into_iter()
-            .map(|url| (url, Refusal::VisibilityMismatch)),
+        residents
+            .iter()
+            .filter(|(key, resident)| {
+                groups[*key]
+                    .iter()
+                    .any(|(_, planned)| planned.public != resident.public)
+            })
+            .map(|(key, _)| ((*key).clone(), Refusal::VisibilityMismatch)),
     );
 
     // A group whose target is occupied won't move, so its *own* URL stays occupied too —
@@ -602,7 +598,10 @@ fn merge_bookmarks(group: &[&Bookmark]) -> Bookmark {
     // blank-line-separated blocks the base doesn't already have. Blocks are compared
     // trimmed so re-merging an already-merged note is a no-op even when the base ends in a
     // newline, which otherwise re-splits as a block the plain comparison can't recognise —
-    // and any group whose old URL is never absorbed re-merges every run.
+    // and any group whose old URL is never absorbed re-merges every run. One case still
+    // escapes it: a note long enough that `PinboardClient::fit_extended` trims it comes
+    // back as a fragment no block matches, and re-merges forever. That is why the trim is
+    // warned about rather than silent.
     let mut note = group[0].note.clone();
     for b in &group[1..] {
         for block in b.note.split("\n\n") {
@@ -1929,9 +1928,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn colliding_rewrite_keeps_resident_privacy_not_widened() {
-        // A (public) normalizes onto B's URL; B (private) is the resident survivor. The merge
-        // must keep B's privacy: an absorbed public bookmark can't widen the survivor to public.
+    async fn colliding_plans_keep_privacy_not_widened() {
+        // A (public) normalizes onto B's URL, and B is planned too — so B is *not* a
+        // resident (a bookmark is never a resident of its own plan) and this is a
+        // plan-vs-plan collision, where `merge_bookmarks`'s all()-rule governs rather than
+        // the resident visibility check. An absorbed public bookmark can't widen the
+        // private survivor to public.
         let mut stored_a = bookmark("https://old-a/");
         stored_a.public = true;
         let mut stored_b = bookmark("https://collide/");
@@ -1963,7 +1965,7 @@ mod tests {
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].url, "https://collide/");
-        // Not widened: the resident private bookmark stays private.
+        // Not widened: the private member keeps the merged record private.
         assert!(!updated[0].shared);
     }
 

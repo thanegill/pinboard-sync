@@ -8,11 +8,27 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
-- A `backup <path>` subcommand that snapshots every bookmark to a file as the raw
-  Pinboard `posts/all` JSON, verbatim — preserving `meta`/`hash` and any entry the
-  parsed read path would skip. The NixOS module gains a `backup` timer
-  (`services.pinboard-sync.backup.{enable,schedule,path}`) that runs it under the
-  hardened service, writing into the service's `StateDirectory` by default.
+- A `backup` subcommand that snapshots **every service** — the Pinboard account and each
+  configured Reddit/GitHub/HackerNews account — into one directory: `raw/` holds each
+  API response with every field intact (captured as text before parsing, so nothing the typed read path
+  drops is lost — Pinboard keeps `meta`/`hash`, GitHub keeps the ~75 repo fields `sync`
+  ignores, HackerNews keeps Algolia's `points`/`num_comments` plus the scraped favorites
+  HTML), `normalized/` holds the same items in one uniform bookmark shape across all four,
+  and `manifest.json` records the run — carrying `complete: false` and the failed targets
+  when a target failed, since its files are then left over from an earlier run. Both halves
+  come from a single traversal, so they always describe the same instant; Pinboard's
+  `posts/all` is fetched **once** and feeds both, because it is rate-limited to one call
+  per five minutes.
+
+  `backup <target> [account]` narrows a run and `--all` covers everything; the directory
+  comes from `--out DIR` or `[backup].directory`. Backing up a source never contacts
+  Pinboard, so those targets take no Pinboard token. Each run replaces the previous
+  snapshot in place (no pruning, no run directories — point a real backup tool at it for
+  history); every file is written atomically at mode 0600, and a body that isn't a JSON
+  array is refused rather than allowed to overwrite a good snapshot. The NixOS module
+  gains a `backup` timer (`services.pinboard-sync.backup.{enable,schedule,directory}`)
+  running it under the hardened service, writing into the service's `StateDirectory` by
+  default.
 - NixOS module: per-credential `*File` options — `pinboardTokenFile`,
   `redditUsernameFile`, `redditCookieFile`, `githubTokenFile`, `hnUsernameFile`. Each
   points at a single secret path (e.g. one sops-nix secret per credential), loaded into
@@ -87,6 +103,10 @@ All notable changes to this project are documented here. The format is based on
 - `cleanup github` treats a repo **blocked under the DMCA** (`451`) the same as a deleted
   one: the bookmark keeps its URL canonicalization and the block is reported as a warning
   rather than as a lookup error.
+- A malformed response body now reports where it failed. The GitHub starred, HackerNews
+  Algolia, and Pinboard `posts/all` reads decode the body text explicitly instead of via
+  `reqwest`'s `json()`, so a proxy or interstitial page returned with a 200 surfaces a
+  line and column rather than an opaque decode error.
 - `--public` is now a value-taking flag: `--public` (= `true`) or `--public=false`.
   Previously it was a bare force-on switch that could not override a config-set `true`
   back to `false`; the new form can. `--limit` is likewise now an optional value (unset,

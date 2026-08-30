@@ -12,6 +12,7 @@ use log::{debug, warn};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
+use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PassOutcome, Plan};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
@@ -271,7 +272,15 @@ impl HackerNewsClient {
         &self,
         comments: bool,
         out: &mut Vec<HackerNewsItemId>,
+        sink: &mut RawSink,
     ) -> Result<(), SourceError> {
+        // The scraped page is the only record of a favorite HN's API never exposes, so
+        // `backup` keeps it verbatim alongside the Algolia details.
+        let stream = if comments {
+            "favorites-comments"
+        } else {
+            "favorites"
+        };
         let suffix = if comments { "&comments=t" } else { "" };
         let mut next = Some(format!(
             "{}/favorites?id={}{}",
@@ -287,6 +296,9 @@ impl HackerNewsClient {
                      stopping (some favorites may be missing)",
                     self.username
                 );
+                sink.mark_truncated(format!(
+                    "hn {stream} stopped at the {MAX_FAVORITES_PAGES}-page cap"
+                ));
                 break;
             }
             if !visited.insert(url.clone()) {
@@ -309,6 +321,7 @@ impl HackerNewsClient {
                 )
                 .into());
             }
+            sink.push(stream, RawKind::Html, &body);
             let (ids, more) = match parse_favorite_ids(&body) {
                 FavoritesPage::Recognized { ids, more } => (ids, more),
                 FavoritesPage::Unrecognized => {
@@ -351,6 +364,7 @@ impl HackerNewsClient {
     async fn fetch_items(
         &self,
         ids: &[HackerNewsItemId],
+        sink: &mut RawSink,
     ) -> Result<HashMap<HackerNewsItemId, HackerNewsItem>, SourceError> {
         let endpoint = format!("{}/api/v1/search", self.algolia);
         let mut out = HashMap::new();
@@ -376,6 +390,7 @@ impl HackerNewsClient {
                 );
             }
             let body = resp.text().await.context("reading hn algolia response")?;
+            sink.push("", RawKind::Json, &body);
             let search: AlgoliaSearchResponse =
                 serde_json::from_str(&body).context("parsing hn algolia response")?;
             for hit in search.hits {
@@ -425,19 +440,40 @@ impl HackerNewsClient {
 
 impl Source for HackerNewsClient {
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
+        self.fetch_capturing(&mut RawSink::disabled()).await
+    }
+}
+
+impl HackerNewsClient {
+    /// [`Source::fetch`], pushing the scraped favorites pages and every Algolia response
+    /// to `sink` so `backup` gets both verbatim out of the same traversal.
+    async fn fetch_capturing(&self, sink: &mut RawSink) -> Result<Vec<BookmarkDraft>, SourceError> {
         let mut ids: Vec<HackerNewsItemId> = Vec::new();
-        self.collect_ids(false, &mut ids).await?;
-        self.collect_ids(true, &mut ids).await?;
+        self.collect_ids(false, &mut ids, sink).await?;
+        self.collect_ids(true, &mut ids, sink).await?;
         // De-dup IDs while preserving order (newest first).
         let mut seen = HashSet::new();
         ids.retain(|id| seen.insert(id.clone()));
 
-        let items = self.fetch_items(&ids).await?;
+        let items = self.fetch_items(&ids, sink).await?;
         Ok(ids
             .iter()
             .filter_map(|id| items.get(id).cloned())
             .filter_map(|item| item.into_draft(&self.config))
             .collect())
+    }
+}
+
+impl BackupSource for HackerNewsClient {
+    async fn dump(&self) -> Result<BackupDump, SourceError> {
+        let mut sink = RawSink::collecting();
+        let drafts = self.fetch_capturing(&mut sink).await?;
+        let (raw, truncated) = sink.into_parts();
+        Ok(BackupDump {
+            raw,
+            records: Ok(drafts.iter().map(ExportBookmark::from).collect()),
+            truncated,
+        })
     }
 }
 
@@ -508,7 +544,7 @@ impl HackerNewsClient {
             .iter()
             .filter_map(|bookmark| HackerNewsItemId::try_from(&bookmark.url).ok())
             .collect();
-        let items = self.fetch_items(&ids).await?;
+        let items = self.fetch_items(&ids, &mut RawSink::disabled()).await?;
 
         let pass = HackerNewsCleanupPass {
             items,
@@ -1599,8 +1635,110 @@ mod net_tests {
             "http://unused.invalid".into(),
         );
         let mut ids = Vec::new();
-        client.collect_ids(false, &mut ids).await.unwrap();
+        client
+            .collect_ids(false, &mut ids, &mut RawSink::disabled())
+            .await
+            .unwrap();
         assert_eq!(hits.load(Ordering::SeqCst), MAX_FAVORITES_PAGES);
         assert_eq!(ids.len(), MAX_FAVORITES_PAGES);
+    }
+
+    #[tokio::test]
+    async fn dump_captures_both_scraped_pages_and_the_algolia_response() {
+        let hn = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .and(query_param_is_missing("comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<table><tr class="athing" id="42"><td>story</td></tr></table>"#,
+            ))
+            .mount(&hn)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .and(query_param("comments", "t"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<table><tr class="athing comtr" id="9"><td>comment</td></tr></table>"#,
+            ))
+            .mount(&hn)
+            .await;
+
+        let algolia = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "hits": [
+                    { "objectID": "42", "title": "Cool", "url": "https://example.com/x",
+                      "author": "alice", "_tags": ["story", "author_alice", "story_42"],
+                      // `HackerNewsItem` keeps none of these.
+                      "points": 271, "num_comments": 88 },
+                    { "objectID": "9", "comment_text": "hi", "author": "carol",
+                      "_tags": ["comment", "author_carol", "story_8"] }
+                ]
+            })))
+            .mount(&algolia)
+            .await;
+
+        let client = HackerNewsClient::with_base_urls(
+            "psophis".into(),
+            HackernewsConfig::default(),
+            hn.uri(),
+            algolia.uri(),
+        );
+        let dump = client.dump().await.unwrap();
+
+        // Three streams' worth of pages: two scraped HTML pages and one Algolia response.
+        let by_stream = |s: &str| -> Vec<&crate::backup::RawPage> {
+            dump.raw.iter().filter(|p| p.stream == s).collect()
+        };
+        assert_eq!(by_stream("favorites").len(), 1);
+        assert_eq!(by_stream("favorites-comments").len(), 1);
+        assert_eq!(by_stream("").len(), 1);
+        assert!(by_stream("favorites")[0].body.contains(r#"id="42""#));
+        assert_eq!(by_stream("favorites")[0].kind, RawKind::Html);
+
+        // The Algolia fields the typed item drops are still in the captured body.
+        let raw: serde_json::Value = serde_json::from_str(&by_stream("")[0].body).unwrap();
+        assert_eq!(raw["hits"][0]["points"], 271);
+        assert_eq!(raw["hits"][0]["num_comments"], 88);
+
+        // Each stream becomes its own file; only the HTML ones are non-JSON.
+        let files = crate::backup::layout("hackernews-psophis", &dump).unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "raw/hackernews-psophis.json",
+                "raw/hackernews-psophis-favorites.html",
+                "raw/hackernews-psophis-favorites-comments.html",
+                "normalized/hackernews-psophis.json",
+            ]
+        );
+
+        // End to end: fetch through the driver and land the snapshot on disk.
+        let dir = std::env::temp_dir().join("pinboard-sync-test-hn-backup-e2e");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::backup::run_job(&client, "hackernews-psophis", &dir, false)
+            .await
+            .unwrap();
+
+        let raw_json = std::fs::read_to_string(dir.join("raw/hackernews-psophis.json")).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&raw_json).unwrap();
+        assert_eq!(
+            raw[0]["hits"][0]["points"], 271,
+            "a dropped Algolia field survives all the way to disk"
+        );
+
+        let normalized =
+            std::fs::read_to_string(dir.join("normalized/hackernews-psophis.json")).unwrap();
+        let records: serde_json::Value = serde_json::from_str(&normalized).unwrap();
+        assert_eq!(records[0]["title"], "Cool");
+        assert!(records[0]["dedup_key"].is_string());
+
+        let html =
+            std::fs::read_to_string(dir.join("raw/hackernews-psophis-favorites.html")).unwrap();
+        assert!(html.contains(r#"id="42""#));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

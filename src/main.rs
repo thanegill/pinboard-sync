@@ -1,5 +1,6 @@
 //! pinboard-sync: sync saved/favorited items from multiple services to Pinboard.
 
+mod backup;
 mod bookmark;
 mod cleanup;
 mod cleanup_pass;
@@ -18,7 +19,7 @@ mod sync;
 mod test_support;
 mod timefmt;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -26,6 +27,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use log::{debug, error, info, warn};
 
+use backup::BackupSource;
 use bookmark::{Bookmark, BookmarkStore};
 use config::{Config, GitHubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
@@ -57,7 +59,7 @@ enum Command {
     Cleanup(CleanupCmd),
     /// Check the Pinboard token and every configured account's credentials.
     Doctor,
-    /// Back up all Pinboard bookmarks to a file (raw `posts/all` JSON, verbatim).
+    /// Snapshot every service to a directory: verbatim API responses plus normalized items.
     Backup(BackupCmd),
     /// Print a shell completion script (bash, zsh, fish, …) to stdout.
     Completions { shell: Shell },
@@ -78,11 +80,114 @@ enum ConfigAction {
 
 #[derive(Args)]
 struct BackupCmd {
-    /// File to write the raw Pinboard JSON snapshot to (replaced atomically).
-    path: PathBuf,
+    /// Back up the Pinboard account and every configured account across every source.
+    #[arg(long)]
+    all: bool,
+    /// Show what would be written without touching the filesystem.
+    #[arg(long)]
+    dry_run: bool,
+    #[command(flatten)]
+    out: OutFlag,
+    #[command(subcommand)]
+    target: Option<BackupTarget>,
+}
+
+/// The snapshot directory, flattened into `backup` *and* every target so it is accepted
+/// on either side of the subcommand (as `--dry-run` already is on `sync`).
+#[derive(Args, Clone, Default)]
+struct OutFlag {
+    /// Directory to write the snapshot into (overrides `[backup].directory`).
+    #[arg(long, value_name = "DIR")]
+    out: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum BackupTarget {
+    /// Back up saved Reddit posts and comments.
+    Reddit(RedditBackupArgs),
+    /// Back up starred GitHub repositories.
+    Github(GitHubBackupArgs),
+    /// Back up favorited HackerNews stories and comments.
+    Hackernews(HackernewsBackupArgs),
+    /// Back up the Pinboard account itself (raw `posts/all`, verbatim).
+    Pinboard(PinboardBackupArgs),
+}
+
+// Backing up a source never contacts Pinboard, so none of the source targets take a
+// Pinboard token — the one place `backup` deliberately diverges from `sync`/`cleanup`.
+
+#[derive(Args, Clone)]
+struct RedditBackupArgs {
+    /// Account name to select from the config (default: the first reddit account).
+    account: Option<String>,
+    /// Back up every reddit account in the config.
+    #[arg(long)]
+    all: bool,
+    /// Reddit username whose saved items to back up (env REDDIT_USERNAME, or *_FILE).
+    #[arg(long)]
+    reddit_username: Option<String>,
+    /// Reddit session cookie, e.g. `reddit_session=…` (env REDDIT_COOKIE, or *_FILE).
+    #[arg(long)]
+    reddit_cookie: Option<String>,
+    /// Shell command run when the Reddit cookie needs refreshing (a 401/403).
+    #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
+    on_auth_failure: Option<String>,
+    #[command(flatten)]
+    out: OutFlag,
+    /// Show what would be written without touching the filesystem.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Args, Clone)]
+struct GitHubBackupArgs {
+    /// Account name to select from the config (default: the first github account).
+    account: Option<String>,
+    /// Back up every github account in the config.
+    #[arg(long)]
+    all: bool,
+    /// GitHub personal access token (env GITHUB_TOKEN, or *_FILE).
+    #[arg(long)]
+    github_token: Option<String>,
+    /// Shell command run when the GitHub token needs refreshing (a 401).
+    #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
+    on_auth_failure: Option<String>,
+    #[command(flatten)]
+    out: OutFlag,
+    /// Show what would be written without touching the filesystem.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Args, Clone)]
+struct HackernewsBackupArgs {
+    /// Account name to select from the config (default: the first hackernews account).
+    account: Option<String>,
+    /// Back up every hackernews account in the config.
+    #[arg(long)]
+    all: bool,
+    /// HackerNews username whose favorites to back up (env HN_USERNAME, or *_FILE).
+    #[arg(long)]
+    username: Option<String>,
+    #[command(flatten)]
+    out: OutFlag,
+    /// Show what would be written without touching the filesystem.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+/// Pinboard has no `account`/`--all`: `[pinboard]` is a single destination table, not an
+/// array of accounts like the sources.
+#[derive(Args, Clone)]
+struct PinboardBackupArgs {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
+    #[command(flatten)]
+    out: OutFlag,
+    /// Show what would be written without touching the filesystem.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Args)]
@@ -616,6 +721,40 @@ impl SyncOverrides {
     }
 }
 
+// `backup` reuses the sync job builders (and so the whole secret ladder), but supplies
+// only the credentials and the auth hook: every other override affects a *write* to
+// Pinboard, which backup never performs.
+
+impl RedditBackupArgs {
+    fn into_overrides(self) -> SyncOverrides {
+        SyncOverrides {
+            reddit_username: self.reddit_username,
+            reddit_cookie: self.reddit_cookie,
+            on_auth_failure: self.on_auth_failure,
+            ..SyncOverrides::default()
+        }
+    }
+}
+
+impl GitHubBackupArgs {
+    fn into_overrides(self) -> SyncOverrides {
+        SyncOverrides {
+            github_token: self.github_token,
+            on_auth_failure: self.on_auth_failure,
+            ..SyncOverrides::default()
+        }
+    }
+}
+
+impl HackernewsBackupArgs {
+    fn into_overrides(self) -> SyncOverrides {
+        SyncOverrides {
+            hackernews_username: self.username,
+            ..SyncOverrides::default()
+        }
+    }
+}
+
 impl RedditSyncArgs {
     /// The secret/operational overrides this single-source invocation supplies.
     fn into_overrides(self) -> SyncOverrides {
@@ -796,6 +935,16 @@ impl Source for SourceClient {
             SourceClient::Reddit(c) => c.fetch().await,
             SourceClient::Github(c) => c.fetch().await,
             SourceClient::Hackernews(c) => c.fetch().await,
+        }
+    }
+}
+
+impl BackupSource for SourceClient {
+    async fn dump(&self) -> Result<backup::BackupDump, SourceError> {
+        match self {
+            SourceClient::Reddit(c) => c.dump().await,
+            SourceClient::Github(c) => c.dump().await,
+            SourceClient::Hackernews(c) => c.dump().await,
         }
     }
 }
@@ -1024,6 +1173,11 @@ async fn run_sync_jobs(
 fn build_pinboard(token_flag: Option<String>, config: &Config) -> Result<PinboardClient> {
     let token = resolve_pinboard_token(token_flag, &config.pinboard)
         .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or [pinboard] in the config)")?;
+    pinboard_client(token, config)
+}
+
+/// The client for an already-resolved token, at the configured write pacing.
+fn pinboard_client(token: String, config: &Config) -> Result<PinboardClient> {
     let rate_limit = config.pinboard.rate_limit_secs.unwrap_or(RATE_LIMIT_SECS);
     PinboardClient::new(token, rate_limit)
 }
@@ -1044,141 +1198,284 @@ async fn open_pinboard(
 
 // --- backup ------------------------------------------------------------------
 
-/// Write a verbatim snapshot of every Pinboard bookmark (raw `posts/all` JSON) to a
-/// file. Preserves exactly what Pinboard returns — no lossy conversion.
+/// One backup target: which client to dump and what to name its files.
+struct BackupJob {
+    client: BackupClient,
+    /// Filename stem, e.g. `reddit-main` or `pinboard`.
+    stem: String,
+    label: String,
+    hook: Option<String>,
+}
+
+/// A backup target's client. Pinboard is a `BookmarkStore`, not a `Source`, so it can't
+/// join `SourceClient` — but it implements the same `BackupSource` port, so the driver
+/// treats all four identically.
+enum BackupClient {
+    /// Boxed: a `SourceClient` is several times the size of a `PinboardClient`, so an
+    /// unboxed variant would make every job pay the larger footprint.
+    Source(Box<SourceClient>),
+    Pinboard(PinboardClient),
+}
+
+impl BackupSource for BackupClient {
+    async fn dump(&self) -> Result<backup::BackupDump, SourceError> {
+        match self {
+            BackupClient::Source(c) => c.dump().await,
+            BackupClient::Pinboard(c) => c.dump().await,
+        }
+    }
+}
+
+/// Write a snapshot of every selected service: the verbatim API responses under `raw/`
+/// and the same items as domain bookmarks under `normalized/`, plus a `manifest.json`.
+/// Each run replaces the previous snapshot in place.
 async fn run_backup(cmd: BackupCmd, config: &Config) -> Result<()> {
-    check_backup_dir(&cmd.path)?;
-    let pinboard = build_pinboard(cmd.pinboard_token, config)?;
-    let body = pinboard
-        .export_all()
-        .await
-        .context("exporting Pinboard bookmarks")?;
-    write_backup(&cmd.path, &body)?;
-    info!("backed up Pinboard bookmarks to {}", cmd.path.display());
-    Ok(())
-}
+    let plan = backup_jobs(&cmd, config)?;
+    let dir = resolve_backup_dir(plan.out.or_else(|| cmd.out.out.clone()), config)?;
+    let jobs = plan.jobs;
+    backup::check_stem_collisions(&jobs.iter().map(|j| j.stem.clone()).collect::<Vec<_>>())?;
+    backup::check_backup_dir(&dir)?;
 
-/// The directory `path` will be written into (`.` when `path` is bare).
-fn backup_dir(path: &Path) -> PathBuf {
-    match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-        _ => PathBuf::from("."),
+    let dry_run = plan.dry_run || cmd.dry_run;
+    let mut run = AllRun::default();
+    let mut entries = Vec::new();
+    let mut removed = Vec::new();
+    let mut failed = plan.skipped;
+    for target in &failed {
+        run.record(Err(anyhow!("{target} was skipped: no credential resolved")));
     }
-}
-
-/// Fail fast if the destination directory is missing, before the ~5-minute rate-limited
-/// `posts/all` export, so a bad path doesn't waste the whole budget.
-fn check_backup_dir(path: &Path) -> Result<()> {
-    let dir = backup_dir(path);
-    if !dir.is_dir() {
-        bail!("backup directory {} does not exist", dir.display());
-    }
-    Ok(())
-}
-
-/// Atomically replace `path` with `body`. Guards a good backup: it refuses a body that
-/// doesn't parse as a JSON array (a 2xx interstitial/proxy page, an empty response, or a
-/// connection dropped mid-array can all pass `posts/all`'s status check), then writes a
-/// private, fsync'd temp file and renames it over the target — an atomic, durable swap, so
-/// a partial or crashed write leaves the previous snapshot intact rather than truncating
-/// it. The snapshot holds every private bookmark, so both files are created mode 0600.
-fn write_backup(path: &Path, body: &str) -> Result<()> {
-    if serde_json::from_str::<Vec<serde_json::Value>>(body).is_err() {
-        bail!(
-            "Pinboard returned a non-JSON-array response ({} bytes); refusing to overwrite {}",
-            body.len(),
-            path.display()
-        );
-    }
-
-    let dir = backup_dir(path);
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("pinboard-backup");
-    let (tmp, mut file) = create_backup_tmp(&dir, file_name)?;
-    write_backup_tmp(&tmp, &mut file, body)
-        .and_then(|()| {
-            std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
-            sync_dir(&dir);
-            Ok(())
-        })
-        .inspect_err(|_| {
-            let _ = std::fs::remove_file(&tmp);
-        })
-}
-
-/// Open `tmp` as a brand-new mode-0600 regular file. `create_new` (O_EXCL) never follows a
-/// pre-existing symlink and never reuses an existing file's contents or permissions, so the
-/// 0600 promise holds; a path that already exists errors with `AlreadyExists` instead.
-fn open_new_private(tmp: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(tmp)
-}
-
-/// Create a fresh, private temp file next to the backup target and return it with its path.
-/// Each attempt mixes fresh entropy into the name, so a leftover temp from a crashed run
-/// (even one with this pid) can't be reused; `open_new_private` guarantees the file is new.
-fn create_backup_tmp(dir: &Path, file_name: &str) -> Result<(PathBuf, std::fs::File)> {
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-    let pid = std::process::id();
-
-    create_new_temp(dir, || {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let nonce = nanos ^ u128::from(COUNTER.fetch_add(1, Ordering::Relaxed));
-        format!(".{file_name}.tmp.{pid}.{nonce:x}")
-    })
-}
-
-/// Open a fresh private temp file in `dir`, drawing candidate names from `next_name` and
-/// retrying whenever the chosen path already exists (a leftover temp, a squatter). Bounded
-/// so a name generator that keeps yielding a colliding name can't spin forever.
-fn create_new_temp(
-    dir: &Path,
-    mut next_name: impl FnMut() -> String,
-) -> Result<(PathBuf, std::fs::File)> {
-    let mut last_err = None;
-    for _ in 0..100 {
-        let tmp = dir.join(next_name());
-        match open_new_private(&tmp) {
-            Ok(file) => return Ok((tmp, file)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(e),
+    // Sequential, unlike `sync`: backup writes are local, so concurrency would only
+    // multiply simultaneous API pressure and interleave the dry-run output.
+    for job in &jobs {
+        info!("{}: backing up", job.label);
+        match backup::run_job(&job.client, &job.stem, &dir, dry_run).await {
+            Ok(outcome) => {
+                // Recorded whether or not the target is trustworthy: it replaced these
+                // files either way, and leaving them out would let the merged manifest
+                // keep the previous run's entry describing what is no longer there.
+                // The reason is stamped onto each entry as well as counted in `failed`,
+                // because a later clean run of a *different* target rewrites `failed` and
+                // would otherwise leave these files looking healthy.
+                entries.extend(outcome.written.into_iter().map(|mut e| {
+                    e.unusable = outcome.unusable.clone();
+                    e
+                }));
+                removed.extend(outcome.removed);
+                if let Some(reason) = outcome.unusable {
+                    failed.push(job.label.clone());
+                    run.record(Err(anyhow!("backing up {}: {reason}", job.label)));
+                }
+            }
             Err(e) => {
-                return Err(e)
-                    .with_context(|| format!("creating backup temp file in {}", dir.display()));
+                failed.push(job.label.clone());
+                run.record(Err(handle_source_err(e, job.hook.as_deref())
+                    .context(format!("backing up {}", job.label))));
             }
         }
     }
-    Err(last_err.expect("loop ran at least once"))
-        .with_context(|| format!("creating a unique backup temp file in {}", dir.display()))
-}
 
-/// Write `body` to the already-opened temp `file` and fsync it, so the bytes are on disk
-/// before the caller renames it over the real target.
-fn write_backup_tmp(tmp: &Path, file: &mut std::fs::File, body: &str) -> Result<()> {
-    use std::io::Write;
-
-    file.write_all(body.as_bytes())
-        .with_context(|| format!("writing backup to {}", tmp.display()))?;
-    file.sync_all()
-        .with_context(|| format!("flushing backup to {}", tmp.display()))
-}
-
-/// Best-effort fsync of the directory so the rename itself survives a crash.
-fn sync_dir(dir: &Path) {
-    if let Ok(handle) = std::fs::File::open(dir) {
-        let _ = handle.sync_all();
+    if dry_run {
+        println!("[dry-run] {} file(s) would be written.", entries.len());
+    } else {
+        // Written even on a partial run, carrying `complete: false` and the failed
+        // targets — a target that failed left its previous files in place, and the
+        // manifest is what stops them passing as part of this run.
+        let now = timefmt::to_rfc3339(time::OffsetDateTime::now_utc()).unwrap_or_default();
+        backup::write_manifest(&dir, &entries, &removed, &failed, &now)?;
+        info!(
+            "backed up {} file(s) to {}",
+            entries.len() + 1,
+            dir.display()
+        );
     }
+    run.finish()
+}
+
+/// What a `backup` invocation resolves to: the jobs, anything it could not cover, and the
+/// target-level `--out`/`--dry-run`. Mirrors `run_sync`'s `(all, source)` match.
+struct BackupPlan {
+    jobs: Vec<BackupJob>,
+    /// Targets that couldn't be built at all (no credential resolved). Counted as
+    /// failures, so a run that quietly missed one can't report itself complete.
+    skipped: Vec<String>,
+    out: Option<String>,
+    dry_run: bool,
+}
+
+fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
+    let ovr = SyncOverrides::default();
+    match (cmd.all, &cmd.target) {
+        (true, Some(_)) => bail!("--all cannot be combined with a target subcommand"),
+        (true, None) => {
+            let mut jobs = Vec::new();
+            let mut skipped = Vec::new();
+            for a in &config.reddit {
+                jobs.push(source_backup_job("reddit", Some(a), |x| {
+                    build_reddit_job(x, &ovr, config)
+                })?);
+            }
+            for a in &config.github {
+                jobs.push(source_backup_job("github", Some(a), |x| {
+                    build_github_job(x, &ovr, config)
+                })?);
+            }
+            for a in &config.hackernews {
+                jobs.push(source_backup_job("hackernews", Some(a), |x| {
+                    build_hackernews_job(x, &ovr, config)
+                })?);
+            }
+            match pinboard_backup_job(None, config)? {
+                Some(job) => jobs.push(job),
+                // Silence here would be the worst outcome: a nightly `--all` that quietly
+                // stops covering Pinboard (an unprovisioned sops secret makes
+                // `resolve_secret` warn and yield `None`) while still exiting 0. Recorded
+                // as a failed target so the manifest says `complete: false`.
+                None if !jobs.is_empty() => {
+                    warn!(
+                        "backup --all: no Pinboard token resolved — the Pinboard account \
+                         is NOT in this snapshot"
+                    );
+                    skipped.push("pinboard".to_string());
+                }
+                None => {}
+            }
+            if jobs.is_empty() {
+                bail!(
+                    "backup --all found nothing to back up: configure an account with \
+                     --config, or set a Pinboard token"
+                );
+            }
+            Ok(BackupPlan {
+                jobs,
+                skipped,
+                out: None,
+                dry_run: false,
+            })
+        }
+        (false, Some(BackupTarget::Reddit(args))) => Ok(BackupPlan {
+            jobs: source_backup_jobs(
+                "reddit",
+                &config.reddit,
+                args.account.as_deref(),
+                args.all,
+                {
+                    let ovr = args.clone().into_overrides();
+                    move |a| build_reddit_job(a, &ovr, config)
+                },
+            )?,
+            skipped: Vec::new(),
+            out: args.out.out.clone(),
+            dry_run: args.dry_run,
+        }),
+        (false, Some(BackupTarget::Github(args))) => Ok(BackupPlan {
+            jobs: source_backup_jobs(
+                "github",
+                &config.github,
+                args.account.as_deref(),
+                args.all,
+                {
+                    let ovr = args.clone().into_overrides();
+                    move |a| build_github_job(a, &ovr, config)
+                },
+            )?,
+            skipped: Vec::new(),
+            out: args.out.out.clone(),
+            dry_run: args.dry_run,
+        }),
+        (false, Some(BackupTarget::Hackernews(args))) => Ok(BackupPlan {
+            jobs: source_backup_jobs(
+                "hackernews",
+                &config.hackernews,
+                args.account.as_deref(),
+                args.all,
+                {
+                    let ovr = args.clone().into_overrides();
+                    move |a| build_hackernews_job(a, &ovr, config)
+                },
+            )?,
+            skipped: Vec::new(),
+            out: args.out.out.clone(),
+            dry_run: args.dry_run,
+        }),
+        (false, Some(BackupTarget::Pinboard(args))) => {
+            let job = pinboard_backup_job(args.pinboard_token.clone(), config)?.context(
+                "missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or \
+                 [pinboard] in the config)",
+            )?;
+            Ok(BackupPlan {
+                jobs: vec![job],
+                skipped: Vec::new(),
+                out: args.out.out.clone(),
+                dry_run: args.dry_run,
+            })
+        }
+        (false, None) => bail!("specify a target (e.g. `backup pinboard`) or pass --all"),
+    }
+}
+
+/// The backup jobs for one source, selecting by name / first / every account. Reuses
+/// `build_jobs` so account selection and the whole secret ladder behave as in `sync`.
+fn source_backup_jobs<T: config::Account>(
+    source: &'static str,
+    accounts: &[T],
+    name: Option<&str>,
+    all: bool,
+    build: impl Fn(Option<&T>) -> Result<SyncJob>,
+) -> Result<Vec<BackupJob>> {
+    if all {
+        if accounts.is_empty() {
+            bail!("--all requires a --config with at least one configured {source} account");
+        }
+        accounts
+            .iter()
+            .map(|a| source_backup_job(source, Some(a), &build))
+            .collect()
+    } else {
+        let account = config::select_account(accounts, name)?;
+        Ok(vec![source_backup_job(source, account, &build)?])
+    }
+}
+
+/// Wrap one account's `SyncJob` as a backup job, keeping its client and auth hook and
+/// discarding the write-only settings (`limit`, `toread`, dates) backup has no use for.
+fn source_backup_job<T: config::Named>(
+    source: &'static str,
+    account: Option<&T>,
+    build: impl Fn(Option<&T>) -> Result<SyncJob>,
+) -> Result<BackupJob> {
+    let job = build(account)?;
+    Ok(BackupJob {
+        stem: format!(
+            "{source}-{}",
+            backup::slug(account.and_then(config::Named::account_name))
+        ),
+        label: job.label.clone(),
+        hook: job.hook.clone(),
+        client: BackupClient::Source(Box::new(job.client)),
+    })
+}
+
+/// The Pinboard backup job, or `None` when no token is configured — so `backup --all`
+/// still backs up the sources on a machine that only holds source credentials.
+fn pinboard_backup_job(flag: Option<String>, config: &Config) -> Result<Option<BackupJob>> {
+    let Some(token) = resolve_pinboard_token(flag, &config.pinboard) else {
+        return Ok(None);
+    };
+    Ok(Some(BackupJob {
+        client: BackupClient::Pinboard(pinboard_client(token, config)?),
+        stem: "pinboard".to_string(),
+        label: "pinboard".to_string(),
+        hook: None,
+    }))
+}
+
+/// The snapshot directory: the `--out` flag, else `[backup].directory`. There is no
+/// built-in default — writing a snapshot into an unexpected working directory is worse
+/// than an error.
+fn resolve_backup_dir(flag: Option<String>, config: &Config) -> Result<PathBuf> {
+    first_nonempty([flag, config.backup.directory.clone()])
+        .map(PathBuf::from)
+        .context("no backup directory (pass --out DIR or set [backup].directory in the config)")
 }
 
 // --- doctor ------------------------------------------------------------------
@@ -2257,19 +2554,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn backup_takes_a_required_path_and_optional_token() {
-        let cmd = parse_backup(&["out.json"]);
-        assert_eq!(cmd.path, PathBuf::from("out.json"));
-        assert_eq!(cmd.pinboard_token, None);
-
-        let cmd = parse_backup(&["out.json", "--pinboard-token", "user:tok"]);
-        assert_eq!(cmd.pinboard_token.as_deref(), Some("user:tok"));
-
-        // The path is required.
-        assert!(Cli::try_parse_from(["pinboard-sync", "backup"]).is_err());
-    }
-
     /// The hook is a real side effect on a real credential expiry, so drive it through
     /// the actual `sh -c` invocation rather than a stand-in: the marker file existing is
     /// the only proof the operator's command ran.
@@ -2311,127 +2595,70 @@ mod tests {
     }
 
     #[test]
-    fn write_backup_replaces_atomically_and_leaves_no_temp() {
-        let dir = scratch_dir("write-backup-ok");
-        let target = dir.join("pinboard-backup.json");
-        std::fs::write(&target, "OLD").unwrap();
+    fn backup_accepts_out_before_or_after_the_target() {
+        let cmd = parse_backup(&["--all", "--out", "/snap"]);
+        assert!(cmd.all);
+        assert_eq!(cmd.out.out.as_deref(), Some("/snap"));
 
-        write_backup(&target, "[{\"href\":\"https://example.com/\"}]").unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(&target).unwrap(),
-            "[{\"href\":\"https://example.com/\"}]"
-        );
-        assert!(
-            std::fs::read_dir(&dir).unwrap().count() == 1,
-            "no temp left"
-        );
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn write_backup_writes_private_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = scratch_dir("write-backup-perms");
-        let target = dir.join("pinboard-backup.json");
-
-        write_backup(&target, "[]").unwrap();
-
-        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "backup must not be world-readable");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn write_backup_refuses_non_json_and_preserves_existing() {
-        let dir = scratch_dir("write-backup-bad");
-        let target = dir.join("pinboard-backup.json");
-        std::fs::write(&target, "GOOD BACKUP").unwrap();
-
-        // A 200 that isn't a JSON array (proxy page, empty body) or a connection dropped
-        // mid-array (a truncated array that still starts with `[`) must not clobber it.
-        for bad in [
-            "",
-            "  ",
-            "<html>Back off</html>",
-            "[{\"href\":\"https://example.com/\"}",
-        ] {
-            let err = write_backup(&target, bad).unwrap_err();
-            assert!(err.to_string().contains("non-JSON"), "got: {err}");
+        // `--out` after the target is honored too, as `--dry-run` is on `sync`.
+        let cmd = parse_backup(&["reddit", "main", "--out", "/snap"]);
+        match cmd.target {
+            Some(BackupTarget::Reddit(args)) => {
+                assert_eq!(args.account.as_deref(), Some("main"));
+                assert_eq!(args.out.out.as_deref(), Some("/snap"));
+            }
+            _ => panic!("expected the reddit target"),
         }
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "GOOD BACKUP");
-        // A rejected write must leave no temp file behind either.
+
+        // Backing up a source never contacts Pinboard, so it takes no token.
+        assert!(Cli::try_parse_from([
+            "pinboard-sync",
+            "backup",
+            "reddit",
+            "--pinboard-token",
+            "x"
+        ])
+        .is_err());
+        // Pinboard is a target now, not a positional path.
+        assert!(matches!(
+            parse_backup(&["pinboard"]).target,
+            Some(BackupTarget::Pinboard(_))
+        ));
+    }
+
+    #[test]
+    fn backup_all_conflicts_with_a_target_and_a_bare_backup_is_rejected() {
+        let config = Config::default();
+
+        let cmd = parse_backup(&["--all", "pinboard"]);
+        let err = backup_jobs(&cmd, &config)
+            .err()
+            .expect("should be rejected");
         assert!(
-            std::fs::read_dir(&dir).unwrap().count() == 1,
-            "no temp left"
+            err.to_string().contains("--all cannot be combined"),
+            "{err}"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
+
+        let cmd = parse_backup(&[]);
+        let err = backup_jobs(&cmd, &config)
+            .err()
+            .expect("should be rejected");
+        assert!(err.to_string().contains("specify a target"), "{err}");
     }
 
     #[test]
-    fn backup_temp_refuses_to_reuse_a_preexisting_file() {
-        use std::os::unix::fs::PermissionsExt;
+    fn backup_dir_prefers_the_flag_then_the_config_then_errors() {
+        let mut config = Config::default();
+        assert!(resolve_backup_dir(None, &config).is_err());
 
-        let dir = scratch_dir("write-backup-squat");
-        let squatted = dir.join(".pinboard-backup.json.tmp.squatter");
-        std::fs::write(&squatted, "SECRET-LEAK").unwrap();
-        std::fs::set_permissions(&squatted, PermissionsExt::from_mode(0o644)).unwrap();
-
-        // create_new refuses a path that already exists rather than truncating it and
-        // inheriting its world-readable mode, so a squatted temp can't leak into a snapshot.
-        let err = open_new_private(&squatted).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(std::fs::read_to_string(&squatted).unwrap(), "SECRET-LEAK");
-        let mode = std::fs::metadata(&squatted).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o644, "existing file left untouched");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn backup_temp_does_not_follow_a_symlink() {
-        let dir = scratch_dir("write-backup-symlink");
-        let victim = dir.join("victim.txt");
-        std::fs::write(&victim, "PRECIOUS").unwrap();
-        let link = dir.join(".pinboard-backup.json.tmp.link");
-        std::os::unix::fs::symlink(&victim, &link).unwrap();
-
-        // O_EXCL refuses the pre-existing symlink instead of following it and truncating
-        // the target.
-        let err = open_new_private(&link).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "PRECIOUS");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn create_new_temp_retries_past_a_colliding_name() {
-        let dir = scratch_dir("create-new-temp-retry");
-        std::fs::write(dir.join("taken"), "SQUAT").unwrap();
-
-        // First candidate collides with the pre-existing file; the loop must retry the
-        // fresh one rather than reuse or truncate "taken".
-        let mut names = ["taken", "fresh"].into_iter().map(str::to_string);
-        let (tmp, _file) = create_new_temp(&dir, || names.next().unwrap()).unwrap();
-
-        assert_eq!(tmp, dir.join("fresh"));
-        assert_eq!(std::fs::read_to_string(dir.join("taken")).unwrap(), "SQUAT");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn create_new_temp_gives_up_after_exhausting_attempts() {
-        let dir = scratch_dir("create-new-temp-exhaust");
-        std::fs::write(dir.join("always"), "SQUAT").unwrap();
-
-        // A generator that never yields a free name exhausts the bounded loop and surfaces
-        // the last AlreadyExists rather than spinning forever.
-        let err = create_new_temp(&dir, || "always".to_string()).unwrap_err();
+        config.backup.directory = Some("/from-config".into());
         assert_eq!(
-            err.downcast_ref::<std::io::Error>()
-                .map(std::io::Error::kind),
-            Some(std::io::ErrorKind::AlreadyExists)
+            resolve_backup_dir(None, &config).unwrap(),
+            PathBuf::from("/from-config")
         );
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            resolve_backup_dir(Some("/from-flag".into()), &config).unwrap(),
+            PathBuf::from("/from-flag")
+        );
     }
 }

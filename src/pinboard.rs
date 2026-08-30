@@ -9,8 +9,10 @@ use log::warn;
 use serde::Deserialize;
 use url::Url;
 
+use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage};
 use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::http::send_retrying;
+use crate::source::SourceError;
 
 const DEFAULT_BASE: &str = "https://api.pinboard.in/v1";
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
@@ -114,25 +116,60 @@ impl PinboardClient {
     }
 }
 
+impl BackupSource for PinboardClient {
+    /// Pinboard is a backup target like any source, and like them it fetches **once**:
+    /// `posts/all` is rate-limited to one call per five minutes, far longer than the
+    /// retry budget, so a second call inside one run would 429 and fail the target. The
+    /// `meta=yes` body is both the raw half and the input to the parsed half, which is
+    /// also what makes the two describe the same instant.
+    async fn dump(&self) -> Result<BackupDump, SourceError> {
+        let body = self.export_all().await?;
+        // Not `?`: a body that parses as JSON but no longer matches the wire shape (a
+        // renamed `href`, say) is exactly when the raw half is worth keeping, so the
+        // failure rides along in `records` and the raw file is still written.
+        let records = serde_json::from_str::<Vec<PinboardBookmark>>(&body)
+            .context("parsing Pinboard posts/all")
+            .map(|wire| {
+                wire_to_bookmarks(wire)
+                    .iter()
+                    .map(ExportBookmark::from)
+                    .collect()
+            });
+        Ok(BackupDump {
+            raw: vec![RawPage {
+                stream: "",
+                kind: RawKind::Json,
+                body,
+            }],
+            records,
+            // `posts/all` is unpaginated: one response is the whole account.
+            truncated: None,
+        })
+    }
+}
+
+/// Convert wire bookmarks to the domain type, skipping (and warning on) any whose `href`
+/// doesn't parse as a URL rather than aborting the whole run for one bad entry. An
+/// unparseable `time` is not fatal — the conversion keeps the bookmark with no timestamp
+/// (see `Bookmark::try_from`) so it stays in the set sync dedups against.
+fn wire_to_bookmarks(wire: Vec<PinboardBookmark>) -> Vec<Bookmark> {
+    wire.into_iter()
+        .filter_map(|b| {
+            let href = b.url.clone();
+            Bookmark::try_from(b)
+                .map_err(|e| warn!("skipping bookmark with unparseable URL {href}: {e}"))
+                .ok()
+        })
+        .collect()
+}
+
 impl BookmarkStore for PinboardClient {
     async fn all(&self) -> Result<Vec<Bookmark>> {
         let resp = self.get_posts_all("no").await?;
         let body = resp.text().await.context("reading Pinboard posts/all")?;
         let wire: Vec<PinboardBookmark> =
             serde_json::from_str(&body).context("parsing Pinboard posts/all")?;
-        // Skip (and warn on) any bookmark whose `href` doesn't parse as a URL rather than
-        // aborting the whole run for one bad entry. An unparseable `time` is not fatal —
-        // the conversion keeps the bookmark with no timestamp (see `Bookmark::try_from`)
-        // so it stays in the set sync dedups against.
-        Ok(wire
-            .into_iter()
-            .filter_map(|b| {
-                let href = b.url.clone();
-                Bookmark::try_from(b)
-                    .map_err(|e| warn!("skipping bookmark with unparseable URL {href}: {e}"))
-                    .ok()
-            })
-            .collect())
+        Ok(wire_to_bookmarks(wire))
     }
 
     async fn delete(&self, url: &Url) -> Result<()> {
@@ -645,6 +682,31 @@ mod net_tests {
 
         let dumped = client(&server).export_all().await.unwrap();
         assert_eq!(dumped, body);
+    }
+
+    #[tokio::test]
+    async fn dump_hits_posts_all_exactly_once() {
+        let server = MockServer::start().await;
+        // One entry has an unparseable `href`: it stays in the raw body but is skipped by
+        // the parsed half, which is the discrepancy the two halves exist to record.
+        let body = r#"[{"href":"not a url","description":"bad","meta":"abc"},
+{"href":"https://example.com/","description":"E","meta":"123","hash":"456"}]"#;
+        Mock::given(method("GET"))
+            .and(path("/posts/all"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            // `posts/all` is rate-limited to one call per five minutes — far longer than
+            // the retry budget — so a second call in one run would 429 and fail the target.
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dump = client(&server).dump().await.unwrap();
+
+        assert_eq!(dump.raw.len(), 1);
+        assert_eq!(dump.raw[0].body, body, "the raw half is byte-for-byte");
+        let records = dump.records.expect("normalization succeeded");
+        assert_eq!(records.len(), 1, "the unparseable href is skipped");
+        assert_eq!(records[0].url, "https://example.com/");
     }
 
     #[tokio::test]

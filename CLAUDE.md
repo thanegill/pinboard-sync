@@ -124,6 +124,20 @@ by URL (one Algolia query each) and adds the discussion link. Reddit's bookmark/
 shaping lives in
 [`src/model.rs`](src/model.rs).
 
+**`backup` has one port and one driver, and captures raw bodies in the same traversal.**
+[`src/backup.rs`](src/backup.rs) is `cleanup_pass.rs`'s sibling: a service implements
+`BackupSource::dump` (returning a `BackupDump` — captured `RawPage`s plus normalized
+`ExportBookmark`s), and the driver owns everything shared — `layout` (pure: payload →
+named files), `write_files` (atomic, mode 0600, per-file sanity check), the manifest and
+the dry-run rendering. Clients never learn where a file goes. Raw fidelity comes from a
+`RawSink` threaded through each client's *existing* pagination: `sync`/`cleanup` pass
+`RawSink::disabled()` (one branch, retains nothing, so their typed `from_str` path is
+unchanged), `backup` passes `collecting()`. Never re-walk pagination for a raw pass — the
+two halves must describe one instant. `PinboardClient` implements `BackupSource` too, so
+the destination is a target like any source. `ExportBookmark` is deliberately *not* a
+`Serialize` on the domain `Bookmark`: the snapshot format is a stable output contract, and
+a domain rename must not silently change an operator's files.
+
 **All tags are config-driven; there are no tag CLI flags.** Each source has a tag
 config struct (`RedditConfig`, `GitHubConfig`, `HackernewsConfig`) of overridable
 fields with built-in defaults; the `tags` list (default e.g. `["reddit"]`) is the

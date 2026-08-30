@@ -22,6 +22,8 @@ pub struct Config {
     pub hooks: Hooks,
     #[serde(default)]
     pub pinboard: PinboardConfig,
+    #[serde(default)]
+    pub backup: BackupConfig,
     /// Per-source default overrides (the middle tier between `[pinboard]`/`[hooks]`
     /// globals and a per-account override).
     #[serde(default)]
@@ -60,6 +62,16 @@ pub struct SourceDefaults {
     pub use_post_date: Option<bool>,
     pub post_date_max_age_days: Option<u64>,
     pub cleanup_stale_to_now: Option<bool>,
+}
+
+/// `backup` output settings. The directory lives in the config because the NixOS timer
+/// runs a bare `backup --all` with nowhere to put a flag.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupConfig {
+    /// Directory the snapshot is written into, overwritten in place each run. Unset means
+    /// `--out` is required.
+    pub directory: Option<String>,
 }
 
 /// Cross-cutting hooks.
@@ -155,6 +167,9 @@ impl Config {
     /// (its API splits the tag string on them), so a space here is silently
     /// corrupting and should fail loudly instead.
     fn validate(&self) -> Result<()> {
+        if self.backup.directory.as_deref().is_some_and(str::is_empty) {
+            bail!("backup.directory must not be empty");
+        }
         check_unique_names("reddit", &self.reddit)?;
         check_unique_names("github", &self.github)?;
         check_unique_names("hackernews", &self.hackernews)?;
@@ -576,6 +591,10 @@ mod tests {
             post_date_max_age_days,
             cleanup_stale_to_now,
         });
+        // Note this list does not destructure `Config` itself, so a *new top-level table*
+        // (like `[backup]`) has to be added here deliberately — only its fields are
+        // compile-checked, not its presence.
+        let backup = documented_fields!(BackupConfig { directory });
         // The per-source defaults tier (`[defaults.<source>]`).
         let source_defaults = documented_fields!(SourceDefaults {
             toread,
@@ -641,6 +660,7 @@ mod tests {
         for &key in hooks
             .iter()
             .chain(&pinboard)
+            .chain(&backup)
             .chain(&source_defaults)
             .chain(&reddit)
             .chain(&github)

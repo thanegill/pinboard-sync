@@ -14,6 +14,7 @@ use log::warn;
 use serde::de::DeserializeOwned;
 use url::Url;
 
+use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::http::send_retrying;
 use crate::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
@@ -112,6 +113,15 @@ impl RedditClient {
     /// caps any listing at ~1000). Inherent (no longer a port): only `sync`'s
     /// `Source::fetch` and the net tests call it, both within this crate.
     async fn fetch_saved(&self) -> Result<Vec<RedditListingEntry>, SourceError> {
+        self.fetch_saved_capturing(&mut RawSink::disabled()).await
+    }
+
+    /// [`fetch_saved`](Self::fetch_saved), pushing each response body to `sink` as it
+    /// arrives so `backup` gets the verbatim listing out of the same traversal.
+    async fn fetch_saved_capturing(
+        &self,
+        sink: &mut RawSink,
+    ) -> Result<Vec<RedditListingEntry>, SourceError> {
         let username = self
             .username
             .as_deref()
@@ -129,6 +139,9 @@ impl RedditClient {
                     "reddit saved for '{username}': hit the {MAX_SAVED_PAGES}-page cap; \
                      stopping (some saved items may be missing)"
                 );
+                sink.mark_truncated(format!(
+                    "reddit saved listing stopped at the {MAX_SAVED_PAGES}-page cap"
+                ));
                 break;
             }
             let after_ref = after.as_deref();
@@ -143,7 +156,11 @@ impl RedditClient {
                 self.with_cookie(req)
             })
             .await?;
-            let listing: RedditListing = decode_reddit_json(resp, "saved listing").await?;
+            let body = reddit_body(resp, "saved listing").await?;
+            sink.push("", RawKind::Json, &body);
+            let listing: RedditListing = serde_json::from_str(&body)
+                .context("parsing saved listing response")
+                .map_err(SourceError::Other)?;
             let got = listing.data.children.len();
             out.extend(listing.data.children);
 
@@ -202,7 +219,19 @@ impl Source for RedditClient {
     /// entry was dropped (e.g. a renamed required subfield that still deserializes as
     /// `None`), which would otherwise make `sync` exit 0 having imported nothing.
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
-        let entries = self.fetch_saved().await?;
+        self.drafts_from(self.fetch_saved().await?)
+    }
+}
+
+impl RedditClient {
+    /// Shape saved entries into drafts. A non-empty listing that yields zero drafts is an
+    /// error, not an empty success: it means every entry was dropped (e.g. a renamed
+    /// required subfield that still deserializes as `None`), which would otherwise make
+    /// `sync` exit 0 having imported nothing.
+    fn drafts_from(
+        &self,
+        entries: Vec<RedditListingEntry>,
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
         let entry_count = entries.len();
         let drafts: Vec<BookmarkDraft> = entries
             .into_iter()
@@ -217,6 +246,28 @@ impl Source for RedditClient {
             .into());
         }
         Ok(drafts)
+    }
+}
+
+impl BackupSource for RedditClient {
+    /// The listing is fetched in full before any of it is shaped, so a shape break is
+    /// reported *without* discarding the raw pages — a schema change is exactly when the
+    /// verbatim body is worth having. (GitHub and HackerNews shape inline as they
+    /// paginate, so a failure there means the capture is incomplete and must not be
+    /// written over a good snapshot.)
+    async fn dump(&self) -> Result<BackupDump, SourceError> {
+        let mut sink = RawSink::collecting();
+        let entries = self.fetch_saved_capturing(&mut sink).await?;
+        let records = self
+            .drafts_from(entries)
+            .map(|drafts| drafts.iter().map(ExportBookmark::from).collect())
+            .map_err(SourceError::into_anyhow);
+        let (raw, truncated) = sink.into_parts();
+        Ok(BackupDump {
+            raw,
+            records,
+            truncated,
+        })
     }
 }
 

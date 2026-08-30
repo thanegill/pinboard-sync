@@ -228,14 +228,11 @@ impl UrlKey for RedditClient {
     }
 }
 
-/// Decode a Reddit JSON response into `T`, centralizing status handling: 401/403
-/// become [`SourceError::ReauthRequired`] (with a fixed, actionable message — the
-/// body is usually a large anti-bot HTML page, so it isn't echoed), any other
-/// non-success status becomes [`SourceError::Other`]. `what` names the request.
-async fn decode_reddit_json<T: DeserializeOwned>(
-    resp: reqwest::Response,
-    what: &str,
-) -> Result<T, SourceError> {
+/// The body text of a Reddit response, centralizing status handling: 401/403 become
+/// [`SourceError::ReauthRequired`] (with a fixed, actionable message — the body is
+/// usually a large anti-bot HTML page, so it isn't echoed), any other non-success
+/// status becomes [`SourceError::Other`]. `what` names the request.
+async fn reddit_body(resp: reqwest::Response, what: &str) -> Result<String, SourceError> {
     use reqwest::StatusCode;
 
     let status = resp.status();
@@ -249,6 +246,15 @@ async fn decode_reddit_json<T: DeserializeOwned>(
     if !status.is_success() {
         return Err(anyhow::anyhow!("{what} returned {status}: {}", body.trim()).into());
     }
+    Ok(body)
+}
+
+/// Decode a Reddit JSON response into `T`, over [`reddit_body`]'s status handling.
+async fn decode_reddit_json<T: DeserializeOwned>(
+    resp: reqwest::Response,
+    what: &str,
+) -> Result<T, SourceError> {
+    let body = reddit_body(resp, what).await?;
     serde_json::from_str(&body)
         .with_context(|| format!("parsing {what} response"))
         .map_err(Into::into)

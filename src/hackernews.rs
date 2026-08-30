@@ -375,8 +375,9 @@ impl HackerNewsClient {
                     anyhow::anyhow!("hn algolia returned {status}: {}", body.trim()).into(),
                 );
             }
+            let body = resp.text().await.context("reading hn algolia response")?;
             let search: AlgoliaSearchResponse =
-                resp.json().await.context("parsing hn algolia response")?;
+                serde_json::from_str(&body).context("parsing hn algolia response")?;
             for hit in search.hits {
                 let item = HackerNewsItem::from(hit);
                 out.insert(HackerNewsItemId::from(item.id), item);

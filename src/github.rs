@@ -332,10 +332,12 @@ impl Source for GitHubClient {
             // warning rather than discarding this page (and every earlier one). A body
             // that isn't a JSON array at all still fails the whole page; a non-empty page
             // where every element fails is a schema break (see `deserialize_lenient`).
-            let elements: Vec<serde_json::Value> = resp
-                .json()
+            let body = resp
+                .text()
                 .await
-                .context("parsing github starred response")?;
+                .context("reading github starred response")?;
+            let elements: Vec<serde_json::Value> =
+                serde_json::from_str(&body).context("parsing github starred response")?;
             let repos: Vec<GitHubStarredRepo> =
                 deserialize_lenient(elements, "github starred element", |count| {
                     SourceError::Other(anyhow::anyhow!(

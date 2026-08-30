@@ -117,8 +117,9 @@ impl PinboardClient {
 impl BookmarkStore for PinboardClient {
     async fn all(&self) -> Result<Vec<Bookmark>> {
         let resp = self.get_posts_all("no").await?;
+        let body = resp.text().await.context("reading Pinboard posts/all")?;
         let wire: Vec<PinboardBookmark> =
-            resp.json().await.context("parsing Pinboard posts/all")?;
+            serde_json::from_str(&body).context("parsing Pinboard posts/all")?;
         // Skip (and warn on) any bookmark whose `href` doesn't parse as a URL rather than
         // aborting the whole run for one bad entry. An unparseable `time` is not fatal —
         // the conversion keeps the bookmark with no timestamp (see `Bookmark::try_from`)

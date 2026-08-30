@@ -83,11 +83,16 @@ that a merge would re-date a bookmark even with dating off. A bookmark is exclud
 own plan's residency: one that stays at its own URL would otherwise merge its stored record
 back in and resurrect what the plan removed.
 
-A URL whose record the pass **could not read** — a failed lookup, or one a halt stopped it
-short of — is `untouchable`: nothing is written there, the rewrite is refused and counted in
-`PassOutcome::refused`. That refusal propagates, since a refused group doesn't move and so
-keeps its own URL occupied, iterated to a fixpoint before any write so the result is
-order-independent.
+Two kinds of target are `untouchable`: nothing is written there, the rewrite is refused and
+counted in `PassOutcome::refused`. One the pass **could not read** — a failed lookup, or one
+a halt stopped it short of — because what is stored there may be stale. One whose **`public`
+doesn't match** every plan moving onto it, because a merge fuses their notes into one record
+and would have to either publish a private annotation or unshare a bookmark the user chose to
+share; the tool picks neither. Both refusals propagate — a refused group doesn't move, so it
+keeps its own URL occupied — iterated to a fixpoint before any write so the result is
+order-independent. The visibility check therefore runs *before* that fixpoint, and it is what
+lets the converged-state guard use `diff` (which ignores `public`/`read_later`): a merge that
+reaches the write can't have changed either flag.
 
 **`Plan` says whether the source was reached, not just whether to write.** `plan` returns
 `Plan::Bookmark` (an end-state), `Plan::Unchanged` (*the source answered*, nothing to do),

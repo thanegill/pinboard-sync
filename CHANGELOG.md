@@ -70,17 +70,29 @@ All notable changes to this project are documented here. The format is based on
   article URL is not an HN item URL, so it never saw them.
   `cleanup` now checks the target against **every** bookmark in the account. Since
   Pinboard holds one record per URL, a bookmark already sitting at the target joins the
-  same field-merge that colliding rewrites already use: tags are unioned, distinct notes
-  are kept, and the resident's title, date and to-read state survive — it is the record
-  that stays at that URL. Privacy is the exception: it is never *widened*, so a private
-  bookmark merging in makes the result private rather than publishing its notes. So the
-  article keeps the user's title, notes and tags, gains the generated
+  same field-merge that colliding rewrites already use: tags are unioned, the resident's
+  note is kept **byte for byte** and extended only with what the incoming bookmarks add,
+  and the resident's title, date and to-read state survive — it is the record that stays
+  at that URL. So the article keeps the user's title, notes and tags, gains the generated
   `HN Link:` line and HN tags, and the now-redundant HN item bookmark is absorbed —
   one record, nothing lost, and the pass converges. Nothing changes when the article is
   not separately bookmarked: the usual rewrite still happens.
-  A target whose record this pass *could not read* — its lookup failed, or a dead
-  credential stopped the pass before reaching it — is still left strictly alone, since
-  what is stored there may be stale.
+
+  Two cases are **refused** rather than merged, leaving both records exactly as they are
+  and reporting the rewrite as left in place. A target whose record this pass *could not
+  read* — its lookup failed, or a dead credential stopped the pass before reaching it —
+  is left strictly alone, since what is stored there may be stale. And a target whose
+  public/private state differs from the bookmark(s) moving onto it is left alone too:
+  merging fuses their notes into one record, so it would have to either publish a private
+  annotation or unshare a bookmark the user chose to share, and neither is this tool's
+  call to make. A refusal protects the refused bookmark's own URL as well, so a second
+  rewrite heading there can't overwrite the record the refusal just preserved.
+
+  `cleanup --all` runs the three sources over one account in turn, and each of them
+  writes. All three now share a **live** view of the account rather than one snapshot
+  taken before the first ran, so a later source sees what an earlier one wrote instead of
+  planning against state that no longer exists. `--dry-run` advances that view too — the
+  preview shows the same set of changes the real run would make.
 - **`cleanup` now fires the `--on-auth-failure` hook**, which previously only `sync` did.
   An expired credential during `cleanup` exited non-zero but ran no hook, so anyone using
   it to be told "re-copy your reddit_session" was silently not told when the expiry

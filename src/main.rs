@@ -1264,7 +1264,8 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             if let Some(acct) = config.github.first() {
                 let opts = gh_cleanup_opts(&over, cmd.dry_run, Some(acct), config);
                 run.record(
-                    cleanup_github_for(&pinboard, &bookmarks, Some(acct), None, &opts).await,
+                    cleanup_github_for(&pinboard, &bookmarks, Some(acct), None, &opts, config)
+                        .await,
                 );
             }
             if let Some(acct) = config.reddit.first() {
@@ -1350,7 +1351,15 @@ async fn run_cleanup_github(
         account,
         config,
     );
-    cleanup_github_for(&pinboard, &bookmarks, account, args.github_token, &opts).await
+    cleanup_github_for(
+        &pinboard,
+        &bookmarks,
+        account,
+        args.github_token,
+        &opts,
+        config,
+    )
+    .await
 }
 
 /// Run github cleanup: build an API client from the account/env token and refresh
@@ -1361,8 +1370,9 @@ async fn cleanup_github_for(
     account: Option<&GitHubAccount>,
     token_flag: Option<String>,
     opts: &github::GitHubCleanupOpts,
+    config: &Config,
 ) -> Result<()> {
-    let config = account
+    let github_config = account
         .map(GitHubAccount::github_config)
         .unwrap_or_default();
     let token = resolve_secret(
@@ -1372,8 +1382,15 @@ async fn cleanup_github_for(
         account.and_then(|a| a.token_file.as_deref()),
     )
     .context("missing GitHub token (set --github-token, GITHUB_TOKEN, or `token`/`token_file` in the config)")?;
-    let client = GitHubClient::new(token, config.clone())?;
-    github::cleanup(pinboard, &client, &config, opts, bookmarks).await
+    let hook = cleanup_hook(
+        account.and_then(|a| a.on_auth_failure.as_deref()),
+        config.defaults.github.on_auth_failure.as_deref(),
+        config,
+    );
+    let client = GitHubClient::new(token, github_config.clone())?;
+    github::cleanup(pinboard, &client, &github_config, opts, bookmarks)
+        .await
+        .map_err(|e| handle_source_err(e, hook.as_deref()))
 }
 
 async fn run_cleanup_reddit(
@@ -1438,7 +1455,14 @@ async fn cleanup_one_reddit(
         None
     };
 
-    cleanup::run(pinboard, reddit.as_ref(), &opts, bookmarks).await
+    let hook = cleanup_hook(
+        account.and_then(|a| a.on_auth_failure.as_deref()),
+        config.defaults.reddit.on_auth_failure.as_deref(),
+        config,
+    );
+    cleanup::run(pinboard, reddit.as_ref(), &opts, bookmarks)
+        .await
+        .map_err(|e| handle_source_err(e, hook.as_deref()))
 }
 
 async fn run_cleanup_hackernews(
@@ -1508,6 +1532,8 @@ async fn cleanup_one_hackernews(
         bookmarks,
     )
     .await
+    // No hook: HackerNews is public, so nothing here can be a re-auth to act on.
+    .map_err(SourceError::into_anyhow)
 }
 
 // --- shared dispatch helpers -------------------------------------------------
@@ -1622,6 +1648,27 @@ fn resolve_hook(
     flag.or_else(|| account_override.map(str::to_string))
         .or_else(|| source_override.map(str::to_string))
         .or_else(|| config.hooks.on_auth_failure.clone())
+}
+
+/// The auth-failure hook for a `cleanup` run: `PINBOARD_SYNC_ON_AUTH_FAILURE` → account →
+/// `[defaults.<source>]` → `[hooks]`. The `cleanup` subcommands take no
+/// `--on-auth-failure` flag, so the env var is the top rung.
+///
+/// Reading the env var here is load-bearing, not a convenience: the NixOS module exports
+/// `onAuthFailure` *only* into the unit environment — it never reaches the generated
+/// TOML — and runs the `cleanup --all` timer with it. Resolving from config alone would
+/// leave the hook dead for the exact deployment it is meant to serve.
+fn cleanup_hook(
+    account_override: Option<&str>,
+    source_override: Option<&str>,
+    config: &Config,
+) -> Option<String> {
+    resolve_hook(
+        on_auth_failure_from_env(),
+        account_override,
+        source_override,
+        config,
+    )
 }
 
 fn resolve_pinboard_token(flag: Option<String>, pb: &config::PinboardConfig) -> Option<String> {
@@ -1878,6 +1925,49 @@ mod tests {
         };
         let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("refresh-cookie"));
+    }
+
+    #[test]
+    fn cleanup_falls_back_to_on_auth_failure_env() {
+        let _env = lock_on_auth_failure_env();
+        // The NixOS module exports `onAuthFailure` *only* as this env var — it never
+        // reaches the generated TOML — and it runs the `cleanup --all` timer with that
+        // same environment. Miss this rung and the hook silently never fires for the
+        // deployment the whole feature exists for.
+        std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
+        let hook = cleanup_hook(None, None, &Config::default());
+        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
+
+        assert_eq!(hook.as_deref(), Some("env-hook"));
+    }
+
+    #[test]
+    fn cleanup_env_hook_outranks_the_config_tiers() {
+        let _env = lock_on_auth_failure_env();
+        // Same precedence as `sync`, whose per-source flag is env-backed: the env var is
+        // the top rung, above an account or `[defaults.<source>]` entry.
+        std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
+        let hook = cleanup_hook(
+            Some("account-hook"),
+            Some("source-hook"),
+            &Config::default(),
+        );
+        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
+
+        assert_eq!(hook.as_deref(), Some("env-hook"));
+    }
+
+    #[test]
+    fn cleanup_uses_the_account_hook_when_no_env_is_set() {
+        let _env = lock_on_auth_failure_env();
+        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
+        let hook = cleanup_hook(
+            Some("account-hook"),
+            Some("source-hook"),
+            &Config::default(),
+        );
+
+        assert_eq!(hook.as_deref(), Some("account-hook"));
     }
 
     #[test]
@@ -2178,6 +2268,38 @@ mod tests {
 
         // The path is required.
         assert!(Cli::try_parse_from(["pinboard-sync", "backup"]).is_err());
+    }
+
+    /// The hook is a real side effect on a real credential expiry, so drive it through
+    /// the actual `sh -c` invocation rather than a stand-in: the marker file existing is
+    /// the only proof the operator's command ran.
+    #[test]
+    fn the_auth_failure_hook_fires_for_reauth_and_nothing_else() {
+        let dir = scratch_dir("auth-hook");
+        let marker = dir.join("fired");
+        let hook = format!("touch {}", marker.display());
+
+        // A rate limit is not a credential problem: firing here would send the operator
+        // to rotate a token when the fix is to wait.
+        handle_source_err(
+            SourceError::RateLimited("resets at 14:23".into()),
+            Some(&hook),
+        );
+        assert!(!marker.exists(), "a rate limit must not fire the hook");
+
+        handle_source_err(
+            SourceError::Other(anyhow!("some transient failure")),
+            Some(&hook),
+        );
+        assert!(!marker.exists(), "an ordinary error must not fire the hook");
+
+        handle_source_err(
+            SourceError::ReauthRequired("cookie expired".into()),
+            Some(&hook),
+        );
+        assert!(marker.exists(), "a dead credential must fire the hook");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A fresh, empty temp directory unique to `label`, cleaned up by the caller.

@@ -23,6 +23,9 @@ pub fn listing_entry(kind: &str, data: Value) -> RedditListingEntry {
 pub struct FakeReddit {
     pub saved: Vec<RedditListingEntry>,
     pub info: Vec<RedditListingEntry>,
+    /// When set, `info` fails with it instead of answering — for exercising the
+    /// expired-cookie path that has to reach the auth-failure hook.
+    pub info_error: Option<SourceError>,
 }
 
 impl Source for FakeReddit {
@@ -46,7 +49,12 @@ impl UrlKey for FakeReddit {
 
 impl PostInfo for FakeReddit {
     async fn info(&self, _fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError> {
-        Ok(self.info.clone())
+        match &self.info_error {
+            Some(SourceError::ReauthRequired(m)) => Err(SourceError::ReauthRequired(m.clone())),
+            Some(SourceError::RateLimited(m)) => Err(SourceError::RateLimited(m.clone())),
+            Some(SourceError::Other(e)) => Err(SourceError::Other(anyhow::anyhow!("{e}"))),
+            None => Ok(self.info.clone()),
+        }
     }
 }
 

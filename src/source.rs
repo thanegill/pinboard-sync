@@ -26,8 +26,13 @@ pub enum SourceError {
 
 impl SourceError {
     /// Flatten into a plain `anyhow::Error`: the re-auth or rate-limit message on its own
-    /// (without the variant's prefix) or the inner error unwrapped. Used by the cleanup
-    /// paths, which surface failures as `anyhow` and don't fire the auth-failure hook.
+    /// (without the variant's prefix) or the inner error unwrapped.
+    ///
+    /// Only for the two paths that genuinely have no use for the variant: `doctor`, which
+    /// reports each credential rather than acting on it, and HackerNews, which is public
+    /// and cannot need re-authentication. Everywhere else the variant is what decides
+    /// whether the `--on-auth-failure` hook fires, so flattening early is how `cleanup`
+    /// silently lost that hook — don't reach for this to make a type mismatch go away.
     pub fn into_anyhow(self) -> anyhow::Error {
         match self {
             SourceError::ReauthRequired(m) | SourceError::RateLimited(m) => anyhow::anyhow!(m),

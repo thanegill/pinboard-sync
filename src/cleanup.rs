@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 
 use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Plan};
@@ -64,7 +64,7 @@ pub async fn run<P: BookmarkStore, R: PostInfo>(
     reddit: Option<&R>,
     opts: &RedditCleanupOpts,
     bookmarks: &[Bookmark],
-) -> Result<()> {
+) -> Result<(), SourceError> {
     let reddit_bms: Vec<_> = bookmarks
         .iter()
         .filter(|bookmark| bookmark.url.host_is("reddit.com"))
@@ -178,7 +178,7 @@ async fn fetch_post_info<R: PostInfo>(
     reddit: Option<&R>,
     opts: &RedditCleanupOpts,
     bookmarks: &[Bookmark],
-) -> Result<HashMap<String, RedditPostMeta>> {
+) -> Result<HashMap<String, RedditPostMeta>, SourceError> {
     let mut map = HashMap::new();
     if !(opts.mark_nsfw || opts.fix_titles || opts.use_post_date) {
         return Ok(map);
@@ -201,12 +201,13 @@ async fn fetch_post_info<R: PostInfo>(
         return Ok(map);
     }
 
+    // Keep the variant: an expired cookie has to stay `ReauthRequired` all the way to
+    // `main`, which is what fires the auth-failure hook.
     let entries = reddit.info(&fullnames).await.map_err(|e| match e {
-        SourceError::ReauthRequired(m) => {
-            anyhow!("{m}\nSet a fresh REDDIT_COOKIE (reddit_session) and retry.")
-        }
-        SourceError::RateLimited(m) => anyhow!("{m}"),
-        SourceError::Other(e) => e,
+        SourceError::ReauthRequired(m) => SourceError::ReauthRequired(format!(
+            "{m}\nSet a fresh REDDIT_COOKIE (reddit_session) and retry."
+        )),
+        other => other,
     })?;
     for entry in entries {
         if let Some(name) = entry.fields.name.clone() {
@@ -1115,6 +1116,33 @@ mod loop_tests {
             .unwrap();
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_expired_cookie_surfaces_as_reauth_not_a_flattened_error() {
+        // `cleanup reddit` reads `/api/info` for NSFW/title/date data, and an expired
+        // reddit_session fails it. The variant has to survive to the caller, or the
+        // auth-failure hook can never fire for cleanup the way it does for sync.
+        let pinboard = FakePinboard {
+            all: vec![bookmark(
+                "https://www.reddit.com/r/rust/comments/abc/x/",
+                "T",
+                "reddit",
+            )],
+            ..Default::default()
+        };
+        let reddit = FakeReddit {
+            info_error: Some(SourceError::ReauthRequired("cookie expired".into())),
+            ..Default::default()
+        };
+
+        let err = run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, SourceError::ReauthRequired(_)),
+            "expected reauth, got {err:?}"
+        );
     }
 
     #[tokio::test]

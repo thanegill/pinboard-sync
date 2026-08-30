@@ -405,7 +405,7 @@ pub async fn cleanup<P: BookmarkStore>(
     config: &GitHubConfig,
     opts: &GitHubCleanupOpts,
     bookmarks: &[Bookmark],
-) -> Result<()> {
+) -> Result<(), SourceError> {
     let gh_bms: Vec<_> = bookmarks
         .iter()
         .filter(|bookmark| bookmark.url.host_is("github.com"))
@@ -418,8 +418,7 @@ pub async fn cleanup<P: BookmarkStore>(
     let star_dates: HashMap<String, i64> = if opts.use_post_date {
         client
             .fetch()
-            .await
-            .map_err(SourceError::into_anyhow)?
+            .await?
             .into_iter()
             .filter_map(|d| {
                 let key = url_key(&d.bookmark.url)?;
@@ -813,6 +812,60 @@ mod net_tests {
     use serde_json::json;
     use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// An expired token during the pass has to reach the caller as `ReauthRequired`, or
+    /// `main` cannot tell it apart from any other failure and the auth-failure hook
+    /// never fires for `cleanup`.
+    #[tokio::test]
+    async fn cleanup_surfaces_an_expired_token_as_reauth() {
+        use crate::pinboard::PinboardBookmark;
+        use crate::test_support::FakePinboard;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r"))
+            .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"message":"Bad creds"}"#))
+            .mount(&server)
+            .await;
+
+        let pinboard = FakePinboard {
+            all: vec![PinboardBookmark {
+                url: "https://github.com/o/r".into(),
+                description: "o/r".into(),
+                extended: "notes".into(),
+                tags: "github-star".into(),
+                time: "2020-01-01T00:00:00Z".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }
+            .try_into()
+            .unwrap()],
+            ..Default::default()
+        };
+        let bookmarks = pinboard.all.clone();
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+
+        let err = cleanup(
+            &pinboard,
+            &client,
+            &GitHubConfig::default(),
+            &GitHubCleanupOpts {
+                dry_run: false,
+                use_post_date: false,
+                max_age_days: 30,
+                cleanup_stale_to_now: false,
+            },
+            &bookmarks,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, SourceError::ReauthRequired(_)),
+            "expected reauth, got {err:?}"
+        );
+    }
 
     /// End to end: a rate limit part-way through stops the pass rather than spending a
     /// doomed request on every remaining bookmark, while keeping the work already done.

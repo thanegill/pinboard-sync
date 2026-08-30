@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use log::{debug, warn};
 use scraper::{Html, Selector};
 use serde::Deserialize;
@@ -495,7 +495,7 @@ impl HackerNewsClient {
         pinboard: &P,
         opts: &HackerNewsCleanupOpts,
         bookmarks: &[Bookmark],
-    ) -> Result<()> {
+    ) -> Result<(), SourceError> {
         let hackernews_bookmarks: Vec<_> = bookmarks
             .iter()
             .filter(|bookmark| HackerNewsItemId::try_from(&bookmark.url).is_ok())
@@ -507,10 +507,7 @@ impl HackerNewsClient {
             .iter()
             .filter_map(|bookmark| HackerNewsItemId::try_from(&bookmark.url).ok())
             .collect();
-        let items = self
-            .fetch_items(&ids)
-            .await
-            .map_err(SourceError::into_anyhow)?;
+        let items = self.fetch_items(&ids).await?;
 
         let pass = HackerNewsCleanupPass {
             items,
@@ -540,9 +537,11 @@ impl HackerNewsClient {
             items.into_result(),
             links.map_or(Ok(()), PassOutcome::into_result),
         ) {
-            (Err(items_err), Err(links_err)) => {
-                bail!("{items_err:#}; and for discussion links: {links_err:#}")
-            }
+            // Flattening the pair loses each one's variant, which costs nothing here:
+            // HackerNews is public, so neither pass can produce a re-auth to act on.
+            (Err(items_err), Err(links_err)) => Err(SourceError::Other(anyhow!(
+                "{items_err:#}; and for discussion links: {links_err:#}"
+            ))),
             (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
             (Ok(()), Ok(())) => Ok(()),
         }

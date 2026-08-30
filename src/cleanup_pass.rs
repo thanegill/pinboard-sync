@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
 use time::OffsetDateTime;
 
@@ -106,11 +106,10 @@ pub struct PassOutcome {
 /// *remaining* lookup fail the same way, so working through them would only spend
 /// requests to collect identical errors.
 ///
-/// Two variants rather than one message because only one of them is an auth problem.
-/// Nothing discriminates them *yet* — `into_result` reports either the same way — but the
-/// `--on-auth-failure` hook does not currently reach `cleanup` at all (see the follow-up
-/// issue for wiring it), and when it does it must fire for [`Halt::Reauth`] only: no
-/// credential change clears a rate limit.
+/// Two variants rather than one message because only one of them is an auth problem:
+/// [`PassOutcome::into_result`] maps them to different [`SourceError`]s, which is what
+/// lets `main` fire the `--on-auth-failure` hook for [`Halt::Reauth`] and withhold it for
+/// [`Halt::RateLimited`] — no credential change clears a quota.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Halt {
     /// A credential needs refreshing.
@@ -148,9 +147,11 @@ impl PassOutcome {
     /// discussion-link pass strips its own marker tag, so it steadily looks up one or two
     /// bookmarks, and without the floor a single hiccup there would be a "majority" and
     /// would wedge the service all over again. One failed lookup is always survivable.
-    pub fn into_result(self) -> Result<()> {
+    /// Returns [`SourceError`] rather than a plain `anyhow::Error` so the *reason* still
+    /// reaches `main`, which is what decides whether to fire the auth-failure hook — a
+    /// halted credential must, a rate limit must not.
+    pub fn into_result(self) -> Result<(), SourceError> {
         if let Some(halt) = &self.halted {
-            let message = halt.message();
             // Why we stopped is the headline, but it must not bury what else went wrong
             // before it: those counts are the only record once this returns.
             let mut also = Vec::new();
@@ -160,20 +161,25 @@ impl PassOutcome {
             if self.write_failed > 0 {
                 also.push(format!("{} write(s)", self.write_failed));
             }
-            if also.is_empty() {
-                bail!("{message}");
-            }
-            bail!("{message} (also failed: {})", also.join(", "));
+            let message = match also.is_empty() {
+                true => halt.message().to_string(),
+                false => format!("{} (also failed: {})", halt.message(), also.join(", ")),
+            };
+            return Err(match halt {
+                Halt::Reauth(_) => SourceError::ReauthRequired(message),
+                Halt::RateLimited(_) => SourceError::RateLimited(message),
+            });
         }
         if self.write_failed > 0 {
-            bail!("{} bookmark(s) failed to write", self.write_failed);
+            return Err(anyhow!("{} bookmark(s) failed to write", self.write_failed).into());
         }
         if self.plan_failed > self.reached.max(1) {
-            bail!(
+            return Err(anyhow!(
                 "{} of {} lookup(s) failed — the source looks unreachable",
                 self.plan_failed,
                 self.plan_failed + self.reached
-            );
+            )
+            .into());
         }
         if self.plan_failed > 0 {
             warn!(

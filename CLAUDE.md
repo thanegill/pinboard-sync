@@ -56,9 +56,9 @@ state forever. `SourceError::ReauthRequired` and `SourceError::RateLimited` stop
 (a dead credential and an exhausted quota both fail every remaining lookup too) but the
 plans already made are still written — which is why `plan`
 returns `SourceError` rather than a flattened `anyhow::Error`. `PassOutcome::halted`
-records *which* of the two it was as a `Halt` so that when the auth-failure hook is
-eventually wired into `cleanup` it can fire for `Halt::Reauth` only — no credential change
-clears a rate limit. Nothing discriminates the two variants today. **Any bookmark *in the
+records *which* of the two it was as a `Halt`, and `into_result` maps them to different
+`SourceError`s so `main` fires the auth-failure hook for `Halt::Reauth` only — no
+credential change clears a rate limit. **Any bookmark *in the
 pass's slice* left without a plan — skipped, failed, or never reached because the pass
 halted — joins `skipped_urls`**, so another bookmark rewriting onto its URL is
 refused (and counted in `PassOutcome::refused`) rather than clobbering a record whose
@@ -172,7 +172,21 @@ install consumes.
 **Re-auth vs other errors drive a side effect.** `SourceError::ReauthRequired`
 (Reddit 401/403 cookie expiry, GitHub 401) fires the `--on-auth-failure` hook and
 exits non-zero; `SourceError::Other` (transient/parse) doesn't. HackerNews is public
-and never re-auths. Both clients send through `http::send_retrying`
+and never re-auths. **`cleanup` fires it too, not just `sync`** — which is why the three
+`cleanup` entry points return `Result<(), SourceError>` rather than `anyhow::Result`:
+flattening the variant at that boundary is exactly what used to lose the hook. Every
+re-auth-capable read in `cleanup` is covered, not only the pass — GitHub's `repo()`
+mid-pass (via `Halt`), GitHub's `fetch()` for `use_post_date` star dates, and Reddit's
+`/api/info`, whose expired cookie is by far the most common in practice. `main`'s
+`handle_source_err` is the single place the hook is fired, shared with `sync`; `cleanup`
+resolves the command through `PINBOARD_SYNC_ON_AUTH_FAILURE` → account →
+`[defaults.<source>]` → `[hooks]` (no `--on-auth-failure` flag on `cleanup`, unlike
+`sync`, whose per-source flag is itself env-backed). **Reading that env var is
+load-bearing**: [`nix/module.nix`](nix/module.nix) exports `onAuthFailure` only into the
+unit environment — it never reaches the generated TOML — and runs the `cleanup --all`
+timer with it, so resolving from config alone would leave the hook dead for the
+deployment it exists to serve. Both clients send through
+`http::send_retrying`
 ([`src/http.rs`](src/http.rs)), which backs off on network errors / 429 / 5xx but
 returns other statuses as-is.
 

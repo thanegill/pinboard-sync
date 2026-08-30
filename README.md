@@ -101,8 +101,11 @@ Two variables are **direct values, not `_FILE`-capable**:
 - **`PINBOARD_SYNC_CONFIG`** — a direct path to the `--config` TOML file (equivalent to
   passing `--config`). The config is already a file, so it takes no `_FILE` indirection.
 - **`PINBOARD_SYNC_ON_AUTH_FAILURE`** — a shell command run when a source needs
-  re-authentication. It can also be set per-account or as `[hooks] on_auth_failure` in
-  the config (flag/env → per-account → `[hooks]`).
+  re-authentication, on both `sync` and `cleanup`. It can also be set per-account, as
+  `[defaults.<source>] on_auth_failure`, or as `[hooks] on_auth_failure`, resolving
+  **flag/env → account → `[defaults.<source>]` → `[hooks]`**. (`cleanup` takes no
+  `--on-auth-failure` flag, so the env var is its top rung.) It does not run for a rate
+  limit — waiting, not a new credential, is what clears one.
 
 ## Usage
 

@@ -40,6 +40,24 @@ All notable changes to this project are documented here. The format is based on
   `--stale-to-now[=BOOL]` on `cleanup` (per source and `cleanup --all`). No environment
   variables — these are CLI- and config-only.
 
+### Fixed
+
+- **`cleanup` now fires the `--on-auth-failure` hook**, which previously only `sync` did.
+  An expired credential during `cleanup` exited non-zero but ran no hook, so anyone using
+  it to be told "re-copy your reddit_session" was silently not told when the expiry
+  happened on the cleanup timer rather than the sync one. All three re-auth-capable reads
+  are covered — Reddit's `/api/info` (the most common, since `reddit_session` cookies
+  expire far more often than GitHub tokens), GitHub's per-repo lookup, and GitHub's star
+  list under `use_post_date`. A rate limit still does **not** fire it: waiting, not a new
+  credential, is what clears a quota. The hook resolves
+  `PINBOARD_SYNC_ON_AUTH_FAILURE` → account → `[defaults.<source>]` → `[hooks]` — the
+  same tiers `sync` uses, less its `--on-auth-failure` flag, which `cleanup` does not
+  take. The env var matters most: the NixOS module passes `onAuthFailure` to the unit
+  that way and never writes it into the generated config. Note that `cleanup --all` keeps
+  going after a failure, so two dead credentials mean the hook runs twice — once per
+  source, each with its own `PINBOARD_SYNC_AUTH_ERROR`. `sync --all` has always behaved
+  this way; a hook that notifies should expect to be called more than once per run.
+
 ### Changed
 
 - **A GitHub rate limit is now recognised as one, and stops the pass instead of being

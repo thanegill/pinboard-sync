@@ -100,6 +100,11 @@ pub trait CleanupPass {
 pub struct PassOutcome {
     /// Bookmarks written, or under `dry_run` that would be.
     pub changed: usize,
+    /// Under `dry_run`, the preview exactly as printed. Kept rather than only written to
+    /// stdout so it can be asserted on: a preview is the one thing an operator reads before
+    /// letting this tool loose on their account, and while it was a bare `println!` the
+    /// whole of it could be deleted with every test still green.
+    pub preview: Vec<String>,
     /// Rewrites this pass declined to make: either the target must not be written at all
     /// (see [`Refusal`]) or a single plan was held back because its visibility disagreed
     /// with the record staying there. Not a failure — leaving them alone is the safe
@@ -453,7 +458,6 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             ),
         }
         if dry_run {
-            println!("[dry-run] {mover}");
             let reason = match staying {
                 Some(staying) => {
                     format!("would merge into {target}, which is {}", describe(staying))
@@ -462,7 +466,11 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
                     "would merge into {target} with bookmarks that disagree about visibility"
                 ),
             };
-            println!("          (refused: {reason})");
+            emit_preview(
+                &mut outcome.preview,
+                &mover,
+                &[("", format!("(refused: {reason})"))],
+            );
         }
         // The mover didn't move, so its own URL is still occupied and no other rewrite may
         // land there.
@@ -487,8 +495,11 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             // Also on stdout: a dry run is a preview, and work the real run would refuse
             // is part of what the operator is previewing.
             if dry_run {
-                println!("[dry-run] {key}");
-                println!("          (refused: {})", reason.explain());
+                emit_preview(
+                    &mut outcome.preview,
+                    key,
+                    &[("", format!("(refused: {})", reason.explain()))],
+                );
             }
             continue;
         }
@@ -517,10 +528,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             let delete_old = url_changed && !targets.contains(&original.url);
 
             if dry_run {
-                println!("[dry-run] {}", original.url);
-                for (label, value) in &changes {
-                    println!("          {label:<6}-> {value}");
-                }
+                emit_preview(&mut outcome.preview, &original.url, &changes);
             }
 
             // Always through the store, dry run included: it is what withholds the
@@ -637,23 +645,22 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         }
 
         if dry_run {
-            println!("[dry-run] {target}");
-            println!("          {:<6}-> {}", "title", merged.title);
-            let note_value = if merged.note.is_empty() {
-                "(removed)"
-            } else {
-                &merged.note
+            let note_value = match merged.note.is_empty() {
+                true => "(removed)".to_string(),
+                false => merged.note.clone(),
             };
-            println!("          {:<6}-> {note_value}", "notes");
-            println!("          {:<6}-> [{}]", "tags", merged.tags.join(" "));
+            let mut detail = vec![
+                ("title", merged.title.clone()),
+                ("notes", note_value),
+                ("tags", format!("[{}]", merged.tags.join(" "))),
+            ];
             if let Some(date) = merged.timestamp.and_then(crate::timefmt::to_rfc3339) {
-                println!("          {:<6}-> {date}", "date");
+                detail.push(("date", date));
             }
-            println!("          {:<6}-> {}", "public", merged.public);
-            println!("          {:<6}-> {}", "toread", merged.read_later);
-            for old in &old_urls {
-                println!("          absorb {old}");
-            }
+            detail.push(("public", merged.public.to_string()));
+            detail.push(("toread", merged.read_later.to_string()));
+            detail.extend(old_urls.iter().map(|old| ("", format!("absorb {old}"))));
+            emit_preview(&mut outcome.preview, target, &detail);
         }
 
         // Always through the store — see the single-plan path above.
@@ -708,6 +715,23 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         );
     }
     outcome
+}
+
+/// Print one bookmark's dry-run preview and keep it in `preview`. A `(label, value)` pair
+/// renders as an aligned `label -> value`; an empty label renders the value alone, for the
+/// lines that are not field changes (`absorb <url>`, `(refused: ...)`).
+fn emit_preview(preview: &mut Vec<String>, url: &url::Url, detail: &[(&str, String)]) {
+    let mut push = |line: String| {
+        println!("{line}");
+        preview.push(line);
+    };
+    push(format!("[dry-run] {url}"));
+    for (label, value) in detail {
+        push(match label.is_empty() {
+            true => format!("          {value}"),
+            false => format!("          {label:<6}-> {value}"),
+        });
+    }
 }
 
 /// Close `untouchable` under "a group whose target is untouchable doesn't move, so its
@@ -3025,5 +3049,107 @@ mod tests {
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());
+        // What the operator actually reads before letting a real run touch the account.
+        assert_eq!(
+            outcome.preview,
+            vec![
+                "[dry-run] https://empty/",
+                "          url   -> https://empty/new",
+                "          title -> New",
+                "          notes -> (removed)",
+                "          tags  -> [x]",
+                "          date  -> 2023-11-14T22:13:20Z",
+                "[dry-run] https://full/",
+                "          url   -> https://full/new",
+                "          title -> New",
+                "          notes -> new notes",
+                "          tags  -> [x]",
+                "          date  -> 2023-11-14T22:13:20Z",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_previews_a_merge_and_its_absorbed_urls() {
+        // The merge preview renders every written field plus one `absorb` line per URL the
+        // merge would delete — the deletions are the destructive half, and the preview is
+        // where an operator gets to see them coming.
+        let mut resident = bookmark("https://target/");
+        resident.note = "resident".into();
+        resident.tags = vec!["rt".into()];
+        let mut mover = bookmark("https://mover/");
+        mover.note = "mover".into();
+        mover.tags = vec!["mt".into()];
+        let slice = vec![mover.clone()];
+        let all = vec![mover, resident];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                url: u("https://target/"),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &all, true),
+            &slice,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert!(pinboard.updated.borrow().is_empty());
+        assert!(pinboard.deleted.borrow().is_empty());
+        assert_eq!(
+            outcome.preview,
+            vec![
+                "[dry-run] https://target/",
+                "          title -> Title",
+                "          notes -> resident\n\nmover",
+                "          tags  -> [rt mt]",
+                "          date  -> 2020-01-01T00:00:00Z",
+                "          public-> false",
+                "          toread-> false",
+                "          absorb https://mover/",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_previews_a_refusal() {
+        // A refusal is work the real run would decline to do, so it belongs in the preview
+        // too — it was invisible there while refusals only reached the log.
+        let mut resident = bookmark("https://target/");
+        resident.public = true;
+        let mut mover = bookmark("https://mover/");
+        mover.public = false;
+        let slice = vec![mover.clone()];
+        let all = vec![mover, resident];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                url: u("https://target/"),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &all, true),
+            &slice,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.refused, 1);
+        assert_eq!(
+            outcome.preview,
+            vec![
+                "[dry-run] https://mover/",
+                "          (refused: would merge into https://target/, which is public)",
+            ]
+        );
     }
 }

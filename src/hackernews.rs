@@ -553,6 +553,7 @@ impl HackerNewsClient {
         let items = run_pass(
             pinboard,
             &hackernews_bookmarks,
+            bookmarks,
             opts.dry_run,
             "HN",
             opts.date_opts(),
@@ -605,6 +606,7 @@ impl HackerNewsClient {
         run_pass(
             pinboard,
             &candidates,
+            bookmarks,
             opts.dry_run,
             "HN discussion",
             opts.date_opts(),
@@ -1344,6 +1346,91 @@ mod net_tests {
             .bookmark
             .tags
             .contains(&"hackernews-comment".to_string()));
+    }
+
+    #[tokio::test]
+    async fn cleanup_refuses_to_clobber_a_separately_saved_article() {
+        use crate::pinboard::PinboardBookmark;
+        use crate::test_support::FakePinboard;
+
+        // The story's article is *also* saved on its own, with the user's own notes and
+        // tags. Rewriting the HN item onto that URL writes `replace=yes` over a record
+        // this pass never planned — and the article URL is not an HN item URL, so it was
+        // never in the pass's slice for `skipped_urls` to protect.
+        let algolia = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "hits": [
+                    { "objectID": "42", "title": "Cool", "url": "https://example.com/x",
+                      "author": "alice", "_tags": ["story", "author_alice", "story_42"] }
+                ]
+            })))
+            .mount(&algolia)
+            .await;
+
+        let stored = |url: &str, title: &str, extended: &str, tags: &str| {
+            PinboardBookmark {
+                url: url.into(),
+                description: title.into(),
+                extended: extended.into(),
+                tags: tags.into(),
+                time: "2020-01-01T00:00:00Z".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }
+            .try_into()
+            .unwrap()
+        };
+        let pinboard = FakePinboard {
+            all: vec![
+                stored(
+                    "https://news.ycombinator.com/item?id=42",
+                    "old title",
+                    "",
+                    "hackernews",
+                ),
+                stored(
+                    "https://example.com/x",
+                    "My saved article",
+                    "hand written notes",
+                    "keepme",
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let client = HackerNewsClient::with_base_urls(
+            String::new(),
+            HackernewsConfig::default(),
+            "unused".into(),
+            algolia.uri(),
+        );
+        let bookmarks = pinboard.all.clone();
+        client
+            .cleanup(
+                &pinboard,
+                &HackerNewsCleanupOpts {
+                    dry_run: false,
+                    link_discussions: false,
+                    use_post_date: false,
+                    max_age_days: 30,
+                    cleanup_stale_to_now: false,
+                },
+                &bookmarks,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            pinboard.updated.borrow().is_empty(),
+            "must not write over the separately saved article: {:?}",
+            pinboard.updated.borrow()
+        );
+        assert!(
+            pinboard.deleted.borrow().is_empty(),
+            "and must not delete the HN item it left in place"
+        );
     }
 
     #[tokio::test]

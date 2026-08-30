@@ -415,13 +415,18 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
 
     for key in group_order {
         let group = groups.remove(key).expect("key came from group_order");
-        // The target holds a bookmark whose state we could not establish, so nothing may
-        // be written there: leave the rewriting bookmark(s) at their old URLs. Separate
-        // from the `targets` delete-guard below — that protects a URL some *plan* writes
-        // to, this one a URL we failed to read.
+        // The target must not be written, so leave the rewriting bookmark(s) at their old
+        // URLs. Separate from the `targets` delete-guard below — that protects a URL some
+        // *plan* writes to, this one a URL no plan may land on.
         if let Some(reason) = untouchable.get(key) {
             outcome.refused += 1;
             warn!("skipping cleanup write to {key}: {}", reason.explain());
+            // Also on stdout: a dry run is a preview, and work the real run would refuse
+            // is part of what the operator is previewing.
+            if dry_run {
+                println!("[dry-run] {key}");
+                println!("          {:<6}-> {}", "refused", reason.explain());
+            }
             continue;
         }
         // A resident sitting at the target joins the group. Pinboard keys on URL, so the

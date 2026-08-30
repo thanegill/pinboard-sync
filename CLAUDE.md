@@ -60,28 +60,34 @@ records *which* of the two it was as a `Halt`, and `into_result` maps them to di
 `SourceError`s so `main` fires the auth-failure hook for `Halt::Reauth` only — no
 credential change clears a rate limit.
 
-**No bookmark is ever replaced by a plan that isn't about it.** `run_pass` takes the
-account's *whole* bookmark set (`residents`) alongside the slice it plans, because **a plan
-can target a URL its own filter excludes**: HN's item pass rewrites a story bookmark to its
-*article* URL, which is not an HN item URL and so was never in the slice. Checking
-residency against the slice alone silently destroyed a separately-saved article's notes and
-tags.
+**The run has one live view of the account, not a snapshot.** `posts/all` is read once into
+an `AccountView` ([`src/bookmark.rs`](src/bookmark.rs)), and `CleanupStore` wraps the real
+store so every write updates that view as it goes. Passes ask it what occupies a URL
+(`AccountState::resident`) and build their slice from it (`snapshot`). Both halves are
+load-bearing: **a plan can target a URL its own filter excludes** — HN's item pass rewrites
+a story bookmark to its *article* URL, which is not an HN item URL — and **`cleanup --all`
+runs github, then reddit, then hackernews over one account**, each writing, so a snapshot
+taken before the first is stale for the others. Recording is not a call anyone can forget:
+`apply_update`/`apply_merge` are default trait methods over `update` + `delete`, so
+intercepting those two covers both. `dry_run` lives on the store rather than beside it, and
+a dry run still advances the view while withholding the network — otherwise a preview would
+show a different set of changes than the run it previews.
 
-Bookmarks the pass produces no plan for are split by whether their stored record is the
-final word on them. **`mergeable`** — outside the slice, or `Plan::Skipped`/`Unchanged` —
-means we deliberately didn't plan it, so what is stored is current: a plan landing on that
-URL takes the resident in as a participant in the same `merge_bookmarks` collision merge
-(resident first, so its title wins), and the mover's old URL is absorbed. Pinboard holds one
-record per URL, so the end state there *must* be a single bookmark; merging is what makes
-that lossless and convergent. The resident's `read_later` and `timestamp` are restored after
-the merge — it is the record that stays, and `merge_bookmarks`'s any()/earliest rules are
-for two *plans*, so without that a merge would re-date a bookmark even with dating off.
-`public` is deliberately **not** restored: never-widen outranks it, because the mover's
-notes land on this record and a private member's annotation must not be republished. **`untouchable`** — the lookup failed, or a dead credential
-halted the pass first — means we couldn't establish its state, so nothing is written there
-at all; the rewrite is refused and counted in `PassOutcome::refused`. That refusal
-propagates: a refused group doesn't move, so its own URL stays occupied and becomes
-untouchable too, iterated to a fixpoint before any write so the result is order-independent.
+**No bookmark is replaced by a plan that isn't about it.** A resident at a group's target
+joins the same `merge_bookmarks` collision merge (resident first, so its title wins) and the
+mover's old URL is absorbed. Pinboard holds one record per URL, so the end state there
+*must* be a single bookmark; merging is what makes that lossless and convergent. The
+resident's `read_later` and `timestamp` are restored afterwards — it is the record that
+stays, and `merge_bookmarks`'s any()/earliest rules are meant for two *plans*, so without
+that a merge would re-date a bookmark even with dating off. A bookmark is excluded from its
+own plan's residency: one that stays at its own URL would otherwise merge its stored record
+back in and resurrect what the plan removed.
+
+A URL whose record the pass **could not read** — a failed lookup, or one a halt stopped it
+short of — is `untouchable`: nothing is written there, the rewrite is refused and counted in
+`PassOutcome::refused`. That refusal propagates, since a refused group doesn't move and so
+keeps its own URL occupied, iterated to a fixpoint before any write so the result is
+order-independent.
 
 **`Plan` says whether the source was reached, not just whether to write.** `plan` returns
 `Plan::Bookmark` (an end-state), `Plan::Unchanged` (*the source answered*, nothing to do),

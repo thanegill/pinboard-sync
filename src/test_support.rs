@@ -97,6 +97,10 @@ pub struct FakePinboard {
     pub fail_add_urls: HashSet<String>,
     /// URLs whose `update` should fail, to exercise cleanup log-and-skip behavior.
     pub fail_update_urls: HashSet<String>,
+    /// URLs whose `delete` should fail. A merge writes then deletes, so this is the only
+    /// way to reach the half-applied case where the write landed and an absorbed URL
+    /// survived.
+    pub fail_delete_urls: HashSet<String>,
 }
 
 impl BookmarkStore for FakePinboard {
@@ -134,6 +138,9 @@ impl BookmarkStore for FakePinboard {
     }
     async fn delete(&self, url: &Url) -> Result<()> {
         self.deleted.borrow_mut().push(url.to_string());
+        if self.fail_delete_urls.contains(url.as_str()) {
+            anyhow::bail!("fake delete failure for {url}");
+        }
         Ok(())
     }
 }

@@ -19,7 +19,7 @@ use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
 use time::OffsetDateTime;
 
-use crate::bookmark::{Bookmark, BookmarkStore};
+use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::source::SourceError;
 
 /// The `use_post_date` policy applied uniformly across a pass: whether to re-date by
@@ -104,11 +104,6 @@ pub struct PassOutcome {
     pub write_failed: usize,
     /// Set when the source told us to stop partway. See [`Halt`].
     pub halted: Option<Halt>,
-    /// URLs this pass wrote, so a *later* pass over the same account in the same run can
-    /// avoid re-planning them from the pre-pass snapshot it was handed and undoing this
-    /// one's work. Recorded under `dry_run` too, so the preview shows the same set of
-    /// changes a real run would make rather than an extra one it wouldn't.
-    pub written: Vec<url::Url>,
 }
 
 /// Why a pass stopped planning early: the source said something that makes every
@@ -125,6 +120,26 @@ pub enum Halt {
     Reauth(String),
     /// The service is refusing requests until a reset; no credential change helps.
     RateLimited(String),
+}
+
+/// Why a rewrite was left in place rather than written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refusal {
+    /// The target holds a record this pass could not read — a failed lookup, or one a halt
+    /// stopped it short of — so what is stored there may be stale.
+    Unreadable,
+    /// The target belongs to a group that was itself refused, so it never moved and its
+    /// URL is still occupied.
+    OccupiedByRefused,
+}
+
+impl Refusal {
+    fn explain(self) -> &'static str {
+        match self {
+            Refusal::Unreadable => "occupied by a bookmark this pass could not read",
+            Refusal::OccupiedByRefused => "occupied by a rewrite that was itself refused",
+        }
+    }
 }
 
 impl Halt {
@@ -200,17 +215,18 @@ impl PassOutcome {
     }
 }
 
-/// Run `pass` over `bookmarks` (already filtered to the source). Re-writes each
-/// changed bookmark (deleting the old URL when it changed), or prints the diff under
-/// `dry_run`. `noun` names the source in the scan log. Never fails outright: every
-/// failure, including a dead credential, is tallied into the returned [`PassOutcome`],
-/// which the caller turns into a verdict.
+/// Run `pass` over `bookmarks` (already filtered to the source). Re-writes each changed
+/// bookmark (deleting the old URL when it changed), or prints the diff under the store's
+/// dry-run. `noun` names the source in the scan log. Never fails outright: every failure,
+/// including a dead credential, is tallied into the returned [`PassOutcome`], which the
+/// caller turns into a verdict.
 ///
-/// `residents` is the *whole* account, not just the slice being planned. A plan can
-/// target a URL outside its own filter — HackerNews rewrites a story bookmark to its
-/// article, which is by definition not an HN item URL — and writing there is
-/// `replace=yes` over a record this pass never planned. Checking residency against the
-/// slice alone cannot see those, so they are read from the full set.
+/// Residency is asked of `store`, whose view covers the *whole* account and reflects what
+/// earlier passes in this run already wrote. Both halves matter: a plan can target a URL
+/// outside its own filter — HackerNews rewrites a story bookmark to its article, which is
+/// by definition not an HN item URL — and writing there is `replace=yes` over a record
+/// this pass never planned; and `cleanup --all` runs three sources in turn over one
+/// account, so a snapshot taken before the first would be stale for the others.
 ///
 /// Two phases so that several bookmarks whose plans normalize to the *same* URL don't
 /// clobber each other: phase 1 plans every bookmark (resolving date + privacy), phase 2
@@ -223,15 +239,14 @@ impl PassOutcome {
 /// stored URL while Y moves elsewhere, Y's delete would otherwise remove the record X
 /// just wrote there. Precomputing the set of all target URLs and refusing to delete any
 /// of them makes the pass order-independent.
-pub async fn run_pass<'a, P: BookmarkStore, C: CleanupPass>(
-    pinboard: &P,
-    bookmarks: &'a [Bookmark],
-    residents: &'a [Bookmark],
-    dry_run: bool,
+pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
+    store: &S,
+    bookmarks: &[Bookmark],
     noun: &str,
     dates: DateOpts,
     pass: &C,
 ) -> PassOutcome {
+    let dry_run = store.dry_run();
     // Dry-run output is consistently prefixed with `[dry-run]`.
     let dry_prefix = if dry_run { "[dry-run] " } else { "" };
     info!(
@@ -243,18 +258,10 @@ pub async fn run_pass<'a, P: BookmarkStore, C: CleanupPass>(
     let mut outcome = PassOutcome::default();
 
     let mut planned_pairs: Vec<(&Bookmark, Bookmark)> = Vec::new();
-    // Bookmarks this pass produces no plan for, split by whether the stored record is the
-    // final word on them. `mergeable`: we deliberately didn't plan it, so what is stored
-    // is current and a plan landing on its URL can merge with it. `untouchable`: we tried
-    // and couldn't establish its state, so nothing may be written there at all.
-    // Residents outside the slice are mergeable — a filter excluded them, nothing failed.
-    let in_slice: std::collections::HashSet<&url::Url> = bookmarks.iter().map(|b| &b.url).collect();
-    let mut mergeable: HashMap<&url::Url, &Bookmark> = residents
-        .iter()
-        .filter(|b| !in_slice.contains(&b.url))
-        .map(|b| (&b.url, b))
-        .collect();
-    let mut untouchable: std::collections::HashSet<&url::Url> = std::collections::HashSet::new();
+    // URLs whose record this pass could not establish — a lookup failed, or a halt stopped
+    // it short. Nothing may be written there at all. Owned rather than borrowed because
+    // the fixpoint below grows it from the group keys.
+    let mut untouchable: HashMap<url::Url, Refusal> = HashMap::new();
     for (index, bookmark) in bookmarks.iter().enumerate() {
         let mut planned = match pass.plan(bookmark).await {
             Ok(Plan::Bookmark(p)) => {
@@ -263,25 +270,29 @@ pub async fn run_pass<'a, P: BookmarkStore, C: CleanupPass>(
             }
             Ok(Plan::Unchanged) => {
                 outcome.reached += 1;
-                mergeable.insert(&bookmark.url, bookmark);
                 continue;
             }
-            Ok(Plan::Skipped) => {
-                mergeable.insert(&bookmark.url, bookmark);
-                continue;
-            }
+            Ok(Plan::Skipped) => continue,
             // Every remaining lookup would fail the same way, so stop planning — but
             // fall through to write the plans already made rather than discard them.
             // This one and everything after it goes unplanned, so protect all of them:
             // a record we never looked at must not be written over.
             Err(SourceError::ReauthRequired(message)) => {
                 outcome.halted = Some(Halt::Reauth(message));
-                untouchable.extend(bookmarks[index..].iter().map(|b| &b.url));
+                untouchable.extend(
+                    bookmarks[index..]
+                        .iter()
+                        .map(|b| (b.url.clone(), Refusal::Unreadable)),
+                );
                 break;
             }
             Err(SourceError::RateLimited(message)) => {
                 outcome.halted = Some(Halt::RateLimited(message));
-                untouchable.extend(bookmarks[index..].iter().map(|b| &b.url));
+                untouchable.extend(
+                    bookmarks[index..]
+                        .iter()
+                        .map(|b| (b.url.clone(), Refusal::Unreadable)),
+                );
                 break;
             }
             // Log and skip a single failed plan so the rest of the pass still runs. Its
@@ -289,7 +300,7 @@ pub async fn run_pass<'a, P: BookmarkStore, C: CleanupPass>(
             // another bookmark rewriting onto its URL would clobber the record.
             Err(e) => {
                 outcome.plan_failed += 1;
-                untouchable.insert(&bookmark.url);
+                untouchable.insert(bookmark.url.clone(), Refusal::Unreadable);
                 error!("looking up bookmark {}: {e:#}", bookmark.url);
                 continue;
             }
@@ -327,6 +338,15 @@ pub async fn run_pass<'a, P: BookmarkStore, C: CleanupPass>(
         groups.entry(key).or_default().push((original, planned));
     }
 
+    // The stored URLs of the bookmarks this pass actually planned. They are excluded from
+    // residency: a bookmark that plans to stay at (or move within) its own URL would
+    // otherwise find itself sitting there and merge its stored record back into its own
+    // plan, undoing the very changes the plan computed.
+    let planned_originals: std::collections::HashSet<&url::Url> = planned_pairs
+        .iter()
+        .map(|(original, _)| &original.url)
+        .collect();
+
     // Every group's target URL. A rewrite's old URL is never deleted when it is one of
     // these, because some other planned write owns that URL; deleting it would clobber
     // that write's record. This keeps the pass order-independent.
@@ -337,19 +357,35 @@ pub async fn run_pass<'a, P: BookmarkStore, C: CleanupPass>(
     // Settled before any write so the outcome doesn't depend on group order, and iterated
     // to a fixpoint because each refusal can occupy the URL that refuses the next.
     loop {
-        let newly_occupied: Vec<&url::Url> = group_order
+        let newly_occupied: Vec<url::Url> = group_order
             .iter()
-            .filter(|key| untouchable.contains(**key))
+            .filter(|key| untouchable.contains_key(**key))
             .filter_map(|key| groups.get(*key))
             .flatten()
-            .map(|(original, _)| &original.url)
-            .filter(|url| !untouchable.contains(*url))
+            .map(|(original, _)| original.url.clone())
+            .filter(|url| !untouchable.contains_key(url))
             .collect();
         if newly_occupied.is_empty() {
             break;
         }
-        untouchable.extend(newly_occupied);
+        untouchable.extend(
+            newly_occupied
+                .into_iter()
+                .map(|url| (url, Refusal::OccupiedByRefused)),
+        );
     }
+
+    // Resolve every group's resident once, before any write. A resident is a record the
+    // live view holds at a group's target that this pass neither planned (a bookmark is
+    // never a resident of its own plan — merging with itself would resurrect what the plan
+    // removed) nor failed to read. Precomputing is equivalent to looking each up lazily:
+    // group keys are distinct, and every URL a write deletes was planned, so no write in
+    // the loop below can change a record read here.
+    let residents: HashMap<&url::Url, Bookmark> = group_order
+        .iter()
+        .filter(|key| !untouchable.contains_key(**key) && !planned_originals.contains(*key))
+        .filter_map(|key| store.resident(key).map(|resident| (*key, resident)))
+        .collect();
 
     for key in group_order {
         let group = groups.remove(key).expect("key came from group_order");
@@ -357,17 +393,15 @@ pub async fn run_pass<'a, P: BookmarkStore, C: CleanupPass>(
         // be written there: leave the rewriting bookmark(s) at their old URLs. Separate
         // from the `targets` delete-guard below — that protects a URL some *plan* writes
         // to, this one a URL we failed to read.
-        if untouchable.contains(key) {
+        if let Some(reason) = untouchable.get(key) {
             outcome.refused += 1;
-            warn!(
-                "skipping cleanup write to {key}: occupied by a bookmark this pass could not read"
-            );
+            warn!("skipping cleanup write to {key}: {}", reason.explain());
             continue;
         }
         // A resident sitting at the target joins the group. Pinboard keys on URL, so the
         // end state there has to be one record, and merging keeps what the resident had
         // instead of replacing it — it goes in first, so its title wins.
-        let resident = mergeable.get(key).copied();
+        let resident = residents.get(key);
         if resident.is_none() && group.len() == 1 {
             let (original, planned) = group[0];
             // The written fields that differ; empty means nothing a write would change.
@@ -381,25 +415,23 @@ pub async fn run_pass<'a, P: BookmarkStore, C: CleanupPass>(
             let delete_old = url_changed && !targets.contains(&original.url);
 
             if dry_run {
-                outcome.changed += 1;
-                outcome.written.push(planned.url.clone());
                 println!("[dry-run] {}", original.url);
                 for (label, value) in &changes {
                     println!("          {label:<6}-> {value}");
                 }
-                continue;
             }
 
+            // Always through the store, dry run included: it is what withholds the
+            // network, and it is also what advances the view a later pass previews from.
             // `planned` carries the stored `public`/`read_later` and the driver-resolved
             // `timestamp`, so it's the complete write model.
             // Log and skip a single failed update so the rest of the pass still runs.
-            match pinboard
+            let write = store
                 .apply_update(planned, delete_old.then_some(&original.url))
-                .await
-            {
-                Ok(()) => {
+                .await;
+            match write.error {
+                None => {
                     outcome.changed += 1;
-                    outcome.written.push(planned.url.clone());
                     debug!(
                         "updated {} -> {} [{}]",
                         original.url,
@@ -407,7 +439,7 @@ pub async fn run_pass<'a, P: BookmarkStore, C: CleanupPass>(
                         planned.tags.join(" ")
                     );
                 }
-                Err(e) => {
+                Some(e) => {
                     outcome.write_failed += 1;
                     error!("updating bookmark {}: {e:#}", original.url);
                 }
@@ -433,7 +465,11 @@ pub async fn run_pass<'a, P: BookmarkStore, C: CleanupPass>(
             // mover's notes land on this record and a private member's annotation must
             // not be republished. Narrowing the resident is the safe direction.
             merged.read_later = resident.read_later;
-            merged.timestamp = resident.timestamp;
+            // `None` means the stored date was absent or wouldn't parse, and writing it
+            // back omits `dt` entirely — under `replace=yes` Pinboard then re-dates the
+            // record to now. Keep the earliest date the merge found instead of losing the
+            // record's age; before this path such a resident was never written at all.
+            merged.timestamp = resident.timestamp.or(merged.timestamp);
         }
         let target = &merged.url;
 
@@ -457,8 +493,6 @@ pub async fn run_pass<'a, P: BookmarkStore, C: CleanupPass>(
         }
 
         if dry_run {
-            outcome.changed += 1;
-            outcome.written.push(target.clone());
             println!("[dry-run] {target}");
             println!("          {:<6}-> {}", "title", merged.title);
             let note_value = if merged.note.is_empty() {
@@ -476,19 +510,27 @@ pub async fn run_pass<'a, P: BookmarkStore, C: CleanupPass>(
             for old in &old_urls {
                 println!("          absorb {old}");
             }
-            continue;
         }
 
-        match pinboard.apply_merge(&merged, &old_urls).await {
-            Ok(()) => {
+        // Always through the store — see the single-plan path above.
+        let write = store.apply_merge(&merged, &old_urls).await;
+        match write.error {
+            None => {
                 outcome.changed += 1;
-                outcome.written.push(merged.url.clone());
-                let absorbed: Vec<String> = old_urls.iter().map(|u| u.to_string()).collect();
+                let absorbed: Vec<String> = write.deleted.iter().map(|u| u.to_string()).collect();
                 debug!("merged {target} <- [{}]", absorbed.join(" "));
             }
-            Err(e) => {
+            // A merge can half-apply: the record is written and an absorbed URL survives.
+            // Say which, because "updating {target} failed" would send the operator after
+            // a record that is actually fine.
+            Some(e) if write.wrote => {
                 outcome.write_failed += 1;
-                error!("updating bookmark {target}: {e:#}");
+                let stranded = old_urls.len() - write.deleted.len();
+                error!("merged {target} but {stranded} absorbed URL(s) remain: {e:#}");
+            }
+            Some(e) => {
+                outcome.write_failed += 1;
+                error!("merging into {target}: {e:#}");
             }
         }
     }
@@ -563,12 +605,23 @@ fn merge_bookmarks(group: &[&Bookmark]) -> Bookmark {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bookmark::{AccountState, AccountView, CleanupStore};
     use crate::test_support::FakePinboard;
     use anyhow::anyhow;
     use url::Url;
 
     fn u(s: &str) -> Url {
         Url::parse(s).unwrap()
+    }
+
+    /// Wrap the fake in the production store so every test exercises the same view
+    /// bookkeeping the real run does, rather than a stand-in that can drift from it.
+    fn store<'a>(
+        pinboard: &'a FakePinboard,
+        all: &[Bookmark],
+        dry_run: bool,
+    ) -> CleanupStore<'a, FakePinboard> {
+        CleanupStore::new(pinboard, AccountView::new(all.to_vec()), dry_run)
     }
 
     /// A `CleanupPass` whose `plan` is a closure, so each test scripts its own outcome.
@@ -625,7 +678,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.plan_failed, 1);
         assert_eq!(outcome.write_failed, 0);
         let updated = pinboard.updated.borrow();
@@ -653,7 +713,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert!(outcome.into_result().is_ok());
     }
 
@@ -670,7 +737,14 @@ mod tests {
         let mut pinboard = FakePinboard::default();
         pinboard.fail_update_urls.insert("https://x/".into());
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.write_failed, 1);
         assert!(pinboard.updated.borrow().is_empty());
         let err = outcome.into_result().unwrap_err();
@@ -685,7 +759,14 @@ mod tests {
         let pass = FakePass(|_: &Bookmark| Err(item_error()));
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.plan_failed, 2);
         let err = outcome.into_result().unwrap_err();
         assert!(err.to_string().contains("2 of 2"), "{err}");
@@ -701,7 +782,14 @@ mod tests {
         let pass = FakePass(|_: &Bookmark| Err(item_error()));
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!((outcome.reached, outcome.plan_failed), (0, 1));
         assert!(outcome.into_result().is_ok());
     }
@@ -726,7 +814,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!((outcome.reached, outcome.plan_failed), (1, 3));
         let err = outcome.into_result().unwrap_err();
         assert!(err.to_string().contains("3 of 4"), "{err}");
@@ -755,7 +850,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(planned.get(), 2, "should stop at the rate limit");
         assert_eq!(
             outcome.halted,
@@ -789,7 +891,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(planned.get(), 2, "should stop at the reauth failure");
         let updated = pinboard.updated.borrow();
         assert_eq!(
@@ -820,7 +929,14 @@ mod tests {
         let mut pinboard = FakePinboard::default();
         pinboard.fail_update_urls.insert("https://x/one".into());
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.write_failed, 1);
         let err = outcome.into_result().unwrap_err().to_string();
         assert!(err.contains("token expired"), "{err}");
@@ -844,7 +960,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.plan_failed, 1);
         let err = outcome.into_result().unwrap_err().to_string();
         assert!(err.contains("token expired"), "{err}");
@@ -873,7 +996,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.reached, 0);
         // "2 of 2", not "2 of 5": the three skipped bookmarks are not in the denominator,
         // which is what stops them padding it into a passing ratio.
@@ -895,7 +1025,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.reached, 1);
         assert!(outcome.into_result().is_ok());
     }
@@ -906,7 +1043,14 @@ mod tests {
         let pass = FakePass(|_: &Bookmark| Ok(Plan::Skipped));
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());
@@ -918,7 +1062,14 @@ mod tests {
         let pass = FakePass(|bookmark: &Bookmark| Ok(Plan::Bookmark(unchanged_plan(bookmark))));
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         assert!(pinboard.updated.borrow().is_empty());
     }
@@ -936,7 +1087,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -1070,7 +1228,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
         let updated = pinboard.updated.borrow();
@@ -1106,8 +1271,14 @@ mod tests {
             });
             let pinboard = FakePinboard::default();
 
-            let outcome =
-                run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+            let outcome = run_pass(
+                &store(&pinboard, &books, false),
+                &books,
+                "test",
+                NO_DATING,
+                &pass,
+            )
+            .await;
             assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
             let updated = pinboard.updated.borrow();
@@ -1153,7 +1324,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &slice, &all, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &all, false),
+            &slice,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.refused, 2, "both rewrites must be refused");
         assert!(
             pinboard.updated.borrow().is_empty(),
@@ -1184,7 +1362,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &slice, &all, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &all, false),
+            &slice,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.refused, 0);
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -1192,6 +1377,43 @@ mod tests {
         assert!(
             !updated[0].shared,
             "a private member's notes must not be republished public"
+        );
+    }
+
+    #[tokio::test]
+    async fn merging_does_not_reset_a_residents_unparseable_date() {
+        // A stored date that wouldn't parse reads back as `None`, and writing `None` omits
+        // `dt` — under `replace=yes` Pinboard then dates the record to today. Keep the
+        // date the merge found rather than losing the record's age.
+        let mut mover = bookmark("https://x/mine");
+        mover.timestamp = crate::timefmt::from_unix(1_000_000);
+        let mut outsider = bookmark("https://other/resident");
+        outsider.timestamp = None;
+        let slice = vec![mover.clone()];
+        let all = vec![mover, outsider];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                url: u("https://other/resident"),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &all, false),
+            &slice,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.refused, 0);
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert!(
+            !updated[0].dt.is_empty(),
+            "an empty dt lets Pinboard re-date the record to now"
         );
     }
 
@@ -1218,7 +1440,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &slice, &all, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &all, false),
+            &slice,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.refused, 0);
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -1259,7 +1488,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &slice, &all, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &all, false),
+            &slice,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         let updated = pinboard.updated.borrow();
         let written: Vec<&str> = updated.iter().map(|c| c.url.as_str()).collect();
         assert!(
@@ -1267,6 +1503,46 @@ mod tests {
             "the settled record must not be rewritten: {written:?}"
         );
         assert_eq!(outcome.refused, 0);
+    }
+
+    #[tokio::test]
+    async fn a_bookmark_is_not_a_resident_of_its_own_plan() {
+        // Reading residency from a live view makes a bookmark that stays at its own URL
+        // find *itself* sitting there. Merging with itself would union its stored record
+        // back into the plan and resurrect exactly what the plan was computed to remove.
+        let mut stored = bookmark("https://x/mine");
+        stored.tags = vec!["keep".into(), "drop-me".into()];
+        stored.note = "stale note".into();
+        let books = vec![stored];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                tags: vec!["keep".into()],
+                note: "fresh note".into(),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.refused, 0);
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert!(
+            !updated[0].tags.contains(&"drop-me".to_string()),
+            "the plan dropped this tag; merging with itself would bring it back: {updated:?}"
+        );
+        assert_eq!(
+            updated[0].extended, "fresh note",
+            "the stale note must not be merged back in"
+        );
     }
 
     #[tokio::test]
@@ -1293,7 +1569,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &slice, &all, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &all, false),
+            &slice,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.refused, 0);
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -1328,7 +1611,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &slice, &all, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &all, false),
+            &slice,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.refused, 0);
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -1364,7 +1654,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         assert_eq!(outcome.refused, 0);
         let updated = pinboard.updated.borrow();
@@ -1403,7 +1700,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.plan_failed, 1);
         assert!(
             pinboard.updated.borrow().is_empty(),
@@ -1434,7 +1738,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert!(matches!(outcome.halted, Some(Halt::Reauth(_))));
         assert!(
             pinboard.updated.borrow().is_empty(),
@@ -1465,7 +1776,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
         let updated = pinboard.updated.borrow();
@@ -1495,7 +1813,14 @@ mod tests {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(&pinboard, &books, &books, false, "test", NO_DATING, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
         let updated = pinboard.updated.borrow();
@@ -1503,6 +1828,33 @@ mod tests {
         assert_eq!(updated[0].url, "https://new/");
         // The public member sorts first, but the private member keeps the merge private.
         assert!(!updated[0].shared);
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_pass_still_advances_the_view() {
+        // A preview has to show the changes a real run would make, including the ones a
+        // later pass only makes because an earlier one wrote. So a dry run routes through
+        // the store as usual — the store is what withholds the network, not this loop.
+        let books = vec![bookmark("https://x/mine")];
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                url: u("https://x/moved"),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+        let store = store(&pinboard, &books, true);
+
+        let outcome = run_pass(&store, &books, "test", NO_DATING, &pass).await;
+        assert_eq!(outcome.changed, 1);
+
+        assert!(
+            store.resident(&u("https://x/moved")).is_some(),
+            "the next pass must preview from the state this one would leave"
+        );
+        assert!(store.resident(&u("https://x/mine")).is_none());
+        assert!(pinboard.updated.borrow().is_empty(), "and write nothing");
+        assert!(pinboard.deleted.borrow().is_empty());
     }
 
     #[tokio::test]
@@ -1535,7 +1887,14 @@ mod tests {
             max_age_days: 1_000_000,
             stale_to_now: false,
         };
-        let outcome = run_pass(&pinboard, &books, &books, true, "test", dates, &pass).await;
+        let outcome = run_pass(
+            &store(&pinboard, &books, true),
+            &books,
+            "test",
+            dates,
+            &pass,
+        )
+        .await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());

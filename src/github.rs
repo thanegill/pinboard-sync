@@ -9,7 +9,7 @@ use log::warn;
 use serde::Deserialize;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
-use crate::bookmark::{Bookmark, BookmarkStore};
+use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Plan};
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::send_retrying;
@@ -401,7 +401,6 @@ impl UrlKey for GitHubClient {
 
 /// Options for `cleanup github`.
 pub struct GitHubCleanupOpts {
-    pub dry_run: bool,
     /// Re-date bookmarks to when the repo was starred (within the age cap). Since the
     /// per-repo lookup doesn't carry `starred_at`, this fetches the star list to map it.
     pub use_post_date: bool,
@@ -428,17 +427,17 @@ impl GitHubCleanupOpts {
 /// setting the title to the current `owner/repo`, and refreshing the `lang:` tag. A
 /// URL change updates + deletes the old; notes are kept and creation time preserved.
 /// A repo that no longer exists (404) keeps just the URL canonicalization.
-pub async fn cleanup<P: BookmarkStore>(
-    pinboard: &P,
+pub async fn cleanup<S: BookmarkStore + AccountState>(
+    store: &S,
     client: &GitHubClient,
     config: &GitHubConfig,
     opts: &GitHubCleanupOpts,
-    bookmarks: &[Bookmark],
 ) -> Result<(), SourceError> {
-    let gh_bms: Vec<_> = bookmarks
-        .iter()
+    // Taken from the run's live view, so an earlier source's writes are already reflected.
+    let gh_bms: Vec<Bookmark> = store
+        .snapshot()
+        .into_iter()
         .filter(|bookmark| bookmark.url.host_is("github.com"))
-        .cloned()
         .collect();
 
     // `starred_at` isn't on the per-repo lookup, so for use_post_date fetch the star
@@ -463,17 +462,9 @@ pub async fn cleanup<P: BookmarkStore>(
         config,
         star_dates,
     };
-    run_pass(
-        pinboard,
-        &gh_bms,
-        bookmarks,
-        opts.dry_run,
-        "github",
-        opts.date_opts(),
-        &pass,
-    )
-    .await
-    .into_result()
+    run_pass(store, &gh_bms, "github", opts.date_opts(), &pass)
+        .await
+        .into_result()
 }
 
 /// Re-shapes one GitHub repo-root bookmark: skip anything that isn't a bare
@@ -839,6 +830,7 @@ mod tests {
 #[cfg(test)]
 mod net_tests {
     use super::*;
+    use crate::bookmark::{AccountView, CleanupStore};
     use serde_json::json;
     use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -877,16 +869,14 @@ mod net_tests {
             GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
 
         let err = cleanup(
-            &pinboard,
+            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
             &GitHubCleanupOpts {
-                dry_run: false,
                 use_post_date: false,
                 max_age_days: 30,
                 cleanup_stale_to_now: false,
             },
-            &bookmarks,
         )
         .await
         .unwrap_err();
@@ -962,16 +952,14 @@ mod net_tests {
             GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
 
         let err = cleanup(
-            &pinboard,
+            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
             &GitHubCleanupOpts {
-                dry_run: false,
                 use_post_date: false,
                 max_age_days: 30,
                 cleanup_stale_to_now: false,
             },
-            &bookmarks,
         )
         .await
         .unwrap_err();
@@ -1311,16 +1299,14 @@ mod net_tests {
             GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
 
         cleanup(
-            &pinboard,
+            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
             &GitHubCleanupOpts {
-                dry_run: false,
                 use_post_date: false,
                 max_age_days: 30,
                 cleanup_stale_to_now: false,
             },
-            &bookmarks,
         )
         .await
         .expect("one dead repo must not fail the whole run");
@@ -1367,16 +1353,14 @@ mod net_tests {
         let client =
             GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
         cleanup(
-            &pinboard,
+            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
             &GitHubCleanupOpts {
-                dry_run: false,
                 use_post_date: false,
                 max_age_days: 30,
                 cleanup_stale_to_now: false,
             },
-            &bookmarks,
         )
         .await
         .unwrap();
@@ -1436,16 +1420,14 @@ mod net_tests {
         let client =
             GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
         cleanup(
-            &pinboard,
+            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
             &GitHubCleanupOpts {
-                dry_run: false,
                 use_post_date: false,
                 max_age_days: 30,
                 cleanup_stale_to_now: false,
             },
-            &bookmarks,
         )
         .await
         .unwrap();
@@ -1489,16 +1471,14 @@ mod net_tests {
         let client =
             GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
         cleanup(
-            &pinboard,
+            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
             &GitHubCleanupOpts {
-                dry_run: false,
                 use_post_date: false,
                 max_age_days: 30,
                 cleanup_stale_to_now: false,
             },
-            &bookmarks,
         )
         .await
         .unwrap();
@@ -1548,16 +1528,14 @@ mod net_tests {
         let client =
             GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
         cleanup(
-            &pinboard,
+            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
             &GitHubCleanupOpts {
-                dry_run: false,
                 use_post_date: false,
                 max_age_days: 30,
                 cleanup_stale_to_now: false,
             },
-            &bookmarks,
         )
         .await
         .unwrap();
@@ -1607,16 +1585,14 @@ mod net_tests {
         let client =
             GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
         cleanup(
-            &pinboard,
+            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
             &GitHubCleanupOpts {
-                dry_run: false,
                 use_post_date: false,
                 max_age_days: 30,
                 cleanup_stale_to_now: false,
             },
-            &bookmarks,
         )
         .await
         .unwrap();

@@ -78,15 +78,23 @@ All notable changes to this project are documented here. The format is based on
   one record, nothing lost, and the pass converges. Nothing changes when the article is
   not separately bookmarked: the usual rewrite still happens.
 
+  The same protection covers a collision between two bookmarks the pass *did* plan — a
+  renamed GitHub repo starred under both its old and new names, say. The one already
+  stored at the target is the record that stays there, so it leads the merge and keeps its
+  own date and to-read state, exactly as an unplanned bookmark at that URL does. It
+  previously kept neither: the surviving record was silently backdated to the absorbed
+  bookmark's date even with dating off, and picked up its to-read flag.
+
   Two cases are **refused** rather than merged, leaving both records exactly as they are
-  and reporting the rewrite as left in place. A target whose record this pass *could not
-  read* — its lookup failed, or a dead credential stopped the pass before reaching it —
-  is left strictly alone, since what is stored there may be stale. And a target whose
-  public/private state differs from the bookmark(s) moving onto it is left alone too:
-  merging fuses their notes into one record, so it would have to either publish a private
-  annotation or unshare a bookmark the user chose to share, and neither is this tool's
-  call to make. A refusal protects the refused bookmark's own URL as well, so a second
-  rewrite heading there can't overwrite the record the refusal just preserved.
+  and reporting the rewrite as left in place (now shown in `--dry-run` too, not only
+  logged). A target whose record this pass *could not read* — its lookup failed, or a dead
+  credential stopped the pass before reaching it — is left strictly alone, since what is
+  stored there may be stale. And a target whose public/private state differs from the
+  bookmark(s) moving onto it is left alone too, in either direction: merging fuses their
+  notes into one record, so it would have to either publish a private annotation or
+  unshare a bookmark the user chose to share, and neither is this tool's call to make.
+  A refusal protects the refused bookmark's own URL as well, so a second rewrite heading
+  there can't overwrite the record the refusal just preserved.
 
   `cleanup --all` runs the three sources over one account in turn, and each of them
   writes. All three now share a **live** view of the account rather than one snapshot

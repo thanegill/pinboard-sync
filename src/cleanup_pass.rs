@@ -374,20 +374,32 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         .collect();
 
     // A merge fuses the members' notes and tags into one record, so it can only run when
-    // every member agrees with the resident about who may read it. Widening would publish
-    // a private member's annotation; narrowing would unshare a bookmark the user chose to
-    // share. Neither is ours to decide, so refuse and leave both records alone. Settled
-    // here, ahead of the fixpoint, because a group refused for this reason stays parked at
-    // its own URL exactly like one refused for an unreadable target.
+    // every member agrees with the record that stays there about who may read it. Widening
+    // would publish a private member's annotation; narrowing would unshare a bookmark the
+    // user chose to share. Neither is ours to decide, so refuse and leave them alone.
+    // Settled here, ahead of the fixpoint, because a group refused for this reason stays
+    // parked at its own URL exactly like one refused for an unreadable target.
+    // Collected before extending so an already-refused target keeps its own, more specific
+    // reason rather than being relabelled a mismatch.
+    let mismatched: Vec<url::Url> = group_order
+        .iter()
+        .filter(|key| !untouchable.contains_key(**key))
+        .filter_map(|key| {
+            let members = &groups[*key];
+            let staying = match residents.get(key) {
+                Some(resident) => resident.public,
+                None => members[incumbent_of(members, key)?].1.public,
+            };
+            members
+                .iter()
+                .any(|(_, planned)| planned.public != staying)
+                .then(|| (*key).clone())
+        })
+        .collect();
     untouchable.extend(
-        residents
-            .iter()
-            .filter(|(key, resident)| {
-                groups[*key]
-                    .iter()
-                    .any(|(_, planned)| planned.public != resident.public)
-            })
-            .map(|(key, _)| ((*key).clone(), Refusal::VisibilityMismatch)),
+        mismatched
+            .into_iter()
+            .map(|url| (url, Refusal::VisibilityMismatch)),
     );
 
     // A group whose target is occupied won't move, so its *own* URL stays occupied too —
@@ -480,25 +492,38 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
 
         // Field-merge and delete the absorbed URLs so a later run sees a single bookmark at
         // the target and converges.
-        let plans: Vec<&Bookmark> = resident
+        // The record that stays at this URL: an unplanned resident, else the member already
+        // stored here. Whichever it is leads the merge, so its title and note are the base
+        // the others extend. For an incumbent that is its *plan*, not its stored record —
+        // the plan is this pass's intended end-state for it, and merging its stored record
+        // back in would resurrect exactly what the plan removed.
+        let incumbent = incumbent_of(&group, key);
+        let survivor = resident.or_else(|| incumbent.map(|at| group[at].1));
+        let plans: Vec<&Bookmark> = survivor
             .into_iter()
-            .chain(group.iter().map(|(_, planned)| *planned))
+            .chain(
+                group
+                    .iter()
+                    .enumerate()
+                    .filter(|(at, _)| Some(*at) != incumbent)
+                    .map(|(_, (_, planned))| *planned),
+            )
             .collect();
         let mut merged = merge_bookmarks(&plans);
-        if let Some(resident) = resident {
-            // The resident's own record-level state survives: it is the bookmark that
-            // stays at this URL, and cleanup never re-shapes those (see the single-plan
-            // path above). Its date in particular must not shift to the mover's under
-            // `merge_bookmarks`'s earliest-wins rule, which is meant for two plans — with
-            // dating off, nothing may re-date a bookmark at all. `public` needs no such
-            // restore: a group only reaches this point when every member already matches
-            // the resident, so `merge_bookmarks`'s all()-rule cannot change it.
-            merged.read_later = resident.read_later;
+        if let Some(survivor) = survivor {
+            // The survivor's own record-level state survives the merge's field rules: it is
+            // the bookmark that stays here, and cleanup never re-shapes those (see the
+            // single-plan path above). Its date in particular must not shift to a mover's
+            // under `merge_bookmarks`'s earliest-wins rule, which is meant for two plans —
+            // with dating off, nothing may re-date a bookmark at all. `public` needs no
+            // such restore: a group only reaches this point when every member already
+            // matches it, so the all()-rule cannot change it.
+            merged.read_later = survivor.read_later;
             // `None` means the stored date was absent or wouldn't parse, and writing it
             // back omits `dt` entirely — under `replace=yes` Pinboard then re-dates the
             // record to now. Keep the earliest date the merge found instead of losing the
             // record's age; before this path such a resident was never written at all.
-            merged.timestamp = resident.timestamp.or(merged.timestamp);
+            merged.timestamp = survivor.timestamp.or(merged.timestamp);
         }
         let target = &merged.url;
 
@@ -514,10 +539,14 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             }
         }
 
-        // Nothing to do when the merge reproduces what the resident already holds and
+        // Nothing to do when the merge reproduces what is already stored at the target and
         // there is nothing to absorb — otherwise a converged state would rewrite itself
-        // every run.
-        if resident.is_some_and(|r| r.diff(&merged).is_empty()) && old_urls.is_empty() {
+        // every run. Compared against the *stored* record, which for an incumbent is not
+        // the plan that led the merge.
+        let stored_at_target = resident.or_else(|| incumbent.map(|at| group[at].0));
+        if stored_at_target.is_some_and(|stored| stored.diff(&merged).is_empty())
+            && old_urls.is_empty()
+        {
             continue;
         }
 
@@ -576,6 +605,18 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         );
     }
     outcome
+}
+
+/// The index within `members` of the group's *incumbent*: the member whose stored URL is
+/// already the group's target. It is the record that stays at that URL, so it plays the
+/// same role a resident does — its plan leads the merge, and its own reading state and date
+/// survive the merge's field rules. A resident is by definition unplanned, so a group has
+/// at most one of the two, and being inside the pass's slice is an implementation detail
+/// that must not decide whether a bookmark is protected.
+fn incumbent_of(members: &[(&Bookmark, &Bookmark)], target: &url::Url) -> Option<usize> {
+    members
+        .iter()
+        .position(|(original, _)| original.url == *target)
 }
 
 /// Field-merge the PLANNED bookmarks of a collision group (all sharing `url`, given in
@@ -1336,10 +1377,11 @@ mod tests {
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
         assert_eq!(updated[0].url, "https://collide/");
-        // Union in snapshot order: A's tags first, then B's.
-        assert_eq!(updated[0].tags, vec!["x".to_string(), "y".to_string()]);
-        assert!(updated[0].extended.contains("from A"));
-        assert!(updated[0].extended.contains("from B"));
+        // B leads the union, not A: B is the record that stays at this URL, so it is the
+        // base the others extend. A led only because it happened to come first in the
+        // slice, which is an ordering the user has no way to see or control.
+        assert_eq!(updated[0].tags, vec!["y".to_string(), "x".to_string()]);
+        assert_eq!(updated[0].extended, "from B\n\nfrom A");
         // Only A's old URL is absorbed; the shared target is not deleted.
         assert_eq!(
             *pinboard.deleted.borrow(),
@@ -1932,13 +1974,95 @@ mod tests {
         assert!(pinboard.deleted.borrow().is_empty());
     }
 
+    /// Two bookmarks in the slice, both planned onto the second one's own URL — a GitHub
+    /// repo rename, where the old and new names are separately starred. The bookmark
+    /// already stored at the target is the record that stays there, exactly like an
+    /// unplanned resident; being inside the slice is an implementation detail the user
+    /// can't see, so it must not decide whether their bookmark is protected.
+    async fn run_rename_collision(
+        pinboard: &FakePinboard,
+        sitting: Bookmark,
+        mover: Bookmark,
+    ) -> PassOutcome {
+        let target = sitting.url.clone();
+        let books = vec![mover, sitting];
+        let pass = FakePass(move |bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                url: target.clone(),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        run_pass(
+            &store(pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await
+    }
+
     #[tokio::test]
-    async fn colliding_plans_keep_privacy_not_widened() {
-        // A (public) normalizes onto B's URL, and B is planned too — so B is *not* a
-        // resident (a bookmark is never a resident of its own plan) and this is a
-        // plan-vs-plan collision, where `merge_bookmarks`'s all()-rule governs rather than
-        // the resident visibility check. An absorbed public bookmark can't widen the
-        // private survivor to public.
+    async fn a_collision_onto_a_stored_bookmark_refuses_on_a_visibility_mismatch() {
+        // The public bookmark is the one that stays; merging a private one onto it would
+        // unshare it. Same hazard as the resident case, so the same refusal.
+        let mut sitting = bookmark("https://github.com/new/name");
+        sitting.public = true;
+        let mut mover = bookmark("https://github.com/old/name");
+        mover.public = false;
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_rename_collision(&pinboard, sitting, mover).await;
+        assert_eq!(outcome.refused, 1);
+        assert!(
+            pinboard.updated.borrow().is_empty(),
+            "a public bookmark must not be silently unshared by a collision"
+        );
+        assert!(pinboard.deleted.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_collision_onto_a_stored_bookmark_keeps_its_date_and_reading_state() {
+        // Visibility matches, so the merge runs — and the bookmark already at the target
+        // keeps its own date and to-read state rather than picking up the absorbed one's
+        // under `merge_bookmarks`'s earliest/any rules. Its note leads, too.
+        let mut sitting = bookmark("https://github.com/new/name");
+        sitting.read_later = false;
+        sitting.timestamp = crate::timefmt::from_unix(1_700_000_000);
+        sitting.note = "sitting".into();
+        let mut mover = bookmark("https://github.com/old/name");
+        mover.read_later = true;
+        mover.timestamp = crate::timefmt::from_unix(1_000_000);
+        mover.note = "mover".into();
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_rename_collision(&pinboard, sitting, mover).await;
+        assert_eq!(outcome.refused, 0);
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://github.com/new/name");
+        assert!(!updated[0].toread, "must not pick up the mover's to-read");
+        assert_eq!(
+            updated[0].dt,
+            crate::timefmt::to_rfc3339(crate::timefmt::from_unix(1_700_000_000).unwrap()).unwrap(),
+            "must not be backdated to the mover's date"
+        );
+        assert_eq!(
+            updated[0].extended, "sitting\n\nmover",
+            "the record that stays leads the merge, so its note is the base"
+        );
+        assert_eq!(
+            *pinboard.deleted.borrow(),
+            vec!["https://github.com/old/name".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_collision_refuses_when_a_public_mover_lands_on_a_private_bookmark() {
+        // The mirror direction of the mismatch: A (public) normalizes onto B's URL, and B
+        // (private) is the record that stays. Refused rather than merged — narrowing A into
+        // a private record is the safe direction for disclosure, but it still makes a
+        // bookmark the user chose to share unreachable, and then deletes A.
         let mut stored_a = bookmark("https://old-a/");
         stored_a.public = true;
         let mut stored_b = bookmark("https://collide/");
@@ -1966,12 +2090,12 @@ mod tests {
         )
         .await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
-
-        let updated = pinboard.updated.borrow();
-        assert_eq!(updated.len(), 1);
-        assert_eq!(updated[0].url, "https://collide/");
-        // Not widened: the private member keeps the merged record private.
-        assert!(!updated[0].shared);
+        assert_eq!(outcome.refused, 1);
+        assert!(pinboard.updated.borrow().is_empty());
+        assert!(
+            pinboard.deleted.borrow().is_empty(),
+            "the refused mover must not be deleted"
+        );
     }
 
     #[tokio::test]

@@ -73,28 +73,39 @@ intercepting those two covers both. `dry_run` lives on the store rather than bes
 a dry run still advances the view while withholding the network — otherwise a preview would
 show a different set of changes than the run it previews.
 
-**No bookmark is replaced by a plan that isn't about it.** A resident at a group's target
-joins the same `merge_bookmarks` collision merge (resident first, so its title wins) and the
-mover's old URL is absorbed. Pinboard holds one record per URL, so the end state there
-*must* be a single bookmark; merging is what makes that lossless and convergent. The
-resident's `read_later` and `timestamp` are restored afterwards — it is the record that
-stays, and `merge_bookmarks`'s any()/earliest rules are meant for two *plans*, so without
-that a merge would re-date a bookmark even with dating off. A bookmark is excluded from its
-own plan's residency: one that stays at its own URL would otherwise merge its stored record
-back in and resurrect what the plan removed.
+**No bookmark is replaced by a plan that isn't about it.** Pinboard holds one record per
+URL, so the end state at a collision target *must* be a single bookmark; merging via
+`merge_bookmarks` is what makes that lossless and convergent, and the movers' old URLs are
+absorbed.
+
+**Every group has at most one record that stays, and it leads the merge.** That is either
+the `resident` — the live view's occupant, which this pass never planned — or the
+`incumbent`, the group member whose *stored* URL is already the target. They are mutually
+exclusive by construction (a bookmark is excluded from its own plan's residency, or it would
+merge its stored record back in and resurrect what the plan removed). Whichever it is goes
+first, so its title, note and tag order are the base the others extend, and its `read_later`
+and `timestamp` are restored afterwards — `merge_bookmarks`'s any()/earliest rules are meant
+for peers, so without that a merge would re-date a bookmark even with dating off. For an
+incumbent it is the *plan* that leads and the *plan's* state that is restored, since the plan
+is this pass's intended end-state for that record. **Resident and incumbent get identical
+treatment on purpose**: whether the occupant happens to fall inside the pass's own slice is
+an implementation detail the user cannot see, and it decided whether their bookmark was
+protected. A GitHub rename where both names are starred goes down the incumbent path, and
+that is the common case, not the rare one. Only a collision onto a URL nothing occupies
+falls back to `merge_bookmarks`'s raw peer rules (`public` if all, `read_later` if any,
+earliest date).
 
 Two kinds of target are `untouchable`: nothing is written there, the rewrite is refused and
 counted in `PassOutcome::refused`. One the pass **could not read** — a failed lookup, or one
 a halt stopped it short of — because what is stored there may be stale. One whose **`public`
-doesn't match** every plan moving onto it, because a merge fuses their notes into one record
-and would have to either publish a private annotation or unshare a bookmark the user chose to
-share; the tool picks neither. Both refusals propagate — a refused group doesn't move, so it
-keeps its own URL occupied — iterated to a fixpoint before any write so the result is
-order-independent. The visibility check therefore runs *before* that fixpoint, and it is what
-lets the converged-state guard use `diff` (which ignores `public`/`read_later`): that guard
-only fires when there *is* a resident, and a merge onto a resident reaches the write only
-when both flags already match it. Two colliding **plans** with no resident are a different
-case and keep `merge_bookmarks`'s own rules (`public` only if all, `read_later` if any).
+doesn't match** the record that stays there, because a merge fuses their notes into one
+record and would have to either publish a private annotation or unshare a bookmark the user
+chose to share; the tool picks neither, in either direction. Both refusals propagate — a
+refused group doesn't move, so it keeps its own URL occupied — iterated to a fixpoint before
+any write so the result is order-independent. The visibility check therefore runs *before*
+that fixpoint, and it is what lets the converged-state guard use `diff` (which ignores
+`public`/`read_later`): the guard only fires when something is already stored at the target,
+and a merge onto it reaches the write only when both flags already match.
 
 **`Plan` says whether the source was reached, not just whether to write.** `plan` returns
 `Plan::Bookmark` (an end-state), `Plan::Unchanged` (*the source answered*, nothing to do),

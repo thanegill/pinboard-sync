@@ -450,6 +450,36 @@ pub fn check_backup_dir(dir: &Path) -> Result<()> {
     }
 }
 
+/// Whether a snapshot could actually be written to `dir`, as a `doctor` check. Probes by
+/// creating and removing a file rather than reading permission bits, which get
+/// `DynamicUser`, ACLs and read-only mounts wrong.
+///
+/// Deliberately creates nothing. A probe that ran `mkdir -p` would report ✓ for a typo'd
+/// path — it would simply create it — and, run as root against the NixOS default, would
+/// leave a real root-owned `/var/lib/pinboard-sync` where systemd expects to manage a
+/// symlink into `/var/lib/private`, breaking the very setup the check exists to validate.
+pub fn probe_writable(dir: &Path) -> Result<DirProbe> {
+    if !dir.is_dir() {
+        // Not yet created is not a fault: `backup` makes the directory on its first run.
+        // Only the parent has to be usable now, which is what catches a typo'd path.
+        check_backup_dir(dir)?;
+        return Ok(DirProbe::WillBeCreated);
+    }
+    let (tmp, _file) = create_backup_tmp(dir, "doctor")?;
+    std::fs::remove_file(&tmp)
+        .with_context(|| format!("removing the probe file {}", tmp.display()))?;
+    Ok(DirProbe::Writable)
+}
+
+/// The outcome of [`probe_writable`]. A directory that doesn't exist yet is reported
+/// separately rather than as an error: `doctor` shouldn't fail a healthy setup just
+/// because `backup` hasn't run yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirProbe {
+    Writable,
+    WillBeCreated,
+}
+
 /// What one target actually did: the files it wrote, the files it deleted, and — when the
 /// target wrote something it can't vouch for — why.
 ///
@@ -465,6 +495,17 @@ pub struct JobOutcome {
     /// truncated fetch, a shape break, or a write that failed partway. Recorded on each
     /// entry too, so the flag survives a later run of a *different* target.
     pub unusable: Option<String>,
+}
+
+impl JobOutcome {
+    /// Add a reason the snapshot can't be trusted, keeping any already recorded — two
+    /// problems describe different damage, and dropping one costs the diagnosis.
+    fn note_unusable(&mut self, reason: String) {
+        self.unusable = Some(match self.unusable.take() {
+            Some(prior) => format!("{prior}; {reason}"),
+            None => reason,
+        });
+    }
 }
 
 /// Back up one target: dump it, lay the payload out, and write it under `dir` — or, under
@@ -527,10 +568,7 @@ pub async fn run_job<S: BackupSource>(
     let write_result = write_files(dir, &files, &mut written);
     outcome.written = written;
     if let Err(e) = write_result {
-        outcome.unusable = Some(match outcome.unusable {
-            Some(prior) => format!("{prior}; {e:#}"),
-            None => format!("{e:#}"),
-        });
+        outcome.note_unusable(format!("{e:#}"));
         return Ok(outcome);
     }
 
@@ -541,8 +579,14 @@ pub async fn run_job<S: BackupSource>(
         let relative = normalized_path(stem);
         let stale = dir.join(&relative);
         if stale.exists() {
-            std::fs::remove_file(&stale)
-                .with_context(|| format!("removing stale {}", stale.display()))?;
+            // Not `?`: this is past the write, so failing here would discard the entries
+            // for files already on disk and leave the merged manifest describing the
+            // previous run's versions of them. Every post-write problem rides back on the
+            // outcome, which is what keeps "`Err` means nothing was written" true.
+            if let Err(e) = std::fs::remove_file(&stale) {
+                outcome.note_unusable(format!("removing stale {}: {e}", stale.display()));
+                return Ok(outcome);
+            }
         }
         // Recorded even when the file was already absent: the manifest may still carry an
         // entry for it from an earlier run, and that entry has to go either way.
@@ -1252,6 +1296,379 @@ mod tests {
                 .any(|e| e.path == "raw/github-main.json"),
             "a written-but-untrustworthy target still reports its files"
         );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_target_updates_its_manifest_entry_rather_than_keeping_the_old_one() {
+        let dir = scratch_dir("backup-manifest-failed");
+        touch(&dir, "raw/github-main.json");
+        let big = ManifestEntry {
+            path: "raw/github-main.json".into(),
+            items: Some(3000),
+            pages: None,
+            bytes: 12_000_000,
+            generated_at: String::new(),
+            unusable: None,
+        };
+        write_manifest(&dir, &[big], &[], &[], "2026-08-01T00:00:00Z").unwrap();
+
+        // The next run hits a page cap: the file is replaced by a much smaller one and
+        // the target is reported failed. Because the manifest *merges*, dropping this
+        // run's entry would leave the month-old one vouching for 3000 items in a file
+        // that now holds one — worse than having no entry at all.
+        let small = ManifestEntry {
+            path: "raw/github-main.json".into(),
+            items: Some(1),
+            pages: None,
+            bytes: 7,
+            generated_at: String::new(),
+            unusable: None,
+        };
+        write_manifest(
+            &dir,
+            &[small],
+            &[],
+            &["github[main]".to_string()],
+            "2026-08-29T00:00:00Z",
+        )
+        .unwrap();
+
+        let m: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(m["files"][0]["items"], 1, "describes what is on disk now");
+        assert_eq!(m["files"][0]["generated_at"], "2026-08-29T00:00:00Z");
+        assert_eq!(m["complete"], false);
+        assert_eq!(m["failed"][0], "github[main]");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_removed_file_loses_its_manifest_entry() {
+        let dir = scratch_dir("backup-manifest-removed");
+        touch(&dir, "raw/reddit-main.json");
+        touch(&dir, "normalized/reddit-main.json");
+        let entry = |path: &str| ManifestEntry {
+            path: path.into(),
+            items: Some(1),
+            pages: None,
+            bytes: 2,
+            generated_at: String::new(),
+            unusable: None,
+        };
+        write_manifest(
+            &dir,
+            &[
+                entry("raw/reddit-main.json"),
+                entry("normalized/reddit-main.json"),
+            ],
+            &[],
+            &[],
+            "2026-08-01T00:00:00Z",
+        )
+        .unwrap();
+
+        // A shape break removes the normalized half; its entry must go too, or a consumer
+        // walking the manifest hits ENOENT.
+        std::fs::remove_file(dir.join("normalized/reddit-main.json")).unwrap();
+        write_manifest(
+            &dir,
+            &[entry("raw/reddit-main.json")],
+            &["normalized/reddit-main.json".to_string()],
+            &["reddit[main]".to_string()],
+            "2026-08-29T00:00:00Z",
+        )
+        .unwrap();
+
+        let m: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
+                .unwrap();
+        let paths: Vec<&str> = m["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, vec!["raw/reddit-main.json"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_corrupt_previous_manifest_is_reported_not_silently_dropped() {
+        let dir = scratch_dir("backup-manifest-corrupt");
+        touch(&dir, "raw/pinboard.json");
+        std::fs::write(dir.join("manifest.json"), "{ truncated").unwrap();
+
+        // It still writes (the manifest is metadata, not the backup) but the entries it
+        // couldn't read are gone, so this must not pass silently — see the `warn!`.
+        let entry = ManifestEntry {
+            path: "raw/pinboard.json".into(),
+            items: Some(1),
+            pages: None,
+            bytes: 2,
+            generated_at: String::new(),
+            unusable: None,
+        };
+        write_manifest(&dir, &[entry], &[], &[], "2026-08-29T00:00:00Z").unwrap();
+        let m: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(m["files"].as_array().unwrap().len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_narrowed_run_merges_into_the_manifest_instead_of_replacing_it() {
+        let dir = scratch_dir("backup-manifest-merge");
+        let entry = |path: &str| ManifestEntry {
+            path: path.into(),
+            items: Some(1),
+            pages: None,
+            bytes: 10,
+            generated_at: String::new(),
+            unusable: None,
+        };
+
+        // A full run describes two targets…
+        touch(&dir, "raw/pinboard.json");
+        touch(&dir, "raw/github-main.json");
+        write_manifest(
+            &dir,
+            &[entry("raw/pinboard.json"), entry("raw/github-main.json")],
+            &[],
+            &[],
+            "2026-08-01T00:00:00Z",
+        )
+        .unwrap();
+        // …then `backup pinboard` refreshes only one. Replacing the manifest would leave
+        // github's file present but undescribed — the stale-file-behind-a-fresh-timestamp
+        // problem the manifest exists to prevent.
+        write_manifest(
+            &dir,
+            &[entry("raw/pinboard.json")],
+            &[],
+            &[],
+            "2026-08-29T00:00:00Z",
+        )
+        .unwrap();
+
+        let m: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
+                .unwrap();
+        let files = m["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2, "the untouched target is still described");
+        let at = |path: &str| {
+            files.iter().find(|f| f["path"] == path).unwrap()["generated_at"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(at("raw/pinboard.json"), "2026-08-29T00:00:00Z");
+        assert_eq!(
+            at("raw/github-main.json"),
+            "2026-08-01T00:00:00Z",
+            "an untouched file keeps its own, older timestamp"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_reports_the_same_verdict_as_the_real_run() {
+        let dir = scratch_dir("backup-dry-verdict");
+
+        // The whole point of `--dry-run` is validating a config before trusting the
+        // timer. If it reported a clean plan for a target the real run flags, an operator
+        // would conclude the setup is good and only find out from the journal.
+        let dry = run_job(&TruncatedSource, "github-main", &dir, true)
+            .await
+            .unwrap();
+        assert!(
+            dry.unusable.is_some(),
+            "a dry run must surface the same verdict"
+        );
+        assert!(!dir.join("raw").exists(), "and still write nothing");
+
+        let real = run_job(&TruncatedSource, "github-main", &dir, false)
+            .await
+            .unwrap();
+        assert_eq!(dry.unusable, real.unusable);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A source whose normalization failed, so `run_job` goes on to remove the stale
+    /// normalized half.
+    struct ShapeBrokenSource;
+
+    impl BackupSource for ShapeBrokenSource {
+        async fn dump(&self) -> Result<BackupDump, SourceError> {
+            Ok(BackupDump {
+                raw: vec![page("", RawKind::Json, "[1]")],
+                records: Err(anyhow::anyhow!("the response shape changed")),
+                truncated: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stale_removal_never_costs_the_report_of_what_was_written() {
+        let dir = scratch_dir("backup-stale-removal");
+        std::fs::create_dir_all(dir.join("normalized")).unwrap();
+        std::fs::write(dir.join("normalized/reddit-main.json"), "[]").unwrap();
+
+        let outcome = run_job(&ShapeBrokenSource, "reddit-main", &dir, false)
+            .await
+            .unwrap();
+
+        // The raw half landed, so it must be reported whatever happened afterwards:
+        // returning `Err` from this path would drop its entry and leave the merged
+        // manifest describing the previous run's version of a file that just changed.
+        assert!(
+            outcome
+                .written
+                .iter()
+                .any(|e| e.path == "raw/reddit-main.json"),
+            "the written raw half is always reported"
+        );
+        assert!(outcome.unusable.is_some(), "the shape break is reported");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stale_removal_that_fails_reports_it_without_losing_the_write() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("backup-stale-removal-fails");
+        let normalized = dir.join("normalized");
+        std::fs::create_dir_all(&normalized).unwrap();
+        std::fs::write(normalized.join("reddit-main.json"), "[]").unwrap();
+        // A read-only parent makes the unlink fail while leaving the file readable.
+        std::fs::set_permissions(&normalized, PermissionsExt::from_mode(0o500)).unwrap();
+
+        let outcome = run_job(&ShapeBrokenSource, "reddit-main", &dir, false)
+            .await
+            .unwrap();
+
+        assert!(
+            outcome
+                .written
+                .iter()
+                .any(|e| e.path == "raw/reddit-main.json"),
+            "the raw half is still reported"
+        );
+        let reason = outcome.unusable.expect("the removal failure is reported");
+        assert!(reason.contains("removing stale"), "{reason}");
+        // The file is still there, so its entry must not be dropped — `removed` stays
+        // empty and the manifest keeps describing what is actually on disk.
+        assert!(outcome.removed.is_empty());
+
+        std::fs::set_permissions(&normalized, PermissionsExt::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_write_that_fails_partway_still_reports_the_files_it_replaced() {
+        let dir = scratch_dir("backup-partial-write");
+        // Block the second file by putting a regular file where its directory must go.
+        std::fs::create_dir_all(dir.join("raw")).unwrap();
+        std::fs::write(dir.join("normalized"), "in the way").unwrap();
+
+        let mut written = Vec::new();
+        let err = write_files(
+            &dir,
+            &[
+                json_file("raw/pinboard.json", "[1]"),
+                json_file("normalized/pinboard.json", "[]"),
+            ],
+            &mut written,
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("normalized"), "{err:#}");
+        // The first file was replaced before the failure. Reporting it is what stops the
+        // merged manifest from keeping the previous run's entry for a file that changed.
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].path, "raw/pinboard.json");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_partial_file_stays_marked_after_a_later_clean_run_of_another_target() {
+        let dir = scratch_dir("backup-partial-flag");
+        touch(&dir, "raw/github-main.json");
+        touch(&dir, "raw/pinboard.json");
+        let entry = |path: &str, unusable: Option<&str>| ManifestEntry {
+            path: path.into(),
+            items: Some(1),
+            pages: None,
+            bytes: 2,
+            generated_at: String::new(),
+            unusable: unusable.map(str::to_string),
+        };
+
+        // Run 1: github truncated.
+        write_manifest(
+            &dir,
+            &[entry(
+                "raw/github-main.json",
+                Some("stopped at the page cap"),
+            )],
+            &[],
+            &["github[main]".to_string()],
+            "2026-08-01T00:00:00Z",
+        )
+        .unwrap();
+
+        // Run 2: a clean `backup pinboard`. It rewrites `complete`/`failed`, so without a
+        // per-entry flag github's partial file would become indistinguishable from a
+        // healthy one — `generated_at` only ever answers "when", not "trustworthy".
+        write_manifest(
+            &dir,
+            &[entry("raw/pinboard.json", None)],
+            &[],
+            &[],
+            "2026-08-29T00:00:00Z",
+        )
+        .unwrap();
+
+        let m: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(m["complete"], true, "this run had no failures");
+        let github = m["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == "raw/github-main.json")
+            .unwrap();
+        assert_eq!(github["unusable"], "stopped at the page cap");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn probe_creates_nothing_and_reports_a_missing_directory() {
+        let dir = scratch_dir("backup-probe");
+
+        probe_writable(&dir).unwrap();
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "the probe file is removed"
+        );
+
+        // A missing directory is reported, never created. Creating it would report ✓ for
+        // a typo'd path, and — run as root against the NixOS default — would leave a
+        // root-owned /var/lib/pinboard-sync where systemd expects to manage a symlink
+        // into /var/lib/private, breaking what the check exists to validate.
+        // A directory that doesn't exist yet is healthy — `backup` creates it on its
+        // first run — so it must not be a `doctor` failure, and must not be created here.
+        let missing = dir.join("nested");
+        assert_eq!(probe_writable(&missing).unwrap(), DirProbe::WillBeCreated);
+        assert!(!missing.exists(), "the probe must not create it");
+
+        // A typo'd path, whose parent is missing too, is a real failure.
+        assert!(probe_writable(&dir.join("no/such/parent")).is_err());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

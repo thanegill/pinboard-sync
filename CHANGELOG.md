@@ -29,6 +29,10 @@ All notable changes to this project are documented here. The format is based on
   gains a `backup` timer (`services.pinboard-sync.backup.{enable,schedule,directory}`)
   running it under the hardened service, writing into the service's `StateDirectory` by
   default.
+- `doctor` now checks that a configured `[backup].directory` is writable, probing by
+  creating and removing a file rather than reading permission bits (which get
+  `DynamicUser`, ACLs and read-only mounts wrong). A misconfigured `StateDirectory` shows
+  up here instead of as a quiet failure in the journal at the next timer firing.
 - NixOS module: per-credential `*File` options — `pinboardTokenFile`,
   `redditUsernameFile`, `redditCookieFile`, `githubTokenFile`, `hnUsernameFile`. Each
   points at a single secret path (e.g. one sops-nix secret per credential), loaded into

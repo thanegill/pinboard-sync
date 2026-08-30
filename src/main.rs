@@ -19,7 +19,7 @@ mod sync;
 mod test_support;
 mod timefmt;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -1490,6 +1490,25 @@ async fn run_doctor(config: &Config) -> Result<()> {
         Err(e) => {
             println!("✗ pinboard — {e:#}");
             failed += 1;
+        }
+    }
+
+    // Only when a directory is configured: a machine that never runs `backup` shouldn't
+    // fail `doctor` over it. Checked here so a misconfigured StateDirectory surfaces now
+    // rather than as a quiet failure in the journal at the next timer firing.
+    if let Some(dir) = &config.backup.directory {
+        match backup::probe_writable(Path::new(dir)) {
+            Ok(backup::DirProbe::Writable) => println!("✓ backup — {dir} is writable"),
+            // Not yet created is healthy: `backup` makes it on its first run, and only a
+            // typo'd or unwritable *parent* is a real problem. Failing here would red-flag
+            // a correct config that simply hasn't run yet.
+            Ok(backup::DirProbe::WillBeCreated) => {
+                println!("✓ backup — {dir} will be created on the first run");
+            }
+            Err(e) => {
+                println!("✗ backup — {dir}: {e:#}");
+                failed += 1;
+            }
         }
     }
 

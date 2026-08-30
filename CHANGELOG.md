@@ -42,6 +42,19 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **`cleanup` no longer fails the whole run because one bookmark could not be looked
+  up.** A per-item lookup failure is logged and skipped, every other bookmark is still
+  cleaned up, and the run exits zero. Previously any single failure made the run exit
+  non-zero, so one permanently dead URL (a repo blocked under DMCA answers `451` forever)
+  left a scheduled `pinboard-sync-cleanup.service` failed on every run, with no way to
+  clear it. The run still exits non-zero when it genuinely could not sync: a bookmark that
+  failed to **write** to Pinboard; an expired credential, which now stops the pass instead
+  of burning one doomed request per bookmark, while still writing the plans it had already
+  made; or lookups failing in the **majority**, which means an outage or a rate limit
+  rather than one bad link. A single failed lookup never fails the run whatever the ratio,
+  and bookmarks the source was never asked about count on neither side of it — so passes
+  that skip most of what they are handed (`cleanup github` ignores deep links and gists)
+  can't pad it into looking healthy.
 - `--public` is now a value-taking flag: `--public` (= `true`) or `--public=false`.
   Previously it was a bare force-on switch that could not override a config-set `true`
   back to `false`; the new form can. `--limit` is likewise now an optional value (unset,

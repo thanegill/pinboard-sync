@@ -13,7 +13,7 @@ use scraper::{Html, Selector};
 use serde::Deserialize;
 
 use crate::bookmark::{Bookmark, BookmarkStore};
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts};
+use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PassOutcome, Plan};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::send_retrying;
 use crate::source::{
@@ -516,7 +516,7 @@ impl HackerNewsClient {
             items,
             config: &self.config,
         };
-        let mut failed = run_pass(
+        let items = run_pass(
             pinboard,
             &hackernews_bookmarks,
             opts.dry_run,
@@ -526,26 +526,38 @@ impl HackerNewsClient {
         )
         .await;
 
-        if opts.link_discussions {
-            failed += self.link_discussions(pinboard, opts, bookmarks).await;
+        // Each pass reaches its own verdict. Merging the tallies first would let this
+        // pass's bookmarks — which are planned from prefetched items and so can never
+        // fail — vouch for the discussion lookups, which are the only per-item network
+        // calls here and can fail on their own.
+        let links = match opts.link_discussions {
+            true => Some(self.link_discussions(pinboard, opts, bookmarks).await),
+            false => None,
+        };
+        // Both passes ran, so report both failures: letting the first `?` short-circuit
+        // would hide a wholesale failure of the second behind the first's message.
+        match (
+            items.into_result(),
+            links.map_or(Ok(()), PassOutcome::into_result),
+        ) {
+            (Err(items_err), Err(links_err)) => {
+                bail!("{items_err:#}; and for discussion links: {links_err:#}")
+            }
+            (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
+            (Ok(()), Ok(())) => Ok(()),
         }
-        if failed > 0 {
-            bail!("{failed} bookmark(s) failed to update");
-        }
-        Ok(())
     }
 
     /// For each article bookmark tagged `link_tag`, look it up on HN by URL and, if it
     /// has a discussion, add `HN Link: <discussion>` to the notes and swap the marker
     /// tag for the base HN tags (update in place). Default-off (opt-in via
     /// `--link-discussions`) because it issues one Algolia query per tagged bookmark.
-    /// Returns the number of bookmarks that failed to link (logged and skipped).
     async fn link_discussions<P: BookmarkStore>(
         &self,
         pinboard: &P,
         opts: &HackerNewsCleanupOpts,
         bookmarks: &[Bookmark],
-    ) -> usize {
+    ) -> PassOutcome {
         let candidates: Vec<_> = bookmarks
             .iter()
             .filter(|bookmark| {
@@ -603,10 +615,10 @@ struct HackerNewsCleanupPass<'a> {
 }
 
 impl CleanupPass for HackerNewsCleanupPass<'_> {
-    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
         // The pass is filtered to HN item URLs, so this matches.
         let Ok(url_id) = HackerNewsItemId::try_from(&bookmark.url) else {
-            return Ok(None);
+            return Ok(Plan::Skipped);
         };
         // A meta-post whose submitted article URL is itself an HN item permalink is
         // stored AT that linked item's URL, but its note's `HN Link:` marker points at
@@ -620,16 +632,16 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
                      references item {marker_id}, not the URL's item {url_id} (meta-post)",
                     bookmark.url
                 );
-                return Ok(None);
+                return Ok(Plan::Skipped);
             }
         }
         let Some(item) = self.items.get(&url_id) else {
-            return Ok(None);
+            return Ok(Plan::Skipped);
         };
         // Re-derive the bookmark from the fresh item (url/title/note/date), then preserve
         // the stored bookmark's existing tags and privacy on the re-write.
         let Some(mut new) = item.clone().into_draft(self.config).map(|d| d.bookmark) else {
-            return Ok(None);
+            return Ok(Plan::Skipped);
         };
         let mut tags = bookmark.tags.clone();
         extend_unique(&mut tags, &new.tags);
@@ -649,7 +661,7 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
                 None => bookmark.note.clone(),
             };
         }
-        Ok(Some(new))
+        Ok(Plan::Bookmark(new))
     }
 }
 
@@ -662,11 +674,13 @@ struct HackerNewsLinkPass<'a> {
 }
 
 impl CleanupPass for HackerNewsLinkPass<'_> {
-    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
-        let id = match self.client.search_by_url(&bookmark.url).await {
-            Ok(Some(id)) => id,
-            Ok(None) => return Ok(None),
-            Err(e) => return Err(SourceError::into_anyhow(e)),
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
+        // Unlike the other passes' early exits, this one is an *answer* from Algolia —
+        // the search ran and the article simply has no discussion — so it counts as
+        // having reached the source.
+        let id = match self.client.search_by_url(&bookmark.url).await? {
+            Some(id) => id,
+            None => return Ok(Plan::Unchanged),
         };
 
         let hn_link = format!("HN Link: https://news.ycombinator.com/item?id={id}");
@@ -684,7 +698,7 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
             .collect();
         extend_unique(&mut tags, &self.client.config.tags);
 
-        Ok(Some(Bookmark {
+        Ok(Plan::Bookmark(Bookmark {
             url: bookmark.url.clone(),
             title,
             note,
@@ -1123,7 +1137,7 @@ mod tests {
             config: &config,
         };
 
-        let planned = pass.plan(&stored).await.unwrap().unwrap();
+        let planned = pass.plan(&stored).await.unwrap().bookmark().unwrap();
         // The user's note survives the re-shape, and the regenerated `HN Link:`
         // back-link is appended rather than clobbering it.
         assert_eq!(
@@ -1155,7 +1169,7 @@ mod tests {
             config: &config,
         };
 
-        let planned = pass.plan(&stored).await.unwrap().unwrap();
+        let planned = pass.plan(&stored).await.unwrap().bookmark().unwrap();
         // A note that already carries the back-link is left untouched.
         assert_eq!(
             planned.note,
@@ -1194,7 +1208,9 @@ mod tests {
             items,
             config: &config,
         };
-        assert!(pass.plan(&stored).await.unwrap().is_none());
+        // Skipped, not Unchanged: the meta-post is filtered out locally, so it is no
+        // evidence that Algolia answered.
+        assert!(matches!(pass.plan(&stored).await.unwrap(), Plan::Skipped));
     }
 
     #[tokio::test]
@@ -1215,7 +1231,7 @@ mod tests {
             config: &config,
         };
 
-        let planned = pass.plan(&stored).await.unwrap().unwrap();
+        let planned = pass.plan(&stored).await.unwrap().bookmark().unwrap();
         // With no stored note, the reconstructed `HN Link:` note is used as-is.
         assert_eq!(
             planned.note,

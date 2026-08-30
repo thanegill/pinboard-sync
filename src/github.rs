@@ -4,12 +4,12 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use log::warn;
 use serde::Deserialize;
 
 use crate::bookmark::{Bookmark, BookmarkStore};
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts};
+use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Plan};
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::send_retrying;
 use crate::source::{
@@ -365,7 +365,7 @@ pub async fn cleanup<P: BookmarkStore>(
         config,
         star_dates,
     };
-    let failed = run_pass(
+    run_pass(
         pinboard,
         &gh_bms,
         opts.dry_run,
@@ -373,11 +373,8 @@ pub async fn cleanup<P: BookmarkStore>(
         opts.date_opts(),
         &pass,
     )
-    .await;
-    if failed > 0 {
-        bail!("{failed} bookmark(s) failed to update");
-    }
-    Ok(())
+    .await
+    .into_result()
 }
 
 /// Re-shapes one GitHub repo-root bookmark: skip anything that isn't a bare
@@ -391,17 +388,19 @@ struct GitHubCleanupPass<'a> {
 }
 
 impl CleanupPass for GitHubCleanupPass<'_> {
-    async fn plan(&self, bookmark: &Bookmark) -> Result<Option<Bookmark>> {
+    async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
         // Only genuine repo-root URLs on the bare github.com host are normalized;
-        // deep links (issues/PRs/blob/tree) and gist/other subdomains are left untouched.
+        // deep links (issues/PRs/blob/tree) and gist/other subdomains are left untouched
+        // without an API call, so they say nothing about whether GitHub is reachable.
         let Some((owner, repo)) = repo_root(&bookmark.url) else {
-            return Ok(None);
+            return Ok(Plan::Skipped);
         };
         // Default to the canonicalization, then refresh from the API when the repo
         // still exists (a 404 keeps just the canonical URL). We already hold the
         // parsed `(owner, repo)`, so build the canonical URL from them directly
         // rather than re-validating the host/path through `canonical_repo_url`.
-        let mut url = Url::parse(&format!("https://github.com/{owner}/{repo}"))?;
+        let mut url = Url::parse(&format!("https://github.com/{owner}/{repo}"))
+            .context("building the canonical github URL")?;
         let mut title = html_to_plain(&bookmark.title);
         let mut note = bookmark.note.clone();
         let mut tags = bookmark.tags.clone();
@@ -419,14 +418,15 @@ impl CleanupPass for GitHubCleanupPass<'_> {
                 url = Url::parse(&info.html_url).unwrap_or(url); // follows renames/transfers
             }
             Ok(None) => {}
-            // A failed lookup is surfaced to the driver, which logs and counts it.
-            Err(e) => return Err(SourceError::into_anyhow(e)),
+            // A failed lookup is surfaced to the driver, which logs and counts it
+            // (or, for a dead credential, aborts the pass).
+            Err(e) => return Err(e),
         }
 
         let timestamp = url_key(&url)
             .and_then(|k| self.star_dates.get(&k).copied())
             .and_then(crate::timefmt::from_unix);
-        Ok(Some(Bookmark {
+        Ok(Plan::Bookmark(Bookmark {
             url,
             title,
             note,
@@ -828,6 +828,77 @@ mod net_tests {
             client.fetch().await,
             Err(SourceError::ReauthRequired(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn cleanup_survives_a_permanently_blocked_repo() {
+        use crate::pinboard::PinboardBookmark;
+        use crate::test_support::FakePinboard;
+
+        // A DMCA-blocked repo answers 451 forever, so the run must still succeed on the
+        // strength of the repos it *could* read.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/blocked/repo"))
+            .respond_with(ResponseTemplate::new(451).set_body_string(
+                r#"{"message":"Repository access blocked","block":{"reason":"dmca"}}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/old/name"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "full_name": "new/name",
+                "html_url": "https://github.com/new/name",
+                "description": "Still here",
+                "language": "Rust"
+            })))
+            .mount(&server)
+            .await;
+
+        let stored = |url: &str, title: &str| {
+            PinboardBookmark {
+                url: url.into(),
+                description: title.into(),
+                extended: "notes".into(),
+                tags: "github-star".into(),
+                time: "2020-01-01T00:00:00Z".into(),
+                shared: "no".into(),
+                toread: "no".into(),
+            }
+            .try_into()
+            .unwrap()
+        };
+        let pinboard = FakePinboard {
+            all: vec![
+                stored("https://github.com/blocked/repo", "blocked/repo"),
+                stored("https://github.com/old/name", "old/name"),
+            ],
+            ..Default::default()
+        };
+        let bookmarks = pinboard.all.clone();
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+
+        cleanup(
+            &pinboard,
+            &client,
+            &GitHubConfig::default(),
+            &GitHubCleanupOpts {
+                dry_run: false,
+                use_post_date: false,
+                max_age_days: 30,
+                cleanup_stale_to_now: false,
+            },
+            &bookmarks,
+        )
+        .await
+        .expect("one dead repo must not fail the whole run");
+
+        // The readable repo was still cleaned up.
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].url, "https://github.com/new/name");
     }
 
     #[tokio::test]

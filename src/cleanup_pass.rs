@@ -667,7 +667,12 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             // A merge can half-apply: the record is written and an absorbed URL survives.
             // Say which, because "updating {target} failed" would send the operator after
             // a record that is actually fine.
+            // Half-applied: the merged record landed and an absorbed URL survived. Count
+            // the change, exactly as the rewrite path does — the account did change — and
+            // name what is actually wrong, since "merging into {target} failed" would send
+            // the operator after a record that is fine.
             Some(e) if write.wrote => {
+                outcome.changed += 1;
                 outcome.write_failed += 1;
                 let stranded = old_urls.len() - write.deleted.len();
                 error!("merged {target} but {stranded} absorbed URL(s) remain: {e:#}");
@@ -1848,6 +1853,205 @@ mod tests {
             *pinboard.deleted.borrow(),
             vec!["https://x/ok".to_string()],
             "only the bookmark that actually merged is absorbed"
+        );
+    }
+
+    #[tokio::test]
+    async fn refusals_propagate_through_a_chain_not_just_one_hop() {
+        // `propagate_refusals` is a fixpoint, and a single iteration is indistinguishable
+        // from one unless the chain is at least two deep. Blocked is unreadable, so C is
+        // refused there, so C's URL is occupied, so B is refused there, so B's URL is
+        // occupied, so A is refused there. One pass of the loop settles only the first hop.
+        let books = vec![
+            bookmark("https://blocked/"),
+            bookmark("https://c/"),
+            bookmark("https://b/"),
+            bookmark("https://a/"),
+        ];
+        let pass = FakePass(|bookmark: &Bookmark| {
+            let target = match bookmark.url.as_str() {
+                "https://blocked/" => return Err(item_error()),
+                "https://c/" => "https://blocked/",
+                "https://b/" => "https://c/",
+                _ => "https://b/",
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: u(target),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.refused, 3, "every hop of the chain must be refused");
+        assert!(
+            pinboard.updated.borrow().is_empty(),
+            "no link in the chain moved, so nothing may be written over any of them"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_halt_protects_the_bookmark_whose_lookup_raised_it() {
+        // The halting bookmark is itself unread — the lookup that raised the halt is the one
+        // that failed — so the protected range has to start at it, not after it.
+        // The mover is planned first, so it forms a group targeting the halting bookmark's
+        // URL; the halt then has to protect that URL from it.
+        let books = vec![bookmark("https://mover/"), bookmark("https://halts/")];
+        let pass = FakePass(|bookmark: &Bookmark| match bookmark.url.as_str() {
+            "https://halts/" => Err(SourceError::ReauthRequired("cookie expired".into())),
+            _ => Ok(Plan::Bookmark(Bookmark {
+                url: u("https://halts/"),
+                ..unchanged_plan(bookmark)
+            })),
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert!(outcome.halted.is_some());
+        assert_eq!(outcome.refused, 1);
+        assert!(
+            pinboard.updated.borrow().is_empty(),
+            "the halting bookmark was never read, so nothing may be written over it"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_bookmark_is_merged_with_not_refused() {
+        // `Plan::Unchanged` means the source answered and the record is current, so a
+        // rewrite landing on it merges — the same as `Plan::Skipped`. Treating it as
+        // unreadable instead would refuse HN's commonest answer (`search_by_url` finding no
+        // discussion) and leave the account unconverged.
+        let mut settled = bookmark("https://target/");
+        settled.note = "settled note".into();
+        let mover = bookmark("https://mover/");
+        let books = vec![settled, mover];
+
+        let pass = FakePass(|bookmark: &Bookmark| match bookmark.url.as_str() {
+            "https://target/" => Ok(Plan::Unchanged),
+            _ => Ok(Plan::Bookmark(Bookmark {
+                url: u("https://target/"),
+                note: "incoming".into(),
+                ..unchanged_plan(bookmark)
+            })),
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.refused, 0);
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(
+            updated[0].extended, "settled note\n\nincoming",
+            "the unchanged bookmark stays and leads the merge"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_merge_whose_delete_fails_reports_the_write_that_landed() {
+        // The merge's half-applied arm: the record is written and an absorbed URL survives.
+        // Saying "merging into {target} failed" would send the operator after a record that
+        // is actually fine.
+        let mut resident = bookmark("https://target/");
+        resident.note = "resident".into();
+        let mut mover = bookmark("https://mover/");
+        mover.note = "mover".into();
+        let slice = vec![mover.clone()];
+        let all = vec![mover, resident];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                url: u("https://target/"),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard {
+            fail_delete_urls: ["https://mover/".to_string()].into_iter().collect(),
+            ..FakePinboard::default()
+        };
+
+        let outcome = run_pass(
+            &store(&pinboard, &all, false),
+            &slice,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(
+            outcome.write_failed, 1,
+            "the stranded URL still fails the run"
+        );
+        assert_eq!(
+            outcome.changed, 1,
+            "but the merge landed, so it counts as a change — as the rewrite path does"
+        );
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1, "and the merged record did land");
+        assert_eq!(updated[0].extended, "resident\n\nmover");
+    }
+
+    #[tokio::test]
+    async fn a_plan_can_never_change_the_privacy_flags() {
+        // The half of the invariant that makes `Bookmark::diff`'s blindness to these two
+        // fields safe. `diff` ignores them *because* the driver forces them from the stored
+        // record — so if the forcing goes, a plan's flags are written with `replace=yes`
+        // and the dry-run doesn't even render the change. Every other test builds its plan
+        // with `unchanged_plan`, which clones the stored flags and so can't catch this.
+        let mut stored = bookmark("https://x/keep");
+        stored.public = false;
+        stored.read_later = true;
+        let books = vec![stored];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                title: "changed".into(),
+                public: true,
+                read_later: false,
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.changed, 1);
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].description, "changed");
+        assert!(
+            !updated[0].shared,
+            "a plan must not publish a private bookmark"
+        );
+        assert!(
+            updated[0].toread,
+            "nor clear a to-read flag the user had set"
         );
     }
 

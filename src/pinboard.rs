@@ -333,6 +333,18 @@ impl PinboardClient {
         if best + TRUNCATION_MARKER.len() >= extended.len() {
             return extended.to_string();
         }
+        // Worth a warning rather than a silent trim: the stored note is now shorter than
+        // the one `cleanup` planned, so a later merge sees a block it doesn't recognise
+        // and can re-append it.
+        warn!(
+            "note trimmed to fit the request URL for {}: {} bytes -> {}",
+            fixed
+                .iter()
+                .find(|(name, _)| *name == "url")
+                .map_or("(unknown url)", |(_, value)| value),
+            extended.len(),
+            best + TRUNCATION_MARKER.len()
+        );
         format!("{}{}", &extended[..best], TRUNCATION_MARKER)
     }
 

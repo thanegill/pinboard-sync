@@ -495,6 +495,17 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
 
     for key in &group_order {
         let group = groups.remove(*key).expect("key came from group_order");
+        // The visibility partition can empty a group outright, when every plan heading here
+        // was held back. There is nothing left to refuse *or* write, so this comes before
+        // the untouchable check: those plans were already counted as they were held back,
+        // and reporting the group again would inflate `refused` past the number of writes
+        // actually abandoned. It also keeps `merge_bookmarks` from being handed an empty
+        // slice to index — today the survivor always supplies a first element, but that is
+        // a property of two distant pieces of code agreeing, and this pass has a history of
+        // one of them moving.
+        if group.is_empty() {
+            continue;
+        }
         // The target must not be written, so leave the rewriting bookmark(s) at their old
         // URLs. Separate from the `targets` delete-guard below — that protects a URL some
         // *plan* writes to, this one a URL no plan may land on.
@@ -516,14 +527,6 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // Anything already stored there joins the group rather than being replaced by it;
         // which member leads that merge is settled below.
         let resident = residents.get(key);
-        // The visibility partition can empty a group outright, when every plan heading here
-        // disagreed with the resident. Nothing is left to write, and returning here is what
-        // keeps `merge_bookmarks` from being handed an empty slice to index — today the
-        // survivor always supplies a first element, but that is a property of two distant
-        // pieces of code agreeing, and this pass has a history of one of them moving.
-        if group.is_empty() {
-            continue;
-        }
         if resident.is_none() && group.len() == 1 {
             let (original, planned) = group[0];
             // The written fields that differ; empty means nothing a write would change.
@@ -2992,6 +2995,56 @@ mod tests {
             pinboard.deleted.borrow().is_empty(),
             "the refused mover must not be deleted"
         );
+    }
+
+    #[tokio::test]
+    async fn an_emptied_group_is_not_counted_as_a_refusal_of_its_own() {
+        // Four plans are held back, so four writes are abandoned. The group at `a/` empties
+        // *and* its key is marked occupied by the pair that stayed there — reporting it as
+        // a refusal too would count five, and print a dry-run stanza for a group with no
+        // members left in it.
+        let mut pub_to_t = bookmark("https://p1/");
+        pub_to_t.public = true;
+        let mut priv_to_t = bookmark("https://p2/");
+        priv_to_t.public = false;
+        let mut pub_to_a = bookmark("https://p3/");
+        pub_to_a.public = true;
+        let mut priv_to_a = bookmark("https://p4/");
+        priv_to_a.public = false;
+        let books = vec![pub_to_t, priv_to_t, pub_to_a, priv_to_a];
+
+        let pass = FakePass(|bookmark: &Bookmark| {
+            let target = match bookmark.url.as_str() {
+                "https://p1/" | "https://p2/" => "https://a/",
+                _ => "https://p1/",
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: u(target),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, true),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(outcome.refused, 4, "one per abandoned write, not per group");
+        assert!(
+            !outcome
+                .preview
+                .iter()
+                .any(|line| line.contains("https://p1/")
+                    && line.starts_with("[dry-run]")
+                    && outcome.preview.iter().filter(|l| *l == line).count() > 1),
+            "no group is previewed twice: {:?}",
+            outcome.preview
+        );
+        assert!(pinboard.updated.borrow().is_empty());
     }
 
     #[tokio::test]

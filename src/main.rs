@@ -28,7 +28,7 @@ use clap_complete::Shell;
 use log::{debug, error, info, warn};
 
 use backup::BackupSource;
-use bookmark::{Bookmark, BookmarkStore};
+use bookmark::{AccountState, AccountView, Bookmark, BookmarkStore, CleanupStore};
 use config::{Config, GitHubAccount, HackernewsAccount, RedditAccount};
 use github::GitHubClient;
 use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackernewsConfig};
@@ -1576,13 +1576,13 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                 bail!("cleanup --all requires a --config with at least one configured account");
             }
             let (pinboard, bookmarks) = open_pinboard(None, config).await?;
+            // One view across all three sources: each writes, and the next must plan
+            // against what it left rather than the pre-run snapshot.
+            let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), cmd.dry_run);
             let mut run = AllRun::default();
             if let Some(acct) = config.github.first() {
-                let opts = gh_cleanup_opts(&over, cmd.dry_run, Some(acct), config);
-                run.record(
-                    cleanup_github_for(&pinboard, &bookmarks, Some(acct), None, &opts, config)
-                        .await,
-                );
+                let opts = gh_cleanup_opts(&over, Some(acct), config);
+                run.record(cleanup_github_for(&store, Some(acct), None, &opts, config).await);
             }
             if let Some(acct) = config.reddit.first() {
                 let args = RedditCleanupArgs {
@@ -1594,21 +1594,16 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                     dates: DateFlags::default(),
                     dry_run: cmd.dry_run,
                 };
-                run.record(
-                    cleanup_one_reddit(Some(acct), &args, &over, &pinboard, &bookmarks, config)
-                        .await,
-                );
+                run.record(cleanup_one_reddit(Some(acct), &args, &over, &store, config).await);
             }
             if let Some(acct) = config.hackernews.first() {
                 run.record(
                     cleanup_one_hackernews(
                         Some(acct),
-                        cmd.dry_run,
                         false, // linking is opt-in via `cleanup hackernews --link-discussions`
                         None,
                         &over,
-                        &pinboard,
-                        &bookmarks,
+                        &store,
                         config,
                     )
                     .await,
@@ -1639,13 +1634,11 @@ fn cleanup_dry_run(top_dry_run: bool, source_dry_run: bool) -> bool {
 /// Resolve the tiered date settings for a github cleanup pass.
 fn gh_cleanup_opts(
     over: &DateOverrides,
-    dry_run: bool,
     account: Option<&GitHubAccount>,
     config: &Config,
 ) -> github::GitHubCleanupOpts {
     let dates = DateSettings::resolve(over, account, &config.defaults.github, config);
     github::GitHubCleanupOpts {
-        dry_run,
         use_post_date: dates.use_post_date,
         max_age_days: dates.max_age_days,
         cleanup_stale_to_now: dates.stale_to_now,
@@ -1661,28 +1654,16 @@ async fn run_cleanup_github(
     let over = args.dates.overrides().with_top_level(top);
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let account = config::select_account(&config.github, args.account.as_deref())?;
-    let opts = gh_cleanup_opts(
-        &over,
-        cleanup_dry_run(top_dry_run, args.dry_run),
-        account,
-        config,
-    );
-    cleanup_github_for(
-        &pinboard,
-        &bookmarks,
-        account,
-        args.github_token,
-        &opts,
-        config,
-    )
-    .await
+    let opts = gh_cleanup_opts(&over, account, config);
+    let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
+    let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
+    cleanup_github_for(&store, account, args.github_token, &opts, config).await
 }
 
 /// Run github cleanup: build an API client from the account/env token and refresh
 /// renamed repos / titles / language.
-async fn cleanup_github_for(
-    pinboard: &PinboardClient,
-    bookmarks: &[Bookmark],
+async fn cleanup_github_for<S: BookmarkStore + AccountState>(
+    store: &S,
     account: Option<&GitHubAccount>,
     token_flag: Option<String>,
     opts: &github::GitHubCleanupOpts,
@@ -1704,7 +1685,7 @@ async fn cleanup_github_for(
         config,
     );
     let client = GitHubClient::new(token, github_config.clone())?;
-    github::cleanup(pinboard, &client, &github_config, opts, bookmarks)
+    github::cleanup(store, &client, &github_config, opts)
         .await
         .map_err(|e| handle_source_err(e, hook.as_deref()))
 }
@@ -1720,23 +1701,22 @@ async fn run_cleanup_reddit(
     // first, or implicit CLI/env) account's cookie + domain/tags.
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let account = config::select_account(&config.reddit, args.account.as_deref())?;
+    let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), args.dry_run);
     cleanup_one_reddit(
         account,
         &args,
         &args.dates.overrides().with_top_level(top),
-        &pinboard,
-        &bookmarks,
+        &store,
         config,
     )
     .await
 }
 
-async fn cleanup_one_reddit(
+async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     account: Option<&RedditAccount>,
     args: &RedditCleanupArgs,
     over: &DateOverrides,
-    pinboard: &PinboardClient,
-    bookmarks: &[Bookmark],
+    store: &S,
     config: &Config,
 ) -> Result<()> {
     let reddit_config = account
@@ -1744,7 +1724,6 @@ async fn cleanup_one_reddit(
         .unwrap_or_default();
     let dates = DateSettings::resolve(over, account, &config.defaults.reddit, config);
     let opts = cleanup::RedditCleanupOpts {
-        dry_run: args.dry_run,
         mark_nsfw: !args.no_nsfw,
         fix_titles: !args.no_titles,
         base_tag: reddit_config.tags.first().cloned().unwrap_or_default(),
@@ -1776,7 +1755,7 @@ async fn cleanup_one_reddit(
         config.defaults.reddit.on_auth_failure.as_deref(),
         config,
     );
-    cleanup::run(pinboard, reddit.as_ref(), &opts, bookmarks)
+    cleanup::run(store, reddit.as_ref(), &opts)
         .await
         .map_err(|e| handle_source_err(e, hook.as_deref()))
 }
@@ -1792,14 +1771,14 @@ async fn run_cleanup_hackernews(
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let account = config::select_account(&config.hackernews, args.account.as_deref())?;
     let over = args.dates.overrides().with_top_level(top);
+    let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
+    let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
     cleanup_one_hackernews(
         account,
-        cleanup_dry_run(top_dry_run, args.dry_run),
         args.link_discussions,
         args.link_tag,
         &over,
-        &pinboard,
-        &bookmarks,
+        &store,
         config,
     )
     .await
@@ -1822,30 +1801,25 @@ fn resolve_hackernews_cleanup_config(
     Ok(hn_config)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn cleanup_one_hackernews(
+async fn cleanup_one_hackernews<S: BookmarkStore + AccountState>(
     account: Option<&HackernewsAccount>,
-    dry_run: bool,
     link_discussions: bool,
     link_tag: Option<String>,
     over: &DateOverrides,
-    pinboard: &PinboardClient,
-    bookmarks: &[Bookmark],
+    store: &S,
     config: &Config,
 ) -> Result<()> {
     let hn_config = resolve_hackernews_cleanup_config(account, link_tag)?;
     let dates = DateSettings::resolve(over, account, &config.defaults.hackernews, config);
     let hn = HackerNewsClient::for_cleanup(hn_config)?;
     hn.cleanup(
-        pinboard,
+        store,
         &HackerNewsCleanupOpts {
-            dry_run,
             link_discussions,
             use_post_date: dates.use_post_date,
             max_age_days: dates.max_age_days,
             cleanup_stale_to_now: dates.stale_to_now,
         },
-        bookmarks,
     )
     .await
     // No hook: HackerNews is public, so nothing here can be a re-auth to act on.

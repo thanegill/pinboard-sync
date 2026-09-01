@@ -185,6 +185,26 @@ changes, comparing creation dates by instant so an equivalently-formatted timest
 isn't treated as a change), and supports `--dry-run` to preview every change first.
 `cleanup --all` runs all three once over the shared bookmark set.
 
+**It can combine two of your bookmarks into one.** Pinboard stores one record per URL,
+so when cleanup rewrites a bookmark onto a URL you have saved separately — an HN story
+whose article you also bookmarked, a GitHub repo starred under both its old and new
+names — the two are **merged** rather than one overwriting the other: tags are unioned,
+notes are concatenated, and the bookmark already at that URL keeps its title, date and
+to-read state. **The absorbed bookmark is then deleted**, since its content now lives in
+the merged record. `--dry-run` lists each merge with an `absorb <url>` line for every
+bookmark that would be removed; it is worth reading before the first real run.
+
+Some rewrites are **refused** and reported instead: cleanup will not write over a
+bookmark it could not read this run, and it will not merge bookmarks that disagree about
+being public or private, since that would either publish a private note or unshare
+something you chose to share. A refusal leaves both records untouched, so the duplicate
+stays until you resolve it yourself.
+
+One case is not idempotent: if a merged note grows past what Pinboard's API accepts in a
+request URL, it is stored truncated (logged when it happens), and the next run no longer
+recognizes the truncated block — so that bookmark is rewritten every run and its note
+grows. Rare, but if you see a note accumulating `… [truncated]` markers, shorten it.
+
 - **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your
   configured `reddit_domain` (default `old.reddit.com`), unwrapping `over18`
   interstitial redirects to the real post. It normalizes tags (ensures the base

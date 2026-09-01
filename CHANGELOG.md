@@ -67,16 +67,57 @@ All notable changes to this project are documented here. The format is based on
   also bookmarked on its own, the rewrite landed on it with `replace=yes` and replaced the
   user's title, notes and tags with the generated ones. The guard that prevents exactly
   this for other collisions only knew about bookmarks in the pass's own slice, and an
-  article URL is not an HN item URL, so it never saw them. `cleanup` now checks the target
-  against every bookmark in the account: if something is already there that this pass did
-  not plan, the rewrite is left in place and reported instead of overwriting. Nothing
-  changes when the article is not separately bookmarked — the usual rewrite still happens.
-  One consequence is deliberate: a legacy bookmark stored at an HN *item* URL whose
-  article `sync` has since saved separately is now left alone rather than collapsed into
-  it, so the pair persists and each run reports one rewrite left in place. Collapsing it
-  previously worked only by overwriting the article's record, which is the data loss this
-  fixes; telling that apart from a genuine collision needs the pass to say "this resident
-  is the same item", which it cannot yet express.
+  article URL is not an HN item URL, so it never saw them.
+  `cleanup` now checks the target against **every** bookmark in the account. Since
+  Pinboard holds one record per URL, a bookmark already sitting at the target joins the
+  same field-merge that colliding rewrites already use: tags are unioned, the resident's
+  note is kept **byte for byte** and extended only with what the incoming bookmarks add,
+  and its title, date and to-read state survive — it is the record that stays at that URL.
+  (Its title survives if it has one, and its date if that date parsed; an absorbed
+  bookmark's `to-read` flag is discarded rather than OR'd in, so a merge can never set
+  to-read on a record the user had already cleared — that last one only when a record
+  *is* staying; bookmarks colliding onto a fresh URL still OR it.) So the article keeps the user's title, notes and tags, gains the generated
+  `HN Link:` line and HN tags, and the now-redundant HN item bookmark is absorbed —
+  one record, nothing lost, and the pass converges — with one exception: a merged note
+  long enough that Pinboard's API rejects the request URL is stored truncated, and the
+  next run no longer recognizes the truncated block, so that bookmark is rewritten every
+  run and its note grows. The trim is now logged when it happens. Nothing changes when the article is
+  not separately bookmarked: the usual rewrite still happens.
+
+  The same protection covers a collision between two bookmarks the pass *did* plan — a
+  renamed GitHub repo starred under both its old and new names, say. The one already
+  stored at the target is the record that stays there, so it leads the merge and keeps its
+  own date and to-read state, exactly as an unplanned bookmark at that URL does. It
+  previously kept neither: the surviving record was silently backdated to the absorbed
+  bookmark's date even with dating off, and picked up its to-read flag.
+
+  Two cases are **refused** rather than merged, leaving both records exactly as they are
+  and reporting the rewrite as left in place (now shown in `--dry-run` too, not only
+  logged). A target whose record this pass *could not read* — its lookup failed, or a dead
+  credential stopped the pass before reaching it — is left strictly alone, since what is
+  stored there may be stale. And a bookmark whose public/private state differs from the
+  record at the URL it is moving to is left where it is, in either direction: merging fuses
+  their notes into one record, so it would have to either publish a private annotation or
+  unshare a bookmark the user chose to share, and neither is this tool's call to make.
+  Only the disagreeing bookmark is held back — the record it was heading for still gets its
+  own cleanup, and any other bookmarks merging in still merge. When *nothing* is stored at
+  the target there is no record to defer to, so the bookmarks moving there must agree with
+  each other instead, and if they don't, none of them is written. Previously a public
+  bookmark colliding with a private one onto a fresh URL was merged into a private record
+  and then deleted — silently unshared, with the run reporting success. A refusal protects the held-
+  back bookmark's own URL as well, so a second rewrite heading there can't overwrite the
+  record the refusal just preserved. The same now applies when a rewrite *fails*: the
+  record stranded at its old URL is marked occupied and the refusal is re-propagated, where
+  before it was left open to being overwritten by a later rewrite — a silent loss of a
+  bookmark that had merely failed to move. That protection only covers rewrites not yet
+  written when the failure happens, which is why a failed write is still reported as a
+  failure and not as a refusal.
+
+  `cleanup --all` runs the three sources over one account in turn, and each of them
+  writes. All three now share a **live** view of the account rather than one snapshot
+  taken before the first ran, so a later source sees what an earlier one wrote instead of
+  planning against state that no longer exists. `--dry-run` advances that view too — the
+  preview shows the same set of changes the real run would make.
 - **`cleanup` now fires the `--on-auth-failure` hook**, which previously only `sync` did.
   An expired credential during `cleanup` exited non-zero but ran no hook, so anyone using
   it to be told "re-copy your reddit_session" was silently not told when the expiry

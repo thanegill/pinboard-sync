@@ -13,7 +13,7 @@ use scraper::{Html, Selector};
 use serde::Deserialize;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
-use crate::bookmark::{Bookmark, BookmarkStore};
+use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PassOutcome, Plan};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::send_retrying;
@@ -490,7 +490,6 @@ impl UrlKey for HackerNewsClient {
 
 /// Options for `cleanup hackernews`.
 pub struct HackerNewsCleanupOpts {
-    pub dry_run: bool,
     /// Also link `link_tag`-tagged article bookmarks to their HN discussion.
     pub link_discussions: bool,
     /// Re-date bookmarks to the source item's creation time (within the age cap).
@@ -527,16 +526,17 @@ impl HackerNewsClient {
     /// item and re-shape it (stories rewrite to the article URL, deleting the old HN
     /// URL; comments/text posts update in place), preserving existing tags and the
     /// creation time.
-    pub async fn cleanup<P: BookmarkStore>(
+    pub async fn cleanup<S: BookmarkStore + AccountState>(
         &self,
-        pinboard: &P,
+        store: &S,
         opts: &HackerNewsCleanupOpts,
-        bookmarks: &[Bookmark],
     ) -> Result<(), SourceError> {
-        let hackernews_bookmarks: Vec<_> = bookmarks
-            .iter()
+        // Taken from the run's live view, so an earlier source's writes are already
+        // reflected.
+        let hackernews_bookmarks: Vec<Bookmark> = store
+            .snapshot()
+            .into_iter()
             .filter(|bookmark| HackerNewsItemId::try_from(&bookmark.url).is_ok())
-            .cloned()
             .collect();
 
         // Batch-fetch every referenced item once.
@@ -550,23 +550,16 @@ impl HackerNewsClient {
             items,
             config: &self.config,
         };
-        let items = run_pass(
-            pinboard,
-            &hackernews_bookmarks,
-            bookmarks,
-            opts.dry_run,
-            "HN",
-            opts.date_opts(),
-            &pass,
-        )
-        .await;
+        let items = run_pass(store, &hackernews_bookmarks, "HN", opts.date_opts(), &pass).await;
 
         // Each pass reaches its own verdict. Merging the tallies first would let this
         // pass's bookmarks — which are planned from prefetched items and so can never
         // fail — vouch for the discussion lookups, which are the only per-item network
         // calls here and can fail on their own.
+        // Its candidates come from the view *after* the item pass wrote, so a bookmark that
+        // pass merged is re-planned from the merged record rather than from a stale copy.
         let links = match opts.link_discussions {
-            true => Some(self.link_discussions(pinboard, opts, bookmarks).await),
+            true => Some(self.link_discussions(store, opts).await),
             false => None,
         };
         // Both passes ran, so report both failures: letting the first `?` short-circuit
@@ -589,25 +582,25 @@ impl HackerNewsClient {
     /// has a discussion, add `HN Link: <discussion>` to the notes and swap the marker
     /// tag for the base HN tags (update in place). Default-off (opt-in via
     /// `--link-discussions`) because it issues one Algolia query per tagged bookmark.
-    async fn link_discussions<P: BookmarkStore>(
+    async fn link_discussions<S: BookmarkStore + AccountState>(
         &self,
-        pinboard: &P,
+        store: &S,
         opts: &HackerNewsCleanupOpts,
-        bookmarks: &[Bookmark],
     ) -> PassOutcome {
-        let candidates: Vec<_> = bookmarks
-            .iter()
+        // Read after the item pass, so a bookmark it merged into is seen as it now stands.
+        // A story merged onto a `link_tag`-tagged article carries that tag into the merged
+        // record, so this pass picks it up in the same run and the account settles in one.
+        let candidates: Vec<Bookmark> = store
+            .snapshot()
+            .into_iter()
             .filter(|bookmark| {
                 HackerNewsItemId::try_from(&bookmark.url).is_err()
                     && bookmark.tags.contains(&self.config.link_tag)
             })
-            .cloned()
             .collect();
         run_pass(
-            pinboard,
+            store,
             &candidates,
-            bookmarks,
-            opts.dry_run,
             "HN discussion",
             opts.date_opts(),
             &HackerNewsLinkPass { client: self },
@@ -1283,6 +1276,7 @@ mod tests {
 #[cfg(test)]
 mod net_tests {
     use super::*;
+    use crate::bookmark::{AccountView, CleanupStore};
     use serde_json::json;
     use wiremock::matchers::{method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1349,14 +1343,14 @@ mod net_tests {
     }
 
     #[tokio::test]
-    async fn cleanup_refuses_to_clobber_a_separately_saved_article() {
+    async fn cleanup_merges_a_story_into_a_separately_saved_article() {
         use crate::pinboard::PinboardBookmark;
         use crate::test_support::FakePinboard;
 
         // The story's article is *also* saved on its own, with the user's own notes and
-        // tags. Rewriting the HN item onto that URL writes `replace=yes` over a record
-        // this pass never planned — and the article URL is not an HN item URL, so it was
-        // never in the pass's slice for `skipped_urls` to protect.
+        // tags. Pinboard holds one record per URL, so the end state has to be a single
+        // bookmark: merge rather than either overwriting the user's record or leaving the
+        // redundant item bookmark behind forever.
         let algolia = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v1/search"))
@@ -1409,27 +1403,38 @@ mod net_tests {
         let bookmarks = pinboard.all.clone();
         client
             .cleanup(
-                &pinboard,
+                &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
                 &HackerNewsCleanupOpts {
-                    dry_run: false,
                     link_discussions: false,
                     use_post_date: false,
                     max_age_days: 30,
                     cleanup_stale_to_now: false,
                 },
-                &bookmarks,
             )
             .await
             .unwrap();
 
+        let updated = pinboard.updated.borrow();
+        assert_eq!(updated.len(), 1);
+        let written = &updated[0];
+        assert_eq!(written.url, "https://example.com/x");
+        // The user's own title survives -- the resident is the first participant in the
+        // merge, and the first non-empty title wins.
+        assert_eq!(written.description, "My saved article");
         assert!(
-            pinboard.updated.borrow().is_empty(),
-            "must not write over the separately saved article: {:?}",
-            pinboard.updated.borrow()
+            written.extended.contains("hand written notes"),
+            "{written:?}"
         );
+        assert!(written.extended.contains("HN Link:"), "{written:?}");
+        assert!(written.tags.contains(&"keepme".to_string()), "{written:?}");
         assert!(
-            pinboard.deleted.borrow().is_empty(),
-            "and must not delete the HN item it left in place"
+            written.tags.contains(&"hackernews".to_string()),
+            "{written:?}"
+        );
+        // ...and the now-redundant HN item bookmark is absorbed, so the pass converges.
+        assert_eq!(
+            *pinboard.deleted.borrow(),
+            vec!["https://news.ycombinator.com/item?id=42".to_string()]
         );
     }
 
@@ -1474,15 +1479,13 @@ mod net_tests {
         let bookmarks = pinboard.all.clone();
         client
             .cleanup(
-                &pinboard,
+                &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
                 &HackerNewsCleanupOpts {
-                    dry_run: false,
                     link_discussions: false,
                     use_post_date: false,
                     max_age_days: 30,
                     cleanup_stale_to_now: false,
                 },
-                &bookmarks,
             )
             .await
             .unwrap();
@@ -1543,15 +1546,13 @@ mod net_tests {
         let bookmarks = pinboard.all.clone();
         client
             .cleanup(
-                &pinboard,
+                &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
                 &HackerNewsCleanupOpts {
-                    dry_run: false,
                     link_discussions: false,
                     use_post_date: false,
                     max_age_days: 30,
                     cleanup_stale_to_now: false,
                 },
-                &bookmarks,
             )
             .await
             .unwrap();
@@ -1610,15 +1611,13 @@ mod net_tests {
         let bookmarks = pinboard.all.clone();
         client
             .cleanup(
-                &pinboard,
+                &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
                 &HackerNewsCleanupOpts {
-                    dry_run: false,
                     link_discussions: true,
                     use_post_date: false,
                     max_age_days: 30,
                     cleanup_stale_to_now: false,
                 },
-                &bookmarks,
             )
             .await
             .unwrap();

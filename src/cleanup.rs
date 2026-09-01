@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use anyhow::Result;
 
-use crate::bookmark::{Bookmark, BookmarkStore};
+use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Plan};
 use crate::htmltext::html_to_plain;
 use crate::model::{cased_subreddit, reddit_key};
@@ -16,7 +16,6 @@ use crate::source::{host_matches, SourceError, UrlExt};
 use url::Url;
 
 pub struct RedditCleanupOpts {
-    pub dry_run: bool,
     pub mark_nsfw: bool,
     pub fix_titles: bool,
     pub base_tag: String,
@@ -59,31 +58,23 @@ struct RedditPostMeta {
     selftext: String,
 }
 
-pub async fn run<P: BookmarkStore, R: PostInfo>(
-    pinboard: &P,
+pub async fn run<S: BookmarkStore + AccountState, R: PostInfo>(
+    store: &S,
     reddit: Option<&R>,
     opts: &RedditCleanupOpts,
-    bookmarks: &[Bookmark],
 ) -> Result<(), SourceError> {
-    let reddit_bms: Vec<_> = bookmarks
-        .iter()
+    // Taken from the run's live view, so an earlier source's writes are already reflected.
+    let reddit_bms: Vec<Bookmark> = store
+        .snapshot()
+        .into_iter()
         .filter(|bookmark| bookmark.url.host_is("reddit.com"))
-        .cloned()
         .collect();
 
     let info = fetch_post_info(reddit, opts, &reddit_bms).await?;
     let pass = RedditCleanupPass { info, opts };
-    run_pass(
-        pinboard,
-        &reddit_bms,
-        bookmarks,
-        opts.dry_run,
-        "reddit",
-        opts.date_opts(),
-        &pass,
-    )
-    .await
-    .into_result()
+    run_pass(store, &reddit_bms, "reddit", opts.date_opts(), &pass)
+        .await
+        .into_result()
 }
 
 /// Re-shapes one reddit bookmark: normalize the URL/tags, then apply the authoritative
@@ -552,13 +543,13 @@ mod tests {
 #[cfg(test)]
 mod loop_tests {
     use super::*;
+    use crate::bookmark::{AccountView, CleanupStore};
     use crate::pinboard::PinboardBookmark;
     use crate::test_support::{listing_entry, FakePinboard, FakeReddit};
     use serde_json::json;
 
     fn opts() -> RedditCleanupOpts {
         RedditCleanupOpts {
-            dry_run: false,
             mark_nsfw: true,
             fix_titles: true,
             base_tag: "reddit".into(),
@@ -612,9 +603,13 @@ mod loop_tests {
             ..Default::default()
         };
 
-        run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
-            .await
-            .unwrap();
+        run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            Some(&reddit),
+            &opts(),
+        )
+        .await
+        .unwrap();
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -666,9 +661,13 @@ mod loop_tests {
             ..opts()
         };
 
-        run(&pinboard, Some(&reddit), &opts, &pinboard.all)
-            .await
-            .unwrap();
+        run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            Some(&reddit),
+            &opts,
+        )
+        .await
+        .unwrap();
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -703,9 +702,13 @@ mod loop_tests {
             ..opts()
         };
 
-        run(&pinboard, Some(&reddit), &opts, &pinboard.all)
-            .await
-            .unwrap();
+        run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            Some(&reddit),
+            &opts,
+        )
+        .await
+        .unwrap();
 
         assert!(pinboard.updated.borrow().is_empty());
     }
@@ -725,9 +728,13 @@ mod loop_tests {
             ..Default::default()
         };
 
-        run(&pinboard, None::<&FakeReddit>, &opts(), &pinboard.all)
-            .await
-            .unwrap();
+        run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            None::<&FakeReddit>,
+            &opts(),
+        )
+        .await
+        .unwrap();
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -763,9 +770,13 @@ mod loop_tests {
             ..opts()
         };
 
-        run(&pinboard, Some(&reddit), &opts, &pinboard.all)
-            .await
-            .unwrap();
+        run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            Some(&reddit),
+            &opts,
+        )
+        .await
+        .unwrap();
 
         let updated = pinboard.updated.borrow();
         assert_eq!(
@@ -802,10 +813,9 @@ mod loop_tests {
         };
 
         run(
-            &pinboard,
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
             Some(&FakeReddit::default()),
             &opts,
-            &pinboard.all,
         )
         .await
         .unwrap();
@@ -842,10 +852,9 @@ mod loop_tests {
         };
 
         run(
-            &pinboard,
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
             Some(&FakeReddit::default()),
             &opts,
-            &pinboard.all,
         )
         .await
         .unwrap();
@@ -888,9 +897,13 @@ mod loop_tests {
             ..Default::default()
         };
 
-        run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
-            .await
-            .unwrap();
+        run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            Some(&reddit),
+            &opts(),
+        )
+        .await
+        .unwrap();
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -932,9 +945,13 @@ mod loop_tests {
             ..Default::default()
         };
 
-        run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
-            .await
-            .unwrap();
+        run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            Some(&reddit),
+            &opts(),
+        )
+        .await
+        .unwrap();
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -970,9 +987,13 @@ mod loop_tests {
             ..Default::default()
         };
 
-        run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
-            .await
-            .unwrap();
+        run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            Some(&reddit),
+            &opts(),
+        )
+        .await
+        .unwrap();
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1);
@@ -1012,9 +1033,13 @@ mod loop_tests {
             ..Default::default()
         };
 
-        run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
-            .await
-            .unwrap();
+        run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            Some(&reddit),
+            &opts(),
+        )
+        .await
+        .unwrap();
 
         // Nothing changed (notes preserved, URL/title/tags already current), so no write.
         assert!(pinboard.updated.borrow().is_empty());
@@ -1056,9 +1081,13 @@ mod loop_tests {
             ..opts()
         };
 
-        run(&pinboard, Some(&reddit), &opts, &pinboard.all)
-            .await
-            .unwrap();
+        run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            Some(&reddit),
+            &opts,
+        )
+        .await
+        .unwrap();
 
         // Only the date could have changed, and the fix keeps the comment's own date, so
         // nothing is written. Without the guard the thread's created_utc would leak in.
@@ -1088,9 +1117,13 @@ mod loop_tests {
             ..Default::default()
         };
 
-        run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
-            .await
-            .unwrap();
+        run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            Some(&reddit),
+            &opts(),
+        )
+        .await
+        .unwrap();
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());
     }
@@ -1107,14 +1140,17 @@ mod loop_tests {
         };
         let reddit = FakeReddit::default();
         let opts = RedditCleanupOpts {
-            dry_run: true,
             mark_nsfw: false,
             fix_titles: false,
             ..opts()
         };
-        run(&pinboard, Some(&reddit), &opts, &pinboard.all)
-            .await
-            .unwrap();
+        run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), true),
+            Some(&reddit),
+            &opts,
+        )
+        .await
+        .unwrap();
         assert!(pinboard.updated.borrow().is_empty());
         assert!(pinboard.deleted.borrow().is_empty());
     }
@@ -1137,9 +1173,13 @@ mod loop_tests {
             ..Default::default()
         };
 
-        let err = run(&pinboard, Some(&reddit), &opts(), &pinboard.all)
-            .await
-            .unwrap_err();
+        let err = run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            Some(&reddit),
+            &opts(),
+        )
+        .await
+        .unwrap_err();
         assert!(
             matches!(err, SourceError::ReauthRequired(_)),
             "expected reauth, got {err:?}"
@@ -1167,9 +1207,13 @@ mod loop_tests {
         };
 
         // The run reports failure (non-zero exit)...
-        let err = run(&pinboard, Some(&reddit), &opts, &pinboard.all)
-            .await
-            .unwrap_err();
+        let err = run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            Some(&reddit),
+            &opts,
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("1 bookmark(s) failed"));
         // ...but the second bookmark was still updated despite the first failing.
         let updated = pinboard.updated.borrow();

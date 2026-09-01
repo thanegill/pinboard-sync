@@ -294,8 +294,10 @@ already be truncated to fit its API's URL budget.
 For multiple accounts of a source, or to keep settings out of flags, use a TOML
 config passed via `--config <path>` (or `$PINBOARD_SYNC_CONFIG`). It holds
 one `[pinboard]` destination, an optional `[hooks]` block, and arrays of accounts
-per source. Print the annotated template with `pinboard-sync config example`; in
-brief:
+per source. Every key is listed in the [config reference](#config-reference) below,
+and a fully-commented template lives at
+[`src/config.example.toml`](src/config.example.toml) — which is also what
+`pinboard-sync config example` prints. In brief:
 
 ```toml
 [pinboard]
@@ -330,6 +332,105 @@ HackerNews — so an account with `username = "alice"` and no `name` is reachabl
 only. With no selector, a command uses the first account of that source. All tag
 settings (prefixes, the base `tags` list, the Reddit media-type allowlist, the HN
 special-type prefix) live in the config only — there are no tag CLI flags.
+
+### Config reference
+
+Every key the config accepts, with its built-in default. A fully-commented template
+carrying all of these lives at
+[`src/config.example.toml`](src/config.example.toml) and is what
+`pinboard-sync config example` prints — it is embedded in the binary, so the copy you
+print always matches your build.
+
+Every key is optional; an absent config means built-in defaults throughout. Unknown
+keys are a hard error rather than being ignored, so a typo fails the run instead of
+silently doing nothing.
+
+#### `[pinboard]` — the shared destination
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `token` | string | — | Pinboard API token, `user:HEX`. |
+| `token_file` | path | — | File whose trimmed contents are the token. |
+| `public` | bool | `false` | Write bookmarks public. |
+| `toread` | bool | `false` | Mark new bookmarks unread. |
+| `rate_limit_secs` | int | `3` | Seconds between `posts/add` writes. |
+| `limit` | int | `0` | Cap on new bookmarks per run; `0` means no cap. |
+| `use_post_date` | bool | `false` | Date bookmarks by the source post date instead of now. |
+| `post_date_max_age_days` | int | `30` | Only backdate posts newer than this. |
+| `cleanup_stale_to_now` | bool | `false` | On `cleanup`, re-date too-old posts to now instead of keeping their date. |
+
+#### `[hooks]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `on_auth_failure` | string | — | Shell command run via `sh -c` when a source needs re-authentication. Receives `PINBOARD_SYNC_AUTH_ERROR` and `PINBOARD_SYNC_EVENT`. |
+
+#### `[backup]`
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `directory` | path | — | Where `backup` writes its snapshot. `--out` overrides it. |
+
+#### `[defaults.reddit]` / `[defaults.github]` / `[defaults.hackernews]`
+
+The middle override tier — **CLI → account → `[defaults.<source>]` → global**. Each
+table accepts the same seven keys, all with the same meaning as their `[pinboard]` or
+`[hooks]` counterpart:
+
+`toread`, `public`, `limit`, `on_auth_failure`, `use_post_date`,
+`post_date_max_age_days`, `cleanup_stale_to_now`
+
+#### Account tables
+
+`[[reddit]]`, `[[github]]` and `[[hackernews]]` are arrays — repeat the table for
+multiple accounts of one source. All three accept the per-account override keys
+`limit`, `toread`, `public`, `use_post_date`, `post_date_max_age_days` and
+`cleanup_stale_to_now`, plus:
+
+| Key | Sources | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `name` | all | string | — | Selector for `sync <source> <name>`. Falls back to `username` for Reddit and HackerNews; GitHub has no username, so its accounts need a `name`. |
+| `username` | reddit, hackernews | string | — | Whose saves/favorites to read. HackerNews favorites are public; Reddit needs the cookie too. |
+| `cookie` / `cookie_file` | reddit | string / path | — | `reddit_session` cookie value, or a file holding it. |
+| `token` / `token_file` | github | string / path | — | Personal access token, or a file holding it. |
+| `on_auth_failure` | reddit, github | string | — | Per-account override of `[hooks].on_auth_failure`. |
+
+##### Tag keys (config-only — there are no tag CLI flags)
+
+`tags` is the base list applied to every bookmark from that account, and setting it
+**replaces** the default rather than adding to it, so include the base tag yourself.
+Setting any prefixed or conditional tag to `""` disables it. Pinboard splits its tag
+string on spaces, so a tag or prefix containing whitespace is rejected at parse time;
+values interpolated into a prefix are slugged (`Jupyter Notebook` →
+`lang:jupyter-notebook`).
+
+| Key | Source | Default | Produces |
+| --- | --- | --- | --- |
+| `tags` | reddit | `["reddit"]` | On every bookmark. |
+| `reddit_domain` | reddit | `"old.reddit.com"` | Host for bookmark and thread URLs. Also what `cleanup reddit` normalizes to. |
+| `tag_subreddit_prefix` | reddit | `"subreddit:"` | `subreddit:<sub>` |
+| `tag_comment` | reddit | `"reddit-comment"` | On saved comments. |
+| `tag_nsfw` | reddit | `"nsfw"` | When the post is `over_18`. |
+| `tag_author_prefix` | reddit | `"author:reddit:"` | `author:reddit:<name>` |
+| `tag_flair_prefix` | reddit | `"reddit-flair:"` | `reddit-flair:<slug>` |
+| `tag_media_prefix` | reddit | `"type:"` | `type:image`, `type:video` |
+| `tag_media_types` | reddit | `["image", "video"]` | Which media types get a `type:` tag; `[]` disables. |
+| `tags` | github | `["github-star"]` | On every bookmark. |
+| `tag_lang_prefix` | github | `"lang:"` | `lang:<language>` |
+| `tags` | hackernews | `["hackernews"]` | On every bookmark. |
+| `tag_comment` | hackernews | `"hackernews-comment"` | On favorited comments. |
+| `tag_author_prefix` | hackernews | `"author:hackernews:"` | `author:hackernews:<name>` |
+| `tag_special_prefix` | hackernews | `"hackernews:"` | `hackernews:show-hn` and the Ask/Tell/Launch forms. |
+| `tag_link` | hackernews | `"find-hn"` | Marker tag you add by hand to an article bookmark. `cleanup hackernews --link-discussions` looks each one up on HN by URL and, if a discussion exists, adds an `HN Link:` line to the notes and swaps the marker for the base HN tags. |
+
+#### Secrets
+
+Every secret resolves through one ladder — **CLI flag → `$VAR` → `$VAR_FILE` → config
+inline → config `*_file`** — so a value can come from wherever suits the deployment
+without the config having to change. The `_file` forms hold a *path* whose trimmed
+contents are the value, which is what lets sops-nix and systemd credentials work
+without secrets ever entering the unit environment. `--config` itself is the one
+exception: it resolves flag → `$PINBOARD_SYNC_CONFIG` only, since it is already a path.
 
 ### Per-source defaults and dating by the source post date
 
@@ -392,7 +493,9 @@ $EDITOR pinboard-sync.toml
 pinboard-sync --config pinboard-sync.toml sync --all --dry-run
 ```
 
-The template is embedded in the binary, so it always matches that build's schema.
+The template is embedded in the binary, so it always matches that build's schema. Its
+source is [`src/config.example.toml`](src/config.example.toml); a test fails the build
+if a config field is ever added without a line documenting it there.
 
 ### `completions`
 

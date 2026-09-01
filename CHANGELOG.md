@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-01
+
 ### Added
 
 - A `backup` subcommand that snapshots **every service** — the Pinboard account and each
@@ -357,7 +359,8 @@ generalized the tool to multiple sources.
 - **NixOS module** with an `environmentFile` for secrets, and a secret-resolution
   ladder (CLI flag → `$VAR` → `$VAR_FILE` → `~/.pinboardrc`).
 
-[Unreleased]: https://github.com/thanegill/pinboard-sync/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/thanegill/pinboard-sync/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.5.0
 [0.4.0]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.4.0
 [0.3.3]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.3.3
 [0.3.2]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.3.2

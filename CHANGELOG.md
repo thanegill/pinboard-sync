@@ -133,6 +133,12 @@ All notable changes to this project are documented here. The format is based on
   going after a failure, so two dead credentials mean the hook runs twice — once per
   source, each with its own `PINBOARD_SYNC_AUTH_ERROR`. `sync --all` has always behaved
   this way; a hook that notifies should expect to be called more than once per run.
+- Text posts no longer carry a **duplicated link in their notes**. A HackerNews text post
+  (Ask HN, etc.) and a bodyless Reddit self-post both bookmark their own permalink, yet
+  `sync` repeated that same URL in the notes (`HN Link: …` / the post's `url`). `sync` now
+  omits it, and `cleanup` removes it from existing bookmarks (HackerNews by reshaping;
+  Reddit self-posts whose notes are just a link back to their own permalink). Link posts
+  keep their external URL.
 
 ### Changed
 
@@ -190,15 +196,6 @@ All notable changes to this project are documented here. The format is based on
   the same moment written differently (e.g. a `+00:00` offset vs a trailing `Z`).
 - A saved bookmark or fetched item whose **URL doesn't parse** is now skipped with a
   warning, so one malformed entry can't derail a `sync` or `cleanup` run.
-
-### Fixed
-
-- Text posts no longer carry a **duplicated link in their notes**. A HackerNews text post
-  (Ask HN, etc.) and a bodyless Reddit self-post both bookmark their own permalink, yet
-  `sync` repeated that same URL in the notes (`HN Link: …` / the post's `url`). `sync` now
-  omits it, and `cleanup` removes it from existing bookmarks (HackerNews by reshaping;
-  Reddit self-posts whose notes are just a link back to their own permalink). Link posts
-  keep their external URL.
 
 ## [0.4.0] - 2026-06-24
 

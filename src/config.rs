@@ -158,7 +158,8 @@ impl Config {
 
     /// Parse a config from TOML text, validating tag fields.
     pub fn parse(text: &str) -> Result<Self> {
-        let config: Config = toml::from_str(text).map_err(|e| anyhow!("parsing config: {e}"))?;
+        let config: Config = toml::from_str(text)
+            .map_err(|e| anyhow!("parsing config: {}", describe_toml_error(&e, text)))?;
         config.validate()?;
         Ok(config)
     }
@@ -197,6 +198,52 @@ impl Config {
         }
         Ok(())
     }
+}
+
+/// Where and what a TOML error is, never the source text around it. toml's own
+/// `Display` quotes the offending line, which may hold an inline `token` or `cookie`.
+/// Without a span it prints only the message and key path, so that form is safe.
+fn describe_toml_error(error: &toml::de::Error, text: &str) -> String {
+    let message = error.message();
+    let Some(span) = error.span() else {
+        return error
+            .to_string()
+            .replacen(message, &without_unexpected_value(message), 1)
+            .trim_end()
+            .replace('\n', "; ");
+    };
+    let (line, column) = line_and_column(text, span.start);
+    let message = without_unexpected_value(message.trim_end()).replace('\n', "; ");
+    format!("line {line}, column {column}: {message}")
+}
+
+/// Drop the value serde quotes in a type mismatch (`invalid type: string "...",
+/// expected usize`): a secret pasted under a non-string key would land there.
+fn without_unexpected_value(message: &str) -> String {
+    for prefix in ["invalid type: ", "invalid value: "] {
+        let Some(rest) = message.strip_prefix(prefix) else {
+            continue;
+        };
+        let (unexpected, expected) = rest
+            .rfind(", expected ")
+            .map_or((rest, ""), |at| rest.split_at(at));
+        let kind = [" `", " \""]
+            .iter()
+            .filter_map(|quote| unexpected.find(quote))
+            .min()
+            .map_or(unexpected, |at| &unexpected[..at]);
+        return format!("{prefix}{kind}{expected}");
+    }
+    message.to_owned()
+}
+
+/// The 1-based line and character column of byte `offset` in `text`.
+fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
+    let before = &text[..text.floor_char_boundary(offset)];
+    let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
+    let line = before.matches('\n').count() + 1;
+    let column = before[line_start..].chars().count() + 1;
+    (line, column)
 }
 
 /// Error if `value` (a tag or tag prefix) contains whitespace — Pinboard tags can't
@@ -427,6 +474,75 @@ mod tests {
         assert!(cfg.hooks.on_auth_failure.is_none());
         assert!(cfg.pinboard.limit.is_none());
         assert!(cfg.defaults.reddit.toread.is_none());
+    }
+
+    fn assert_error_hides(text: &str, secret: &str, location: &str) {
+        let err = Config::parse(text).expect_err("malformed config must not parse");
+        for rendered in [format!("{err}"), format!("{err:#}"), format!("{err:?}")] {
+            assert!(!rendered.contains(secret), "leaked {secret}: {rendered}");
+            assert!(rendered.contains(location), "no {location} in: {rendered}");
+        }
+    }
+
+    #[test]
+    fn syntax_error_on_an_inline_secret_reports_position_not_the_line() {
+        assert_error_hides(
+            "[hooks]\n\n[pinboard]\ntoken = \"user:SECRET123\ntoread = true\n",
+            "SECRET123",
+            "line 4, column",
+        );
+        assert_error_hides(
+            "[[reddit]]\nname = \"main\"\ncookie = reddit_session=SECRET456\n",
+            "SECRET456",
+            "line 3, column",
+        );
+    }
+
+    #[test]
+    fn type_error_on_an_inline_secret_reports_position_not_the_line() {
+        assert_error_hides(
+            "[pinboard]\ntoken = [\"SECRET789\"]\n",
+            "SECRET789",
+            "line 2, column 9",
+        );
+    }
+
+    #[test]
+    fn secret_under_a_non_string_key_is_not_quoted_back() {
+        assert_error_hides(
+            "[pinboard]\nlimit = \"user:SECRET321\"\n",
+            "SECRET321",
+            "line 2, column 9: invalid type: string, expected usize",
+        );
+        assert_error_hides(
+            "[[reddit]]\ntoread = \"reddit_session=SECRET654, expected x\"\n",
+            "SECRET654",
+            "line 2, column 10: invalid type: string, expected a boolean",
+        );
+        assert_error_hides(
+            "[[github]]\ntag_lang_prefix = 5\n",
+            "`5`",
+            "invalid type: integer, expected a string",
+        );
+    }
+
+    #[test]
+    fn spanless_toml_error_still_drops_the_value() {
+        let error = <toml::de::Error as serde::de::Error>::custom(
+            "invalid type: string \"SECRET987\", expected usize",
+        );
+        assert_eq!(
+            describe_toml_error(&error, ""),
+            "invalid type: string, expected usize"
+        );
+    }
+
+    #[test]
+    fn toml_error_column_counts_characters() {
+        assert_eq!(line_and_column("a = \"é\"\nb", 9), (2, 1));
+        assert_eq!(line_and_column("ab", 1), (1, 2));
+        assert_eq!(line_and_column("é", 1), (1, 1));
+        assert_eq!(line_and_column("ab", 99), (1, 3));
     }
 
     #[test]

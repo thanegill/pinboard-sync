@@ -1871,16 +1871,34 @@ fn run_auth_failure_hook(cmd: Option<&str>, err: &str) {
         return;
     };
     eprintln!("Running --on-auth-failure hook...");
-    match std::process::Command::new("sh")
+    let mut command = auth_failure_hook_command(cmd, err);
+    match command.status() {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!("auth-failure hook exited with {s}"),
+        Err(e) => eprintln!(
+            "failed to run auth-failure hook via {}: {e}",
+            command.get_program().display()
+        ),
+    }
+}
+
+fn auth_failure_hook_command(cmd: &str, err: &str) -> std::process::Command {
+    let mut command = std::process::Command::new(hook_shell(Path::new("/bin/sh")));
+    command
         .arg("-c")
         .arg(cmd)
         .env("PINBOARD_SYNC_AUTH_ERROR", err)
-        .env("PINBOARD_SYNC_EVENT", "reauth_required")
-        .status()
-    {
-        Ok(s) if s.success() => {}
-        Ok(s) => eprintln!("auth-failure hook exited with {s}"),
-        Err(e) => eprintln!("failed to run auth-failure hook: {e}"),
+        .env("PINBOARD_SYNC_EVENT", "reauth_required");
+    command
+}
+
+/// The shell the hook runs under: `system_shell` (`/bin/sh`, as `system(3)` uses) so the
+/// caller's `PATH` doesn't matter, else `sh` from `PATH` on a host without one.
+fn hook_shell(system_shell: &Path) -> &Path {
+    if system_shell.exists() {
+        system_shell
+    } else {
+        Path::new("sh")
     }
 }
 
@@ -2548,7 +2566,7 @@ mod tests {
     }
 
     /// The hook is a real side effect on a real credential expiry, so drive it through
-    /// the actual `sh -c` invocation rather than a stand-in: the marker file existing is
+    /// the real hook command rather than a stand-in: the marker file existing is
     /// the only proof the operator's command ran.
     #[test]
     fn the_auth_failure_hook_fires_for_reauth_and_nothing_else() {
@@ -2575,6 +2593,47 @@ mod tests {
             Some(&hook),
         );
         assert!(marker.exists(), "a dead credential must fire the hook");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The NixOS module's units carry no shell on `PATH` (thanegill/pinboard-sync#77), so
+    /// the hook must not depend on finding one there. The command uses only shell
+    /// builtins, since nothing else is reachable through an empty `PATH` either.
+    #[test]
+    fn the_auth_failure_hook_runs_without_a_shell_on_path() {
+        let dir = scratch_dir("auth-hook-no-path");
+        let empty_path = dir.join("empty-path");
+        std::fs::create_dir(&empty_path).unwrap();
+        let marker = dir.join("fired");
+        let hook = format!(
+            "echo \"$PINBOARD_SYNC_EVENT: $PINBOARD_SYNC_AUTH_ERROR\" > '{}'",
+            marker.display()
+        );
+
+        let status = auth_failure_hook_command(&hook, "cookie expired")
+            .env("PATH", &empty_path)
+            .status()
+            .expect("the hook's shell is found without PATH");
+        assert!(status.success());
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            "reauth_required: cookie expired\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// NixOS's bashless profile has no `/bin/sh`; there the hook still runs if the unit
+    /// puts a shell on `PATH`.
+    #[test]
+    fn the_hook_shell_falls_back_to_path_without_a_system_shell() {
+        let dir = scratch_dir("hook-shell");
+        let system_shell = dir.join("sh");
+        assert_eq!(hook_shell(&system_shell), Path::new("sh"));
+
+        std::fs::write(&system_shell, "").unwrap();
+        assert_eq!(hook_shell(&system_shell), system_shell);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

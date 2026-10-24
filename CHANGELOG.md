@@ -21,6 +21,13 @@ All notable changes to this project are documented here. The format is based on
   used up the whole 2.5 minutes, later requests from that same client fall back to the
   usual short retries, so a long outage partway through `cleanup` no longer turns into
   hours of waiting.
+- **The auth-failure hook now runs under the NixOS module.** The hook was spawned as
+  `sh -c`, looking `sh` up on `PATH`, and the module's units get only the NixOS service
+  defaults there (coreutils, findutils, grep, sed, systemd). Every hook failed with
+  `No such file or directory`, and an expired credential went unreported. The hook now
+  runs under `/bin/sh`, as `system(3)` does, so the caller's `PATH` no longer matters.
+  On a host without `/bin/sh` (NixOS's bashless profile), it falls back to `sh` from
+  `PATH`. (#77)
 
 ## [0.5.0] - 2026-09-01
 

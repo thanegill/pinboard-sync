@@ -363,7 +363,7 @@ silently doing nothing.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `on_auth_failure` | string | — | Shell command run via `sh -c` when a source needs re-authentication. Receives `PINBOARD_SYNC_AUTH_ERROR` and `PINBOARD_SYNC_EVENT`. |
+| `on_auth_failure` | string | — | Shell command run via `/bin/sh -c` (or `sh` from `PATH` on a host without `/bin/sh`) when a source needs re-authentication. Receives `PINBOARD_SYNC_AUTH_ERROR` and `PINBOARD_SYNC_EVENT`. |
 
 #### `[backup]`
 

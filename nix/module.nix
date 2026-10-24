@@ -216,12 +216,27 @@ in
     onAuthFailure = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = ''notify-send "pinboard-sync needs a fresh cookie: $PINBOARD_SYNC_AUTH_ERROR"'';
+      example = lib.literalExpression ''
+        "''${lib.getExe pkgs.curl} -d \"pinboard-sync needs a fresh cookie: $PINBOARD_SYNC_AUTH_ERROR\" https://ntfy.sh/my-topic"
+      '';
       description = ''
         Shell command run when a source needs re-authentication (e.g. an expired
-        Reddit cookie). Runs via `sh -c` with `PINBOARD_SYNC_AUTH_ERROR` and
+        Reddit cookie). Runs via `/bin/sh -c` with `PINBOARD_SYNC_AUTH_ERROR` and
         `PINBOARD_SYNC_EVENT` in the environment. Exported as
         `PINBOARD_SYNC_ON_AUTH_FAILURE`.
+
+        Any hook, whether set here or through `settings` (`[hooks]`,
+        `[defaults.<source>]` or an account's `on_auth_failure`), inherits the unit's
+        sandbox. Its `PATH` holds only the NixOS service defaults (coreutils,
+        findutils, grep, sed, systemd), so call any other program by its store path.
+        Only IPv4/IPv6 sockets are allowed, so a tool that talks over a local socket
+        (`systemctl`, `logger`, D-Bus) fails.
+
+        On a host without `/bin/sh` (the bashless profile), the hook falls back to
+        `sh` from `PATH`, which has none by default. Add a non-bash package that
+        provides `bin/sh` (e.g. `pkgs.busybox`; `pkgs.dash` ships only `bin/dash`) to
+        the `path` of each enabled unit: `systemd.services.pinboard-sync`,
+        `pinboard-sync-cleanup` and `pinboard-sync-backup`.
       '';
     };
 

@@ -277,10 +277,13 @@ resolves the command through `PINBOARD_SYNC_ON_AUTH_FAILURE` → account →
 load-bearing**: [`nix/module.nix`](nix/module.nix) exports `onAuthFailure` only into the
 unit environment — it never reaches the generated TOML — and runs the `cleanup --all`
 timer with it, so resolving from config alone would leave the hook dead for the
-deployment it exists to serve. Both clients send through
+deployment it exists to serve. Every client sends through
 `http::send_retrying`
 ([`src/http.rs`](src/http.rs)), which backs off on network errors / 429 / 5xx but
-returns other statuses as-is.
+returns other statuses as-is. It strips the request URL from every client's transport
+error before wrapping it, because Pinboard's `auth_token` rides in the query string and
+`reqwest::Error` prints the URL in `Display` and `Debug`. Never put a request URL with a
+query into a message: Pinboard errors name the endpoint (no query) instead.
 
 **`SourceError::RateLimited` is the third case, and deliberately not either of those.**
 GitHub answers both its primary and secondary rate limits with a **403 or 429** — the

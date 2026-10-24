@@ -24,6 +24,12 @@ All notable changes to this project are documented here. The format is based on
   `github[2] has the same account name as github[0]`. The inline `token` and `cookie`
   values also show as `<redacted>` in any debug print of the config.
   ([#84](https://github.com/thanegill/pinboard-sync/issues/84))
+- The sample `on_auth_failure` hook in `config example` no longer suggests
+  `systemctl --user`, which can't work under the NixOS module: the unit runs as a
+  `DynamicUser` with no user session and allows no Unix sockets. The sample now POSTs the
+  error to an ntfy.sh topic with `curl`, and a note explains the module's limits, points
+  at its `onAuthFailure` option for calling curl by its store path, and warns that ntfy.sh
+  topics are public, so the topic name should be long and random. ([#88](https://github.com/thanegill/pinboard-sync/issues/88))
 
 ## [0.5.1] - 2026-10-24
 

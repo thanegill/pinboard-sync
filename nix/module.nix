@@ -217,13 +217,14 @@ in
       type = lib.types.nullOr lib.types.str;
       default = null;
       example = lib.literalExpression ''
-        "''${lib.getExe pkgs.curl} -d \"pinboard-sync needs a fresh cookie: $PINBOARD_SYNC_AUTH_ERROR\" https://ntfy.sh/my-topic"
+        "''${lib.getExe pkgs.curl} -fsS -d \"pinboard-sync needs re-authentication: $PINBOARD_SYNC_AUTH_ERROR\" https://ntfy.sh/YOUR-LONG-RANDOM-TOPIC"
       '';
       description = ''
         Shell command run when a source needs re-authentication (e.g. an expired
         Reddit cookie). Runs via `/bin/sh -c` with `PINBOARD_SYNC_AUTH_ERROR` and
         `PINBOARD_SYNC_EVENT` in the environment. Exported as
-        `PINBOARD_SYNC_ON_AUTH_FAILURE`.
+        `PINBOARD_SYNC_ON_AUTH_FAILURE`. The example posts to ntfy.sh, whose topics
+        are public: anyone who knows the name can read them, so pick a long random one.
 
         Any hook, whether set here or through `settings` (`[hooks]`,
         `[defaults.<source>]` or an account's `on_auth_failure`), inherits the unit's

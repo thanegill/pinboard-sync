@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- A config file that fails to parse no longer prints its own contents. The error used to
+  quote the offending line, so a typo on an inline `token = "..."` or `cookie = "..."`
+  line wrote that credential to stderr and the journal. It now reports the line, column
+  and what is wrong (for example `parsing config: line 4, column 24: invalid basic
+  string`) without quoting the line, and a value of the wrong type is named by its type,
+  not quoted back. If a failed run was logged before this fix, rotate any credential on
+  the line that logged error quoted.
+  ([#84](https://github.com/thanegill/pinboard-sync/issues/84))
+- A config value that fails validation is no longer printed either, so a credential
+  pasted into a tag, `reddit_domain`, or an account `name` or `username` stays out of the
+  error. The error names the field by its position instead, such as
+  `` `reddit[1].tags[1]` must not contain whitespace ``,
+  `` `reddit[0].reddit_domain` contains a `/` `` or
+  `github[2] has the same account name as github[0]`. The inline `token` and `cookie`
+  values also show as `<redacted>` in any debug print of the config.
+  ([#84](https://github.com/thanegill/pinboard-sync/issues/84))
+
 ## [0.5.1] - 2026-10-24
 
 ### Fixed

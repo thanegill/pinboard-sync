@@ -52,6 +52,7 @@ impl PostInfo for FakeReddit {
         match &self.info_error {
             Some(SourceError::ReauthRequired(m)) => Err(SourceError::ReauthRequired(m.clone())),
             Some(SourceError::RateLimited(m)) => Err(SourceError::RateLimited(m.clone())),
+            Some(SourceError::Blocked(m)) => Err(SourceError::Blocked(m.clone())),
             Some(SourceError::Other(e)) => Err(SourceError::Other(anyhow::anyhow!("{e}"))),
             None => Ok(self.info.clone()),
         }

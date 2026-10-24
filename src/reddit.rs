@@ -293,25 +293,92 @@ impl UrlKey for RedditClient {
     }
 }
 
-/// The body text of a Reddit response, centralizing status handling: 401/403 become
-/// [`SourceError::ReauthRequired`] (with a fixed, actionable message — the body is
-/// usually a large anti-bot HTML page, so it isn't echoed), any other non-success
+/// The body text of a Reddit response, centralizing status handling. Reddit's
+/// network-security page (see [`edge_page`]) becomes [`SourceError::Blocked`] and any
+/// other 401/403 [`SourceError::ReauthRequired`]; both carry a fixed, actionable message,
+/// since the body is usually a large HTML page and isn't echoed. Any other non-success
 /// status becomes [`SourceError::Other`]. `what` names the request.
 async fn reddit_body(resp: reqwest::Response, what: &str) -> Result<String, SourceError> {
+    use reqwest::header::CONTENT_TYPE;
     use reqwest::StatusCode;
 
     let status = resp.status();
-    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-        return Err(SourceError::ReauthRequired(format!(
-            "{what} returned {status} — Reddit blocked the request. REDDIT_COOKIE (your \
-             reddit_session) likely expired or is missing; re-copy it from a logged-in browser."
-        )));
-    }
+    let content_type = resp
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
     let body = resp.text().await.unwrap_or_default();
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        let reauth = format!(
+            "{what} returned {status}. REDDIT_COOKIE (your reddit_session) likely expired \
+             or is missing; re-copy it from a logged-in browser."
+        );
+        return Err(match edge_page(status, &content_type, &body) {
+            Some(EdgePage::NetworkSecurity) => SourceError::Blocked(format!(
+                "{what} returned {status} — Reddit's edge blocked the request with its \
+                 network-security page. Re-copying REDDIT_COOKIE will not lift the \
+                 block; tracked in https://github.com/thanegill/pinboard-sync/issues/78."
+            )),
+            Some(EdgePage::NetworkPolicy) => SourceError::ReauthRequired(format!(
+                "{reauth} (Reddit answered with its \"network policy\" page, which it \
+                 serves for an invalid credential; if the cookie is fresh, the host's IP \
+                 may be blocked instead.)"
+            )),
+            None => {
+                warn!(
+                    "{what} returned {status} ({} bytes of {content_type:?}), not a \
+                     recognised edge page; treating it as an expired cookie",
+                    body.len()
+                );
+                SourceError::ReauthRequired(reauth)
+            }
+        });
+    }
     if !status.is_success() {
         return Err(anyhow::anyhow!("{what} returned {status}: {}", body.trim()).into());
     }
     Ok(body)
+}
+
+/// One of the HTML pages Reddit's edge answers a refused request with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgePage {
+    /// "You've been blocked by network security" (since 2026-10-20, redlib-org/redlib#591,
+    /// thanegill/pinboard-sync#78): served to a request carrying a *valid* cookie, so no
+    /// credential change lifts it.
+    NetworkSecurity,
+    /// "whoa there, pardner! Your request has been blocked due to a network policy":
+    /// served for a junk cookie or bearer token as well as for blocked IP ranges, so it
+    /// stays a credential problem.
+    NetworkPolicy,
+}
+
+/// Which edge page a response is, if any: a 403 `text/html` body carrying the page's
+/// phrase. Neither phrase includes the apostrophe, and each is matched
+/// case-insensitively anywhere in the body with its whitespace collapsed, so the
+/// apostrophe's spelling and the markup and line breaks around it don't matter. Reddit's
+/// API answers a real 403 with short JSON, which the content type rules out even if it
+/// ever quoted a phrase.
+fn edge_page(status: reqwest::StatusCode, content_type: &str, body: &str) -> Option<EdgePage> {
+    if status != reqwest::StatusCode::FORBIDDEN
+        || !content_type.to_ascii_lowercase().starts_with("text/html")
+    {
+        return None;
+    }
+    let body = body
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    if body.contains("blocked by network security") {
+        Some(EdgePage::NetworkSecurity)
+    } else if body.contains("blocked due to a network policy") {
+        Some(EdgePage::NetworkPolicy)
+    } else {
+        None
+    }
 }
 
 /// Decode a Reddit JSON response into `T`, over [`reddit_body`]'s status handling.
@@ -363,6 +430,141 @@ mod tests {
                 "status {code} should require re-auth"
             );
         }
+    }
+
+    /// A minimal stand-in for the page Reddit's edge has served JSON clients since
+    /// 2026-10-20 (redlib-org/redlib#591), built from its reported text, curly apostrophe
+    /// and all; the real one wraps that text in about 190KB of markup.
+    pub(super) const BLOCK_PAGE: &str = "<!DOCTYPE html><html><head><title>Blocked</title>\
+        </head><body><h1>You\u{2019}ve been blocked by network security.</h1><p>If you \
+        think you\u{2019}ve been blocked by mistake, file a ticket below and we\u{2019}ll \
+        look into it.</p><a href=\"https://support.reddithelp.com/hc/en-us/requests/new?\
+        ticket_form_id=21879292693140\">File a ticket</a></body></html>";
+
+    const HTML: &str = "text/html; charset=utf-8";
+
+    fn html_response(status: u16, body: &str) -> reqwest::Response {
+        reqwest::Response::from(
+            http::Response::builder()
+                .status(status)
+                .header("content-type", HTML)
+                .body(body.to_string())
+                .unwrap(),
+        )
+    }
+
+    /// A minimal stand-in for the ~1.5KB page Reddit's edge serves for a junk cookie or
+    /// bearer token (and for blocked IP ranges).
+    const NETWORK_POLICY_PAGE: &str = "<!doctype html><html><head><title>Blocked</title>\
+        </head><body><h1>whoa there, pardner!</h1><p>Your request has been blocked due \
+        to a network policy.</p><p>Try logging in or creating an account here to get \
+        back to browsing.</p></body></html>";
+
+    #[test]
+    fn recognises_reddit_edge_pages() {
+        let forbidden = reqwest::StatusCode::FORBIDDEN;
+        let security = Some(EdgePage::NetworkSecurity);
+        assert_eq!(edge_page(forbidden, HTML, BLOCK_PAGE), security);
+        assert_eq!(
+            edge_page(
+                forbidden,
+                "TEXT/HTML",
+                "YOU'VE BEEN BLOCKED BY NETWORK SECURITY"
+            ),
+            security
+        );
+        assert_eq!(
+            edge_page(
+                forbidden,
+                HTML,
+                "<h1>You've been blocked by\n      network  security.</h1>"
+            ),
+            security
+        );
+        assert_eq!(
+            edge_page(forbidden, "text/html", NETWORK_POLICY_PAGE),
+            Some(EdgePage::NetworkPolicy)
+        );
+    }
+
+    #[test]
+    fn does_not_mistake_other_refusals_for_an_edge_page() {
+        let forbidden = reqwest::StatusCode::FORBIDDEN;
+        for body in [
+            "",
+            "denied",
+            "blocked",
+            r#"{"message": "Forbidden", "error": 403}"#,
+            "<html><title>reddit: log in</title><body>Log in to continue</body></html>",
+        ] {
+            assert_eq!(
+                edge_page(forbidden, HTML, body),
+                None,
+                "{body:?} is not an edge page"
+            );
+        }
+        assert_eq!(
+            edge_page(forbidden, "application/json", BLOCK_PAGE),
+            None,
+            "a JSON body is an API answer, not the edge's page"
+        );
+        assert_eq!(
+            edge_page(reqwest::StatusCode::UNAUTHORIZED, HTML, BLOCK_PAGE),
+            None,
+            "only a 403 is an edge page"
+        );
+    }
+
+    #[tokio::test]
+    async fn keeps_the_network_policy_page_a_credential_problem() {
+        let err = decode_reddit_json::<Sample>(html_response(403, NETWORK_POLICY_PAGE), "req")
+            .await
+            .unwrap_err();
+        let SourceError::ReauthRequired(message) = err else {
+            panic!("a junk credential must still fire the hook: {err:?}");
+        };
+        assert!(message.contains("REDDIT_COOKIE"), "{message}");
+        assert!(message.contains("network policy"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn keeps_other_403s_as_reauth() {
+        let json_forbidden = reqwest::Response::from(
+            http::Response::builder()
+                .status(403)
+                .header("content-type", "application/json; charset=UTF-8")
+                .body(r#"{"message": "Forbidden", "error": 403}"#.to_string())
+                .unwrap(),
+        );
+        for (label, resp) in [
+            ("JSON API 403", json_forbidden),
+            (
+                "HTML without the phrase",
+                html_response(403, "<html><title>reddit: log in</title></html>"),
+            ),
+            (
+                "block text without a content type",
+                response(403, BLOCK_PAGE),
+            ),
+        ] {
+            let err = decode_reddit_json::<Sample>(resp, "req").await.unwrap_err();
+            assert!(
+                matches!(err, SourceError::ReauthRequired(_)),
+                "{label}: got {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn maps_a_403_block_page_to_blocked_not_reauth() {
+        let err = decode_reddit_json::<Sample>(html_response(403, BLOCK_PAGE), "req")
+            .await
+            .unwrap_err();
+        let SourceError::Blocked(message) = err else {
+            panic!("a block page must not ask for a new cookie: {err:?}");
+        };
+        assert!(message.contains("issues/78"), "{message}");
+        assert!(!message.contains("likely expired"), "{message}");
     }
 
     #[tokio::test]
@@ -556,6 +758,47 @@ mod net_tests {
             client.fetch_saved().await,
             Err(SourceError::ReauthRequired(_))
         ));
+    }
+
+    /// The block as Reddit serves it, headers included.
+    fn block_page() -> ResponseTemplate {
+        ResponseTemplate::new(403)
+            .insert_header("server", "snooserv")
+            .insert_header("retry-after", "0")
+            .set_body_raw(super::tests::BLOCK_PAGE, "text/html; charset=utf-8")
+    }
+
+    #[tokio::test]
+    async fn fetch_saved_maps_a_block_page_to_blocked() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/psophis/saved.json"))
+            .respond_with(block_page())
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = RedditClient::for_test(
+            Some("reddit_session=secret".into()),
+            Some("psophis".into()),
+            server.uri(),
+        );
+        let err = client.fetch_saved().await.unwrap_err();
+        assert!(matches!(err, SourceError::Blocked(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn info_maps_a_block_page_to_blocked() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/info.json"))
+            .respond_with(block_page())
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client =
+            RedditClient::for_test(Some("reddit_session=secret".into()), None, server.uri());
+        let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
+        assert!(matches!(err, SourceError::Blocked(_)), "got {err:?}");
     }
 
     #[tokio::test]

@@ -52,13 +52,13 @@ condition now reaches the driver as a `Plan` (a deleted or blocked repo is a
 trouble. A handful of those is a blip worth riding out; most of them failing means most of
 the work silently did not happen. This is deliberate: `cleanup`
 runs as a scheduled service, and a permanently dead URL must not wedge it into a failed
-state forever. `SourceError::ReauthRequired` and `SourceError::RateLimited` stop the pass
-(a dead credential and an exhausted quota both fail every remaining lookup too) but the
-plans already made are still written — which is why `plan`
-returns `SourceError` rather than a flattened `anyhow::Error`. `PassOutcome::halted`
-records *which* of the two it was as a `Halt`, and `into_result` maps them to different
-`SourceError`s so `main` fires the auth-failure hook for `Halt::Reauth` only — no
-credential change clears a rate limit.
+state forever. `SourceError::ReauthRequired`, `SourceError::RateLimited` and
+`SourceError::Blocked` stop the pass (a dead credential, an exhausted quota and an edge
+block all fail every remaining lookup too) but the plans already made are still written —
+which is why `plan` returns `SourceError` rather than a flattened `anyhow::Error`.
+`PassOutcome::halted` records *which* it was as a `Halt`, and `into_result` maps each back
+to its own `SourceError` so `main` fires the auth-failure hook for `Halt::Reauth` only —
+no credential change clears a rate limit or an edge block.
 
 **The run has one live view of the account, not a snapshot.** `posts/all` is read once into
 an `AccountView` ([`src/bookmark.rs`](src/bookmark.rs)), and `CleanupStore` wraps the real
@@ -262,8 +262,9 @@ Reads parallel, writes serial — `posts/all` is fetched once up front and share
 install consumes.
 
 **Re-auth vs other errors drive a side effect.** `SourceError::ReauthRequired`
-(Reddit 401/403 cookie expiry, GitHub 401) fires the `--on-auth-failure` hook and
-exits non-zero; `SourceError::Other` (transient/parse) doesn't. HackerNews is public
+(Reddit 401/403 that isn't the "blocked by network security" page, GitHub 401) fires the
+`--on-auth-failure` hook and exits non-zero; `SourceError::Other` (transient/parse)
+doesn't. HackerNews is public
 and never re-auths. **`cleanup` fires it too, not just `sync`** — which is why the three
 `cleanup` entry points return `Result<(), SourceError>` rather than `anyhow::Result`:
 flattening the variant at that boundary is exactly what used to lose the hook. Every
@@ -307,8 +308,22 @@ out and GitHub asks for a minute on secondary limits, so it would only fail more
 The 403 form isn't retried; the **429** form still is, by the shared 429/5xx predicate, and
 those ~12s are simply wasted before the response is read — harmless, and the reason a
 `rate_limit_message` unit test uses a synthesized `HeaderMap` rather than a 429 over
-wiremock. Stopping the pass is the response instead. Reddit's 403, by contrast, only ever
-means a dead cookie, so it maps straight to `ReauthRequired`.
+wiremock. Stopping the pass is the response instead.
+
+**`SourceError::Blocked` is the fourth: Reddit's edge refusing the request by policy.**
+Reddit's block is recognisable only by its body (it sends `retry-after: 0`, which must not
+be read as a rate limit), so `reddit_body` reads it: `reddit::edge_page` recognises a 403
+`text/html` body by its phrase. "Blocked by network security" (redlib-org/redlib#591)
+returns `Blocked`; any other 401/403 — Reddit's API 403 is short JSON — is still a dead
+cookie and `ReauthRequired`. That includes the ~1.5KB "whoa there, pardner ... blocked due
+to a network policy" page, which Reddit serves for a junk cookie or bearer token (and for
+blocked IP ranges), so it stays a credential problem with an IP hint added. A block
+arrives with a valid cookie (#78), so firing the hook would send the operator to re-copy a
+credential that isn't the problem. It shares
+`RateLimited`'s handling (no hook; a pass that hits it halts via `Halt::Blocked`) but keeps
+its own variant so the message names a block, which no reset is known to lift. No Reddit
+`plan` makes a request today: a block on `/api/info` stops `cleanup reddit` before
+`run_pass`, as an expired cookie does.
 
 **Pinboard field names are inverted.** In `posts/add`, `description` is the *title*
 and `extended` is the notes (delicious backcompat). Bookmarks are written

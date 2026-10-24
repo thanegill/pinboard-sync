@@ -75,9 +75,10 @@ pub trait CleanupPass {
     /// not handle ([`Plan::Skipped`]), which the driver needs to tell one dead link
     /// apart from an unreachable source.
     /// [`SourceError::Other`] marks a per-item failure (logged and counted; the
-    /// pass continues with the next bookmark), while [`SourceError::ReauthRequired`] and
-    /// [`SourceError::RateLimited`] stop the pass — a dead credential and an exhausted
-    /// quota both fail every remaining lookup too. A plan's
+    /// pass continues with the next bookmark), while [`SourceError::ReauthRequired`],
+    /// [`SourceError::RateLimited`] and [`SourceError::Blocked`] stop the pass: a dead
+    /// credential, an exhausted quota and an edge block all fail every remaining lookup
+    /// too. A plan's
     /// `timestamp` is the *candidate* source date; the driver resolves the final date
     /// from it via the pass's [`DateOpts`], and takes `public`/`read_later` from the
     /// stored bookmark — so those two fields on the returned `Bookmark` are ignored. (That
@@ -133,16 +134,18 @@ pub struct PassOutcome {
 /// *remaining* lookup fail the same way, so working through them would only spend
 /// requests to collect identical errors.
 ///
-/// Two variants rather than one message because only one of them is an auth problem:
-/// [`PassOutcome::into_result`] maps them to different [`SourceError`]s, which is what
-/// lets `main` fire the `--on-auth-failure` hook for [`Halt::Reauth`] and withhold it for
-/// [`Halt::RateLimited`] — no credential change clears a quota.
+/// Variants rather than one message because only one of them is an auth problem:
+/// [`PassOutcome::into_result`] maps each to its own [`SourceError`], which is what lets
+/// `main` fire the `--on-auth-failure` hook for [`Halt::Reauth`] and withhold it for the
+/// others, since no credential change clears a quota or an edge block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Halt {
     /// A credential needs refreshing.
     Reauth(String),
     /// The service is refusing requests until a reset; no credential change helps.
     RateLimited(String),
+    /// The service's edge is refusing the request by policy; no credential change helps.
+    Blocked(String),
 }
 
 /// Why a rewrite was left in place rather than written.
@@ -173,10 +176,21 @@ impl Refusal {
 }
 
 impl Halt {
+    /// The halt `error` calls for, or `error` back when it is a per-item failure. Matched
+    /// exhaustively so a new [`SourceError`] variant has to choose a side here.
+    fn from_source_error(error: SourceError) -> Result<Halt, SourceError> {
+        match error {
+            SourceError::ReauthRequired(message) => Ok(Halt::Reauth(message)),
+            SourceError::RateLimited(message) => Ok(Halt::RateLimited(message)),
+            SourceError::Blocked(message) => Ok(Halt::Blocked(message)),
+            other @ SourceError::Other(_) => Err(other),
+        }
+    }
+
     /// The operator-facing explanation, without a variant prefix.
     fn message(&self) -> &str {
         match self {
-            Halt::Reauth(message) | Halt::RateLimited(message) => message,
+            Halt::Reauth(message) | Halt::RateLimited(message) | Halt::Blocked(message) => message,
         }
     }
 }
@@ -185,9 +199,10 @@ impl PassOutcome {
     /// The run's verdict. A link we could not look up is *not* a failed run: it is
     /// logged, skipped, and every other bookmark is still cleaned up, so one
     /// permanently dead URL cannot wedge a scheduled service into a failed state
-    /// forever. Three things do fail the run — a [`Halt`] (a dead credential or a rate
-    /// limit), a write we could not make (the destination is what we sync *to*), and
-    /// lookups failing in the *majority*, which is an outage wearing a per-item disguise.
+    /// forever. Three things do fail the run: a [`Halt`] (a dead credential, a rate
+    /// limit or an edge block), a write we could not make (the destination is what we
+    /// sync *to*), and lookups failing in the *majority*, which is an outage wearing a
+    /// per-item disguise.
     ///
     /// The majority test rather than "every lookup failed" because a `plan` failure can
     /// no longer be one dead link: every permanent per-item condition reaches the driver
@@ -203,7 +218,7 @@ impl PassOutcome {
     /// would wedge the service all over again. One failed lookup is always survivable.
     /// Returns [`SourceError`] rather than a plain `anyhow::Error` so the *reason* still
     /// reaches `main`, which is what decides whether to fire the auth-failure hook — a
-    /// halted credential must, a rate limit must not.
+    /// halted credential must, a rate limit or an edge block must not.
     pub fn into_result(self) -> Result<(), SourceError> {
         if let Some(halt) = &self.halted {
             // Why we stopped is the headline, but it must not bury what else went wrong
@@ -222,6 +237,7 @@ impl PassOutcome {
             return Err(match halt {
                 Halt::Reauth(_) => SourceError::ReauthRequired(message),
                 Halt::RateLimited(_) => SourceError::RateLimited(message),
+                Halt::Blocked(_) => SourceError::Blocked(message),
             });
         }
         if self.write_failed > 0 {
@@ -303,37 +319,30 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
                 continue;
             }
             Ok(Plan::Skipped) => continue,
-            // Every remaining lookup would fail the same way, so stop planning — but
-            // fall through to write the plans already made rather than discard them.
-            // This one and everything after it goes unplanned, so protect all of them:
-            // a record we never looked at must not be written over.
-            Err(SourceError::ReauthRequired(message)) => {
-                outcome.halted = Some(Halt::Reauth(message));
-                untouchable.extend(
-                    bookmarks[index..]
-                        .iter()
-                        .map(|b| (b.url.clone(), Refusal::Unreadable)),
-                );
-                break;
-            }
-            Err(SourceError::RateLimited(message)) => {
-                outcome.halted = Some(Halt::RateLimited(message));
-                untouchable.extend(
-                    bookmarks[index..]
-                        .iter()
-                        .map(|b| (b.url.clone(), Refusal::Unreadable)),
-                );
-                break;
-            }
-            // Log and skip a single failed plan so the rest of the pass still runs. Its
-            // end-state is unknown, which makes it as untouchable as a skipped one —
-            // another bookmark rewriting onto its URL would clobber the record.
-            Err(e) => {
-                outcome.plan_failed += 1;
-                untouchable.insert(bookmark.url.clone(), Refusal::Unreadable);
-                error!("looking up bookmark {}: {e:#}", bookmark.url);
-                continue;
-            }
+            Err(error) => match Halt::from_source_error(error) {
+                // Every remaining lookup would fail the same way, so stop planning, but
+                // fall through to write the plans already made rather than discard them.
+                // This one and everything after it goes unplanned, so protect all of them:
+                // a record we never looked at must not be written over.
+                Ok(halt) => {
+                    outcome.halted = Some(halt);
+                    untouchable.extend(
+                        bookmarks[index..]
+                            .iter()
+                            .map(|b| (b.url.clone(), Refusal::Unreadable)),
+                    );
+                    break;
+                }
+                // Log and skip a single failed plan so the rest of the pass still runs. Its
+                // end-state is unknown, which makes it as untouchable as a skipped one:
+                // another bookmark rewriting onto its URL would clobber the record.
+                Err(e) => {
+                    outcome.plan_failed += 1;
+                    untouchable.insert(bookmark.url.clone(), Refusal::Unreadable);
+                    error!("looking up bookmark {}: {e:#}", bookmark.url);
+                    continue;
+                }
+            },
         };
 
         // Resolve the final creation time here, at the write boundary: the candidate
@@ -1119,6 +1128,48 @@ mod tests {
         assert_eq!(pinboard.updated.borrow().len(), 1);
         let err = outcome.into_result().unwrap_err().to_string();
         assert!(err.contains("resets at 14:23"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_edge_block_stops_the_pass_and_is_reported_as_a_block() {
+        // A block refuses every remaining lookup too, and must come back out as a block:
+        // turned into a re-auth it would fire the hook, into a plain error it would be
+        // counted as one dead link and the pass would grind on.
+        let books = vec![
+            bookmark("https://x/one"),
+            bookmark("https://x/blocked"),
+            bookmark("https://x/never"),
+        ];
+        let planned = std::cell::Cell::new(0usize);
+        let pass = FakePass(|bookmark: &Bookmark| {
+            planned.set(planned.get() + 1);
+            if bookmark.url.as_str().ends_with("one") {
+                return Ok(Plan::Bookmark(Bookmark {
+                    title: "New".into(),
+                    ..unchanged_plan(bookmark)
+                }));
+            }
+            Err(SourceError::Blocked("edge block".into()))
+        });
+        let pinboard = FakePinboard::default();
+
+        let outcome = run_pass(
+            &store(&pinboard, &books, false),
+            &books,
+            "test",
+            NO_DATING,
+            &pass,
+        )
+        .await;
+        assert_eq!(planned.get(), 2, "should stop at the block");
+        assert_eq!(outcome.halted, Some(Halt::Blocked("edge block".into())));
+        assert_eq!(outcome.plan_failed, 0, "a block is not a per-item failure");
+        assert_eq!(pinboard.updated.borrow().len(), 1);
+        let err = outcome.into_result().unwrap_err();
+        assert!(
+            matches!(&err, SourceError::Blocked(m) if m == "edge block"),
+            "got {err:?}"
+        );
     }
 
     #[tokio::test]

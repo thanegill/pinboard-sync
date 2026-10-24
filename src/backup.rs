@@ -833,6 +833,7 @@ fn sync_dir(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::scratch_dir;
     use time::OffsetDateTime;
     use url::Url;
 
@@ -1077,8 +1078,9 @@ mod tests {
 
     #[test]
     fn a_partial_run_is_marked_incomplete_in_the_manifest() {
-        let dir = scratch_dir("backup-manifest");
-        touch(&dir, "raw/pinboard.json");
+        let scratch = scratch_dir("backup-manifest");
+        let dir = scratch.path();
+        touch(dir, "raw/pinboard.json");
         let entries = vec![ManifestEntry {
             path: "raw/pinboard.json".into(),
             items: Some(3),
@@ -1088,7 +1090,7 @@ mod tests {
             unusable: None,
         }];
 
-        write_manifest(&dir, &entries, &[], &[], "2026-08-29T00:00:00Z").unwrap();
+        write_manifest(dir, &entries, &[], &[], "2026-08-29T00:00:00Z").unwrap();
         let ok: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
                 .unwrap();
@@ -1100,7 +1102,7 @@ mod tests {
         // A failed target left its previous files in place; without this the fresh
         // `generated_at` would vouch for them.
         write_manifest(
-            &dir,
+            dir,
             &entries,
             &[],
             &["github[work]".to_string()],
@@ -1112,15 +1114,6 @@ mod tests {
                 .unwrap();
         assert_eq!(partial["complete"], false);
         assert_eq!(partial["failed"][0], "github[work]");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// A fresh, empty temp directory unique to `label`, cleaned up by the caller.
-    fn scratch_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pinboard-sync-test-{label}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
     }
 
     fn json_file(path: &str, body: &str) -> BackupFile {
@@ -1134,10 +1127,11 @@ mod tests {
 
     #[test]
     fn write_files_creates_the_tree_and_replaces_atomically() {
-        let dir = scratch_dir("backup-write-ok");
+        let scratch = scratch_dir("backup-write-ok");
+        let dir = scratch.path();
         let target = dir.join("raw/pinboard.json");
         write_files(
-            &dir,
+            dir,
             &[json_file("raw/pinboard.json", "[1]")],
             &mut Vec::new(),
         )
@@ -1146,7 +1140,7 @@ mod tests {
 
         // A second run overwrites in place and leaves no temp behind.
         write_files(
-            &dir,
+            dir,
             &[json_file("raw/pinboard.json", "[2]")],
             &mut Vec::new(),
         )
@@ -1157,16 +1151,16 @@ mod tests {
             1,
             "no temp left"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn written_snapshots_are_not_world_readable() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = scratch_dir("backup-write-perms");
+        let scratch = scratch_dir("backup-write-perms");
+        let dir = scratch.path();
         write_files(
-            &dir,
+            dir,
             &[json_file("raw/pinboard.json", "[]")],
             &mut Vec::new(),
         )
@@ -1176,14 +1170,14 @@ mod tests {
         let mode = |p: PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(dir.join("raw/pinboard.json")), 0o600);
         assert_eq!(mode(dir.join("raw")), 0o700);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_bad_body_anywhere_leaves_every_previous_file_intact() {
-        let dir = scratch_dir("backup-write-bad");
+        let scratch = scratch_dir("backup-write-bad");
+        let dir = scratch.path();
         write_files(
-            &dir,
+            dir,
             &[json_file("raw/pinboard.json", "[1]")],
             &mut Vec::new(),
         )
@@ -1199,7 +1193,7 @@ mod tests {
             r#"[{"href":"https://x/"}"#,
         ] {
             let err = write_files(
-                &dir,
+                dir,
                 &[
                     json_file("raw/pinboard.json", "[2]"),
                     json_file("raw/reddit-main.json", bad),
@@ -1218,7 +1212,6 @@ mod tests {
             "the good file from the previous run survives"
         );
         assert!(!dir.join("raw/reddit-main.json").exists());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A source that hands back a fixed payload, so the driver can be exercised without
@@ -1237,9 +1230,10 @@ mod tests {
 
     #[tokio::test]
     async fn dry_run_writes_nothing_and_refuses_what_the_real_run_would() {
-        let dir = scratch_dir("backup-dry-run");
+        let scratch = scratch_dir("backup-dry-run");
+        let dir = scratch.path();
 
-        run_job(&FakeSource("[1]"), "pinboard", &dir, true)
+        run_job(&FakeSource("[1]"), "pinboard", dir, true)
             .await
             .unwrap();
         assert!(!dir.join("raw").exists(), "a dry run touches no files");
@@ -1248,7 +1242,7 @@ mod tests {
         // validating a config behind a captive portal would otherwise see "would be
         // written" and conclude the setup is good. (A non-JSON body is rejected by the
         // merge before `check_writable` sees it; either way the run fails.)
-        let err = run_job(&FakeSource("<html>portal</html>"), "pinboard", &dir, true)
+        let err = run_job(&FakeSource("<html>portal</html>"), "pinboard", dir, true)
             .await
             .unwrap_err();
         assert!(
@@ -1256,7 +1250,6 @@ mod tests {
             "{err:#}"
         );
         assert!(!dir.join("raw").exists());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A source whose pagination stopped at a page cap.
@@ -1274,12 +1267,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_truncated_dump_is_written_but_reported_failed() {
-        let dir = scratch_dir("backup-truncated");
+        let scratch = scratch_dir("backup-truncated");
+        let dir = scratch.path();
 
         // The files are still written — a partial snapshot beats none — but the target
         // is reported failed so it lands in the manifest's `failed` list. Silently
         // replacing a complete snapshot with a truncated one is the failure mode here.
-        let outcome = run_job(&TruncatedSource, "github-main", &dir, false)
+        let outcome = run_job(&TruncatedSource, "github-main", dir, false)
             .await
             .unwrap();
         let msg = format!("{:#}", outcome.unusable.expect("reported unusable"));
@@ -1296,14 +1290,13 @@ mod tests {
                 .any(|e| e.path == "raw/github-main.json"),
             "a written-but-untrustworthy target still reports its files"
         );
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_failed_target_updates_its_manifest_entry_rather_than_keeping_the_old_one() {
-        let dir = scratch_dir("backup-manifest-failed");
-        touch(&dir, "raw/github-main.json");
+        let scratch = scratch_dir("backup-manifest-failed");
+        let dir = scratch.path();
+        touch(dir, "raw/github-main.json");
         let big = ManifestEntry {
             path: "raw/github-main.json".into(),
             items: Some(3000),
@@ -1312,7 +1305,7 @@ mod tests {
             generated_at: String::new(),
             unusable: None,
         };
-        write_manifest(&dir, &[big], &[], &[], "2026-08-01T00:00:00Z").unwrap();
+        write_manifest(dir, &[big], &[], &[], "2026-08-01T00:00:00Z").unwrap();
 
         // The next run hits a page cap: the file is replaced by a much smaller one and
         // the target is reported failed. Because the manifest *merges*, dropping this
@@ -1327,7 +1320,7 @@ mod tests {
             unusable: None,
         };
         write_manifest(
-            &dir,
+            dir,
             &[small],
             &[],
             &["github[main]".to_string()],
@@ -1342,14 +1335,14 @@ mod tests {
         assert_eq!(m["files"][0]["generated_at"], "2026-08-29T00:00:00Z");
         assert_eq!(m["complete"], false);
         assert_eq!(m["failed"][0], "github[main]");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_removed_file_loses_its_manifest_entry() {
-        let dir = scratch_dir("backup-manifest-removed");
-        touch(&dir, "raw/reddit-main.json");
-        touch(&dir, "normalized/reddit-main.json");
+        let scratch = scratch_dir("backup-manifest-removed");
+        let dir = scratch.path();
+        touch(dir, "raw/reddit-main.json");
+        touch(dir, "normalized/reddit-main.json");
         let entry = |path: &str| ManifestEntry {
             path: path.into(),
             items: Some(1),
@@ -1359,7 +1352,7 @@ mod tests {
             unusable: None,
         };
         write_manifest(
-            &dir,
+            dir,
             &[
                 entry("raw/reddit-main.json"),
                 entry("normalized/reddit-main.json"),
@@ -1374,7 +1367,7 @@ mod tests {
         // walking the manifest hits ENOENT.
         std::fs::remove_file(dir.join("normalized/reddit-main.json")).unwrap();
         write_manifest(
-            &dir,
+            dir,
             &[entry("raw/reddit-main.json")],
             &["normalized/reddit-main.json".to_string()],
             &["reddit[main]".to_string()],
@@ -1392,13 +1385,13 @@ mod tests {
             .map(|f| f["path"].as_str().unwrap())
             .collect();
         assert_eq!(paths, vec!["raw/reddit-main.json"]);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_corrupt_previous_manifest_is_reported_not_silently_dropped() {
-        let dir = scratch_dir("backup-manifest-corrupt");
-        touch(&dir, "raw/pinboard.json");
+        let scratch = scratch_dir("backup-manifest-corrupt");
+        let dir = scratch.path();
+        touch(dir, "raw/pinboard.json");
         std::fs::write(dir.join("manifest.json"), "{ truncated").unwrap();
 
         // It still writes (the manifest is metadata, not the backup) but the entries it
@@ -1411,17 +1404,17 @@ mod tests {
             generated_at: String::new(),
             unusable: None,
         };
-        write_manifest(&dir, &[entry], &[], &[], "2026-08-29T00:00:00Z").unwrap();
+        write_manifest(dir, &[entry], &[], &[], "2026-08-29T00:00:00Z").unwrap();
         let m: Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
                 .unwrap();
         assert_eq!(m["files"].as_array().unwrap().len(), 1);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_narrowed_run_merges_into_the_manifest_instead_of_replacing_it() {
-        let dir = scratch_dir("backup-manifest-merge");
+        let scratch = scratch_dir("backup-manifest-merge");
+        let dir = scratch.path();
         let entry = |path: &str| ManifestEntry {
             path: path.into(),
             items: Some(1),
@@ -1432,10 +1425,10 @@ mod tests {
         };
 
         // A full run describes two targets…
-        touch(&dir, "raw/pinboard.json");
-        touch(&dir, "raw/github-main.json");
+        touch(dir, "raw/pinboard.json");
+        touch(dir, "raw/github-main.json");
         write_manifest(
-            &dir,
+            dir,
             &[entry("raw/pinboard.json"), entry("raw/github-main.json")],
             &[],
             &[],
@@ -1446,7 +1439,7 @@ mod tests {
         // github's file present but undescribed — the stale-file-behind-a-fresh-timestamp
         // problem the manifest exists to prevent.
         write_manifest(
-            &dir,
+            dir,
             &[entry("raw/pinboard.json")],
             &[],
             &[],
@@ -1471,17 +1464,17 @@ mod tests {
             "2026-08-01T00:00:00Z",
             "an untouched file keeps its own, older timestamp"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
     async fn a_dry_run_reports_the_same_verdict_as_the_real_run() {
-        let dir = scratch_dir("backup-dry-verdict");
+        let scratch = scratch_dir("backup-dry-verdict");
+        let dir = scratch.path();
 
         // The whole point of `--dry-run` is validating a config before trusting the
         // timer. If it reported a clean plan for a target the real run flags, an operator
         // would conclude the setup is good and only find out from the journal.
-        let dry = run_job(&TruncatedSource, "github-main", &dir, true)
+        let dry = run_job(&TruncatedSource, "github-main", dir, true)
             .await
             .unwrap();
         assert!(
@@ -1490,11 +1483,10 @@ mod tests {
         );
         assert!(!dir.join("raw").exists(), "and still write nothing");
 
-        let real = run_job(&TruncatedSource, "github-main", &dir, false)
+        let real = run_job(&TruncatedSource, "github-main", dir, false)
             .await
             .unwrap();
         assert_eq!(dry.unusable, real.unusable);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A source whose normalization failed, so `run_job` goes on to remove the stale
@@ -1513,11 +1505,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_stale_removal_never_costs_the_report_of_what_was_written() {
-        let dir = scratch_dir("backup-stale-removal");
+        let scratch = scratch_dir("backup-stale-removal");
+        let dir = scratch.path();
         std::fs::create_dir_all(dir.join("normalized")).unwrap();
         std::fs::write(dir.join("normalized/reddit-main.json"), "[]").unwrap();
 
-        let outcome = run_job(&ShapeBrokenSource, "reddit-main", &dir, false)
+        let outcome = run_job(&ShapeBrokenSource, "reddit-main", dir, false)
             .await
             .unwrap();
 
@@ -1532,23 +1525,24 @@ mod tests {
             "the written raw half is always reported"
         );
         assert!(outcome.unusable.is_some(), "the shape break is reported");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
     async fn a_stale_removal_that_fails_reports_it_without_losing_the_write() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = scratch_dir("backup-stale-removal-fails");
+        let scratch = scratch_dir("backup-stale-removal-fails");
+        let dir = scratch.path();
         let normalized = dir.join("normalized");
         std::fs::create_dir_all(&normalized).unwrap();
         std::fs::write(normalized.join("reddit-main.json"), "[]").unwrap();
         // A read-only parent makes the unlink fail while leaving the file readable.
         std::fs::set_permissions(&normalized, PermissionsExt::from_mode(0o500)).unwrap();
 
-        let outcome = run_job(&ShapeBrokenSource, "reddit-main", &dir, false)
+        let outcome = run_job(&ShapeBrokenSource, "reddit-main", dir, false)
             .await
             .unwrap();
+        std::fs::set_permissions(&normalized, PermissionsExt::from_mode(0o700)).unwrap();
 
         assert!(
             outcome
@@ -1562,21 +1556,20 @@ mod tests {
         // The file is still there, so its entry must not be dropped — `removed` stays
         // empty and the manifest keeps describing what is actually on disk.
         assert!(outcome.removed.is_empty());
-
-        std::fs::set_permissions(&normalized, PermissionsExt::from_mode(0o700)).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
+        scratch.close().unwrap();
     }
 
     #[test]
     fn a_write_that_fails_partway_still_reports_the_files_it_replaced() {
-        let dir = scratch_dir("backup-partial-write");
+        let scratch = scratch_dir("backup-partial-write");
+        let dir = scratch.path();
         // Block the second file by putting a regular file where its directory must go.
         std::fs::create_dir_all(dir.join("raw")).unwrap();
         std::fs::write(dir.join("normalized"), "in the way").unwrap();
 
         let mut written = Vec::new();
         let err = write_files(
-            &dir,
+            dir,
             &[
                 json_file("raw/pinboard.json", "[1]"),
                 json_file("normalized/pinboard.json", "[]"),
@@ -1590,14 +1583,14 @@ mod tests {
         // merged manifest from keeping the previous run's entry for a file that changed.
         assert_eq!(written.len(), 1);
         assert_eq!(written[0].path, "raw/pinboard.json");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_partial_file_stays_marked_after_a_later_clean_run_of_another_target() {
-        let dir = scratch_dir("backup-partial-flag");
-        touch(&dir, "raw/github-main.json");
-        touch(&dir, "raw/pinboard.json");
+        let scratch = scratch_dir("backup-partial-flag");
+        let dir = scratch.path();
+        touch(dir, "raw/github-main.json");
+        touch(dir, "raw/pinboard.json");
         let entry = |path: &str, unusable: Option<&str>| ManifestEntry {
             path: path.into(),
             items: Some(1),
@@ -1609,7 +1602,7 @@ mod tests {
 
         // Run 1: github truncated.
         write_manifest(
-            &dir,
+            dir,
             &[entry(
                 "raw/github-main.json",
                 Some("stopped at the page cap"),
@@ -1624,7 +1617,7 @@ mod tests {
         // per-entry flag github's partial file would become indistinguishable from a
         // healthy one — `generated_at` only ever answers "when", not "trustworthy".
         write_manifest(
-            &dir,
+            dir,
             &[entry("raw/pinboard.json", None)],
             &[],
             &[],
@@ -1643,16 +1636,16 @@ mod tests {
             .find(|f| f["path"] == "raw/github-main.json")
             .unwrap();
         assert_eq!(github["unusable"], "stopped at the page cap");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn probe_creates_nothing_and_reports_a_missing_directory() {
-        let dir = scratch_dir("backup-probe");
+        let scratch = scratch_dir("backup-probe");
+        let dir = scratch.path();
 
-        probe_writable(&dir).unwrap();
+        probe_writable(dir).unwrap();
         assert_eq!(
-            std::fs::read_dir(&dir).unwrap().count(),
+            std::fs::read_dir(dir).unwrap().count(),
             0,
             "the probe file is removed"
         );
@@ -1669,15 +1662,14 @@ mod tests {
 
         // A typo'd path, whose parent is missing too, is a real failure.
         assert!(probe_writable(&dir.join("no/such/parent")).is_err());
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn backup_temp_refuses_to_reuse_a_preexisting_file() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = scratch_dir("backup-write-squat");
+        let scratch = scratch_dir("backup-write-squat");
+        let dir = scratch.path();
         let squatted = dir.join(".pinboard-backup.json.tmp.squatter");
         std::fs::write(&squatted, "SECRET-LEAK").unwrap();
         std::fs::set_permissions(&squatted, PermissionsExt::from_mode(0o644)).unwrap();
@@ -1689,12 +1681,12 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&squatted).unwrap(), "SECRET-LEAK");
         let mode = std::fs::metadata(&squatted).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o644, "existing file left untouched");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn backup_temp_does_not_follow_a_symlink() {
-        let dir = scratch_dir("backup-write-symlink");
+        let scratch = scratch_dir("backup-write-symlink");
+        let dir = scratch.path();
         let victim = dir.join("victim.txt");
         std::fs::write(&victim, "PRECIOUS").unwrap();
         let link = dir.join(".pinboard-backup.json.tmp.link");
@@ -1705,38 +1697,37 @@ mod tests {
         let err = open_new_private(&link).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "PRECIOUS");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn create_new_temp_retries_past_a_colliding_name() {
-        let dir = scratch_dir("backup-temp-retry");
+        let scratch = scratch_dir("backup-temp-retry");
+        let dir = scratch.path();
         std::fs::write(dir.join("taken"), "SQUAT").unwrap();
 
         // First candidate collides with the pre-existing file; the loop must retry the
         // fresh one rather than reuse or truncate "taken".
         let mut names = ["taken", "fresh"].into_iter().map(str::to_string);
-        let (tmp, _file) = create_new_temp(&dir, || names.next().unwrap()).unwrap();
+        let (tmp, _file) = create_new_temp(dir, || names.next().unwrap()).unwrap();
 
         assert_eq!(tmp, dir.join("fresh"));
         assert_eq!(std::fs::read_to_string(dir.join("taken")).unwrap(), "SQUAT");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn create_new_temp_gives_up_after_exhausting_attempts() {
-        let dir = scratch_dir("backup-temp-exhaust");
+        let scratch = scratch_dir("backup-temp-exhaust");
+        let dir = scratch.path();
         std::fs::write(dir.join("always"), "SQUAT").unwrap();
 
         // A generator that never yields a free name exhausts the bounded loop and surfaces
         // the last AlreadyExists rather than spinning forever.
-        let err = create_new_temp(&dir, || "always".to_string()).unwrap_err();
+        let err = create_new_temp(dir, || "always".to_string()).unwrap_err();
         assert_eq!(
             err.downcast_ref::<std::io::Error>()
                 .map(std::io::Error::kind),
             Some(std::io::ErrorKind::AlreadyExists)
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

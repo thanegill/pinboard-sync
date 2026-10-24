@@ -11,7 +11,7 @@ use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage};
 use crate::bookmark::{Bookmark, BookmarkStore};
-use crate::http::send_retrying;
+use crate::http::{send_retrying, ConnectBudget};
 use crate::source::SourceError;
 
 const DEFAULT_BASE: &str = "https://api.pinboard.in/v1";
@@ -81,6 +81,7 @@ pub struct PinboardClient {
     wrote: Cell<bool>,
     /// API base, e.g. `https://api.pinboard.in/v1`.
     base: String,
+    connect_budget: ConnectBudget,
 }
 
 impl PinboardClient {
@@ -99,6 +100,7 @@ impl PinboardClient {
             rate_limit_secs,
             wrote: Cell::new(false),
             base,
+            connect_budget: ConnectBudget::default(),
         })
     }
 
@@ -246,6 +248,7 @@ impl PinboardClient {
 
             let resp = send_retrying(
                 &endpoint,
+                &self.connect_budget,
                 MAX_RETRIES,
                 Duration::from_secs(RATE_LIMIT_SECS),
                 || self.http.get(&endpoint).query(&params),
@@ -370,6 +373,7 @@ impl PinboardClient {
     ) -> Result<reqwest::Response> {
         let resp = send_retrying(
             url,
+            &self.connect_budget,
             MAX_RETRIES,
             Duration::from_secs(RATE_LIMIT_SECS),
             || self.http.get(url).query(params),

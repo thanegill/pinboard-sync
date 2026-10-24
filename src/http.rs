@@ -21,16 +21,31 @@ const CONNECT_BACKOFF: [Duration; 5] = [
     Duration::from_secs(80),
 ];
 
-/// Retry an async operation. An `Err` for which `is_connect_error` is true is retried
-/// after each delay in `connect_backoff` in turn, and given up on once they run out.
-/// Any other `Err` (a transport failure), or an `Ok(value)` for which `retry_on_ok` is
-/// true (a transient response, e.g. HTTP 429/5xx), is retried with linear backoff
-/// (`base_delay * n`) for up to `max_attempts` such attempts. Otherwise returns the
-/// value as-is. The two budgets are separate, so one request can make up to
-/// `connect_backoff.len() + max_attempts` attempts.
+/// One client's allowance for riding out connect failures on [`CONNECT_BACKOFF`].
+///
+/// It is spent the first time a request waits out the whole schedule and still cannot
+/// connect: the outage has then outlasted what the schedule covers, and paying ~2.5
+/// minutes again for every later item would stretch a `cleanup` over hundreds of
+/// bookmarks into hours. From then on that client's connect errors take the linear
+/// policy like any other transport error. It is never refilled, so a client gets one
+/// long wait per run.
+#[derive(Default)]
+pub struct ConnectBudget {
+    spent: Cell<bool>,
+}
+
+/// Retry an async operation. While `budget` is unspent, an `Err` for which
+/// `is_connect_error` is true is retried after each delay in `connect_backoff` in turn;
+/// once they run out the error is returned and `budget` is spent. Any other `Err` (a
+/// transport failure, or a connect failure once `budget` is spent), or an `Ok(value)`
+/// for which `retry_on_ok` is true (a transient response, e.g. HTTP 429/5xx), is
+/// retried with linear backoff (`base_delay * n`) for up to `max_attempts` such
+/// attempts. Otherwise returns the value as-is. The two budgets are separate, so one
+/// request can make up to `connect_backoff.len() + max_attempts` attempts.
 ///
 /// Transport-agnostic so it can be unit-tested without any network — see tests.
 async fn retry<T, E, F, Fut>(
+    budget: &ConnectBudget,
     max_attempts: u32,
     base_delay: Duration,
     connect_backoff: &[Duration],
@@ -46,10 +61,15 @@ where
     let mut other_attempts: u32 = 0;
     loop {
         let delay = match op().await {
-            Err(err) if is_connect_error(&err) => match connect_delays.next() {
-                Some(delay) => delay,
-                None => return Err(err),
-            },
+            Err(err) if !budget.spent.get() && is_connect_error(&err) => {
+                match connect_delays.next() {
+                    Some(delay) => delay,
+                    None => {
+                        budget.spent.set(true);
+                        return Err(err);
+                    }
+                }
+            }
             outcome => {
                 other_attempts += 1;
                 let transient = match &outcome {
@@ -70,11 +90,12 @@ where
 /// connection (per `reqwest::Error::is_connect`: any connector failure, so DNS, TCP
 /// connect, or the TLS handshake) is retried on the long exponential
 /// [`CONNECT_BACKOFF`] (5s, 10s, 20s, 40s, 80s), so a short resolver or network outage
-/// doesn't fail the run. Other transport errors
-/// (timeouts, dropped connections), HTTP 429, and 5xx are retried with linear backoff,
-/// `base_delay * n` for up to `max_attempts` attempts. Responses that are not
-/// transient — 2xx and other 4xx (e.g. 401/403/400) — are returned as-is for the
-/// caller to interpret, since retrying them would not help.
+/// doesn't fail the run — once per client, while its `budget` is unspent (see
+/// [`ConnectBudget`]). Other transport errors (timeouts, dropped connections), HTTP
+/// 429, and 5xx are retried with linear backoff, `base_delay * n` for up to
+/// `max_attempts` attempts. Responses that are not transient — 2xx and other 4xx (e.g.
+/// 401/403/400) — are returned as-is for the caller to interpret, since retrying them
+/// would not help.
 ///
 /// `build` is called once per attempt, so it must reconstruct the request (the
 /// request is consumed by `send`).
@@ -84,6 +105,7 @@ where
 /// otherwise print it in both `Display` and `Debug`. `label` names the endpoint instead.
 pub async fn send_retrying<F>(
     label: &str,
+    budget: &ConnectBudget,
     max_attempts: u32,
     base_delay: Duration,
     build: F,
@@ -91,11 +113,20 @@ pub async fn send_retrying<F>(
 where
     F: FnMut() -> reqwest::RequestBuilder,
 {
-    send_with_connect_backoff(label, max_attempts, base_delay, &CONNECT_BACKOFF, build).await
+    send_with_connect_backoff(
+        label,
+        budget,
+        max_attempts,
+        base_delay,
+        &CONNECT_BACKOFF,
+        build,
+    )
+    .await
 }
 
 async fn send_with_connect_backoff<F>(
     label: &str,
+    budget: &ConnectBudget,
     max_attempts: u32,
     base_delay: Duration,
     connect_backoff: &[Duration],
@@ -106,6 +137,7 @@ where
 {
     let attempts = Cell::new(0u32);
     retry(
+        budget,
         max_attempts,
         base_delay,
         connect_backoff,
@@ -142,22 +174,24 @@ mod tests {
 
     /// Retry over a canned sequence of outcomes (status code, or `Err`), counting
     /// how many attempts were made. `retry_on_ok` treats 429/5xx as transient, and
-    /// `Failure::Connect` gets the three-step `NO_CONNECT_BACKOFF`.
+    /// `Failure::Connect` gets the three-step `NO_CONNECT_BACKOFF` on a fresh budget.
     async fn run(outcomes: Vec<Result<u16, Failure>>, max: u32) -> (Result<u16, Failure>, usize) {
-        run_with_backoff(outcomes, max, &NO_CONNECT_BACKOFF).await
+        run_on(&ConnectBudget::default(), outcomes, max).await
     }
 
-    async fn run_with_backoff(
+    /// [`run`], drawing on a `budget` shared with other calls, as one client's requests do.
+    async fn run_on(
+        budget: &ConnectBudget,
         outcomes: Vec<Result<u16, Failure>>,
         max: u32,
-        connect_backoff: &[Duration],
     ) -> (Result<u16, Failure>, usize) {
         let calls = RefCell::new(0usize);
         let seq = RefCell::new(outcomes.into_iter());
         let result = retry(
+            budget,
             max,
             NO_DELAY,
-            connect_backoff,
+            &NO_CONNECT_BACKOFF,
             |s: &u16| *s == 429 || (500..600).contains(s),
             |failure: &Failure| *failure == Failure::Connect,
             || {
@@ -259,6 +293,7 @@ mod tests {
         let start = tokio::time::Instant::now();
         let attempt_offsets = RefCell::new(Vec::new());
         let result: Result<u16, Failure> = retry(
+            &ConnectBudget::default(),
             5,
             Duration::from_secs(3),
             &CONNECT_BACKOFF,
@@ -273,6 +308,45 @@ mod tests {
 
         assert_eq!(result, Err(Failure::Connect));
         assert_eq!(attempt_offsets.into_inner(), [0, 5, 15, 35, 75, 155]);
+    }
+
+    #[tokio::test]
+    async fn a_spent_connect_budget_falls_back_to_linear_retries() {
+        let budget = ConnectBudget::default();
+        let (result, calls) =
+            run_on(&budget, (0..4).map(|_| Err(Failure::Connect)).collect(), 2).await;
+        assert_eq!(result, Err(Failure::Connect));
+        assert_eq!(
+            calls, 4,
+            "the first outage waits out the whole connect backoff"
+        );
+
+        let (result, calls) =
+            run_on(&budget, (0..4).map(|_| Err(Failure::Connect)).collect(), 2).await;
+        assert_eq!(result, Err(Failure::Connect));
+        assert_eq!(
+            calls, 2,
+            "later requests on the client get only max_attempts"
+        );
+
+        let (result, calls) = run_on(&budget, vec![Err(Failure::Connect), Ok(200)], 2).await;
+        assert_eq!(result, Ok(200));
+        assert_eq!(
+            calls, 2,
+            "a spent budget still retries a connect error linearly"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connect_outage_that_clears_leaves_the_budget_unspent() {
+        let budget = ConnectBudget::default();
+        let (result, _) = run_on(&budget, vec![Err(Failure::Connect), Ok(200)], 2).await;
+        assert_eq!(result, Ok(200));
+
+        let (result, calls) =
+            run_on(&budget, (0..4).map(|_| Err(Failure::Connect)).collect(), 2).await;
+        assert_eq!(result, Err(Failure::Connect));
+        assert_eq!(calls, 4);
     }
 
     /// Asserts that no rendering of a `send_retrying` error leaks `secret`, and that the
@@ -300,10 +374,17 @@ mod tests {
         let http = reqwest::Client::new();
 
         // reqwest rejects the scheme before opening a socket but still attaches the URL.
-        let err = send_with_connect_backoff("posts/all", 2, NO_DELAY, &NO_CONNECT_BACKOFF, || {
-            http.get("ftp://api.pinboard.in/v1/posts/all")
-                .query(&[("auth_token", "user:SECRET123")])
-        })
+        let err = send_with_connect_backoff(
+            "posts/all",
+            &ConnectBudget::default(),
+            2,
+            NO_DELAY,
+            &NO_CONNECT_BACKOFF,
+            || {
+                http.get("ftp://api.pinboard.in/v1/posts/all")
+                    .query(&[("auth_token", "user:SECRET123")])
+            },
+        )
         .await
         .unwrap_err();
 
@@ -325,17 +406,29 @@ mod net_tests {
         let http = reqwest::Client::new();
         let url = format!("http://127.0.0.1:{port}/v1/posts/all");
 
-        let err =
-            send_with_connect_backoff("posts/all", 2, Duration::ZERO, &[Duration::ZERO; 3], || {
-                http.get(&url).query(&[("auth_token", "user:SECRET123")])
-            })
-            .await
-            .unwrap_err();
+        let budget = ConnectBudget::default();
+        let send = || {
+            send_with_connect_backoff(
+                "posts/all",
+                &budget,
+                2,
+                Duration::ZERO,
+                &[Duration::ZERO; 3],
+                || http.get(&url).query(&[("auth_token", "user:SECRET123")]),
+            )
+        };
 
+        let err = send().await.unwrap_err();
         assert!(
             format!("{err:#}").contains("failed after 4 attempts"),
             "a refused connect must take the connect backoff: {err:#}"
         );
         assert_error_hides(&err, reqwest::Error::is_connect, "SECRET123");
+
+        let err = send().await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("failed after 2 attempts"),
+            "the spent budget must leave only the linear retries: {err:#}"
+        );
     }
 }

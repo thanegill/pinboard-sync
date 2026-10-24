@@ -12,7 +12,7 @@ use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Plan};
 use crate::htmltext::{blockquote, html_to_plain};
-use crate::http::send_retrying;
+use crate::http::{send_retrying, ConnectBudget};
 use crate::source::{
     deserialize_lenient, extend_unique, push_prefixed, push_tags, url_key, BookmarkDraft, Source,
     SourceError, UrlExt, UrlKey,
@@ -203,6 +203,7 @@ pub struct GitHubClient {
     config: GitHubConfig,
     /// API base (overridden in tests).
     base: String,
+    connect_budget: ConnectBudget,
 }
 
 impl GitHubClient {
@@ -234,7 +235,12 @@ impl GitHubClient {
             .default_headers(headers)
             .build()
             .context("building HTTP client")?;
-        Ok(Self { http, config, base })
+        Ok(Self {
+            http,
+            config,
+            base,
+            connect_budget: ConnectBudget::default(),
+        })
     }
 
     /// Look up a repo via `/repos/{owner}/{name}` (the API follows renames and
@@ -242,9 +248,13 @@ impl GitHubClient {
     /// inaccessible — deleted or private (404), or blocked under the DMCA (451).
     async fn repo(&self, owner: &str, name: &str) -> Result<Option<GitHubRepo>, SourceError> {
         let endpoint = format!("{}/repos/{}/{}", self.base, owner, name);
-        let resp = send_retrying("github repo", MAX_RETRIES, RETRY_DELAY, || {
-            self.http.get(&endpoint)
-        })
+        let resp = send_retrying(
+            "github repo",
+            &self.connect_budget,
+            MAX_RETRIES,
+            RETRY_DELAY,
+            || self.http.get(&endpoint),
+        )
         .await?;
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -307,15 +317,21 @@ impl GitHubClient {
                 warn!("github starred: 'next' link looped back to page {page}; stopping");
                 break;
             }
-            let resp = send_retrying("github starred", MAX_RETRIES, RETRY_DELAY, || {
-                // The star+json media type makes each element `{ starred_at, repo }`, so
-                // we can date each bookmark by when it was starred.
-                self.http
-                    .get(&endpoint)
-                    .header(reqwest::header::ACCEPT, "application/vnd.github.star+json")
-                    .query(&[("sort", "created")])
-                    .query(&[("page", page)])
-            })
+            let resp = send_retrying(
+                "github starred",
+                &self.connect_budget,
+                MAX_RETRIES,
+                RETRY_DELAY,
+                || {
+                    // The star+json media type makes each element `{ starred_at, repo }`, so
+                    // we can date each bookmark by when it was starred.
+                    self.http
+                        .get(&endpoint)
+                        .header(reqwest::header::ACCEPT, "application/vnd.github.star+json")
+                        .query(&[("sort", "created")])
+                        .query(&[("page", page)])
+                },
+            )
             .await?;
 
             let status = resp.status();

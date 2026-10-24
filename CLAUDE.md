@@ -285,11 +285,15 @@ returns other statuses as-is. A request that could not establish a connection
 own exponential `CONNECT_BACKOFF` (5s … 80s, ~2.5 minutes in all), on top of and
 separate from the caller's linear `max_attempts` budget, so a resolver restart during a
 NixOS switch doesn't fail a timer-started run; tests inject a zero schedule through
-`send_with_connect_backoff`. It strips the request URL
-from every client's transport error before wrapping it, because Pinboard's `auth_token`
-rides in the query string and `reqwest::Error` prints the URL in `Display` and `Debug`.
-Never put a request URL with a query into a message: Pinboard errors name the endpoint
-(no query) instead.
+`send_with_connect_backoff`. That long wait is **once per client**: each client owns a
+`ConnectBudget`, spent when one request waits out the whole schedule and still can't
+connect, after which that client's connect errors take the linear policy. Without it an
+outage that starts mid-run costs 155s per remaining item — hours for a `cleanup` over
+hundreds of bookmarks, since `plan_failed` doesn't halt a pass. `send_retrying` strips
+the request URL from every client's transport error before wrapping it, because
+Pinboard's `auth_token` rides in the query string and `reqwest::Error` prints the URL in
+`Display` and `Debug`. Never put a request URL with a query into a message: Pinboard
+errors name the endpoint (no query) instead.
 
 **`SourceError::RateLimited` is the third case, and deliberately not either of those.**
 GitHub answers both its primary and secondary rate limits with a **403 or 429** — the

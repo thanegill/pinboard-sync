@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
-use crate::http::send_retrying;
+use crate::http::{send_retrying, ConnectBudget};
 use crate::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 
@@ -54,6 +54,7 @@ pub struct RedditClient {
     base: String,
     /// Per-account config: bookmark domain + tag vocabulary for shaping drafts.
     config: RedditConfig,
+    connect_budget: ConnectBudget,
 }
 
 impl RedditClient {
@@ -96,6 +97,7 @@ impl RedditClient {
             username,
             base,
             config,
+            connect_budget: ConnectBudget::default(),
         })
     }
 
@@ -145,16 +147,22 @@ impl RedditClient {
                 break;
             }
             let after_ref = after.as_deref();
-            let resp = send_retrying("saved listing", MAX_RETRIES, RETRY_DELAY, || {
-                let mut req = self
-                    .http
-                    .get(&endpoint)
-                    .query(&[("limit", "100"), ("raw_json", "1")]);
-                if let Some(a) = after_ref {
-                    req = req.query(&[("after", a)]);
-                }
-                self.with_cookie(req)
-            })
+            let resp = send_retrying(
+                "saved listing",
+                &self.connect_budget,
+                MAX_RETRIES,
+                RETRY_DELAY,
+                || {
+                    let mut req = self
+                        .http
+                        .get(&endpoint)
+                        .query(&[("limit", "100"), ("raw_json", "1")]);
+                    if let Some(a) = after_ref {
+                        req = req.query(&[("after", a)]);
+                    }
+                    self.with_cookie(req)
+                },
+            )
             .await?;
             let body = reddit_body(resp, "saved listing").await?;
             sink.push("", RawKind::Json, &body);
@@ -194,13 +202,19 @@ impl PostInfo for RedditClient {
         let endpoint = format!("{}/api/info.json", self.base);
         for (i, chunk) in chunks.iter().enumerate() {
             let ids = chunk.join(",");
-            let resp = send_retrying("api/info", MAX_RETRIES, RETRY_DELAY, || {
-                self.with_cookie(
-                    self.http
-                        .get(&endpoint)
-                        .query(&[("id", ids.as_str()), ("raw_json", "1")]),
-                )
-            })
+            let resp = send_retrying(
+                "api/info",
+                &self.connect_budget,
+                MAX_RETRIES,
+                RETRY_DELAY,
+                || {
+                    self.with_cookie(
+                        self.http
+                            .get(&endpoint)
+                            .query(&[("id", ids.as_str()), ("raw_json", "1")]),
+                    )
+                },
+            )
             .await?;
             let listing: RedditListing = decode_reddit_json(resp, "api/info").await?;
             out.extend(listing.data.children);

@@ -38,6 +38,17 @@ All notable changes to this project are documented here. The format is based on
   including Reddit's "whoa there, pardner" network-policy page, which it serves for a junk
   credential; that error now also says the host's IP may be blocked if the cookie is
   fresh.
+- **A Reddit cookie given as a bare `reddit_session` value now works.** It used to be
+  sent as is, and Reddit doesn't recognise a session without its name. A value that
+  doesn't already name a `reddit_session` cookie, at its start or after a `;`, is now sent
+  as `reddit_session=<value>`, including one ending in base64 `=` padding.
+  `reddit_session=<value>` and a whole copied `Cookie` header carrying it are sent
+  unchanged; surrounding whitespace and one pair of surrounding double quotes are
+  stripped. Other cookies with no `reddit_session` among them are sent unchanged with a
+  warning, since naming them would only garble the header. A value that sets no session,
+  such as a bare `reddit_session=`, now counts as no cookie, as a blank one does, so
+  `cleanup reddit` reports the cookie missing instead of sending an empty session; the
+  `.env.example` placeholder is now blank.
 
 ## [0.5.0] - 2026-09-01
 

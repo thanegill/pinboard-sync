@@ -202,6 +202,15 @@ by URL (one Algolia query each) and adds the discussion link. Reddit's bookmark/
 shaping lives in
 [`src/model.rs`](src/model.rs).
 
+**The Reddit cookie is shaped in one place.** `RedditClient::build` passes the configured
+cookie through `reddit::session_cookie`, so every entry point sends the same header.
+`reddit_session` is the only name Reddit knows the session by, so a bare value (which may
+end in base64 `=` padding) is sent as `reddit_session=<value>`. A value counts as already
+named only when `reddit_session=` starts it or follows a `;`, never by substring. A value
+that sets no session — blank, or only an empty `reddit_session=` — is no cookie, and
+`main`'s `resolve_reddit_cookie` skips it through `reddit::is_configured_cookie` so the
+secret ladder falls through it exactly as it does a blank value.
+
 **`backup` has one port and one driver, and captures raw bodies in the same traversal.**
 [`src/backup.rs`](src/backup.rs) is `cleanup_pass.rs`'s sibling: a service implements
 `BackupSource::dump` (returning a `BackupDump` — captured `RawPage`s plus normalized

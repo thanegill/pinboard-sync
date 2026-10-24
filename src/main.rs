@@ -126,7 +126,8 @@ struct RedditBackupArgs {
     /// Reddit username whose saved items to back up (env REDDIT_USERNAME, or *_FILE).
     #[arg(long)]
     reddit_username: Option<String>,
-    /// Reddit session cookie, e.g. `reddit_session=…` (env REDDIT_COOKIE, or *_FILE).
+    /// Reddit session cookie, `reddit_session=…` or its bare value (env REDDIT_COOKIE,
+    /// or *_FILE).
     #[arg(long)]
     reddit_cookie: Option<String>,
     /// Shell command run when the Reddit cookie needs refreshing (a 401/403).
@@ -231,7 +232,8 @@ struct RedditSyncArgs {
     /// Reddit username whose saved items to sync (env REDDIT_USERNAME, or *_FILE).
     #[arg(long)]
     reddit_username: Option<String>,
-    /// Reddit session cookie, e.g. `reddit_session=…` (env REDDIT_COOKIE, or *_FILE).
+    /// Reddit session cookie, `reddit_session=…` or its bare value (env REDDIT_COOKIE,
+    /// or *_FILE).
     #[arg(long)]
     reddit_cookie: Option<String>,
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
@@ -421,7 +423,8 @@ struct HackernewsCleanupArgs {
 struct RedditCleanupArgs {
     /// Account name whose cookie + domain/tags to use (default: the first reddit account).
     account: Option<String>,
-    /// Reddit session cookie (env REDDIT_COOKIE, or *_FILE). Needed for the
+    /// Reddit session cookie, `reddit_session=…` or its bare value (env REDDIT_COOKIE,
+    /// or *_FILE). Needed for the
     /// `/api/info` lookups; not required with --no-nsfw --no-titles.
     #[arg(long)]
     reddit_cookie: Option<String>,
@@ -1011,12 +1014,7 @@ fn build_reddit_job(
         None,
     )
     .context("missing Reddit username (set --reddit-username, REDDIT_USERNAME, or `username` in the config)")?;
-    let cookie = resolve_secret(
-        ovr.reddit_cookie.clone(),
-        "REDDIT_COOKIE",
-        account.and_then(|a| a.cookie.clone()),
-        account.and_then(|a| a.cookie_file.as_deref()),
-    );
+    let cookie = resolve_reddit_cookie(ovr.reddit_cookie.clone(), account);
     let reddit_config = account
         .map(RedditAccount::reddit_config)
         .unwrap_or_default();
@@ -1738,12 +1736,7 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     // Reddit (for /api/info) is needed when marking NSFW, fixing titles, or dating by
     // the source post (the post's created_utc comes from /api/info too).
     let reddit = if opts.mark_nsfw || opts.fix_titles || opts.use_post_date {
-        let cookie = resolve_secret(
-            args.reddit_cookie.clone(),
-            "REDDIT_COOKIE",
-            account.and_then(|a| a.cookie.clone()),
-            account.and_then(|a| a.cookie_file.as_deref()),
-        )
+        let cookie = resolve_reddit_cookie(args.reddit_cookie.clone(), account)
         .context("missing Reddit cookie (set --reddit-cookie, REDDIT_COOKIE, or pass --no-nsfw --no-titles and disable use_post_date)")?;
         Some(RedditClient::for_info(Some(cookie))?)
     } else {
@@ -1915,7 +1908,35 @@ fn resolve_secret(
     cfg_inline: Option<String>,
     cfg_file: Option<&str>,
 ) -> Option<String> {
-    first_nonempty([
+    first_nonempty(secret_ladder(flag, var, cfg_inline, cfg_file))
+}
+
+/// The Reddit cookie through [`resolve_secret`]'s ladder, skipping a candidate that
+/// configures no session (see [`reddit::is_configured_cookie`]) as a blank one is skipped.
+fn resolve_reddit_cookie(flag: Option<String>, account: Option<&RedditAccount>) -> Option<String> {
+    first_configured_cookie(secret_ladder(
+        flag,
+        "REDDIT_COOKIE",
+        account.and_then(|a| a.cookie.clone()),
+        account.and_then(|a| a.cookie_file.as_deref()),
+    ))
+}
+
+/// The first candidate that configures a Reddit session.
+fn first_configured_cookie(candidates: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|cookie| reddit::is_configured_cookie(cookie))
+}
+
+fn secret_ladder(
+    flag: Option<String>,
+    var: &str,
+    cfg_inline: Option<String>,
+    cfg_file: Option<&str>,
+) -> [Option<String>; 5] {
+    [
         flag,
         std::env::var(var).ok(),
         std::env::var(format!("{var}_FILE"))
@@ -1923,12 +1944,15 @@ fn resolve_secret(
             .and_then(|p| read_file_secret(&p)),
         cfg_inline,
         cfg_file.and_then(read_file_secret),
-    ])
+    ]
 }
 
-/// The first non-empty value among the candidates.
+/// The first value among the candidates that isn't blank.
 fn first_nonempty(candidates: impl IntoIterator<Item = Option<String>>) -> Option<String> {
-    candidates.into_iter().flatten().find(|s| !s.is_empty())
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|s| !s.trim().is_empty())
 }
 
 /// Read a file's trimmed contents, or `None` if missing or empty.
@@ -2028,6 +2052,28 @@ mod tests {
             Some("b".into())
         );
         assert_eq!(first_nonempty([None, Some(String::new())]), None);
+        assert_eq!(
+            first_nonempty([Some(" \n".into()), Some("b".into())]),
+            Some("b".into())
+        );
+    }
+
+    #[test]
+    fn reddit_cookie_skips_candidates_that_set_no_session() {
+        assert_eq!(
+            first_configured_cookie([
+                Some("reddit_session=".into()),
+                None,
+                Some(" ".into()),
+                Some("a=1; reddit_session=".into()),
+                Some("abc".into()),
+            ]),
+            Some("abc".into())
+        );
+        assert_eq!(
+            first_configured_cookie([Some("reddit_session=".into()), Some("\"\"".into())]),
+            None
+        );
     }
 
     #[test]

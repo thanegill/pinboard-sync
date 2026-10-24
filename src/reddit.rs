@@ -46,7 +46,7 @@ pub trait PostInfo {
 /// cookie over native-tls.
 pub struct RedditClient {
     http: reqwest::Client,
-    /// `Cookie` header value, e.g. `reddit_session=…`.
+    /// `Cookie` header value, e.g. `reddit_session=…`, as [`session_cookie`] shapes it.
     cookie: Option<String>,
     /// Whose saved listing to read; required by `fetch_saved`.
     username: Option<String>,
@@ -93,7 +93,7 @@ impl RedditClient {
             .context("building HTTP client")?;
         Ok(Self {
             http,
-            cookie,
+            cookie: cookie.as_deref().and_then(session_cookie),
             username,
             base,
             config,
@@ -291,6 +291,78 @@ impl UrlKey for RedditClient {
     fn dedup_key(&self, url: &Url) -> Option<String> {
         reddit_key(url)
     }
+}
+
+/// The `Cookie` header for a configured cookie. A value that already names a
+/// `reddit_session` cookie, alone or in a whole copied `Cookie` header, is sent as is; a
+/// bare session value, including one ending in base64 `=` padding, becomes
+/// `reddit_session=<value>`, since Reddit only recognises the session by that name. Other
+/// cookies without a `reddit_session` are sent as is with a warning: naming them would
+/// only produce a garbled header. See [`cookie_form`] for what counts as no cookie.
+fn session_cookie(raw: &str) -> Option<String> {
+    let value = unquoted(raw);
+    match cookie_form(value)? {
+        CookieForm::Named => Some(value.to_string()),
+        CookieForm::Bare => Some(format!("reddit_session={value}")),
+        CookieForm::OtherCookies => {
+            warn!(
+                "REDDIT_COOKIE doesn't name a reddit_session cookie (expected the bare value \
+                 or reddit_session=<value>, with no `Cookie:` prefix); sending it as is, and \
+                 Reddit will likely refuse it"
+            );
+            Some(value.to_string())
+        }
+    }
+}
+
+/// Whether `raw` configures a Reddit session at all, so secret resolution can skip one
+/// that doesn't (blank, or an empty `reddit_session=`) as it skips a blank value.
+pub fn is_configured_cookie(raw: &str) -> bool {
+    cookie_form(unquoted(raw)).is_some()
+}
+
+/// `raw` trimmed, without one pair of surrounding double quotes, as an env file or shell
+/// assignment can leave them.
+fn unquoted(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    trimmed
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .map_or(trimmed, str::trim)
+}
+
+/// How a configured cookie value is shaped; see [`session_cookie`].
+#[derive(Debug, PartialEq, Eq)]
+enum CookieForm {
+    /// Names a non-empty `reddit_session` cookie, as its first pair or after a `;`.
+    Named,
+    /// A session value alone: no `;`, and no `=` but trailing base64 padding.
+    Bare,
+    /// `name=value` pairs, none of them `reddit_session`.
+    OtherCookies,
+}
+
+/// The shape of a cookie value, or `None` if it configures no session: blank, or naming
+/// `reddit_session` only with an empty value.
+fn cookie_form(value: &str) -> Option<CookieForm> {
+    if value.is_empty() {
+        return None;
+    }
+    let sessions: Vec<&str> = value
+        .split(';')
+        .filter_map(|pair| pair.trim_start().strip_prefix("reddit_session="))
+        .collect();
+    if !sessions.is_empty() {
+        let any_session_set = sessions.iter().any(|session| !session.trim().is_empty());
+        return any_session_set.then_some(CookieForm::Named);
+    }
+    Some(
+        if value.contains(';') || value.trim_end_matches('=').contains('=') {
+            CookieForm::OtherCookies
+        } else {
+            CookieForm::Bare
+        },
+    )
 }
 
 /// The body text of a Reddit response, centralizing status handling. Reddit's
@@ -587,6 +659,79 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, SourceError::Other(_)));
     }
+
+    #[test]
+    fn every_entry_point_names_a_bare_cookie() {
+        let named = Some("reddit_session=bare-value");
+        let sync = RedditClient::for_user(
+            "psophis".into(),
+            Some(" bare-value ".into()),
+            RedditConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(sync.cookie.as_deref(), named);
+        let cleanup = RedditClient::for_info(Some("bare-value\n".into())).unwrap();
+        assert_eq!(cleanup.cookie.as_deref(), named);
+    }
+
+    #[test]
+    fn names_a_bare_session_value_and_keeps_named_cookies() {
+        let cases = [
+            ("  abc.def-ghi\n", "reddit_session=abc.def-ghi"),
+            ("YWJjZA=", "reddit_session=YWJjZA="),
+            ("YWJj==", "reddit_session=YWJj=="),
+            ("reddit_session=abc\n", "reddit_session=abc"),
+            ("reddit_session=YWJj==", "reddit_session=YWJj=="),
+            (
+                " reddit_session=abc; token_v2=x ",
+                "reddit_session=abc; token_v2=x",
+            ),
+            (" a=1;reddit_session=abc ", "a=1;reddit_session=abc"),
+            ("a=1;  reddit_session=abc", "a=1;  reddit_session=abc"),
+            ("a=1; b=2", "a=1; b=2"),
+            ("\"abc\"", "reddit_session=abc"),
+            (" \"reddit_session=abc\"\n", "reddit_session=abc"),
+            ("\"abc", "reddit_session=\"abc"),
+        ];
+        for (raw, sent) in cases {
+            assert_eq!(session_cookie(raw).as_deref(), Some(sent), "{raw:?}");
+        }
+        for unset in [
+            " \n",
+            "\"\"",
+            "reddit_session=",
+            " reddit_session= \n",
+            "\"reddit_session=\"",
+            "a=1; reddit_session=",
+            "reddit_session= ; a=1",
+        ] {
+            assert_eq!(session_cookie(unset), None, "{unset:?}");
+            assert!(!is_configured_cookie(unset), "{unset:?}");
+        }
+        assert!(is_configured_cookie("abc"));
+        assert!(is_configured_cookie("reddit_session=; reddit_session=abc"));
+    }
+
+    #[test]
+    fn names_a_session_cookie_only_by_its_name() {
+        let cases = [
+            ("abc.def-ghi", CookieForm::Bare),
+            ("YWJjZA=", CookieForm::Bare),
+            ("YWJj==", CookieForm::Bare),
+            ("reddit_session=abc", CookieForm::Named),
+            ("reddit_session=abc; token_v2=x", CookieForm::Named),
+            ("a=1; reddit_session=abc", CookieForm::Named),
+            ("a=1;reddit_session=abc", CookieForm::Named),
+            ("a=reddit_session=1", CookieForm::OtherCookies),
+            ("a=1; b=x reddit_session=2", CookieForm::OtherCookies),
+            ("a=1; b=2", CookieForm::OtherCookies),
+            ("token_v2=x", CookieForm::OtherCookies),
+        ];
+        for (trimmed, form) in cases {
+            assert_eq!(cookie_form(trimmed), Some(form), "{trimmed:?}");
+        }
+        assert_eq!(cookie_form(""), None);
+    }
 }
 
 /// Integration tests against a `wiremock` server. These bind a TCP socket, so
@@ -653,6 +798,28 @@ mod net_tests {
             ]
         );
         assert!(items[1].is_comment);
+    }
+
+    #[tokio::test]
+    async fn sends_a_bare_cookie_value_as_reddit_session() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/psophis/saved.json"))
+            .and(header("cookie", "reddit_session=bare-value"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "kind": "Listing",
+                "data": { "after": null, "children": [] }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = RedditClient::for_test(
+            Some("bare-value\n".into()),
+            Some("psophis".into()),
+            server.uri(),
+        );
+        assert!(client.fetch_saved().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -799,6 +966,24 @@ mod net_tests {
             RedditClient::for_test(Some("reddit_session=secret".into()), None, server.uri());
         let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
         assert!(matches!(err, SourceError::Blocked(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn info_sends_a_bare_cookie_value_as_reddit_session() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/info.json"))
+            .and(header("cookie", "reddit_session=bare-value"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "kind": "Listing",
+                "data": { "after": null, "children": [] }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = RedditClient::for_test(Some("bare-value".into()), None, server.uri());
+        assert!(client.info(&["t3_a".to_string()]).await.unwrap().is_empty());
     }
 
     #[tokio::test]

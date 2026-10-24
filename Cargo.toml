@@ -21,7 +21,8 @@ futures = { version = "0.3", default-features = false, features = ["std", "async
 # fingerprint (403 on the saved listing) but accepts native-tls's, so the HTTP client
 # is built with native-tls. On Linux that pulls in OpenSSL (hence pkg-config + openssl
 # at build time); on macOS it uses the Security framework. See CLAUDE.md.
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+# native-tls-alpn: the edge also rejects a ClientHello with no ALPN extension (#78).
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls", "native-tls-alpn"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

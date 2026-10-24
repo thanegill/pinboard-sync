@@ -354,6 +354,13 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   but accepts native-tls's, so `reqwest` is built with `native-tls`. On Linux that's
   OpenSSL via `openssl-sys`, so the flake carries `pkg-config` + `openssl` and the
   closure includes OpenSSL. Keep it this way.
+- **`native-tls-alpn` is load-bearing too.** Reddit's edge also 403s (with its
+  network-security page) a TLS 1.3 ClientHello that carries no ALPN extension, which is
+  what plain `native-tls` sends ([#78](https://github.com/thanegill/pinboard-sync/issues/78));
+  header case and order are not the cause. With that feature reqwest offers `h2` as well
+  unless told otherwise, and the crate has no `http2` feature, so every client starts
+  from `http::client_builder()` (`http1_only`, ALPN `http/1.1` alone). Build new clients
+  from it; `http::net_tests::client_hello_offers_alpn_http1_only` guards the ClientHello.
 - **The Nix package build runs the tests** (`buildRustPackage` `doCheck`), so a
   failing test blocks `nix build`/`nix flake check`. The `net_tests` modules bind a
   socket, which the sandbox forbids — the flake's `checkFlags = [ "--skip=net_tests" ]`

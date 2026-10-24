@@ -11,7 +11,7 @@ use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage};
 use crate::bookmark::{Bookmark, BookmarkStore};
-use crate::http::{send_retrying, ConnectBudget};
+use crate::http::{client_builder, send_retrying, ConnectBudget};
 use crate::source::SourceError;
 
 const DEFAULT_BASE: &str = "https://api.pinboard.in/v1";
@@ -90,7 +90,7 @@ impl PinboardClient {
     }
 
     fn build(auth_token: String, rate_limit_secs: u64, base: String) -> Result<Self> {
-        let http = reqwest::Client::builder()
+        let http = client_builder()
             .user_agent(USER_AGENT)
             .build()
             .context("building HTTP client")?;

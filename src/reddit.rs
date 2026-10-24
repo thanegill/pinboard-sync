@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
-use crate::http::{send_retrying, ConnectBudget};
+use crate::http::{client_builder, send_retrying, ConnectBudget};
 use crate::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 
@@ -86,8 +86,9 @@ impl RedditClient {
         config: RedditConfig,
     ) -> anyhow::Result<Self> {
         // native-tls is the only TLS backend compiled in (see Cargo.toml), so it's
-        // the default connector — Reddit's edge rejects rustls's TLS fingerprint.
-        let http = reqwest::Client::builder()
+        // the default connector — Reddit's edge rejects rustls's TLS fingerprint, and
+        // a ClientHello without ALPN (see `http::client_builder`).
+        let http = client_builder()
             .user_agent(USER_AGENT)
             .redirect(reqwest::redirect::Policy::none())
             .build()

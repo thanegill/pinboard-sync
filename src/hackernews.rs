@@ -16,7 +16,7 @@ use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PassOutcome, Plan};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
-use crate::http::send_retrying;
+use crate::http::{send_retrying, ConnectBudget};
 use crate::source::{
     extend_unique, push_prefixed, push_tag, push_tags, url_key, BookmarkDraft, Source, SourceError,
     UrlKey,
@@ -235,6 +235,7 @@ pub struct HackerNewsClient {
     base: String,
     /// Algolia API base (overridden in tests).
     algolia: String,
+    connect_budget: ConnectBudget,
 }
 
 impl HackerNewsClient {
@@ -263,6 +264,7 @@ impl HackerNewsClient {
             config,
             base,
             algolia,
+            connect_budget: ConnectBudget::default(),
         })
     }
 
@@ -308,9 +310,13 @@ impl HackerNewsClient {
                 );
                 break;
             }
-            let resp = send_retrying("hn favorites", MAX_RETRIES, RETRY_DELAY, || {
-                self.http.get(&url)
-            })
+            let resp = send_retrying(
+                "hn favorites",
+                &self.connect_budget,
+                MAX_RETRIES,
+                RETRY_DELAY,
+                || self.http.get(&url),
+            )
             .await?;
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
@@ -375,12 +381,18 @@ impl HackerNewsClient {
                 .collect::<Vec<_>>()
                 .join(" OR ");
             let hits_per_page = chunk.len().to_string();
-            let resp = send_retrying("hn algolia", MAX_RETRIES, RETRY_DELAY, || {
-                self.http.get(&endpoint).query(&[
-                    ("filters", filters.as_str()),
-                    ("hitsPerPage", hits_per_page.as_str()),
-                ])
-            })
+            let resp = send_retrying(
+                "hn algolia",
+                &self.connect_budget,
+                MAX_RETRIES,
+                RETRY_DELAY,
+                || {
+                    self.http.get(&endpoint).query(&[
+                        ("filters", filters.as_str()),
+                        ("hitsPerPage", hits_per_page.as_str()),
+                    ])
+                },
+            )
             .await?;
             let status = resp.status();
             if !status.is_success() {
@@ -407,13 +419,19 @@ impl HackerNewsClient {
     /// the id only when a hit's URL matches `url` (so loose matches are ignored).
     async fn search_by_url(&self, url: &Url) -> Result<Option<String>, SourceError> {
         let endpoint = format!("{}/api/v1/search", self.algolia);
-        let resp = send_retrying("hn algolia url", MAX_RETRIES, RETRY_DELAY, || {
-            self.http.get(&endpoint).query(&[
-                ("restrictSearchableAttributes", "url"),
-                ("query", url.as_str()),
-                ("hitsPerPage", "5"),
-            ])
-        })
+        let resp = send_retrying(
+            "hn algolia url",
+            &self.connect_budget,
+            MAX_RETRIES,
+            RETRY_DELAY,
+            || {
+                self.http.get(&endpoint).query(&[
+                    ("restrictSearchableAttributes", "url"),
+                    ("query", url.as_str()),
+                    ("hitsPerPage", "5"),
+                ])
+            },
+        )
         .await?;
         let status = resp.status();
         if !status.is_success() {

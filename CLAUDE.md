@@ -280,10 +280,20 @@ timer with it, so resolving from config alone would leave the hook dead for the
 deployment it exists to serve. Every client sends through
 `http::send_retrying`
 ([`src/http.rs`](src/http.rs)), which backs off on network errors / 429 / 5xx but
-returns other statuses as-is. It strips the request URL from every client's transport
-error before wrapping it, because Pinboard's `auth_token` rides in the query string and
-`reqwest::Error` prints the URL in `Display` and `Debug`. Never put a request URL with a
-query into a message: Pinboard errors name the endpoint (no query) instead.
+returns other statuses as-is. A request that could not establish a connection
+(`is_connect`: any connector failure, so DNS, TCP connect, or the TLS handshake) gets its
+own exponential `CONNECT_BACKOFF` (5s … 80s, ~2.5 minutes in all), on top of and
+separate from the caller's linear `max_attempts` budget, so a resolver restart during a
+NixOS switch doesn't fail a timer-started run; tests inject a zero schedule through
+`send_with_connect_backoff`. That long wait is **once per client**: each client owns a
+`ConnectBudget`, spent when one request waits out the whole schedule and still can't
+connect, after which that client's connect errors take the linear policy. Without it an
+outage that starts mid-run costs 155s per remaining item — hours for a `cleanup` over
+hundreds of bookmarks, since `plan_failed` doesn't halt a pass. `send_retrying` strips
+the request URL from every client's transport error before wrapping it, because
+Pinboard's `auth_token` rides in the query string and `reqwest::Error` prints the URL in
+`Display` and `Debug`. Never put a request URL with a query into a message: Pinboard
+errors name the endpoint (no query) instead.
 
 **`SourceError::RateLimited` is the third case, and deliberately not either of those.**
 GitHub answers both its primary and secondary rate limits with a **403 or 429** — the
@@ -314,7 +324,9 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   failing test blocks `nix build`/`nix flake check`. The `net_tests` modules bind a
   socket, which the sandbox forbids — the flake's `checkFlags = [ "--skip=net_tests" ]`
   excludes them there; they still run under `cargo test`. Keep all *other* tests
-  hermetic (no network/sockets).
+  hermetic (no network/sockets). A `net_tests` case that points a real client at a dead
+  port sleeps the real ~2.5-minute `CONNECT_BACKOFF`; only `http.rs`'s own tests can
+  inject a zero schedule.
 - **`nix build`/`nix flake check` only see git-tracked files.** A new untracked
   module (or `config.example.toml`, used via `include_str!`) fails the sandbox build
   with `file not found`, even though dev-shell `cargo` passes — that discrepancy is

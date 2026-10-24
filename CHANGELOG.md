@@ -12,6 +12,15 @@ All notable changes to this project are documented here. The format is based on
   Pinboard API token. The error used to include the full request URL, whose `auth_token`
   query parameter is the token; it now names only the endpoint. If a failed run was
   logged before this fix, rotate the token.
+- A short DNS or network outage no longer fails a run. A request that could not connect
+  (name resolution failed, or the connection was refused or failed its TLS handshake) is
+  now retried after 5s, 10s, 20s, 40s and 80s, about 2.5 minutes of waiting in all,
+  instead of the usual few seconds. Retries for HTTP 429 and 5xx responses are unchanged.
+- An outage that lasts longer than that long retry window costs it once per account and
+  service in a run (and once for Pinboard), not once per request. After one request has
+  used up the whole 2.5 minutes, later requests from that same client fall back to the
+  usual short retries, so a long outage partway through `cleanup` no longer turns into
+  hours of waiting.
 
 ## [0.5.0] - 2026-09-01
 

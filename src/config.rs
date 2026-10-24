@@ -5,7 +5,8 @@
 //! account → typed-config mapping. Every field is optional, so an absent or empty
 //! config yields all defaults.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::fmt;
 
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
@@ -83,7 +84,7 @@ pub struct Hooks {
 }
 
 /// The shared Pinboard destination.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PinboardConfig {
     pub token: Option<String>,
@@ -118,7 +119,7 @@ pub const DEFAULT_MAX_AGE_DAYS: u64 = 30;
 
 /// One reddit account: whose saves to read, the session cookie, and the
 /// (non-secret) tag/domain vocabulary.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RedditAccount {
     pub name: Option<String>,
@@ -175,26 +176,29 @@ impl Config {
         check_unique_names("github", &self.github)?;
         check_unique_names("hackernews", &self.hackernews)?;
 
-        for a in &self.reddit {
-            check_domain("reddit.reddit_domain", &a.reddit_domain)?;
-            check_tags("reddit.tags", &a.tags)?;
-            check_tag("reddit.tag_subreddit_prefix", &a.tag_subreddit_prefix)?;
-            check_tag("reddit.tag_comment", &a.tag_comment)?;
-            check_tag("reddit.tag_nsfw", &a.tag_nsfw)?;
-            check_tag("reddit.tag_author_prefix", &a.tag_author_prefix)?;
-            check_tag("reddit.tag_flair_prefix", &a.tag_flair_prefix)?;
-            check_tag("reddit.tag_media_prefix", &a.tag_media_prefix)?;
+        for (index, account) in self.reddit.iter().enumerate() {
+            let at = |field: &str| format!("reddit[{index}].{field}");
+            check_domain(&at("reddit_domain"), &account.reddit_domain)?;
+            check_tags(&at("tags"), &account.tags)?;
+            check_tag(&at("tag_subreddit_prefix"), &account.tag_subreddit_prefix)?;
+            check_tag(&at("tag_comment"), &account.tag_comment)?;
+            check_tag(&at("tag_nsfw"), &account.tag_nsfw)?;
+            check_tag(&at("tag_author_prefix"), &account.tag_author_prefix)?;
+            check_tag(&at("tag_flair_prefix"), &account.tag_flair_prefix)?;
+            check_tag(&at("tag_media_prefix"), &account.tag_media_prefix)?;
         }
-        for a in &self.github {
-            check_tags("github.tags", &a.tags)?;
-            check_tag("github.tag_lang_prefix", &a.tag_lang_prefix)?;
+        for (index, account) in self.github.iter().enumerate() {
+            let at = |field: &str| format!("github[{index}].{field}");
+            check_tags(&at("tags"), &account.tags)?;
+            check_tag(&at("tag_lang_prefix"), &account.tag_lang_prefix)?;
         }
-        for a in &self.hackernews {
-            check_tags("hackernews.tags", &a.tags)?;
-            check_tag("hackernews.tag_comment", &a.tag_comment)?;
-            check_tag("hackernews.tag_author_prefix", &a.tag_author_prefix)?;
-            check_tag("hackernews.tag_special_prefix", &a.tag_special_prefix)?;
-            check_tag("hackernews.tag_link", &a.tag_link)?;
+        for (index, account) in self.hackernews.iter().enumerate() {
+            let at = |field: &str| format!("hackernews[{index}].{field}");
+            check_tags(&at("tags"), &account.tags)?;
+            check_tag(&at("tag_comment"), &account.tag_comment)?;
+            check_tag(&at("tag_author_prefix"), &account.tag_author_prefix)?;
+            check_tag(&at("tag_special_prefix"), &account.tag_special_prefix)?;
+            check_tag(&at("tag_link"), &account.tag_link)?;
         }
         Ok(())
     }
@@ -248,10 +252,11 @@ fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
 
 /// Error if `value` (a tag or tag prefix) contains whitespace — Pinboard tags can't
 /// contain spaces (its API splits the tag string on them), so a space here silently
-/// corrupts and should fail loudly instead.
+/// corrupts and should fail loudly instead. The error names the field, never the value,
+/// which may be a credential pasted into the wrong key.
 pub(crate) fn reject_whitespace(field: &str, value: &str) -> Result<()> {
     if value.chars().any(char::is_whitespace) {
-        bail!("config: `{field}` must not contain whitespace (got {value:?})");
+        bail!("config: `{field}` must not contain whitespace");
     }
     Ok(())
 }
@@ -265,8 +270,8 @@ fn check_tag(field: &str, value: &Option<String>) -> Result<()> {
 
 /// Error if any tag in the list contains whitespace.
 fn check_tags(field: &str, values: &Option<Vec<String>>) -> Result<()> {
-    for v in values.iter().flatten() {
-        reject_whitespace(field, v)?;
+    for (index, v) in values.iter().flatten().enumerate() {
+        reject_whitespace(&format!("{field}[{index}]"), v)?;
     }
     Ok(())
 }
@@ -274,12 +279,13 @@ fn check_tags(field: &str, values: &Option<Vec<String>>) -> Result<()> {
 /// Error if two accounts of a source share a `name` (the second would be
 /// unreachable by name in `sync <source> <name>`).
 fn check_unique_names<T: Named>(source: &str, accounts: &[T]) -> Result<()> {
-    let mut seen = HashSet::new();
-    for account in accounts {
-        if let Some(name) = account.account_name() {
-            if !seen.insert(name) {
-                bail!("config: duplicate {source} account name {name:?}");
-            }
+    let mut first_with_name = HashMap::new();
+    for (index, account) in accounts.iter().enumerate() {
+        let Some(name) = account.account_name() else {
+            continue;
+        };
+        if let Some(first) = first_with_name.insert(name, index) {
+            bail!("config: {source}[{index}] has the same account name as {source}[{first}]");
         }
     }
     Ok(())
@@ -288,12 +294,19 @@ fn check_unique_names<T: Named>(source: &str, accounts: &[T]) -> Result<()> {
 /// Error if `value` isn't a bare host (it's interpolated as `https://<domain>…`, so
 /// a scheme, slash, or whitespace would corrupt the bookmark URLs).
 fn check_domain(field: &str, value: &Option<String>) -> Result<()> {
-    if let Some(v) = value {
-        if v.is_empty() || v.contains('/') || v.chars().any(char::is_whitespace) {
-            bail!("config: `{field}` must be a bare host like \"old.reddit.com\" (got {v:?})");
-        }
-    }
-    Ok(())
+    let Some(domain) = value else {
+        return Ok(());
+    };
+    let problem = if domain.is_empty() {
+        "is empty"
+    } else if domain.contains('/') {
+        "contains a `/`"
+    } else if domain.chars().any(char::is_whitespace) {
+        "contains whitespace"
+    } else {
+        return Ok(());
+    };
+    bail!("config: `{field}` {problem}; it must be a bare host like \"old.reddit.com\"")
 }
 
 impl RedditAccount {
@@ -319,7 +332,7 @@ impl RedditAccount {
 }
 
 /// One GitHub account: a personal access token plus the (non-secret) tag config.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GitHubAccount {
     pub name: Option<String>,
@@ -391,6 +404,128 @@ impl HackernewsAccount {
             special_prefix: self.tag_special_prefix.clone().unwrap_or(d.special_prefix),
             link_tag: self.tag_link.clone().unwrap_or(d.link_tag),
         }
+    }
+}
+
+/// Shows whether an inline secret is set, never its value. The `Debug` impls below
+/// destructure every field so a new one cannot be added without deciding how it shows.
+struct Redacted<'a>(&'a Option<String>);
+
+impl fmt::Debug for Redacted<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(_) => f.write_str("Some(<redacted>)"),
+            None => f.write_str("None"),
+        }
+    }
+}
+
+impl fmt::Debug for PinboardConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            token,
+            token_file,
+            public,
+            toread,
+            rate_limit_secs,
+            limit,
+            use_post_date,
+            post_date_max_age_days,
+            cleanup_stale_to_now,
+        } = self;
+        f.debug_struct("PinboardConfig")
+            .field("token", &Redacted(token))
+            .field("token_file", token_file)
+            .field("public", public)
+            .field("toread", toread)
+            .field("rate_limit_secs", rate_limit_secs)
+            .field("limit", limit)
+            .field("use_post_date", use_post_date)
+            .field("post_date_max_age_days", post_date_max_age_days)
+            .field("cleanup_stale_to_now", cleanup_stale_to_now)
+            .finish()
+    }
+}
+
+impl fmt::Debug for RedditAccount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            name,
+            username,
+            cookie,
+            cookie_file,
+            on_auth_failure,
+            limit,
+            toread,
+            public,
+            use_post_date,
+            post_date_max_age_days,
+            cleanup_stale_to_now,
+            reddit_domain,
+            tag_subreddit_prefix,
+            tag_comment,
+            tag_nsfw,
+            tag_author_prefix,
+            tag_flair_prefix,
+            tag_media_prefix,
+            tag_media_types,
+            tags,
+        } = self;
+        f.debug_struct("RedditAccount")
+            .field("name", name)
+            .field("username", username)
+            .field("cookie", &Redacted(cookie))
+            .field("cookie_file", cookie_file)
+            .field("on_auth_failure", on_auth_failure)
+            .field("limit", limit)
+            .field("toread", toread)
+            .field("public", public)
+            .field("use_post_date", use_post_date)
+            .field("post_date_max_age_days", post_date_max_age_days)
+            .field("cleanup_stale_to_now", cleanup_stale_to_now)
+            .field("reddit_domain", reddit_domain)
+            .field("tag_subreddit_prefix", tag_subreddit_prefix)
+            .field("tag_comment", tag_comment)
+            .field("tag_nsfw", tag_nsfw)
+            .field("tag_author_prefix", tag_author_prefix)
+            .field("tag_flair_prefix", tag_flair_prefix)
+            .field("tag_media_prefix", tag_media_prefix)
+            .field("tag_media_types", tag_media_types)
+            .field("tags", tags)
+            .finish()
+    }
+}
+
+impl fmt::Debug for GitHubAccount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            name,
+            token,
+            token_file,
+            on_auth_failure,
+            limit,
+            toread,
+            public,
+            use_post_date,
+            post_date_max_age_days,
+            cleanup_stale_to_now,
+            tag_lang_prefix,
+            tags,
+        } = self;
+        f.debug_struct("GitHubAccount")
+            .field("name", name)
+            .field("token", &Redacted(token))
+            .field("token_file", token_file)
+            .field("on_auth_failure", on_auth_failure)
+            .field("limit", limit)
+            .field("toread", toread)
+            .field("public", public)
+            .field("use_post_date", use_post_date)
+            .field("post_date_max_age_days", post_date_max_age_days)
+            .field("cleanup_stale_to_now", cleanup_stale_to_now)
+            .field("tag_lang_prefix", tag_lang_prefix)
+            .field("tags", tags)
+            .finish()
     }
 }
 
@@ -524,6 +659,70 @@ mod tests {
             "`5`",
             "invalid type: integer, expected a string",
         );
+    }
+
+    #[test]
+    fn validation_error_names_the_field_not_the_value() {
+        assert_error_hides(
+            "[[reddit]]\n[[reddit]]\ntags = [\"reddit\", \"reddit_session=SECRET1 x\"]\n",
+            "SECRET1",
+            "`reddit[1].tags[1]` must not contain whitespace",
+        );
+        assert_error_hides(
+            "[[github]]\ntag_lang_prefix = \"ghp SECRET2\"\n",
+            "SECRET2",
+            "`github[0].tag_lang_prefix` must not contain whitespace",
+        );
+        assert_error_hides(
+            "[[hackernews]]\ntag_link = \"x SECRET3\"\n",
+            "SECRET3",
+            "`hackernews[0].tag_link` must not contain whitespace",
+        );
+        assert_error_hides(
+            "[[reddit]]\nreddit_domain = \"user:SECRET4/x\"\n",
+            "SECRET4",
+            "`reddit[0].reddit_domain` contains a `/`",
+        );
+        assert_error_hides(
+            "[[reddit]]\nreddit_domain = \"reddit_session=SECRET5 x\"\n",
+            "SECRET5",
+            "`reddit[0].reddit_domain` contains whitespace",
+        );
+        assert_error_hides(
+            "[[reddit]]\nreddit_domain = \"\"\n",
+            "SECRET",
+            "`reddit[0].reddit_domain` is empty",
+        );
+        assert_error_hides(
+            "[[github]]\nname = \"SECRET6\"\n[[github]]\n[[github]]\nname = \"SECRET6\"\n",
+            "SECRET6",
+            "github[2] has the same account name as github[0]",
+        );
+    }
+
+    #[test]
+    fn debug_of_a_parsed_config_redacts_inline_secrets() {
+        let cfg = Config::parse(
+            "[pinboard]\ntoken = \"user:PINSECRET\"\n\
+             [[reddit]]\ncookie = \"reddit_session=REDDITSECRET\"\ncookie_file = \"/run/cookie\"\n\
+             [[reddit]]\n\
+             [[github]]\ntoken = \"ghp_GITHUBSECRET\"\n",
+        )
+        .unwrap();
+        for rendered in [format!("{cfg:?}"), format!("{cfg:#?}")] {
+            for secret in ["PINSECRET", "REDDITSECRET", "GITHUBSECRET"] {
+                assert!(!rendered.contains(secret), "leaked {secret}: {rendered}");
+            }
+            assert!(rendered.contains("/run/cookie"), "{rendered}");
+        }
+        assert_eq!(
+            format!("{:?}", Redacted(&cfg.pinboard.token)),
+            "Some(<redacted>)"
+        );
+        assert_eq!(format!("{:?}", Redacted(&cfg.reddit[1].cookie)), "None");
+        assert!(format!("{:?}", cfg.reddit[0]).contains("cookie: Some(<redacted>)"));
+        assert!(format!("{:?}", cfg.reddit[1]).contains("cookie: None"));
+        assert!(format!("{:?}", cfg.github[0]).contains("token: Some(<redacted>)"));
     }
 
     #[test]

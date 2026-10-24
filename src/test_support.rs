@@ -1,18 +1,29 @@
 //! In-memory fakes implementing the client ports ([`SavedSource`] /
 //! [`BookmarkStore`]) so the `sync` and `cleanup` loops can be tested without
-//! any network. Compiled only under `#[cfg(test)]`.
+//! any network, plus per-test scratch directories. Compiled only under
+//! `#[cfg(test)]`.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use tempfile::TempDir;
 use url::Url;
 
 use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::model::{reddit_key, RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
+
+/// A fresh, empty directory unique to this call, removed when the returned guard is
+/// dropped: keep it bound for as long as the test uses the path.
+pub fn scratch_dir(label: &str) -> TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("pinboard-sync-test-{label}-"))
+        .tempdir()
+        .unwrap()
+}
 
 /// Build a `RedditListingEntry` from `kind` (`t3`/`t1`) and a `data` JSON object.
 pub fn listing_entry(kind: &str, data: Value) -> RedditListingEntry {

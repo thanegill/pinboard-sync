@@ -2032,6 +2032,7 @@ pub(crate) fn preview(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::scratch_dir;
 
     /// Serializes tests that read or write `PINBOARD_SYNC_ON_AUTH_FAILURE`, since
     /// the env var is process-global and clap reads it at parse time.
@@ -2620,7 +2621,8 @@ mod tests {
     /// the only proof the operator's command ran.
     #[test]
     fn the_auth_failure_hook_fires_for_reauth_and_nothing_else() {
-        let dir = scratch_dir("auth-hook");
+        let scratch = scratch_dir("auth-hook");
+        let dir = scratch.path();
         let marker = dir.join("fired");
         let hook = format!("touch {}", marker.display());
 
@@ -2649,8 +2651,6 @@ mod tests {
             Some(&hook),
         );
         assert!(marker.exists(), "a dead credential must fire the hook");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The NixOS module's units carry no shell on `PATH` (thanegill/pinboard-sync#77), so
@@ -2658,7 +2658,8 @@ mod tests {
     /// builtins, since nothing else is reachable through an empty `PATH` either.
     #[test]
     fn the_auth_failure_hook_runs_without_a_shell_on_path() {
-        let dir = scratch_dir("auth-hook-no-path");
+        let scratch = scratch_dir("auth-hook-no-path");
+        let dir = scratch.path();
         let empty_path = dir.join("empty-path");
         std::fs::create_dir(&empty_path).unwrap();
         let marker = dir.join("fired");
@@ -2676,30 +2677,19 @@ mod tests {
             std::fs::read_to_string(&marker).unwrap(),
             "reauth_required: cookie expired\n"
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// NixOS's bashless profile has no `/bin/sh`; there the hook still runs if the unit
     /// puts a shell on `PATH`.
     #[test]
     fn the_hook_shell_falls_back_to_path_without_a_system_shell() {
-        let dir = scratch_dir("hook-shell");
+        let scratch = scratch_dir("hook-shell");
+        let dir = scratch.path();
         let system_shell = dir.join("sh");
         assert_eq!(hook_shell(&system_shell), Path::new("sh"));
 
         std::fs::write(&system_shell, "").unwrap();
         assert_eq!(hook_shell(&system_shell), system_shell);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A fresh, empty temp directory unique to `label`, cleaned up by the caller.
-    fn scratch_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pinboard-sync-test-{label}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
     }
 
     #[test]

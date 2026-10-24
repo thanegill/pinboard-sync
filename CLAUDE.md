@@ -368,6 +368,11 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   hermetic (no network/sockets). A `net_tests` case that points a real client at a dead
   port sleeps the real ~2.5-minute `CONNECT_BACKOFF`; only `http.rs`'s own tests can
   inject a zero schedule.
+- **A test that touches the filesystem takes its directory from
+  `test_support::scratch_dir`**, a `tempfile::TempDir` unique per call and removed on
+  drop; keep the guard bound while the path is in use. A fixed path under
+  `temp_dir()` collides with a concurrent `cargo test` (another worktree, the Nix
+  build) and deletes its files mid-run.
 - **`nix build`/`nix flake check` only see git-tracked files.** A new untracked
   module (or `config.example.toml`, used via `include_str!`) fails the sandbox build
   with `file not found`, even though dev-shell `cargo` passes — that discrepancy is

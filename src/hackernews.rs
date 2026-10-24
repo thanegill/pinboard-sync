@@ -1820,10 +1820,9 @@ mod net_tests {
         );
 
         // End to end: fetch through the driver and land the snapshot on disk.
-        let dir = std::env::temp_dir().join("pinboard-sync-test-hn-backup-e2e");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        crate::backup::run_job(&client, "hackernews-psophis", &dir, false)
+        let scratch = crate::test_support::scratch_dir("hn-backup-e2e");
+        let dir = scratch.path();
+        crate::backup::run_job(&client, "hackernews-psophis", dir, false)
             .await
             .unwrap();
 
@@ -1843,6 +1842,5 @@ mod net_tests {
         let html =
             std::fs::read_to_string(dir.join("raw/hackernews-psophis-favorites.html")).unwrap();
         assert!(html.contains(r#"id="42""#));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

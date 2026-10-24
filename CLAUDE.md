@@ -271,7 +271,8 @@ Reads parallel, writes serial — `posts/all` is fetched once up front and share
 install consumes.
 
 **Re-auth vs other errors drive a side effect.** `SourceError::ReauthRequired`
-(Reddit 401/403 that isn't the "blocked by network security" page, GitHub 401) fires the
+(Reddit 401/403 that isn't the "blocked by network security" page, a Reddit redirect to
+`/login`, GitHub 401) fires the
 `--on-auth-failure` hook and exits non-zero; `SourceError::Other` (transient/parse)
 doesn't. HackerNews is public
 and never re-auths. **`cleanup` fires it too, not just `sync`** — which is why the three
@@ -333,6 +334,15 @@ credential that isn't the problem. It shares
 its own variant so the message names a block, which no reset is known to lift. No Reddit
 `plan` makes a request today: a block on `/api/info` stops `cleanup reddit` before
 `run_pass`, as an expired cookie does.
+
+**The Reddit client never follows a redirect.** Reddit answers a request without a session
+it accepts with a 302 to `/login` (seen for a request with no cookie), and following it can
+land on a login page that answers 403 — which the 401/403 arm would misreport as a 403 on
+the endpoint itself. So `RedditClient` is
+built with `redirect::Policy::none()`, and `reddit_body` maps a 3xx whose `Location` path
+is `/login` or under `/login/` to `ReauthRequired` and any other 3xx to `Other`.
+`saved.json` pagination only changes query parameters on one URL and `/api/info` is a
+single GET, so nothing relied on following a redirect.
 
 **Pinboard field names are inverted.** In `posts/add`, `description` is the *title*
 and `extended` is the notes (delicious backcompat). Bookmarks are written

@@ -130,7 +130,8 @@ struct RedditBackupArgs {
     /// or *_FILE).
     #[arg(long)]
     reddit_cookie: Option<String>,
-    /// Shell command run when the Reddit cookie needs refreshing (a 401/403).
+    /// Shell command run when the Reddit cookie needs refreshing (a 401/403, or a
+    /// redirect to the login page).
     #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
     on_auth_failure: Option<String>,
     #[command(flatten)]
@@ -254,7 +255,8 @@ struct RedditSyncArgs {
     /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     use_post_date: Option<bool>,
-    /// Shell command run when the Reddit cookie needs refreshing (a 401/403).
+    /// Shell command run when the Reddit cookie needs refreshing (a 401/403, or a
+    /// redirect to the login page).
     #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
     on_auth_failure: Option<String>,
     /// Fetch and print what would be posted, without writing to Pinboard.

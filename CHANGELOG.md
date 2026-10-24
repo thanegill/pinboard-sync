@@ -49,6 +49,13 @@ All notable changes to this project are documented here. The format is based on
   such as a bare `reddit_session=`, now counts as no cookie, as a blank one does, so
   `cleanup reddit` reports the cookie missing instead of sending an empty session; the
   `.env.example` placeholder is now blank.
+- **Reddit's redirect to its login page is now reported as a cookie it didn't accept,**
+  instead of being followed. Reddit sends it to a request without a session it accepts,
+  such as one with no cookie. Following it can reach a login page that answers 403, which
+  then read as a 403 on the saved listing or `/api/info`, indistinguishable from an edge
+  block. The error now says Reddit didn't accept the session cookie, and the
+  `--on-auth-failure` hook still runs. Any other redirect fails as an ordinary error
+  without the hook.
 
 ## [0.5.0] - 2026-09-01
 

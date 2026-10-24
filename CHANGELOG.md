@@ -28,6 +28,16 @@ All notable changes to this project are documented here. The format is based on
   runs under `/bin/sh`, as `system(3)` does, so the caller's `PATH` no longer matters.
   On a host without `/bin/sh` (NixOS's bashless profile), it falls back to `sh` from
   `PATH`. (#77)
+- **A Reddit 403 that is Reddit's "blocked by network security" page is now reported as a
+  block, not an expired cookie,** and no longer runs the `--on-auth-failure` hook: the
+  page arrives with a valid `reddit_session`, so the hook was asking for a credential that
+  isn't the problem. The error now says Reddit's edge blocked the request and points at
+  [#78](https://github.com/thanegill/pinboard-sync/issues/78). A block on `cleanup
+  reddit`'s `/api/info` lookup stops it before anything is written, as an expired cookie
+  does, but without the hook. Any other 401/403 is still treated as an expired cookie,
+  including Reddit's "whoa there, pardner" network-policy page, which it serves for a junk
+  credential; that error now also says the host's IP may be blocked if the cookie is
+  fresh.
 
 ## [0.5.0] - 2026-09-01
 

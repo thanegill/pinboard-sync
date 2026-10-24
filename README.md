@@ -105,7 +105,9 @@ Two variables are **direct values, not `_FILE`-capable**:
   `[defaults.<source>] on_auth_failure`, or as `[hooks] on_auth_failure`, resolving
   **flag/env → account → `[defaults.<source>]` → `[hooks]`**. (`cleanup` takes no
   `--on-auth-failure` flag, so the env var is its top rung.) It does not run for a rate
-  limit — waiting, not a new credential, is what clears one.
+  limit — waiting, not a new credential, is what clears one — nor when Reddit answers
+  with its "blocked by network security" page, which refuses the request whatever cookie
+  it carries ([#78](https://github.com/thanegill/pinboard-sync/issues/78)).
 
 ## Usage
 

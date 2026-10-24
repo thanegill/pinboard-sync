@@ -1187,6 +1187,36 @@ mod loop_tests {
     }
 
     #[tokio::test]
+    async fn an_api_info_block_stays_a_block() {
+        // The cookie hint appended to a re-auth must not land on a block, which no cookie
+        // fixes, and the variant must survive so `main` withholds the hook.
+        let pinboard = FakePinboard {
+            all: vec![bookmark(
+                "https://www.reddit.com/r/rust/comments/abc/x/",
+                "T",
+                "reddit",
+            )],
+            ..Default::default()
+        };
+        let reddit = FakeReddit {
+            info_error: Some(SourceError::Blocked("edge block".into())),
+            ..Default::default()
+        };
+
+        let err = run(
+            &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+            Some(&reddit),
+            &opts(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, SourceError::Blocked(m) if m == "edge block"),
+            "expected the block unchanged, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn logs_and_skips_a_failing_update_then_continues() {
         // Two bookmarks that both need a URL rewrite; the first one's update fails.
         let pinboard = FakePinboard {

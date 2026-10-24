@@ -1862,6 +1862,8 @@ fn handle_source_err(e: SourceError, hook: Option<&str>) -> anyhow::Error {
         // Deliberately no hook: no credential change clears a rate limit, so waking the
         // operator to rotate a token would send them after the wrong problem.
         SourceError::RateLimited(msg) => anyhow!("{msg}"),
+        // Nor here: the edge refuses whatever credential is sent.
+        SourceError::Blocked(msg) => anyhow!("{msg}"),
         SourceError::Other(e) => e,
     }
 }
@@ -2581,6 +2583,12 @@ mod tests {
             Some(&hook),
         );
         assert!(!marker.exists(), "a rate limit must not fire the hook");
+
+        handle_source_err(
+            SourceError::Blocked("Reddit's edge blocked the request".into()),
+            Some(&hook),
+        );
+        assert!(!marker.exists(), "an edge block must not fire the hook");
 
         handle_source_err(
             SourceError::Other(anyhow!("some transient failure")),

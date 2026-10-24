@@ -20,13 +20,20 @@ pub enum SourceError {
     /// would fail the same way, so a caller should stop rather than work through them.
     #[error("rate limited: {0}")]
     RateLimited(String),
+    /// The service's edge refused the request as a matter of policy (Reddit's "blocked by
+    /// network security" page), whatever the credential. Like
+    /// [`SourceError::RateLimited`] it must not fire the auth-failure hook and it fails
+    /// every remaining request to the same endpoint the same way; unlike it, waiting is
+    /// not known to help.
+    #[error("blocked: {0}")]
+    Blocked(String),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
 
 impl SourceError {
-    /// Flatten into a plain `anyhow::Error`: the re-auth or rate-limit message on its own
-    /// (without the variant's prefix) or the inner error unwrapped.
+    /// Flatten into a plain `anyhow::Error`: the re-auth, rate-limit or block message on
+    /// its own (without the variant's prefix) or the inner error unwrapped.
     ///
     /// Only for the two paths that genuinely have no use for the variant: `doctor`, which
     /// reports each credential rather than acting on it, and HackerNews, which is public
@@ -35,7 +42,9 @@ impl SourceError {
     /// silently lost that hook — don't reach for this to make a type mismatch go away.
     pub fn into_anyhow(self) -> anyhow::Error {
         match self {
-            SourceError::ReauthRequired(m) | SourceError::RateLimited(m) => anyhow::anyhow!(m),
+            SourceError::ReauthRequired(m)
+            | SourceError::RateLimited(m)
+            | SourceError::Blocked(m) => anyhow::anyhow!(m),
             SourceError::Other(e) => e,
         }
     }

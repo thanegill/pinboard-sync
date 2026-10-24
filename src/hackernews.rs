@@ -16,7 +16,7 @@ use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PassOutcome, Plan};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
-use crate::http::{send_retrying, ConnectBudget};
+use crate::http::{client_builder, send_retrying, ConnectBudget};
 use crate::source::{
     extend_unique, push_prefixed, push_tag, push_tags, url_key, BookmarkDraft, Source, SourceError,
     UrlKey,
@@ -254,7 +254,7 @@ impl HackerNewsClient {
         base: String,
         algolia: String,
     ) -> anyhow::Result<Self> {
-        let http = reqwest::Client::builder()
+        let http = client_builder()
             .user_agent(BROWSER_UA)
             .build()
             .context("building HTTP client")?;

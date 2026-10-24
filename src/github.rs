@@ -12,7 +12,7 @@ use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Plan};
 use crate::htmltext::{blockquote, html_to_plain};
-use crate::http::{send_retrying, ConnectBudget};
+use crate::http::{client_builder, send_retrying, ConnectBudget};
 use crate::source::{
     deserialize_lenient, extend_unique, push_prefixed, push_tags, url_key, BookmarkDraft, Source,
     SourceError, UrlExt, UrlKey,
@@ -230,7 +230,7 @@ impl GitHubClient {
             HeaderValue::from_static("2022-11-28"),
         );
 
-        let http = reqwest::Client::builder()
+        let http = client_builder()
             .user_agent(UA)
             .default_headers(headers)
             .build()

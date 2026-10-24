@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- Reddit sync, backup and cleanup work again. Since 2026-10-21 Reddit's edge has refused
+  (403, "blocked by network security") a TLS 1.3 connection that does not offer ALPN,
+  which this client never did. Every HTTP client now offers ALPN `http/1.1`. Nothing changes in
+  the config or the cookie. ([#78](https://github.com/thanegill/pinboard-sync/issues/78))
 - A failed Pinboard request (DNS failure, refused connection, timeout) no longer logs the
   Pinboard API token. The error used to include the full request URL, whose `auth_token`
   query parameter is the token; it now names only the endpoint. If a failed run was

@@ -86,6 +86,14 @@ where
     }
 }
 
+/// The starting point for every client's `reqwest::Client`: HTTP/1.1 only, so the TLS
+/// ClientHello offers ALPN `http/1.1` alone. Reddit's edge 403s a ClientHello with no ALPN
+/// extension (#78), and `native-tls-alpn` otherwise offers `h2` too, which this build
+/// (no `http2` feature) cannot speak if a server picks it.
+pub fn client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().http1_only()
+}
+
 /// Send a request, retrying *transient* failures. A request that could not establish a
 /// connection (per `reqwest::Error::is_connect`: any connector failure, so DNS, TCP
 /// connect, or the TLS handshake) is retried on the long exponential
@@ -397,6 +405,83 @@ mod tests {
 mod net_tests {
     use super::tests::assert_error_hides;
     use super::*;
+
+    /// The ALPN protocol names a TLS ClientHello offers, or `None` when it has no ALPN
+    /// extension. `hello` starts at the TLS record header.
+    fn offered_alpn(hello: &[u8]) -> Option<Vec<String>> {
+        let u16_at = |at: usize| usize::from(u16::from_be_bytes([hello[at], hello[at + 1]]));
+        assert_eq!(hello[0], 0x16, "not a TLS handshake record");
+        assert_eq!(hello[5], 0x01, "not a ClientHello");
+        let session_id = 5 + 4 + 2 + 32;
+        let cipher_suites = session_id + 1 + usize::from(hello[session_id]);
+        let compression = cipher_suites + 2 + u16_at(cipher_suites);
+        let extensions = compression + 1 + usize::from(hello[compression]);
+        let extensions_end = extensions + 2 + u16_at(extensions);
+        assert!(
+            hello.len() >= extensions_end,
+            "ClientHello spans more than one record"
+        );
+        let mut at = extensions + 2;
+        while at < extensions_end {
+            let (kind, len) = (u16_at(at), u16_at(at + 2));
+            let body = &hello[at + 4..at + 4 + len];
+            if kind == 0x0010 {
+                let mut names = Vec::new();
+                let mut name_at = 2;
+                while name_at < body.len() {
+                    let name_len = usize::from(body[name_at]);
+                    let name = &body[name_at + 1..name_at + 1 + name_len];
+                    names.push(String::from_utf8_lossy(name).into_owned());
+                    name_at += 1 + name_len;
+                }
+                return Some(names);
+            }
+            at += 4 + len;
+        }
+        None
+    }
+
+    #[tokio::test]
+    async fn client_hello_offers_alpn_http1_only() {
+        use std::io::Read;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let read_hello = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "the client never connected"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(err) => panic!("accept: {err}"),
+                }
+            };
+            socket.set_nonblocking(false).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut hello = vec![0u8; 5];
+            socket.read_exact(&mut hello).unwrap();
+            let record_len = u16::from_be_bytes([hello[3], hello[4]]);
+            hello.resize(5 + usize::from(record_len), 0);
+            socket.read_exact(&mut hello[5..]).unwrap();
+            hello
+        });
+        let http = client_builder().no_proxy().build().unwrap();
+
+        let sent = http.get(format!("https://127.0.0.1:{port}/")).send().await;
+
+        assert!(sent.is_err(), "the listener never completes the handshake");
+        let hello = read_hello.join().unwrap();
+        assert_eq!(offered_alpn(&hello), Some(vec!["http/1.1".to_string()]));
+    }
 
     #[tokio::test]
     async fn connect_error_does_not_leak_query_token() {

@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-24
+
 ### Fixed
 
 - Reddit sync, backup and cleanup work again. Since 2026-10-21 Reddit's edge has refused
@@ -414,7 +416,8 @@ generalized the tool to multiple sources.
 - **NixOS module** with an `environmentFile` for secrets, and a secret-resolution
   ladder (CLI flag → `$VAR` → `$VAR_FILE` → `~/.pinboardrc`).
 
-[Unreleased]: https://github.com/thanegill/pinboard-sync/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/thanegill/pinboard-sync/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.5.1
 [0.5.0]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.5.0
 [0.4.0]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.4.0
 [0.3.3]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.3.3

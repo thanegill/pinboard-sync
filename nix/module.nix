@@ -284,8 +284,8 @@ in
       default = null;
       example = "/run/secrets/reddit-cookie";
       description = ''
-        Path to a file containing the Reddit session cookie, in the full
-        `reddit_session=<value>` form (matching `REDDIT_COOKIE` in `.env.example`).
+        Path to a file containing the Reddit session cookie, either its bare value
+        or `reddit_session=<value>` (matching `REDDIT_COOKIE` in `.env.example`).
         Loaded via systemd `LoadCredential` and read through `REDDIT_COOKIE_FILE`.
       '';
     };

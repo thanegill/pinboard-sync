@@ -57,8 +57,9 @@ Per source:
   edge blocks cookieless requests, so the tool reads
   `old.reddit.com/user/<you>/saved.json` with a logged-in cookie. Copy
   `reddit_session` from your browser's DevTools (Application → Cookies →
-  reddit.com). It lasts about a year; when it expires the tool exits non-zero and
-  runs the optional auth-failure hook so you can re-copy it.
+  reddit.com); either its bare value or `reddit_session=<value>` works. It lasts
+  about a year; when it expires the tool exits non-zero and runs the optional
+  auth-failure hook so you can re-copy it.
 - **GitHub** needs a **personal access token** (`public_repo`/`read` scope is
   plenty — it only reads `/user/starred`).
 - **HackerNews** needs only your **username**; favorites are public.
@@ -92,7 +93,7 @@ export HN_USERNAME_FILE=/run/secrets/hn-username
 | --- | --- | --- |
 | `PINBOARD_TOKEN` | Pinboard API token (`user:TOKEN`), shared by every source | yes |
 | `REDDIT_USERNAME` | Reddit user whose saved items to read | no |
-| `REDDIT_COOKIE` | Reddit `reddit_session=…` cookie | yes |
+| `REDDIT_COOKIE` | Reddit `reddit_session` cookie, bare or as `reddit_session=…` | yes |
 | `GITHUB_TOKEN` | GitHub personal access token | yes |
 | `HN_USERNAME` | HackerNews user whose favorites to read | no |
 
@@ -393,7 +394,7 @@ multiple accounts of one source. All three accept the per-account override keys
 | --- | --- | --- | --- | --- |
 | `name` | all | string | — | Selector for `sync <source> <name>`. Falls back to `username` for Reddit and HackerNews; GitHub has no username, so its accounts need a `name`. |
 | `username` | reddit, hackernews | string | — | Whose saves/favorites to read. HackerNews favorites are public; Reddit needs the cookie too. |
-| `cookie` / `cookie_file` | reddit | string / path | — | `reddit_session` cookie value, or a file holding it. |
+| `cookie` / `cookie_file` | reddit | string / path | — | `reddit_session` cookie, bare or as `reddit_session=…`, or a file holding it. |
 | `token` / `token_file` | github | string / path | — | Personal access token, or a file holding it. |
 | `on_auth_failure` | reddit, github | string | — | Per-account override of `[hooks].on_auth_failure`. |
 
@@ -589,7 +590,7 @@ services.pinboard-sync = {
   enable = true;
   pinboardTokenFile = config.sops.secrets.pinboard-token.path;
   redditUsernameFile = config.sops.secrets.reddit-username.path;
-  # The Reddit cookie file must contain the full `reddit_session=<value>` form.
+  # The Reddit cookie file holds the `reddit_session` value, bare or as `reddit_session=<value>`.
   redditCookieFile = config.sops.secrets.reddit-cookie.path;
 };
 ```

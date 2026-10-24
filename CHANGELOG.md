@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed Pinboard request (DNS failure, refused connection, timeout) no longer logs the
+  Pinboard API token. The error used to include the full request URL, whose `auth_token`
+  query parameter is the token; it now names only the endpoint. If a failed run was
+  logged before this fix, rotate the token.
+
 ## [0.5.0] - 2026-09-01
 
 ### Added

@@ -40,6 +40,10 @@ where
 ///
 /// `build` is called once per attempt, so it must reconstruct the request (the
 /// request is consumed by `send`).
+///
+/// A transport error is returned without its request URL, for every client: a URL can
+/// carry a credential in its query (Pinboard's `auth_token`), and `reqwest::Error` would
+/// otherwise print it in both `Display` and `Debug`. `label` names the endpoint instead.
 pub async fn send_retrying<F>(
     label: &str,
     max_attempts: u32,
@@ -59,6 +63,7 @@ where
         || build().send(),
     )
     .await
+    .map_err(reqwest::Error::without_url)
     .with_context(|| format!("{label} failed after {max_attempts} attempts"))
 }
 
@@ -124,5 +129,64 @@ mod tests {
         let (result, calls) = run(vec![Err(()), Err(()), Err(())], 3).await;
         assert_eq!(result, Err(()));
         assert_eq!(calls, 3);
+    }
+
+    /// Asserts that no rendering of a `send_retrying` error leaks `secret`, and that the
+    /// error is a `reqwest::Error` matching `kind`, so the check can't pass on an
+    /// unrelated failure that never carried the URL.
+    pub(super) fn assert_error_hides(
+        err: &anyhow::Error,
+        kind: fn(&reqwest::Error) -> bool,
+        secret: &str,
+    ) {
+        let renderings = [format!("{err}"), format!("{err:#}"), format!("{err:?}")]
+            .into_iter()
+            .chain(err.chain().map(|cause| format!("{cause:?}")));
+        for rendering in renderings {
+            assert!(!rendering.contains(secret), "token leaked: {rendering}");
+        }
+        assert!(
+            err.downcast_ref::<reqwest::Error>().is_some_and(kind),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_error_does_not_leak_query_token() {
+        let http = reqwest::Client::new();
+
+        // reqwest rejects the scheme before opening a socket but still attaches the URL.
+        let err = send_retrying("posts/all", 2, NO_DELAY, || {
+            http.get("ftp://api.pinboard.in/v1/posts/all")
+                .query(&[("auth_token", "user:SECRET123")])
+        })
+        .await
+        .unwrap_err();
+
+        assert_error_hides(&err, reqwest::Error::is_builder, "SECRET123");
+    }
+}
+
+/// Tests that need a socket; the flake skips `net_tests` in the Nix build sandbox.
+#[cfg(test)]
+mod net_tests {
+    use super::tests::assert_error_hides;
+    use super::*;
+
+    #[tokio::test]
+    async fn connect_error_does_not_leak_query_token() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let http = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/v1/posts/all");
+
+        let err = send_retrying("posts/all", 2, Duration::ZERO, || {
+            http.get(&url).query(&[("auth_token", "user:SECRET123")])
+        })
+        .await
+        .unwrap_err();
+
+        assert_error_hides(&err, reqwest::Error::is_connect, "SECRET123");
     }
 }

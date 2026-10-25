@@ -12,7 +12,7 @@ use log::{debug, warn};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
-use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
+use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PassOutcome, Plan};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
@@ -551,12 +551,7 @@ impl BackupSource for HackerNewsClient {
     async fn dump(&self) -> Result<BackupDump, SourceError> {
         let mut sink = RawSink::collecting();
         let drafts = self.fetch_capturing(None, &mut sink).await?;
-        let (raw, truncated) = sink.into_parts();
-        Ok(BackupDump {
-            raw,
-            records: Ok(drafts.iter().map(ExportBookmark::from).collect()),
-            truncated,
-        })
+        Ok(BackupDump::from_drafts(sink, &drafts))
     }
 }
 

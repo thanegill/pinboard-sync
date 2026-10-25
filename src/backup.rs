@@ -168,6 +168,19 @@ pub struct BackupDump {
     pub truncated: Option<String>,
 }
 
+impl BackupDump {
+    /// The dump of a source that shapes its drafts as it paginates (GitHub, HackerNews):
+    /// everything `sink` captured, with `drafts` as the records.
+    pub fn from_drafts(sink: RawSink, drafts: &[BookmarkDraft]) -> Self {
+        let (raw, truncated) = sink.into_parts();
+        Self {
+            raw,
+            records: Ok(drafts.iter().map(ExportBookmark::from).collect()),
+            truncated,
+        }
+    }
+}
+
 /// A service that can dump what it holds. Implemented by the three `Source` clients and
 /// by the Pinboard client, so `backup` covers the destination as well as the sources.
 /// (Crate-internal, never spawned across threads, so the missing `Send` bound from

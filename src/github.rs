@@ -264,6 +264,20 @@ impl GitHubClient {
         ))
     }
 
+    /// The error for an unsuccessful (non-401) response to the `what` request:
+    /// [`SourceError::RateLimited`] when [`rate_limit_message`] recognises one, else the
+    /// status with an excerpt of the body, the token redacted.
+    async fn refusal(&self, what: &str, resp: reqwest::Response) -> SourceError {
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let body = resp.text().await.unwrap_or_default();
+        if let Some(message) = rate_limit_message(status, &headers, &body) {
+            return SourceError::RateLimited(message);
+        }
+        crate::http::error_with_body(&format!("{what} returned {status}"), &body, &[&self.token])
+            .into()
+    }
+
     /// Look up a repo via `/repos/{owner}/{name}` (the API follows renames and
     /// transfers, returning the current name/URL). `None` if it is permanently
     /// inaccessible — deleted or private (404), or blocked under the DMCA (451).
@@ -293,17 +307,7 @@ impl GitHubClient {
             return Ok(None);
         }
         if !status.is_success() {
-            let headers = resp.headers().clone();
-            let body = resp.text().await.unwrap_or_default();
-            if let Some(message) = rate_limit_message(status, &headers, &body) {
-                return Err(SourceError::RateLimited(message));
-            }
-            return Err(crate::http::error_with_body(
-                &format!("github repo returned {status}"),
-                &body,
-                &[&self.token],
-            )
-            .into());
+            return Err(self.refusal("github repo", resp).await);
         }
         let repo: GitHubRepo = resp.json().await.context("parsing github repo response")?;
         Ok(Some(repo))
@@ -387,17 +391,7 @@ impl GitHubClient {
                 .and_then(|v| v.to_str().ok())
                 .and_then(parse_link_next);
             if !status.is_success() {
-                let headers = resp.headers().clone();
-                let body = resp.text().await.unwrap_or_default();
-                if let Some(message) = rate_limit_message(status, &headers, &body) {
-                    return Err(SourceError::RateLimited(message));
-                }
-                return Err(crate::http::error_with_body(
-                    &format!("github starred returned {status}"),
-                    &body,
-                    &[&self.token],
-                )
-                .into());
+                return Err(self.refusal("github starred", resp).await);
             }
 
             // Deserialize element-by-element so one malformed repo is skipped with a

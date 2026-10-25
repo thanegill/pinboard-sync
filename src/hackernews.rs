@@ -445,16 +445,7 @@ impl HackerNewsClient {
                 },
             )
             .await?;
-            let status = resp.status();
-            if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(crate::http::error_with_body(
-                    &format!("hn algolia returned {status}"),
-                    &body,
-                    &[],
-                )
-                .into());
-            }
+            let resp = algolia_success(resp, "hn algolia").await?;
             let body = resp.text().await.context("reading hn algolia response")?;
             sink.push("", RawKind::Json, &body);
             let search: AlgoliaSearchResponse =
@@ -485,16 +476,7 @@ impl HackerNewsClient {
             },
         )
         .await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(crate::http::error_with_body(
-                &format!("hn algolia url search returned {status}"),
-                &body,
-                &[],
-            )
-            .into());
-        }
+        let resp = algolia_success(resp, "hn algolia url search").await?;
         let search: AlgoliaSearchResponse =
             resp.json().await.context("parsing hn algolia response")?;
         let want = url_key(url);
@@ -694,6 +676,20 @@ impl HackerNewsClient {
         )
         .await
     }
+}
+
+/// `resp` when it succeeded, else an error naming the `what` request with its status and
+/// an excerpt of the body.
+async fn algolia_success(
+    resp: reqwest::Response,
+    what: &str,
+) -> Result<reqwest::Response, SourceError> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let body = resp.text().await.unwrap_or_default();
+    Err(crate::http::error_with_body(&format!("{what} returned {status}"), &body, &[]).into())
 }
 
 /// The HN item id referenced by a note's `HN Link: <url>` back-link marker, if the note

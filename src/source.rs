@@ -102,22 +102,26 @@ pub fn github_token_source(rung: SecretRung) -> &'static str {
     }
 }
 
-/// Every setting a Reddit cookie can come from, as "A, B or C" for a message to follow
-/// "set".
+/// Every setting a Reddit cookie can come from, as "A, B, C, or the config's `x` or
+/// `x_file`" for a message to follow "set".
 pub fn reddit_cookie_settings() -> String {
     settings_list(reddit_cookie_source)
 }
 
-/// Every setting a GitHub token can come from, as "A, B or C" for a message to follow
-/// "set".
+/// Every setting a GitHub token can come from, as "A, B, C, or the config's `x` or
+/// `x_file`" for a message to follow "set".
 pub fn github_token_settings() -> String {
     settings_list(github_token_source)
 }
 
-/// The setting each rung reads, in ladder order, as "A, B or C".
+/// The setting each rung reads, in ladder order. The two config rungs share one entry,
+/// "the config's `x` or `x_file`", rather than naming the config twice.
 fn settings_list(setting: fn(SecretRung) -> &'static str) -> String {
-    let [rest @ .., last] = SecretRung::ALL.map(setting);
-    format!("{} or {last}", rest.join(", "))
+    let [flag, env, env_file, config_inline, config_file] = SecretRung::ALL.map(setting);
+    let config_file_key = config_file
+        .strip_prefix("the config's ")
+        .unwrap_or(config_file);
+    format!("{flag}, {env}, {env_file}, or {config_inline} or {config_file_key}")
 }
 
 /// A bookmark ready to write to Pinboard, plus the key used to tell whether it is
@@ -308,13 +312,13 @@ mod tests {
     fn settings_lists_name_every_rung_in_ladder_order() {
         assert_eq!(
             reddit_cookie_settings(),
-            "--reddit-cookie, $REDDIT_COOKIE, $REDDIT_COOKIE_FILE, the config's `cookie` or \
-             the config's `cookie_file`"
+            "--reddit-cookie, $REDDIT_COOKIE, $REDDIT_COOKIE_FILE, or the config's `cookie` \
+             or `cookie_file`"
         );
         assert_eq!(
             github_token_settings(),
-            "--github-token, $GITHUB_TOKEN, $GITHUB_TOKEN_FILE, the config's `token` or the \
-             config's `token_file`"
+            "--github-token, $GITHUB_TOKEN, $GITHUB_TOKEN_FILE, or the config's `token` or \
+             `token_file`"
         );
     }
 

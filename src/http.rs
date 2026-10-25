@@ -19,6 +19,23 @@ use tower::ServiceExt;
 /// on [`CONNECT_BACKOFF`].
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Bounds the wait from send to the response headers (connect included), then each gap
+/// between body chunks; must outlast [`CONNECT_TIMEOUT`] so a slow connect still takes the
+/// connect backoff.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+const _: () = assert!(READ_TIMEOUT.as_secs() > CONNECT_TIMEOUT.as_secs());
+
+/// How long after its last frame an HTTP/2 connection is pinged, idle or not.
+const H2_PING_INTERVAL: Duration = Duration::from_secs(30);
+
+/// An unanswered ping this long closes the connection, failing its requests before
+/// [`READ_TIMEOUT`] would, so the retry reconnects instead of reusing the dead one.
+const H2_PING_TIMEOUT: Duration = Duration::from_secs(20);
+
+const _: () =
+    assert!(H2_PING_INTERVAL.as_secs() + H2_PING_TIMEOUT.as_secs() < READ_TIMEOUT.as_secs());
+
 /// The waits before each retry of a request that could not establish a connection (a
 /// DNS, TCP or TLS failure). Exponential and long, about 2.5 minutes of waiting in all,
 /// so a resolver or network that is down for a minute or two is ridden out. The attempts
@@ -258,9 +275,16 @@ fn retry_after_verdict(
 /// The starting point for every client's `reqwest::Client`. The TLS ClientHello offers
 /// ALPN `h2, http/1.1`, and the client speaks whichever the server picks. Reddit's edge
 /// 403s a ClientHello with no ALPN extension (#78), which `native-tls-alpn` adds.
-/// Connecting (DNS, TCP and the TLS handshake) is bounded by [`CONNECT_TIMEOUT`].
+/// Connecting (DNS, TCP and the TLS handshake) is bounded by [`CONNECT_TIMEOUT`], and
+/// silence by [`READ_TIMEOUT`]. No overall timeout: it would cap a slow but steady
+/// `posts/all`.
 pub fn client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT)
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .http2_keep_alive_interval(H2_PING_INTERVAL)
+        .http2_keep_alive_timeout(H2_PING_TIMEOUT)
+        .http2_keep_alive_while_idle(true)
 }
 
 /// Send a request, retrying *transient* failures. A request that could not establish a
@@ -269,10 +293,12 @@ pub fn client_builder() -> reqwest::ClientBuilder {
 /// retried on the long exponential [`CONNECT_BACKOFF`] (5s, 10s, 20s, 40s, 80s), so a
 /// short resolver or network outage doesn't fail the run — once per client, while its
 /// `budget` is unspent (see [`ConnectBudget`]). Other transport errors (a connection
-/// dropped mid-request), HTTP 429, and 5xx are retried with linear backoff,
-/// `base_delay * n` for up to `max_attempts` attempts. Responses that are not transient —
-/// 2xx and other 4xx (e.g. 401/403/400) — are returned as-is for the caller to interpret,
-/// since retrying them would not help.
+/// dropped mid-request, or no response headers within [`READ_TIMEOUT`]), HTTP 429, and
+/// 5xx are retried with linear backoff, `base_delay * n` for up to `max_attempts`
+/// attempts. Responses that are not transient — 2xx and other 4xx (e.g. 401/403/400) —
+/// are returned as-is for the caller to interpret, since retrying them would not help.
+///
+/// Only sending is retried: a body that stalls after this returns fails the caller's read.
 ///
 /// `build` is called once and the request cloned for each attempt; one that cannot be built
 /// fails at once as "building `label`".
@@ -829,6 +855,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn every_client_gets_the_read_timeout() {
+        let client = format!("{:?}", client_builder().build().unwrap());
+        assert!(
+            client.contains(&format!("read_timeout: {READ_TIMEOUT:?}")),
+            "{client}"
+        );
+    }
+
     #[tokio::test]
     async fn request_error_does_not_leak_query_token() {
         let http = reqwest::Client::new();
@@ -1099,6 +1134,10 @@ mod net_tests {
         /// Shut the whole connection down instead of answering: a GOAWAY that counts
         /// this stream as processed, then the socket closes under it.
         Abort,
+        /// Stop serving this connection, pings included, but keep its socket open.
+        Hang,
+        /// Answer 200, then [`H2Reply::Hang`] once the response has had time to go out.
+        OkThenHang,
     }
 
     /// An HTTP/2 server without TLS on a local port, answering per `replies`, and a
@@ -1132,6 +1171,16 @@ mod net_tests {
                                 conn.abrupt_shutdown(h2::Reason::INTERNAL_ERROR);
                                 let _ = std::future::poll_fn(|cx| conn.poll_closed(cx)).await;
                                 return;
+                            }
+                            H2Reply::Hang => {
+                                std::future::pending::<()>().await;
+                            }
+                            H2Reply::OkThenHang => {
+                                drop(respond.send_response(ok(), true));
+                                let flush = std::future::poll_fn(|cx| conn.poll_closed(cx));
+                                let _ =
+                                    tokio::time::timeout(Duration::from_millis(50), flush).await;
+                                std::future::pending::<()>().await;
                             }
                         }
                     }
@@ -1243,5 +1292,180 @@ mod net_tests {
             assert!(waits.is_empty(), "{waits:?}");
         }
         assert_eq!(connections.load(Ordering::SeqCst), 2);
+    }
+
+    /// [`h2_client`] with pings short enough to find a dead connection well within its
+    /// one-second read timeout.
+    fn h2_pinging_client() -> reqwest::Client {
+        client_builder()
+            .no_proxy()
+            .http2_prior_knowledge()
+            .read_timeout(Duration::from_secs(1))
+            .http2_keep_alive_interval(Duration::from_millis(100))
+            .http2_keep_alive_timeout(Duration::from_millis(100))
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_dead_h2_connection_is_found_by_its_pings_and_the_retry_reconnects() {
+        let (addr, connections) = h2c_server(vec![H2Reply::Ok, H2Reply::Hang, H2Reply::Ok]).await;
+        let url = format!("http://{addr}/");
+        let http = h2_pinging_client();
+
+        let (sent, _) = h2_get(&http, &url).await;
+        assert_eq!(sent.unwrap().status(), 200);
+
+        let (sent, waits) = h2_get(&http, &url).await;
+        assert_eq!(sent.unwrap().status(), 200);
+        assert_eq!(waits, [H2_LINEAR_DELAY]);
+        assert_eq!(connections.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn an_idle_dead_h2_connection_is_dropped_before_the_next_request() {
+        let (addr, connections) = h2c_server(vec![H2Reply::OkThenHang, H2Reply::Ok]).await;
+        let url = format!("http://{addr}/");
+        let http = h2_pinging_client();
+
+        let (sent, _) = h2_get(&http, &url).await;
+        assert_eq!(sent.unwrap().status(), 200);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let (sent, waits) = h2_get(&http, &url).await;
+        assert_eq!(sent.unwrap().status(), 200);
+        assert!(waits.is_empty(), "{waits:?}");
+        assert_eq!(connections.load(Ordering::SeqCst), 2);
+    }
+
+    const SHORT_READ_TIMEOUT: Duration = Duration::from_millis(300);
+
+    fn short_read_timeout_client() -> reqwest::Client {
+        client_builder()
+            .no_proxy()
+            .read_timeout(SHORT_READ_TIMEOUT)
+            .build()
+            .unwrap()
+    }
+
+    /// Reads the request head, then hands the socket to `respond`.
+    fn serve_one(respond: impl FnOnce(std::net::TcpStream) + Send + 'static) -> u16 {
+        use std::io::Read;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_nodelay(true).unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8];
+            while !head.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            respond(socket);
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn a_silent_server_times_out_onto_the_linear_retries() {
+        let silent_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = silent_listener.local_addr().unwrap().port();
+        let http = short_read_timeout_client();
+
+        let sent = tokio::time::timeout(
+            Duration::from_secs(10),
+            send_with_connect_backoff(
+                "silent",
+                &ConnectBudget::default(),
+                2,
+                Duration::ZERO,
+                &[Duration::ZERO; 3],
+                backoff_if_transient,
+                || http.get(format!("http://127.0.0.1:{port}/")),
+            ),
+        )
+        .await
+        .expect("the read timeout never fired");
+
+        let err = sent.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("failed after 2 attempts"),
+            "a read timeout must take the linear retries, not the connect backoff: {err:#}"
+        );
+        assert!(
+            err.downcast_ref::<reqwest::Error>()
+                .is_some_and(|err| err.is_timeout() && !err.is_connect()),
+            "unexpected error: {err:#}"
+        );
+        drop(silent_listener);
+    }
+
+    #[tokio::test]
+    async fn a_body_that_stalls_times_out_without_its_url() {
+        use std::io::Write;
+
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let port = serve_one(move |mut socket| {
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
+                .unwrap();
+            let _ = held.recv();
+        });
+        let http = short_read_timeout_client();
+        let url = format!("http://127.0.0.1:{port}/v1/posts/all?auth_token=user:SECRET123");
+
+        let read = tokio::time::timeout(Duration::from_secs(10), async {
+            http.get(&url).send().await.unwrap().text().await
+        })
+        .await
+        .expect("the read timeout never fired");
+
+        let err = read.unwrap_err();
+        assert!(err.is_timeout(), "unexpected error: {err:?}");
+        for rendering in [format!("{err}"), format!("{err:?}")] {
+            assert!(
+                !rendering.contains("SECRET123"),
+                "token leaked: {rendering}"
+            );
+        }
+        drop(release);
+    }
+
+    #[tokio::test]
+    async fn a_slow_body_that_keeps_arriving_is_not_cut_off() {
+        use std::io::Write;
+
+        let chunks = ["one ", "two ", "three ", "four ", "five ", "six"];
+        let port = serve_one(move |mut socket| {
+            let body_len = chunks.concat().len();
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n"
+            )
+            .unwrap();
+            for chunk in chunks {
+                std::thread::sleep(SHORT_READ_TIMEOUT / 4);
+                socket.write_all(chunk.as_bytes()).unwrap();
+            }
+        });
+        let http = short_read_timeout_client();
+        let start = std::time::Instant::now();
+
+        let body = http
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        assert_eq!(body, chunks.concat());
+        assert!(
+            start.elapsed() > SHORT_READ_TIMEOUT,
+            "the body must take longer than one read timeout in all"
+        );
     }
 }

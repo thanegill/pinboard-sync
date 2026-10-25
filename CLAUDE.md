@@ -342,9 +342,14 @@ deployment it exists to serve. Every client sends through
 returns other statuses as-is. It builds the request once and hands it to tower's
 `retry::Retry` over the request's `reqwest::Client`; every decision lives in
 `http::RetryPolicy`, whose waits go through `http::sleep`, and its unit tests drive the
-same policy over a `tower::service_fn` mock of canned outcomes. Which responses retry,
-and how, is a classifier returning an `http::Verdict` (`Done`, `Backoff`,
-`RetryOnceAfter(wait)`): `send_retrying` uses
+same policy over a `tower::service_fn` mock of canned outcomes. reqwest's `read_timeout`
+(`READ_TIMEOUT`, 60s) times out both the wait for response headers, counted from the
+send so it must stay above `CONNECT_TIMEOUT` (a const assert holds it there), and any gap
+between body chunks. A header timeout is a plain transport error and takes the linear
+retries. A body stall happens after `send_retrying` has returned, so it is not retried
+and fails the caller's read. There is deliberately no overall `timeout`, which would cap
+a slow but steady `posts/all`. Which responses retry, and how, is a classifier returning
+an `http::Verdict` (`Done`, `Backoff`, `RetryOnceAfter(wait)`): `send_retrying` uses
 `backoff_if_transient`, and `send_retrying_with` takes any other. The one other today is
 the HackerNews favorites pages' `retry_after_up_to(FAVORITES_MAX_RETRY_AFTER)`, which
 shares the 5xx rule: four quick retries of a 429 there only prolong HN's block, so a 429
@@ -437,7 +442,10 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   ClientHello offers ALPN `h2, http/1.1` and each connection speaks what the server picks
   ([#91](https://github.com/thanegill/pinboard-sync/issues/91)). Every client starts from
   `http::client_builder()` (the 30s `CONNECT_TIMEOUT` keeps a black-holed host from
-  stalling each attempt for the OS connect timeout). Build new clients from it;
+  stalling each attempt for the OS connect timeout, the 60s `READ_TIMEOUT` bounds a
+  server that goes silent, and HTTP/2 pings close a dead pooled connection, since a read
+  timeout over h2 resets only the stream and the retry would reuse it). Build new
+  clients from it;
   `http::net_tests::client_hello_offers_alpn_h2_and_http1` guards the ClientHello. Over
   h2 a dead connection or reset stream is a transport error, not `is_connect`, so it gets
   the linear retries; the `h2c_server` tests in `http::net_tests` pin that down. `-v`

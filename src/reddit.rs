@@ -350,15 +350,16 @@ impl UrlKey for RedditClient {
 }
 
 /// The `Cookie` header for a configured cookie. A value that already names a
-/// `reddit_session` cookie, alone or in a whole copied `Cookie` header, is sent as is; a
-/// bare session value, including one ending in base64 `=` padding, becomes
-/// `reddit_session=<value>`, since Reddit only recognises the session by that name. Other
-/// cookies without a `reddit_session` are sent as is with a warning: naming them would
-/// only produce a garbled header. See [`cookie_form`] for what counts as no cookie.
+/// `reddit_session` cookie, alone or in a whole copied `Cookie` header, is sent with only
+/// its first non-empty `reddit_session` (see [`with_one_session`]); a bare session value,
+/// including one ending in base64 `=` padding, becomes `reddit_session=<value>`, since
+/// Reddit only recognises the session by that name. Other cookies without a
+/// `reddit_session` are sent as is with a warning: naming them would only produce a garbled
+/// header. See [`cookie_form`] for what counts as no cookie.
 fn session_cookie(raw: &str) -> Option<String> {
     let value = unquoted(raw);
     match cookie_form(value)? {
-        CookieForm::Named => Some(value.to_string()),
+        CookieForm::Named => Some(with_one_session(value)),
         CookieForm::Bare => Some(format!("reddit_session={value}")),
         CookieForm::OtherCookies => {
             warn!(
@@ -404,13 +405,11 @@ fn cookie_form(value: &str) -> Option<CookieForm> {
     if value.is_empty() {
         return None;
     }
-    let sessions: Vec<&str> = value
-        .split(';')
-        .filter_map(|pair| pair.trim_start().strip_prefix("reddit_session="))
-        .collect();
-    if !sessions.is_empty() {
-        let any_session_set = sessions.iter().any(|session| !session.trim().is_empty());
-        return any_session_set.then_some(CookieForm::Named);
+    let mut sessions = value.split(';').filter_map(session_value).peekable();
+    if sessions.peek().is_some() {
+        return sessions
+            .any(|session| !session.trim().is_empty())
+            .then_some(CookieForm::Named);
     }
     Some(
         if value.contains(';') || value.trim_end_matches('=').contains('=') {
@@ -419,6 +418,31 @@ fn cookie_form(value: &str) -> Option<CookieForm> {
             CookieForm::Bare
         },
     )
+}
+
+/// The value of a `reddit_session=<value>` cookie pair, or `None` for any other pair.
+fn session_value(pair: &str) -> Option<&str> {
+    pair.trim_start().strip_prefix("reddit_session=")
+}
+
+/// `value`'s cookie pairs, in order, without empty pairs or any `reddit_session` but the
+/// first non-empty one. Sent several, Reddit would pick one by its own rule, so an empty
+/// pair could mask the real session.
+fn with_one_session(value: &str) -> String {
+    let mut session_kept = false;
+    let pairs: Vec<&str> = value
+        .split(';')
+        .filter(|pair| !pair.trim().is_empty())
+        .filter(|pair| match session_value(pair) {
+            None => true,
+            Some(session) if session_kept || session.trim().is_empty() => false,
+            Some(_) => {
+                session_kept = true;
+                true
+            }
+        })
+        .collect();
+    pairs.join(";").trim().to_string()
 }
 
 /// The error for a redirect. A redirect to `/login` means Reddit wants a session it
@@ -837,7 +861,29 @@ mod tests {
             assert!(!is_configured_cookie(unset), "{unset:?}");
         }
         assert!(is_configured_cookie("abc"));
-        assert!(is_configured_cookie("reddit_session=; reddit_session=abc"));
+    }
+
+    #[test]
+    fn sends_only_the_first_non_empty_session_whatever_the_order() {
+        let cases = [
+            ("reddit_session=; reddit_session=abc", "reddit_session=abc"),
+            ("reddit_session=abc; reddit_session=", "reddit_session=abc"),
+            (
+                "reddit_session=abc;reddit_session=def",
+                "reddit_session=abc",
+            ),
+            (
+                "a=1; reddit_session= ; reddit_session=abc; b=2; reddit_session=def",
+                "a=1; reddit_session=abc; b=2",
+            ),
+            ("reddit_session=abc;", "reddit_session=abc"),
+            ("a=1;; reddit_session=abc", "a=1; reddit_session=abc"),
+        ];
+        for (raw, sent) in cases {
+            assert!(is_configured_cookie(raw), "{raw:?}");
+            assert_eq!(session_cookie(raw).as_deref(), Some(sent), "{raw:?}");
+        }
+        assert!(!is_configured_cookie("reddit_session=; reddit_session= "));
     }
 
     #[test]

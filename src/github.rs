@@ -281,7 +281,11 @@ impl GitHubClient {
             if let Some(message) = rate_limit_message(status, &headers, &body) {
                 return Err(SourceError::RateLimited(message));
             }
-            return Err(anyhow::anyhow!("github repo returned {status}: {}", body.trim()).into());
+            return Err(crate::http::error_with_body(
+                &format!("github repo returned {status}"),
+                &body,
+            )
+            .into());
         }
         let repo: GitHubRepo = resp.json().await.context("parsing github repo response")?;
         Ok(Some(repo))
@@ -373,9 +377,11 @@ impl GitHubClient {
                 if let Some(message) = rate_limit_message(status, &headers, &body) {
                     return Err(SourceError::RateLimited(message));
                 }
-                return Err(
-                    anyhow::anyhow!("github starred returned {status}: {}", body.trim()).into(),
-                );
+                return Err(crate::http::error_with_body(
+                    &format!("github starred returned {status}"),
+                    &body,
+                )
+                .into());
             }
 
             // Deserialize element-by-element so one malformed repo is skipped with a
@@ -1153,6 +1159,41 @@ mod net_tests {
             "expected a rate-limit error, got {err:?}"
         );
         assert!(err.to_string().contains("60s"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn repo_error_quotes_a_capped_one_line_excerpt() {
+        use crate::test_support::{assert_quotes_capped_excerpt, long_error_page};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r"))
+            .respond_with(ResponseTemplate::new(422).set_body_string(long_error_page()))
+            .mount(&server)
+            .await;
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+
+        let err = client.repo("o", "r").await.unwrap_err();
+        assert_quotes_capped_excerpt(
+            &err.to_string(),
+            "github repo returned 422 Unprocessable Entity",
+        );
+    }
+
+    #[tokio::test]
+    async fn starred_error_quotes_a_capped_one_line_excerpt() {
+        use crate::test_support::{assert_quotes_capped_excerpt, long_error_page};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/starred"))
+            .respond_with(ResponseTemplate::new(404).set_body_string(long_error_page()))
+            .mount(&server)
+            .await;
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+
+        let err = client.fetch().await.unwrap_err();
+        assert_quotes_capped_excerpt(&err.to_string(), "github starred returned 404 Not Found");
     }
 
     #[tokio::test]

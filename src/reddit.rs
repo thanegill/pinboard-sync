@@ -495,7 +495,9 @@ async fn reddit_body(resp: reqwest::Response, what: &str) -> Result<String, Sour
         });
     }
     if !status.is_success() {
-        return Err(anyhow::anyhow!("{what} returned {status}: {}", body.trim()).into());
+        return Err(
+            crate::http::error_with_body(&format!("{what} returned {status}"), &body).into(),
+        );
     }
     Ok(body)
 }
@@ -1320,5 +1322,23 @@ mod net_tests {
         let client = saved_client(&server);
         let dump = crate::http::recording_waits(client.dump()).await.0.unwrap();
         assert_eq!(dump.raw.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn saved_listing_error_quotes_a_capped_one_line_excerpt() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/psophis/saved.json"))
+            .respond_with(
+                ResponseTemplate::new(404).set_body_string(crate::test_support::long_error_page()),
+            )
+            .mount(&server)
+            .await;
+
+        let err = saved_client(&server).fetch_saved().await.unwrap_err();
+        crate::test_support::assert_quotes_capped_excerpt(
+            &err.to_string(),
+            "saved listing returned 404 Not Found",
+        );
     }
 }

@@ -364,7 +364,9 @@ is redacted before the call: a Pinboard error body could echo the request back, 
 text from a Pinboard response that goes
 into an error (a non-success body via `PinboardClient::status_error`, or a `result_code`)
 goes through `redacted_error`, which redacts the token, its secret part (which also covers
-it percent-encoded) and any `auth_token=` value from the whole text first.
+it percent-encoded) and any `auth_token=` value from the whole text first. GitHub, Reddit
+and Algolia bodies go in unredacted: the GitHub token and Reddit cookie travel in headers,
+which their error bodies don't echo, and HackerNews has no credential.
 
 **`SourceError::RateLimited` is the third case, and deliberately not either of those.**
 GitHub answers both its primary and secondary rate limits with a **403 or 429** — the

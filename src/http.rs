@@ -1,10 +1,11 @@
-//! Shared HTTP retry helper used by every client.
+//! Shared HTTP helpers used by every client: the retrying send, and quoting a response
+//! body in an error.
 
 use std::cell::Cell;
 use std::future::Future;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use time::format_description::well_known::Rfc2822;
 use time::OffsetDateTime;
 
@@ -310,6 +311,38 @@ where
     .await
     .map_err(reqwest::Error::without_url)
     .with_context(|| format!("{label} failed after {} attempts", attempts.get()))
+}
+
+/// The longest [`error_excerpt`] returns, in bytes, including [`ELLIPSIS`].
+pub const ERROR_BODY_MAX_BYTES: usize = 300;
+/// Ends an [`error_excerpt`] that was cut.
+pub const ELLIPSIS: &str = "…";
+
+/// The error `"{what}: {excerpt}"`, quoting a response body as [`error_excerpt`] cuts it,
+/// with [`body_debug_line`] logged at debug level first so `-v` shows what the excerpt
+/// left out. Both carry the body as given, so a caller whose body could echo a secret
+/// redacts it before passing it in.
+pub fn error_with_body(what: &str, body: &str) -> anyhow::Error {
+    log::debug!("{}", body_debug_line(what, body));
+    anyhow!("{what}: {}", error_excerpt(body))
+}
+
+/// The debug line [`error_with_body`] logs: the whole body, uncut, as an escaped string
+/// literal, so its newlines can't start what looks like a separate log line in the journal.
+fn body_debug_line(what: &str, body: &str) -> String {
+    format!("{what}; full response body: {body:?}")
+}
+
+/// `text` with its whitespace collapsed to one line and cut to at most
+/// [`ERROR_BODY_MAX_BYTES`] on a char boundary, with [`ELLIPSIS`] marking the cut, so a
+/// large HTML error page stays out of the journal.
+fn error_excerpt(text: &str) -> String {
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.len() <= ERROR_BODY_MAX_BYTES {
+        return one_line;
+    }
+    let cut = one_line.floor_char_boundary(ERROR_BODY_MAX_BYTES - ELLIPSIS.len());
+    format!("{}{ELLIPSIS}", &one_line[..cut])
 }
 
 #[cfg(test)]
@@ -728,6 +761,51 @@ mod tests {
         .unwrap_err();
 
         assert_error_hides(&err, reqwest::Error::is_builder, "SECRET123");
+    }
+
+    #[test]
+    fn excerpt_is_collapsed_to_one_line() {
+        assert_eq!(
+            error_excerpt("\n  <h1>400</h1>\r\n\t<p>Bad Request</p>\n"),
+            "<h1>400</h1> <p>Bad Request</p>"
+        );
+    }
+
+    #[test]
+    fn excerpt_is_cut_on_a_char_boundary_within_the_cap() {
+        // `ELLIPSIS` is 3 bytes, so the cut offset is odd and lands inside an `é` here.
+        let body = format!("xx{}", "é".repeat(ERROR_BODY_MAX_BYTES));
+        let excerpt = error_excerpt(&body);
+        assert!(excerpt.len() <= ERROR_BODY_MAX_BYTES);
+        let kept = excerpt.strip_suffix(ELLIPSIS).expect("cut is marked");
+        assert_eq!(kept.len(), ERROR_BODY_MAX_BYTES - ELLIPSIS.len() - 1);
+        assert!(body.starts_with(kept));
+    }
+
+    #[test]
+    fn excerpt_at_the_cap_is_kept_whole() {
+        let body = "x".repeat(ERROR_BODY_MAX_BYTES);
+        assert_eq!(error_excerpt(&body), body);
+    }
+
+    #[test]
+    fn error_with_body_quotes_the_excerpt_after_what() {
+        let err = error_with_body("github repo returned 500", "  oops\n  try again  ");
+        assert_eq!(err.to_string(), "github repo returned 500: oops try again");
+    }
+
+    #[test]
+    fn debug_line_keeps_the_whole_body_escaped_on_one_line() {
+        let x = "x".repeat(2 * ERROR_BODY_MAX_BYTES);
+        let body = format!("<p class=\"é\">\r\n{x}\nERROR forged entry\n</p>");
+        let line = body_debug_line("github repo returned 500", &body);
+        assert_eq!(
+            line,
+            format!(
+                r#"github repo returned 500; full response body: "<p class=\"é\">\r\n{x}\nERROR forged entry\n</p>""#
+            )
+        );
+        assert!(!line.contains(['\n', '\r']), "{line}");
     }
 }
 

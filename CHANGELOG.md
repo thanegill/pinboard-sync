@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- `-v` logs the full response body when an error quotes one, with the Pinboard token
+  redacted.
+
 ### Changed
 
 - **Breaking:** `limit` / `--limit` take `auto` (default), `all` or a positive number;

@@ -4,14 +4,14 @@
 use std::cell::Cell;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use log::warn;
 use serde::Deserialize;
 use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage};
 use crate::bookmark::{Bookmark, BookmarkStore};
-use crate::http::{client_builder, send_retrying, ConnectBudget};
+use crate::http::{client_builder, error_with_body, send_retrying, ConnectBudget};
 use crate::source::SourceError;
 
 const DEFAULT_BASE: &str = "https://api.pinboard.in/v1";
@@ -33,9 +33,6 @@ const MAX_URL_BYTES: usize = 4000;
 const MIN_URL_BYTES: usize = 500;
 /// Appended to a trimmed `extended` so the truncation is visible in the bookmark.
 const TRUNCATION_MARKER: &str = "… [truncated]";
-/// The longest [`redacted_excerpt`] returns, in bytes, including [`ELLIPSIS`].
-const ERROR_BODY_MAX_BYTES: usize = 300;
-const ELLIPSIS: &str = "…";
 const REDACTED: &str = "[redacted]";
 
 #[derive(Deserialize)]
@@ -154,28 +151,27 @@ impl BackupSource for PinboardClient {
     }
 }
 
-/// Text from a Pinboard response made fit for an error message: every occurrence of the
-/// `user:SECRET` token, and of its `SECRET` alone (which also covers the token
-/// percent-encoded as `user%3ASECRET`), replaced, as is any `auth_token=` value (a
-/// quoted request line cut short mid-token); whitespace collapsed to one line; and cut
-/// to at most [`ERROR_BODY_MAX_BYTES`] on a char boundary, with `…` marking the cut.
-/// Redacting comes first so the cut can't leave half a token behind.
-fn redacted_excerpt(text: &str, auth_token: &str) -> String {
+/// [`error_with_body`] for text from a Pinboard response, which could echo the request
+/// line and the token in it. The token is redacted from the whole text first, so neither
+/// the error nor the debug-logged body carries it, and the excerpt's cut can't leave half
+/// a token behind.
+fn redacted_error(what: &str, text: &str, auth_token: &str) -> anyhow::Error {
+    error_with_body(what, &redact_token(text, auth_token))
+}
+
+/// `text` with every occurrence of the `user:SECRET` token, and of its `SECRET` alone
+/// (which also covers the token percent-encoded as `user%3ASECRET`), replaced, as is any
+/// `auth_token=` value (a quoted request line cut short mid-token). Nothing else changes.
+fn redact_token(text: &str, auth_token: &str) -> String {
     let secret = auth_token
         .split_once(':')
         .map_or(auth_token, |(_, secret)| secret);
-    let redacted = [auth_token, secret]
+    [auth_token, secret]
         .into_iter()
         .filter(|needle| !needle.is_empty())
         .fold(redact_auth_token_values(text), |text, needle| {
             text.replace(needle, REDACTED)
-        });
-    let one_line = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one_line.len() <= ERROR_BODY_MAX_BYTES {
-        return one_line;
-    }
-    let cut = one_line.floor_char_boundary(ERROR_BODY_MAX_BYTES - ELLIPSIS.len());
-    format!("{}{ELLIPSIS}", &one_line[..cut])
+        })
 }
 
 /// `text` with the value of every `auth_token=` parameter replaced, up to the next `&`,
@@ -237,9 +233,10 @@ impl BookmarkStore for PinboardClient {
             .await
             .context("parsing Pinboard posts/delete response")?;
         if parsed.result_code != "done" {
-            return Err(anyhow!(
-                "Pinboard posts/delete failed: {}",
-                redacted_excerpt(&parsed.result_code, &self.auth_token)
+            return Err(redacted_error(
+                "Pinboard posts/delete failed",
+                &parsed.result_code,
+                &self.auth_token,
             ));
         }
         Ok(())
@@ -316,9 +313,10 @@ impl PinboardClient {
                 .await
                 .context("parsing Pinboard posts/add response")?;
             if parsed.result_code != "done" {
-                return Err(anyhow!(
-                    "Pinboard posts/add failed: {}",
-                    redacted_excerpt(&parsed.result_code, &self.auth_token)
+                return Err(redacted_error(
+                    "Pinboard posts/add failed",
+                    &parsed.result_code,
+                    &self.auth_token,
                 ));
             }
             // Warn once the trim is final, not inside the retry: a note Pinboard keeps
@@ -436,13 +434,14 @@ impl PinboardClient {
     }
 
     /// The error for a non-success response from `endpoint` (no query string), quoting
-    /// the body only through [`redacted_excerpt`].
+    /// the body only through [`redacted_error`].
     async fn status_error(&self, endpoint: &str, resp: reqwest::Response) -> anyhow::Error {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        anyhow!(
-            "Pinboard {endpoint} returned {status}: {}",
-            redacted_excerpt(&body, &self.auth_token)
+        redacted_error(
+            &format!("Pinboard {endpoint} returned {status}"),
+            &body,
+            &self.auth_token,
         )
     }
 
@@ -466,6 +465,7 @@ impl PinboardClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::{ELLIPSIS, ERROR_BODY_MAX_BYTES};
 
     fn test_client() -> PinboardClient {
         PinboardClient::with_base_url("user:tok".into(), DEFAULT_BASE.to_string()).unwrap()
@@ -501,18 +501,18 @@ mod tests {
     }
 
     #[test]
-    fn excerpt_redacts_the_token_plain_percent_encoded_and_bare() {
+    fn redacts_the_token_plain_percent_encoded_and_bare() {
         let body = "encoded user%3ASECRET123\ntoken user:SECRET123, secret SECRET123";
         assert_eq!(
-            redacted_excerpt(body, "user:SECRET123"),
-            "encoded user%3A[redacted] token [redacted], secret [redacted]"
+            redact_token(body, "user:SECRET123"),
+            "encoded user%3A[redacted]\ntoken [redacted], secret [redacted]"
         );
     }
 
     #[test]
-    fn excerpt_redacts_an_auth_token_value_cut_short() {
+    fn redacts_an_auth_token_value_cut_short() {
         assert_eq!(
-            redacted_excerpt(
+            redact_token(
                 "<p>GET /v1/posts/add?auth_token=user%3ASECR</p> auth_token=&x",
                 "user:SECRET123"
             ),
@@ -521,44 +521,40 @@ mod tests {
     }
 
     #[test]
-    fn excerpt_redacts_before_cutting() {
-        // Cutting the raw body first would keep `user:SECRET` and drop the `123`, so
-        // neither the token nor its secret would match any more.
-        let padding = "x".repeat(ERROR_BODY_MAX_BYTES - ELLIPSIS.len() - "user:SECRET".len());
-        let body = format!("{padding}user:SECRET123{}", "y".repeat(20));
-        let excerpt = redacted_excerpt(&body, "user:SECRET123");
-        assert!(!excerpt.contains("SEC"), "token prefix kept: {excerpt}");
+    fn without_a_secret_part_redacts_nothing_extra() {
+        assert_eq!(redact_token("bad  request", "user:"), "bad  request");
+        assert_eq!(redact_token("bad request", ""), "bad request");
     }
 
+    /// `redact_token`'s output is the body `error_with_body` logs at debug level, so it
+    /// must be the whole text, uncut, less only the token.
     #[test]
-    fn excerpt_without_a_secret_part_redacts_nothing_extra() {
-        assert_eq!(redacted_excerpt("bad  request", "user:"), "bad request");
-        assert_eq!(redacted_excerpt("bad request", ""), "bad request");
-    }
-
-    #[test]
-    fn excerpt_is_collapsed_to_one_line() {
+    fn debug_logged_body_is_whole_but_has_no_token() {
+        let body = format!(
+            "<html>\n<p>GET /posts/all?auth_token=user%3ASECRET123&format=json</p>\n\
+             <pre>{}</pre>\n<p>token: user:SECRET123</p>\n</html>",
+            "x".repeat(2 * ERROR_BODY_MAX_BYTES)
+        );
+        let logged = redact_token(&body, "user:SECRET123");
+        assert!(!logged.contains("SECRET123"), "token logged: {logged}");
         assert_eq!(
-            redacted_excerpt("\n  <h1>400</h1>\r\n\t<p>Bad Request</p>\n", "user:tok"),
-            "<h1>400</h1> <p>Bad Request</p>"
+            logged,
+            body.replace("user%3ASECRET123", "[redacted]")
+                .replace("user:SECRET123", "[redacted]")
         );
     }
 
     #[test]
-    fn excerpt_is_cut_on_a_char_boundary_within_the_cap() {
-        // `ELLIPSIS` is 3 bytes, so the cut offset is odd and lands inside an `é` here.
-        let body = format!("xx{}", "é".repeat(ERROR_BODY_MAX_BYTES));
-        let excerpt = redacted_excerpt(&body, "user:tok");
-        assert!(excerpt.len() <= ERROR_BODY_MAX_BYTES);
-        let kept = excerpt.strip_suffix(ELLIPSIS).expect("cut is marked");
-        assert_eq!(kept.len(), ERROR_BODY_MAX_BYTES - ELLIPSIS.len() - 1);
-        assert!(body.starts_with(kept));
-    }
-
-    #[test]
-    fn excerpt_at_the_cap_is_kept_whole() {
-        let body = "x".repeat(ERROR_BODY_MAX_BYTES);
-        assert_eq!(redacted_excerpt(&body, "user:tok"), body);
+    fn redacted_error_redacts_before_cutting() {
+        // Cutting the raw body first would keep `user:SECRET` and drop the `123`, so
+        // neither the token nor its secret would match any more.
+        let padding = "x".repeat(ERROR_BODY_MAX_BYTES - ELLIPSIS.len() - "user:SECRET".len());
+        let body = format!("{padding}user:SECRET123{}", "y".repeat(20));
+        let message = redacted_error("Pinboard posts/add failed", &body, "user:SECRET123");
+        assert!(
+            !message.to_string().contains("SEC"),
+            "token prefix kept: {message}"
+        );
     }
 
     #[test]
@@ -631,6 +627,9 @@ mod tests {
 #[cfg(test)]
 mod net_tests {
     use super::*;
+    use crate::test_support::{
+        assert_quotes_capped_excerpt, capturing_logs, long_error_page, ERROR_PAGE_TAIL,
+    };
     use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -710,6 +709,49 @@ mod net_tests {
 
         let err = leak_client(&server).all().await.unwrap_err();
         assert_error_hides_secret(&err, "posts/all", "403 Forbidden");
+    }
+
+    #[tokio::test]
+    async fn debug_logged_body_is_whole_escaped_and_has_no_token() {
+        let server = MockServer::start().await;
+        let body = format!(
+            "<p>GET /posts/all?auth_token=user%3A{LEAK_SECRET}</p>\n{}",
+            long_error_page()
+        );
+        Mock::given(method("GET"))
+            .and(path("/posts/all"))
+            .respond_with(ResponseTemplate::new(404).set_body_string(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (result, logs) = capturing_logs(leak_client(&server).all()).await;
+        assert!(result.is_err());
+        let [line] = logs.as_slice() else {
+            panic!("expected one log line, got {logs:?}");
+        };
+        assert!(line.starts_with("DEBUG Pinboard "), "{line}");
+        assert!(!line.contains(LEAK_SECRET), "token logged: {line}");
+        assert!(line.contains("auth_token=[redacted]"), "{line}");
+        assert!(line.contains(ERROR_PAGE_TAIL), "body cut: {line}");
+        assert!(!line.contains('\n'), "not escaped: {line}");
+    }
+
+    #[tokio::test]
+    async fn status_error_quotes_a_capped_one_line_excerpt() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/posts/all"))
+            .respond_with(ResponseTemplate::new(404).set_body_string(long_error_page()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let err = client(&server).all().await.unwrap_err();
+        assert_quotes_capped_excerpt(
+            &err.to_string(),
+            &format!("Pinboard {}/posts/all returned 404 Not Found", server.uri()),
+        );
     }
 
     #[tokio::test]

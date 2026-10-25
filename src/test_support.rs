@@ -1,10 +1,12 @@
 //! In-memory fakes implementing the client ports ([`SavedSource`] /
 //! [`BookmarkStore`]) so the `sync` and `cleanup` loops can be tested without
-//! any network, plus per-test scratch directories. Compiled only under
+//! any network, plus per-test scratch directories and log capture. Compiled only under
 //! `#[cfg(test)]`.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::future::Future;
+use std::sync::Once;
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -15,6 +17,84 @@ use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::model::{reddit_key, RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
+
+tokio::task_local! {
+    static CAPTURED_LOGS: RefCell<Vec<String>>;
+}
+
+/// Records each of this crate's log lines as `"LEVEL message"`, as `-v` would show them,
+/// but only from inside [`capturing_logs`], so tests running alongside on other tasks
+/// neither see nor disturb each other's lines.
+struct CaptureLogger;
+
+impl log::Log for CaptureLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        let crate_name = env!("CARGO_CRATE_NAME");
+        let target = metadata.target();
+        let ours = target
+            .strip_prefix(crate_name)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with("::"));
+        ours && CAPTURED_LOGS.try_with(|_| ()).is_ok()
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let line = format!("{} {}", record.level(), record.args());
+        let _ = CAPTURED_LOGS.try_with(|lines| lines.borrow_mut().push(line));
+    }
+
+    fn flush(&self) {}
+}
+
+/// Runs `fut`, returning its output and every line it logged at debug level or above.
+pub async fn capturing_logs<T>(fut: impl Future<Output = T>) -> (T, Vec<String>) {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        log::set_logger(&CaptureLogger).expect("no other logger in tests");
+        log::set_max_level(log::LevelFilter::Debug);
+    });
+    CAPTURED_LOGS
+        .scope(RefCell::default(), async {
+            let output = fut.await;
+            (output, CAPTURED_LOGS.with(RefCell::take))
+        })
+        .await
+}
+
+/// Ends [`long_error_page`], past the excerpt's cut, so it must not reach the message.
+pub const ERROR_PAGE_TAIL: &str = "end-of-error-page";
+
+/// A multi-line HTML error page several times longer than an error may quote.
+pub fn long_error_page() -> String {
+    format!(
+        "<html>\n  <head><title>Error</title></head>\n  <body>\n{}  </body>\n\
+         {ERROR_PAGE_TAIL}\n</html>\n",
+        "    <p>the request could not be served</p>\n".repeat(50)
+    )
+}
+
+/// `message` is `"{what}: {excerpt}"`, the excerpt of [`long_error_page`]: on one line,
+/// within the cap, and cut with the ellipsis.
+pub fn assert_quotes_capped_excerpt(message: &str, what: &str) {
+    use crate::http::{ELLIPSIS, ERROR_BODY_MAX_BYTES};
+    let excerpt = message
+        .strip_prefix(&format!("{what}: "))
+        .unwrap_or_else(|| panic!("not `{what}: <excerpt>`: {message}"));
+    assert!(!excerpt.contains('\n'), "not one line: {message}");
+    assert!(
+        excerpt.len() <= ERROR_BODY_MAX_BYTES,
+        "{} bytes over the cap: {message}",
+        excerpt.len()
+    );
+    assert!(
+        excerpt.starts_with("<html> <head><title>Error</title>"),
+        "{message}"
+    );
+    assert!(excerpt.ends_with(ELLIPSIS), "cut not marked: {message}");
+    assert!(!excerpt.contains(ERROR_PAGE_TAIL), "not cut: {message}");
+}
 
 /// A fresh, empty directory unique to this call, removed when the returned guard is
 /// dropped: keep it bound for as long as the test uses the path.

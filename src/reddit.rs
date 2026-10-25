@@ -472,11 +472,11 @@ impl TryFrom<&str> for CookieForm {
     }
 }
 
-/// Whether a cookie or session value holds nothing but whitespace and double quotes, which
-/// no real session is.
+/// Whether a cookie or session value holds nothing but whitespace, double quotes and the
+/// `;`/`=` separators, so it has no `name=value` pair a session could be.
 fn is_blank(value: &str) -> bool {
     value
-        .trim_matches(|c: char| c == '"' || c.is_whitespace())
+        .trim_matches(|c: char| matches!(c, '"' | ';' | '=') || c.is_whitespace())
         .is_empty()
 }
 
@@ -485,14 +485,14 @@ fn session_value(pair: &str) -> Option<&str> {
     pair.trim_start().strip_prefix("reddit_session=")
 }
 
-/// `value`'s cookie pairs, in order, without empty pairs or any `reddit_session` but the
-/// first non-empty one. Sent several, Reddit would pick one by its own rule, so an empty
-/// pair could mask the real session.
+/// `value`'s cookie pairs, in order, without [blank](is_blank) pairs or any
+/// `reddit_session` but the first non-empty one. Sent several, Reddit would pick one by its
+/// own rule, so an empty pair could mask the real session.
 fn with_one_session(value: &str) -> String {
     let mut session_kept = false;
     let pairs: Vec<&str> = value
         .split(';')
-        .filter(|pair| !pair.trim().is_empty())
+        .filter(|pair| !is_blank(pair))
         .filter(|pair| match session_value(pair) {
             None => true,
             Some(session) if session_kept || is_blank(session) => false,
@@ -1073,6 +1073,35 @@ mod tests {
         ] {
             assert_eq!(session_cookie(unset, TEST_COOKIE_SOURCE), None, "{unset:?}");
             assert!(!is_configured_cookie(unset), "{unset:?}");
+        }
+    }
+
+    #[test]
+    fn a_cookie_of_only_separators_is_no_cookie() {
+        for unset in [
+            ";",
+            "=",
+            "=;",
+            " ; = ;\n",
+            "\"=\"",
+            "reddit_session==",
+            "reddit_session=;=",
+            "a=1; reddit_session= =",
+        ] {
+            assert_eq!(session_cookie(unset, TEST_COOKIE_SOURCE), None, "{unset:?}");
+            assert!(!is_configured_cookie(unset), "{unset:?}");
+        }
+        let cases = [
+            ("reddit_session==; reddit_session=abc", "reddit_session=abc"),
+            ("reddit_session=abc; =; ;", "reddit_session=abc"),
+            ("abc=", "reddit_session=abc="),
+        ];
+        for (raw, sent) in cases {
+            assert_eq!(
+                session_cookie(raw, TEST_COOKIE_SOURCE).as_deref(),
+                Some(sent),
+                "{raw:?}"
+            );
         }
     }
 

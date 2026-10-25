@@ -249,11 +249,11 @@ cookie through `reddit::session_cookie`, so every entry point sends the same hea
 end in base64 `=` padding) is sent as `reddit_session=<value>`. A value counts as already
 named only when `reddit_session=` starts it or follows a `;`, never by substring, and of
 several `reddit_session` pairs only the first non-empty one is sent. Only a matched pair
-of surrounding quotes is stripped, and a value of nothing but whitespace and quotes counts
-as empty. A value that sets no session — blank, or only empty `reddit_session=` pairs —
-is no cookie, and
-`main`'s `resolve_reddit_cookie` skips it through `reddit::is_configured_cookie` so the
-secret ladder falls through it exactly as it does a blank value.
+of surrounding quotes is stripped, and a value of nothing but whitespace, quotes and the
+`;`/`=` separators counts as empty. A value that sets no session — blank, or only empty
+`reddit_session=` pairs — is no cookie, and `main`'s `resolve_reddit_cookie` skips it
+through `reddit::is_configured_cookie` so the secret ladder falls through it exactly as
+it does a blank value.
 
 **`backup` has one port and one driver, and captures raw bodies in the same traversal.**
 [`src/backup.rs`](src/backup.rs) is `cleanup_pass.rs`'s sibling: a service implements

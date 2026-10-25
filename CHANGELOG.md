@@ -28,7 +28,7 @@ All notable changes to this project are documented here. The format is based on
   5.5 minutes instead of 15.
 - Only the first non-empty `reddit_session` in a Reddit cookie is sent, and empty pairs
   are dropped.
-- A Reddit cookie of only quotes or whitespace counts as no cookie.
+- A Reddit cookie of only quotes, whitespace, `;` or `=` counts as no cookie.
 - Reddit cookie messages name the setting the cookie came from.
 - GitHub 401 errors name the setting the token came from.
 

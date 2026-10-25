@@ -2178,7 +2178,7 @@ mod tests {
         assert_eq!(
             first_cookie_on([
                 Some("reddit_session="),
-                None,
+                Some("=;"),
                 Some(" "),
                 Some("a=1; reddit_session="),
                 Some("abc"),

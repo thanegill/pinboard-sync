@@ -339,8 +339,12 @@ timer with it, so resolving from config alone would leave the hook dead for the
 deployment it exists to serve. Every client sends through
 `http::send_retrying`
 ([`src/http.rs`](src/http.rs)), which backs off on network errors / 429 / 5xx but
-returns other statuses as-is. Which responses retry, and how, is a classifier returning
-an `http::Verdict` (`Done`, `Backoff`, `RetryOnceAfter(wait)`): `send_retrying` uses
+returns other statuses as-is. It builds the request once and hands it to tower's
+`retry::Retry` over the request's `reqwest::Client`; every decision lives in
+`http::RetryPolicy`, whose waits go through `http::sleep`, and its unit tests drive the
+same policy over a `tower::service_fn` mock of canned outcomes. Which responses retry,
+and how, is a classifier returning an `http::Verdict` (`Done`, `Backoff`,
+`RetryOnceAfter(wait)`): `send_retrying` uses
 `backoff_if_transient`, and `send_retrying_with` takes any other. The one other today is
 the HackerNews favorites pages' `retry_after_up_to(FAVORITES_MAX_RETRY_AFTER)`, which
 shares the 5xx rule: four quick retries of a 429 there only prolong HN's block, so a 429

@@ -3,11 +3,15 @@
 
 use std::cell::Cell;
 use std::future::Future;
+use std::pin::Pin;
+use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use time::format_description::well_known::Rfc2822;
 use time::OffsetDateTime;
+use tower::retry::{Policy, Retry};
+use tower::ServiceExt;
 
 /// How long one attempt may take to connect, from DNS through the TLS handshake.
 /// hyper-util, under reqwest, splits the TCP part evenly across each address family's
@@ -54,68 +58,111 @@ pub enum Verdict {
     RetryOnceAfter(Duration),
 }
 
-/// Retry an async operation. While `budget` is unspent, an `Err` for which
-/// `is_connect_error` is true is retried after each delay in `connect_backoff` in turn;
-/// once they run out the error is returned and `budget` is spent. Any other `Err` (a
-/// transport failure, or a connect failure once `budget` is spent), or an `Ok(value)`
-/// that `classify` calls [`Verdict::Backoff`] (a transient response, e.g. HTTP 5xx), is
-/// retried with linear backoff (`base_delay * n`) for up to `max_attempts` such
-/// attempts. An `Ok(value)` it calls [`Verdict::RetryOnceAfter`] is retried after that
-/// wait the first time and returned the second. Otherwise returns the value as-is. The
-/// budgets are separate, so one request can make up to
-/// `connect_backoff.len() + max_attempts + 1` attempts.
+/// How tower's [`Retry`] retries one request: connect failures on `connect_delays` while
+/// `budget` is unspent, other failures and [`Verdict::Backoff`] responses linearly up to
+/// `max_attempts`, and a [`Verdict::RetryOnceAfter`] once.
 ///
-/// Transport-agnostic so it can be unit-tested without any network — see tests.
-async fn retry<T, E, F, Fut>(
-    budget: &ConnectBudget,
+/// `Retry` clones the policy once per request, so its counters start fresh; `attempts` is
+/// shared with that clone.
+struct RetryPolicy<'a, Res, E> {
+    budget: &'a ConnectBudget,
     max_attempts: u32,
     base_delay: Duration,
-    connect_backoff: &[Duration],
-    classify: impl Fn(&T) -> Verdict,
-    is_connect_error: impl Fn(&E) -> bool,
-    mut op: F,
-) -> Result<T, E>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Result<T, E>>,
-{
-    let mut connect_delays = connect_backoff.iter().copied();
-    let mut other_attempts: u32 = 0;
-    let mut waited_once = false;
-    loop {
-        let delay = match op().await {
-            Err(err) if !budget.spent.get() && is_connect_error(&err) => {
-                match connect_delays.next() {
-                    Some(delay) => delay,
-                    None => {
-                        budget.spent.set(true);
-                        return Err(err);
-                    }
+    connect_delays: std::slice::Iter<'a, Duration>,
+    classify: Rc<dyn Fn(&Res) -> Verdict + 'a>,
+    is_connect_error: fn(&E) -> bool,
+    other_attempts: u32,
+    waited_once: bool,
+    attempts: Rc<Cell<u32>>,
+}
+
+impl<Res, E> Clone for RetryPolicy<'_, Res, E> {
+    fn clone(&self) -> Self {
+        RetryPolicy {
+            connect_delays: self.connect_delays.clone(),
+            classify: Rc::clone(&self.classify),
+            attempts: Rc::clone(&self.attempts),
+            ..*self
+        }
+    }
+}
+
+impl<'a, Res, E> RetryPolicy<'a, Res, E> {
+    fn new(
+        budget: &'a ConnectBudget,
+        max_attempts: u32,
+        base_delay: Duration,
+        connect_backoff: &'a [Duration],
+        classify: impl Fn(&Res) -> Verdict + 'a,
+        is_connect_error: fn(&E) -> bool,
+    ) -> Self {
+        RetryPolicy {
+            budget,
+            max_attempts,
+            base_delay,
+            connect_delays: connect_backoff.iter(),
+            classify: Rc::new(classify),
+            is_connect_error,
+            other_attempts: 0,
+            waited_once: false,
+            attempts: Rc::default(),
+        }
+    }
+
+    /// How long to wait before trying again after `outcome`, or `None` to return it.
+    fn delay_after(&mut self, outcome: &Result<Res, E>) -> Option<Duration> {
+        if let Err(err) = outcome {
+            if !self.budget.spent.get() && (self.is_connect_error)(err) {
+                let delay = self.connect_delays.next().copied();
+                if delay.is_none() {
+                    self.budget.spent.set(true);
                 }
+                return delay;
             }
-            outcome => {
-                let verdict = match &outcome {
-                    Ok(value) => classify(value),
-                    Err(_) => Verdict::Backoff,
-                };
-                match verdict {
-                    Verdict::Done => return outcome,
-                    Verdict::RetryOnceAfter(_) if waited_once => return outcome,
-                    Verdict::RetryOnceAfter(wait) => {
-                        waited_once = true;
-                        wait
-                    }
-                    Verdict::Backoff => {
-                        other_attempts += 1;
-                        if other_attempts >= max_attempts {
-                            return outcome;
-                        }
-                        base_delay * other_attempts
-                    }
-                }
-            }
+        }
+        let verdict = match outcome {
+            Ok(value) => (self.classify)(value),
+            Err(_) => Verdict::Backoff,
         };
-        sleep(delay).await;
+        match verdict {
+            Verdict::Done => None,
+            Verdict::RetryOnceAfter(_) if self.waited_once => None,
+            Verdict::RetryOnceAfter(wait) => {
+                self.waited_once = true;
+                Some(wait)
+            }
+            Verdict::Backoff => {
+                self.other_attempts += 1;
+                (self.other_attempts < self.max_attempts)
+                    .then(|| self.base_delay * self.other_attempts)
+            }
+        }
+    }
+}
+
+/// `None` silently stops retries and their count; reqwest returns it only for a streaming
+/// body, which no request here has.
+trait Resend: Sized {
+    fn resend(&self) -> Option<Self>;
+}
+
+impl Resend for reqwest::Request {
+    fn resend(&self) -> Option<Self> {
+        self.try_clone()
+    }
+}
+
+impl<Req: Resend, Res, E> Policy<Req, Res, E> for RetryPolicy<'_, Res, E> {
+    type Future = Pin<Box<dyn Future<Output = ()>>>;
+
+    fn retry(&mut self, _: &mut Req, outcome: &mut Result<Res, E>) -> Option<Self::Future> {
+        self.attempts.set(self.attempts.get() + 1);
+        let delay = self.delay_after(outcome)?;
+        Some(Box::pin(sleep(delay)))
+    }
+
+    fn clone_request(&mut self, request: &Req) -> Option<Req> {
+        request.resend()
     }
 }
 
@@ -227,8 +274,8 @@ pub fn client_builder() -> reqwest::ClientBuilder {
 /// 2xx and other 4xx (e.g. 401/403/400) — are returned as-is for the caller to interpret,
 /// since retrying them would not help.
 ///
-/// `build` is called once per attempt, so it must reconstruct the request (the
-/// request is consumed by `send`).
+/// `build` is called once and the request cloned for each attempt; one that cannot be built
+/// fails at once as "building `label`".
 ///
 /// A transport error is returned without its request URL, for every client: a URL can
 /// carry a credential in its query (Pinboard's `auth_token`), and `reqwest::Error` would
@@ -241,7 +288,7 @@ pub async fn send_retrying<F>(
     build: F,
 ) -> Result<reqwest::Response>
 where
-    F: FnMut() -> reqwest::RequestBuilder,
+    F: FnOnce() -> reqwest::RequestBuilder,
 {
     send_retrying_with(
         label,
@@ -266,7 +313,7 @@ pub async fn send_retrying_with<F>(
     build: F,
 ) -> Result<reqwest::Response>
 where
-    F: FnMut() -> reqwest::RequestBuilder,
+    F: FnOnce() -> reqwest::RequestBuilder,
 {
     send_with_connect_backoff(
         label,
@@ -287,28 +334,30 @@ async fn send_with_connect_backoff<F>(
     base_delay: Duration,
     connect_backoff: &[Duration],
     classify: impl Fn(&reqwest::Response) -> Verdict,
-    mut build: F,
+    build: F,
 ) -> Result<reqwest::Response>
 where
-    F: FnMut() -> reqwest::RequestBuilder,
+    F: FnOnce() -> reqwest::RequestBuilder,
 {
-    let attempts = Cell::new(0u32);
-    retry(
+    let (client, request) = build().build_split();
+    let request = request
+        .map_err(reqwest::Error::without_url)
+        .with_context(|| format!("building {label}"))?;
+    let policy = RetryPolicy::new(
         budget,
         max_attempts,
         base_delay,
         connect_backoff,
         classify,
         reqwest::Error::is_connect,
-        || {
-            attempts.set(attempts.get() + 1);
-            build().send()
-        },
-    )
-    .await
-    .map_err(reqwest::Error::without_url)
-    .with_context(|| format!("{label} failed after {} attempts", attempts.get()))
-    .inspect(|resp| log::debug!("{}", protocol_debug_line(resp)))
+    );
+    let attempts = Rc::clone(&policy.attempts);
+    Retry::new(policy, client)
+        .oneshot(request)
+        .await
+        .map_err(reqwest::Error::without_url)
+        .with_context(|| format!("{label} failed after {} attempts", attempts.get()))
+        .inspect(|resp| log::debug!("{}", protocol_debug_line(resp)))
 }
 
 /// The debug line naming the protocol a response came over, for checking what each
@@ -393,6 +442,29 @@ mod tests {
         }
     }
 
+    fn is_connect(failure: &Failure) -> bool {
+        *failure == Failure::Connect
+    }
+
+    impl Resend for () {
+        fn resend(&self) -> Option<Self> {
+            Some(())
+        }
+    }
+
+    /// Drives `policy` over a mock service whose every call is `op()`.
+    async fn retry<Fut>(
+        policy: RetryPolicy<'_, u16, Failure>,
+        op: impl Fn() -> Fut + Clone,
+    ) -> Result<u16, Failure>
+    where
+        Fut: Future<Output = Result<u16, Failure>>,
+    {
+        Retry::new(policy, tower::service_fn(move |()| op()))
+            .oneshot(())
+            .await
+    }
+
     /// Retry over a canned sequence of outcomes (status code, or `Err`), counting
     /// how many attempts were made. 429/5xx are transient, and `Failure::Connect` gets
     /// the three-step `NO_CONNECT_BACKOFF` on a fresh budget.
@@ -418,19 +490,19 @@ mod tests {
     ) -> (Result<u16, Failure>, usize) {
         let calls = RefCell::new(0usize);
         let seq = RefCell::new(outcomes.into_iter());
-        let result = retry(
+        let policy = RetryPolicy::new(
             budget,
             max,
             NO_DELAY,
             &NO_CONNECT_BACKOFF,
             classify,
-            |failure: &Failure| *failure == Failure::Connect,
-            || {
-                *calls.borrow_mut() += 1;
-                let next = seq.borrow_mut().next().expect("ran out of canned outcomes");
-                async move { next }
-            },
-        )
+            is_connect,
+        );
+        let result = retry(policy, || {
+            *calls.borrow_mut() += 1;
+            let next = seq.borrow_mut().next().expect("ran out of canned outcomes");
+            async move { next }
+        })
         .await;
         (result, calls.into_inner())
     }
@@ -471,8 +543,9 @@ mod tests {
         let start = tokio::time::Instant::now();
         let attempt_offsets = RefCell::new(Vec::new());
         let statuses = RefCell::new(vec![429u16, 200].into_iter());
-        let result: Result<u16, Failure> = retry(
-            &ConnectBudget::default(),
+        let budget = ConnectBudget::default();
+        let policy = RetryPolicy::new(
+            &budget,
             5,
             Duration::from_secs(2),
             &NO_CONNECT_BACKOFF,
@@ -480,13 +553,13 @@ mod tests {
                 429 => Verdict::RetryOnceAfter(Duration::from_secs(90)),
                 _ => Verdict::Done,
             },
-            |failure: &Failure| *failure == Failure::Connect,
-            || {
-                attempt_offsets.borrow_mut().push(start.elapsed().as_secs());
-                let status = statuses.borrow_mut().next().unwrap();
-                async move { Ok(status) }
-            },
-        )
+            is_connect,
+        );
+        let result = retry(policy, || {
+            attempt_offsets.borrow_mut().push(start.elapsed().as_secs());
+            let status = statuses.borrow_mut().next().unwrap();
+            async move { Ok(status) }
+        })
         .await;
 
         assert_eq!(result, Ok(200));
@@ -678,18 +751,19 @@ mod tests {
     async fn connect_backoff_outlasts_a_two_minute_outage() {
         let start = tokio::time::Instant::now();
         let attempt_offsets = RefCell::new(Vec::new());
-        let result: Result<u16, Failure> = retry(
-            &ConnectBudget::default(),
+        let budget = ConnectBudget::default();
+        let policy = RetryPolicy::new(
+            &budget,
             5,
             Duration::from_secs(3),
             &CONNECT_BACKOFF,
             |_: &u16| Verdict::Done,
-            |failure: &Failure| *failure == Failure::Connect,
-            || {
-                attempt_offsets.borrow_mut().push(start.elapsed().as_secs());
-                async { Err(Failure::Connect) }
-            },
-        )
+            is_connect,
+        );
+        let result = retry(policy, || {
+            attempt_offsets.borrow_mut().push(start.elapsed().as_secs());
+            async { Err(Failure::Connect) }
+        })
         .await;
 
         assert_eq!(result, Err(Failure::Connect));
@@ -775,6 +849,34 @@ mod tests {
         .await
         .unwrap_err();
 
+        assert_error_hides(&err, reqwest::Error::is_builder, "SECRET123");
+    }
+
+    #[tokio::test]
+    async fn a_request_that_cannot_be_built_fails_at_once_without_its_url() {
+        let http = reqwest::Client::new();
+        let builds = Cell::new(0);
+
+        let err = send_with_connect_backoff(
+            "posts/all",
+            &ConnectBudget::default(),
+            2,
+            NO_DELAY,
+            &NO_CONNECT_BACKOFF,
+            backoff_if_transient,
+            || {
+                builds.set(builds.get() + 1);
+                http.get("unix:/v1/posts/all?auth_token=user:SECRET123")
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(builds.get(), 1);
+        assert!(
+            format!("{err:#}").starts_with("building posts/all: "),
+            "{err:#}"
+        );
         assert_error_hides(&err, reqwest::Error::is_builder, "SECRET123");
     }
 

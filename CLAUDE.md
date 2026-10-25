@@ -305,7 +305,8 @@ canonicalizes repo-root URLs and looks each repo up via the API to rewrite
 renamed/moved repos and refresh the title + language tag.
 
 **`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
-`SyncJob { client: SourceClient, hook, limit }`; `SourceClient` is an enum over the
+`SyncJob { client: SourceClient, hook, common }`, `common` holding the resolved `limit`
+and write settings; `SourceClient` is an enum over the
 three clients implementing `Source`, so `build_jobs` + `run_sync_jobs` handle one
 account and `--all` uniformly. Per-account settings
 (`toread`/`public`/`limit`/`use_post_date`/…) resolve CLI flag → account →

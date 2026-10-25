@@ -828,40 +828,33 @@ impl HackernewsSyncArgs {
 }
 
 /// A configured source client ready to fetch, plus its auth-failure hook and the
-/// per-run write cap.
+/// account's resolved write settings.
 struct SyncJob {
     client: SourceClient,
     /// Human label for logs, e.g. `reddit[alice]`.
     label: String,
     hook: Option<String>,
-    limit: SyncLimit,
-    /// Resolved to-read flag for this account's new bookmarks.
-    toread: bool,
-    /// Resolved public/shared flag for this account's new bookmarks.
-    shared: bool,
-    /// Resolved: date new bookmarks by the source post date.
-    use_post_date: bool,
-    /// Resolved backdate age cap, in days (posts older than this use "now").
-    max_age_days: u64,
+    common: JobCommon,
 }
 
 impl SyncJob {
     /// The source's drafts: read incrementally against `existing` under
     /// [`SyncLimit::Auto`], else in full.
     async fn fetch(&self, existing: &[Bookmark]) -> Result<Vec<BookmarkDraft>, SourceError> {
-        match self.limit {
+        match self.common.limit {
             SyncLimit::Auto => self.client.fetch_incremental(existing).await,
             SyncLimit::All | SyncLimit::Max(_) => self.client.fetch().await,
         }
     }
 
     fn settings(&self) -> sync::JobSettings {
+        let common = &self.common;
         sync::JobSettings {
-            toread: self.toread,
-            shared: self.shared,
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
-            limit: self.limit.write_cap(),
+            toread: common.toread,
+            shared: common.shared,
+            use_post_date: common.dates.use_post_date,
+            max_age_days: common.dates.max_age_days,
+            limit: common.limit.write_cap(),
         }
     }
 }
@@ -995,7 +988,9 @@ impl UrlKey for SourceClient {
 /// global ladder. Leaves client/secret/hook construction to each source builder.
 struct JobCommon {
     limit: SyncLimit,
+    /// To-read flag for this account's new bookmarks.
     toread: bool,
+    /// Public/shared flag for this account's new bookmarks.
     shared: bool,
     dates: DateOpts,
 }
@@ -1055,11 +1050,7 @@ fn build_reddit_job(
         client: SourceClient::Reddit(RedditClient::for_user(username, cookie, reddit_config)?),
         label: job_label("reddit", account),
         hook,
-        limit: common.limit,
-        toread: common.toread,
-        shared: common.shared,
-        use_post_date: common.dates.use_post_date,
-        max_age_days: common.dates.max_age_days,
+        common,
     })
 }
 
@@ -1083,11 +1074,7 @@ fn build_github_job(
         client: SourceClient::Github(GitHubClient::new(token, github_config)?),
         label: job_label("github", account),
         hook,
-        limit: common.limit,
-        toread: common.toread,
-        shared: common.shared,
-        use_post_date: common.dates.use_post_date,
-        max_age_days: common.dates.max_age_days,
+        common,
     })
 }
 
@@ -1113,11 +1100,7 @@ fn build_hackernews_job(
         client: SourceClient::Hackernews(HackerNewsClient::new(username, hn_config)?),
         label: job_label("hackernews", account),
         hook: None,
-        limit: common.limit,
-        toread: common.toread,
-        shared: common.shared,
-        use_post_date: common.dates.use_post_date,
-        max_age_days: common.dates.max_age_days,
+        common,
     })
 }
 
@@ -2355,15 +2338,30 @@ mod tests {
     }
 
     fn assert_wired(job: &SyncJob) {
+        let common = &job.common;
         assert_eq!(
-            job.limit,
+            common.limit,
             SyncLimit::Max(NonZeroUsize::new(7).unwrap()),
             "limit"
         );
-        assert!(job.toread, "toread");
-        assert!(!job.shared, "shared (from --public=false)");
-        assert!(job.use_post_date, "use_post_date");
-        assert_eq!(job.max_age_days, 99, "max_age_days");
+        assert!(common.toread, "toread");
+        assert!(!common.shared, "shared (from --public=false)");
+        assert!(common.dates.use_post_date, "use_post_date");
+        assert_eq!(common.dates.max_age_days, 99, "max_age_days");
+    }
+
+    /// The write settings of a job a test only fetches through: everything off but `limit`.
+    pub(super) fn fetch_only(limit: SyncLimit) -> JobCommon {
+        JobCommon {
+            limit,
+            toread: false,
+            shared: false,
+            dates: DateOpts {
+                use_post_date: false,
+                max_age_days: 30,
+                stale_to_now: false,
+            },
+        }
     }
 
     #[test]
@@ -2950,6 +2948,7 @@ mod tests {
 /// Tests that need a socket; the flake skips `net_tests` in the Nix build sandbox.
 #[cfg(test)]
 mod net_tests {
+    use super::tests::fetch_only;
     use super::*;
     use serde_json::json;
     use std::num::NonZeroUsize;
@@ -3001,11 +3000,7 @@ mod net_tests {
             )),
             label: "hackernews[u]".into(),
             hook: None,
-            limit,
-            toread: false,
-            shared: false,
-            use_post_date: false,
-            max_age_days: 30,
+            common: fetch_only(limit),
         };
         let existing = [Bookmark {
             url: Url::parse("https://news.ycombinator.com/item?id=1").unwrap(),
@@ -3059,11 +3054,7 @@ mod net_tests {
                 client: client(&server),
                 label: "test".into(),
                 hook: None,
-                limit,
-                toread: false,
-                shared: false,
-                use_post_date: false,
-                max_age_days: 30,
+                common: fetch_only(limit),
             };
 
             crate::http::recording_waits(job.fetch(existing))

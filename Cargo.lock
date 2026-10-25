@@ -1265,6 +1265,7 @@ dependencies = [
  "time",
  "tokio",
  "toml",
+ "tower",
  "url",
  "wiremock",
 ]

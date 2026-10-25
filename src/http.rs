@@ -572,13 +572,17 @@ pub const ELLIPSIS: &str = "…";
 pub const REDACTED: &str = "[redacted]";
 
 /// The error `"{what}: {excerpt}"`, quoting a response body as [`error_excerpt`] cuts it,
-/// with [`body_debug_line`] logged at debug level first so `-v` shows what the excerpt
-/// left out. Both carry the body with `secrets` [redacted](redact) first, so the cut can't
-/// leave part of one behind.
+/// or just `"{what}"` when the body is blank, with [`body_debug_line`] logged at debug
+/// level first so `-v` shows what the excerpt left out. Both carry the body with `secrets`
+/// [redacted](redact) first, so the cut can't leave part of one behind.
 pub fn error_with_body(what: &str, body: &str, secrets: &[&str]) -> anyhow::Error {
     let body = redact(body, secrets);
     log::debug!("{}", body_debug_line(what, &body));
-    anyhow!("{what}: {}", error_excerpt(&body))
+    let excerpt = error_excerpt(&body);
+    if excerpt.is_empty() {
+        return anyhow!("{what}");
+    }
+    anyhow!("{what}: {excerpt}")
 }
 
 /// Logs [`body_debug_line`] at debug level with `secrets` [redacted](redact), for a body
@@ -1422,6 +1426,14 @@ mod tests {
     fn error_with_body_quotes_the_excerpt_after_what() {
         let err = error_with_body("github repo returned 500", "  oops\n  try again  ", &[]);
         assert_eq!(err.to_string(), "github repo returned 500: oops try again");
+    }
+
+    #[test]
+    fn error_with_body_quotes_nothing_for_a_blank_body() {
+        for blank in ["", " \n\t "] {
+            let err = error_with_body("github repo returned 502", blank, &[]);
+            assert_eq!(err.to_string(), "github repo returned 502", "{blank:?}");
+        }
     }
 
     #[test]

@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format is based on
 - A Reddit cookie with a stray `;` (`abc;`, `a=1;;`) is sent without it, so a bare value
   still counts as the session.
 - Error excerpts and `-v` body logs redact the GitHub token and Reddit cookie too.
+- An error for an empty response body no longer ends in a dangling `: `.
 
 ## [0.6.0] - 2026-10-25
 

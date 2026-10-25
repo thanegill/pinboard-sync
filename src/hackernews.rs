@@ -593,22 +593,8 @@ impl UrlKey for HackerNewsClient {
 pub struct HackerNewsCleanupOpts {
     /// Also link `link_tag`-tagged article bookmarks to their HN discussion.
     pub link_discussions: bool,
-    /// Re-date bookmarks to the source item's creation time (within the age cap).
-    pub use_post_date: bool,
-    /// Backdate age cap, in days.
-    pub max_age_days: u64,
-    /// Re-date items older than the cap to "now" instead of leaving them.
-    pub cleanup_stale_to_now: bool,
-}
-
-impl HackerNewsCleanupOpts {
-    fn date_opts(&self) -> DateOpts {
-        DateOpts {
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
-            stale_to_now: self.cleanup_stale_to_now,
-        }
-    }
+    /// Whether and how to re-date bookmarks by the source item's creation time.
+    pub dates: DateOpts,
 }
 
 impl HackerNewsClient {
@@ -651,7 +637,7 @@ impl HackerNewsClient {
             items,
             config: &self.config,
         };
-        let items = run_pass(store, &hackernews_bookmarks, "HN", opts.date_opts(), &pass).await;
+        let items = run_pass(store, &hackernews_bookmarks, "HN", opts.dates, &pass).await;
 
         // Each pass reaches its own verdict. Merging the tallies first would let this
         // pass's bookmarks — which are planned from prefetched items and so can never
@@ -703,7 +689,7 @@ impl HackerNewsClient {
             store,
             &candidates,
             "HN discussion",
-            opts.date_opts(),
+            opts.dates,
             &HackerNewsLinkPass { client: self },
         )
         .await
@@ -1582,9 +1568,11 @@ mod net_tests {
                 &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
                 &HackerNewsCleanupOpts {
                     link_discussions: false,
-                    use_post_date: false,
-                    max_age_days: 30,
-                    cleanup_stale_to_now: false,
+                    dates: DateOpts {
+                        use_post_date: false,
+                        max_age_days: 30,
+                        stale_to_now: false,
+                    },
                 },
             )
             .await
@@ -1658,9 +1646,11 @@ mod net_tests {
                 &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
                 &HackerNewsCleanupOpts {
                     link_discussions: false,
-                    use_post_date: false,
-                    max_age_days: 30,
-                    cleanup_stale_to_now: false,
+                    dates: DateOpts {
+                        use_post_date: false,
+                        max_age_days: 30,
+                        stale_to_now: false,
+                    },
                 },
             )
             .await
@@ -1725,9 +1715,11 @@ mod net_tests {
                 &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
                 &HackerNewsCleanupOpts {
                     link_discussions: false,
-                    use_post_date: false,
-                    max_age_days: 30,
-                    cleanup_stale_to_now: false,
+                    dates: DateOpts {
+                        use_post_date: false,
+                        max_age_days: 30,
+                        stale_to_now: false,
+                    },
                 },
             )
             .await
@@ -1790,9 +1782,11 @@ mod net_tests {
                 &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
                 &HackerNewsCleanupOpts {
                     link_discussions: true,
-                    use_post_date: false,
-                    max_age_days: 30,
-                    cleanup_stale_to_now: false,
+                    dates: DateOpts {
+                        use_post_date: false,
+                        max_age_days: 30,
+                        stale_to_now: false,
+                    },
                 },
             )
             .await

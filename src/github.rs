@@ -467,39 +467,19 @@ impl UrlKey for GitHubClient {
     }
 }
 
-/// Options for `cleanup github`.
-pub struct GitHubCleanupOpts {
-    /// Re-date bookmarks to when the repo was starred (within the age cap). Since the
-    /// per-repo lookup doesn't carry `starred_at`, this fetches the star list to map it.
-    pub use_post_date: bool,
-    /// Backdate age cap, in days.
-    pub max_age_days: u64,
-    /// Re-date repos starred longer ago than the cap to "now" instead of leaving them.
-    pub cleanup_stale_to_now: bool,
-}
-
-impl GitHubCleanupOpts {
-    fn date_opts(&self) -> DateOpts {
-        DateOpts {
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
-            stale_to_now: self.cleanup_stale_to_now,
-        }
-    }
-}
-
 /// Normalize existing GitHub repo bookmarks. Only genuine repo-root URLs on the bare
 /// `github.com` host (`owner/repo`) are touched; deep links (issues/PRs/blob/tree) and
 /// gist or other subdomains are left alone. For each repo root, look it up via the API
 /// (which follows renames/transfers), rewriting a moved repo's URL to the current one,
 /// setting the title to the current `owner/repo`, and refreshing the `lang:` tag. A
 /// URL change updates + deletes the old; notes are kept and creation time preserved.
-/// A repo that no longer exists (404) keeps just the URL canonicalization.
+/// A repo that no longer exists (404) keeps just the URL canonicalization. Under
+/// `use_post_date`, bookmarks are re-dated to when the repo was starred.
 pub async fn cleanup<S: BookmarkStore + AccountState>(
     store: &S,
     client: &GitHubClient,
     config: &GitHubConfig,
-    opts: &GitHubCleanupOpts,
+    dates: DateOpts,
 ) -> Result<(), SourceError> {
     // Taken from the run's live view, so an earlier source's writes are already reflected.
     let gh_bms: Vec<Bookmark> = store
@@ -511,7 +491,7 @@ pub async fn cleanup<S: BookmarkStore + AccountState>(
     // `starred_at` isn't on the per-repo lookup, so for use_post_date fetch the star
     // list once and map url_key -> star epoch. A repo no longer starred won't be here
     // (it keeps its existing time).
-    let star_dates: HashMap<String, i64> = if opts.use_post_date {
+    let star_dates: HashMap<String, i64> = if dates.use_post_date {
         client
             .fetch()
             .await?
@@ -530,7 +510,7 @@ pub async fn cleanup<S: BookmarkStore + AccountState>(
         config,
         star_dates,
     };
-    run_pass(store, &gh_bms, "github", opts.date_opts(), &pass)
+    run_pass(store, &gh_bms, "github", dates, &pass)
         .await
         .into_result()
 }
@@ -991,10 +971,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1074,10 +1054,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1504,10 +1484,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1558,10 +1538,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1625,10 +1605,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1676,10 +1656,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1733,10 +1713,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1790,10 +1770,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1981,10 +1961,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks), false),
             &star_client(&server),
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: true,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await

@@ -29,6 +29,7 @@ use log::{debug, error, info, warn};
 
 use backup::BackupSource;
 use bookmark::{AccountState, AccountView, Bookmark, BookmarkStore, CleanupStore};
+use cleanup_pass::DateOpts;
 use config::{Config, GitHubAccount, HackernewsAccount, RedditAccount, SyncLimit};
 use github::{GitHubClient, GitHubConfig};
 use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackernewsConfig};
@@ -382,13 +383,13 @@ struct DateFlags {
     stale_to_now: Option<bool>,
 }
 
-impl DateFlags {
-    /// The date-setting overrides these flags supply, sitting at the top of the tier.
-    fn overrides(&self) -> DateOverrides {
+/// The date-setting overrides these flags supply, sitting at the top of the tier.
+impl From<&DateFlags> for DateOverrides {
+    fn from(flags: &DateFlags) -> Self {
         DateOverrides {
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
-            stale_to_now: self.stale_to_now,
+            use_post_date: flags.use_post_date,
+            max_age_days: flags.max_age_days,
+            stale_to_now: flags.stale_to_now,
         }
     }
 }
@@ -724,13 +725,15 @@ impl SyncOverrides {
         self.on_auth_failure = on_auth_failure.or(self.on_auth_failure);
         self
     }
+}
 
-    /// The date-setting overrides this invocation supplies. `stale_to_now` is
-    /// cleanup-only, so it is always `None` here.
-    fn date_overrides(&self) -> DateOverrides {
+/// The date-setting overrides a sync invocation supplies. `stale_to_now` is cleanup-only,
+/// so it is always `None` here.
+impl From<&SyncOverrides> for DateOverrides {
+    fn from(ovr: &SyncOverrides) -> Self {
         DateOverrides {
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
+            use_post_date: ovr.use_post_date,
+            max_age_days: ovr.max_age_days,
             stale_to_now: None,
         }
     }
@@ -879,16 +882,6 @@ fn resolve_setting<T>(flag: Option<T>, account: Option<T>, source: Option<T>, gl
     flag.or(account).or(source).unwrap_or(global)
 }
 
-/// The resolved `use_post_date` trio for an account, each resolved through
-/// [`resolve_setting`] (flag → account → per-source default → `[pinboard]` global, with
-/// `max_age_days` defaulting to [`config::DEFAULT_MAX_AGE_DAYS`]). Shared by every
-/// `sync`/`cleanup` builder.
-struct DateSettings {
-    use_post_date: bool,
-    max_age_days: u64,
-    stale_to_now: bool,
-}
-
 /// CLI-flag overrides for the date settings, sitting at the top of the tier
 /// (flag → account → per-source default → `[pinboard]` global). All-`None` means
 /// "no flag given", so resolution falls through to the existing tiers unchanged.
@@ -912,36 +905,38 @@ impl DateOverrides {
     }
 }
 
-impl DateSettings {
-    fn resolve(
-        over: &DateOverrides,
-        account: Option<&impl config::Account>,
-        src: &config::SourceDefaults,
-        config: &Config,
-    ) -> Self {
-        Self {
-            use_post_date: resolve_setting(
-                over.use_post_date,
-                account.and_then(|a| a.use_post_date()),
-                src.use_post_date,
-                config.pinboard.use_post_date,
-            ),
-            max_age_days: resolve_setting(
-                over.max_age_days,
-                account.and_then(|a| a.max_age_days()),
-                src.post_date_max_age_days,
-                config
-                    .pinboard
-                    .post_date_max_age_days
-                    .unwrap_or(config::DEFAULT_MAX_AGE_DAYS),
-            ),
-            stale_to_now: resolve_setting(
-                over.stale_to_now,
-                account.and_then(|a| a.stale_to_now()),
-                src.cleanup_stale_to_now,
-                config.pinboard.cleanup_stale_to_now,
-            ),
-        }
+/// The `use_post_date` trio for an account, each resolved through [`resolve_setting`]
+/// (flag → account → per-source default → `[pinboard]` global, with `max_age_days`
+/// defaulting to [`config::DEFAULT_MAX_AGE_DAYS`]). Shared by every `sync`/`cleanup`
+/// builder.
+fn resolve_dates(
+    over: &DateOverrides,
+    account: Option<&impl config::Account>,
+    src: &config::SourceDefaults,
+    config: &Config,
+) -> DateOpts {
+    DateOpts {
+        use_post_date: resolve_setting(
+            over.use_post_date,
+            account.and_then(|a| a.use_post_date()),
+            src.use_post_date,
+            config.pinboard.use_post_date,
+        ),
+        max_age_days: resolve_setting(
+            over.max_age_days,
+            account.and_then(|a| a.max_age_days()),
+            src.post_date_max_age_days,
+            config
+                .pinboard
+                .post_date_max_age_days
+                .unwrap_or(config::DEFAULT_MAX_AGE_DAYS),
+        ),
+        stale_to_now: resolve_setting(
+            over.stale_to_now,
+            account.and_then(|a| a.stale_to_now()),
+            src.cleanup_stale_to_now,
+            config.pinboard.cleanup_stale_to_now,
+        ),
     }
 }
 
@@ -995,14 +990,14 @@ impl UrlKey for SourceClient {
 }
 
 /// The per-account settings every `build_*_job` resolves the same way: the
-/// `limit`/`toread`/`shared` trio through [`resolve_setting`] plus the [`DateSettings`],
-/// each on the flag → account → per-source default → `[pinboard]` global ladder. Leaves
-/// client/secret/hook construction to each source builder.
+/// `limit`/`toread`/`shared` trio through [`resolve_setting`] plus the dates through
+/// [`resolve_dates`], each on the flag → account → per-source default → `[pinboard]`
+/// global ladder. Leaves client/secret/hook construction to each source builder.
 struct JobCommon {
     limit: SyncLimit,
     toread: bool,
     shared: bool,
-    dates: DateSettings,
+    dates: DateOpts,
 }
 
 fn resolve_job_common(
@@ -1030,7 +1025,7 @@ fn resolve_job_common(
             src.public,
             config.pinboard.public,
         ),
-        dates: DateSettings::resolve(&ovr.date_overrides(), account, src, config),
+        dates: resolve_dates(&DateOverrides::from(ovr), account, src, config),
     }
 }
 
@@ -1584,7 +1579,7 @@ async fn check_accounts<T: config::Named>(
 // --- cleanup -----------------------------------------------------------------
 
 async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
-    let over = cmd.dates.overrides();
+    let over = DateOverrides::from(&cmd.dates);
     match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
@@ -1600,8 +1595,8 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), cmd.dry_run);
             let mut run = AllRun::default();
             if let Some(acct) = config.github.first() {
-                let opts = gh_cleanup_opts(&over, Some(acct), config);
-                run.record(cleanup_github_for(&store, Some(acct), None, &opts, config).await);
+                let dates = resolve_dates(&over, Some(acct), &config.defaults.github, config);
+                run.record(cleanup_github_for(&store, Some(acct), None, dates, config).await);
             }
             if let Some(acct) = config.reddit.first() {
                 let args = RedditCleanupArgs {
@@ -1650,33 +1645,19 @@ fn cleanup_dry_run(top_dry_run: bool, source_dry_run: bool) -> bool {
     top_dry_run || source_dry_run
 }
 
-/// Resolve the tiered date settings for a github cleanup pass.
-fn gh_cleanup_opts(
-    over: &DateOverrides,
-    account: Option<&GitHubAccount>,
-    config: &Config,
-) -> github::GitHubCleanupOpts {
-    let dates = DateSettings::resolve(over, account, &config.defaults.github, config);
-    github::GitHubCleanupOpts {
-        use_post_date: dates.use_post_date,
-        max_age_days: dates.max_age_days,
-        cleanup_stale_to_now: dates.stale_to_now,
-    }
-}
-
 async fn run_cleanup_github(
     args: GitHubCleanupArgs,
     top_dry_run: bool,
     top: &DateOverrides,
     config: &Config,
 ) -> Result<()> {
-    let over = args.dates.overrides().with_top_level(top);
+    let over = DateOverrides::from(&args.dates).with_top_level(top);
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let account = config::select_account(&config.github, args.account.as_deref())?;
-    let opts = gh_cleanup_opts(&over, account, config);
+    let dates = resolve_dates(&over, account, &config.defaults.github, config);
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
-    cleanup_github_for(&store, account, args.github_token, &opts, config).await
+    cleanup_github_for(&store, account, args.github_token, dates, config).await
 }
 
 /// Run github cleanup: build an API client from the account/env token and refresh
@@ -1685,7 +1666,7 @@ async fn cleanup_github_for<S: BookmarkStore + AccountState>(
     store: &S,
     account: Option<&GitHubAccount>,
     token_flag: Option<String>,
-    opts: &github::GitHubCleanupOpts,
+    dates: DateOpts,
     config: &Config,
 ) -> Result<()> {
     let github_config = account.map(GitHubConfig::from).unwrap_or_default();
@@ -1696,7 +1677,7 @@ async fn cleanup_github_for<S: BookmarkStore + AccountState>(
         config,
     );
     let client = GitHubClient::new(token, github_config.clone())?;
-    github::cleanup(store, &client, &github_config, opts)
+    github::cleanup(store, &client, &github_config, dates)
         .await
         .map_err(|e| handle_source_err(e, hook.as_deref()))
 }
@@ -1716,7 +1697,7 @@ async fn run_cleanup_reddit(
     cleanup_one_reddit(
         account,
         &args,
-        &args.dates.overrides().with_top_level(top),
+        &DateOverrides::from(&args.dates).with_top_level(top),
         &store,
         config,
     )
@@ -1731,7 +1712,6 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     config: &Config,
 ) -> Result<()> {
     let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
-    let dates = DateSettings::resolve(over, account, &config.defaults.reddit, config);
     let opts = cleanup::RedditCleanupOpts {
         mark_nsfw: !args.no_nsfw,
         fix_titles: !args.no_titles,
@@ -1739,14 +1719,12 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
         subreddit_tag_prefix: reddit_config.subreddit_prefix.clone(),
         nsfw_tag: reddit_config.nsfw.clone(),
         domain: reddit_config.domain.clone(),
-        use_post_date: dates.use_post_date,
-        max_age_days: dates.max_age_days,
-        cleanup_stale_to_now: dates.stale_to_now,
+        dates: resolve_dates(over, account, &config.defaults.reddit, config),
     };
 
     // Reddit (for /api/info) is needed when marking NSFW, fixing titles, or dating by
     // the source post (the post's created_utc comes from /api/info too).
-    let reddit = if opts.mark_nsfw || opts.fix_titles || opts.use_post_date {
+    let reddit = if opts.mark_nsfw || opts.fix_titles || opts.dates.use_post_date {
         let cookie = resolve_reddit_cookie(args.reddit_cookie.clone(), account)
             .with_context(missing_reddit_cookie)?;
         Some(RedditClient::for_info(Some(cookie))?)
@@ -1774,7 +1752,7 @@ async fn run_cleanup_hackernews(
     // first, or implicit) account's tag config.
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let account = config::select_account(&config.hackernews, args.account.as_deref())?;
-    let over = args.dates.overrides().with_top_level(top);
+    let over = DateOverrides::from(&args.dates).with_top_level(top);
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
     cleanup_one_hackernews(
@@ -1812,15 +1790,12 @@ async fn cleanup_one_hackernews<S: BookmarkStore + AccountState>(
     config: &Config,
 ) -> Result<()> {
     let hn_config = resolve_hackernews_cleanup_config(account, link_tag)?;
-    let dates = DateSettings::resolve(over, account, &config.defaults.hackernews, config);
     let hn = HackerNewsClient::for_cleanup(hn_config)?;
     hn.cleanup(
         store,
         &HackerNewsCleanupOpts {
             link_discussions,
-            use_post_date: dates.use_post_date,
-            max_age_days: dates.max_age_days,
-            cleanup_stale_to_now: dates.stale_to_now,
+            dates: resolve_dates(over, account, &config.defaults.hackernews, config),
         },
     )
     .await
@@ -2315,7 +2290,7 @@ mod tests {
             stale_to_now: Some(true),
             ..Default::default()
         };
-        let d = DateSettings::resolve(&over, None::<&RedditAccount>, src, &config);
+        let d = resolve_dates(&over, None::<&RedditAccount>, src, &config);
         assert!(d.stale_to_now);
 
         // flag forces it off against a true global
@@ -2326,7 +2301,7 @@ mod tests {
             stale_to_now: Some(false),
             ..Default::default()
         };
-        let d = DateSettings::resolve(&over, None::<&RedditAccount>, src, &config);
+        let d = resolve_dates(&over, None::<&RedditAccount>, src, &config);
         assert!(!d.stale_to_now);
     }
 
@@ -2341,11 +2316,11 @@ mod tests {
             max_age_days: Some(99),
             ..Default::default()
         };
-        let d = DateSettings::resolve(&over, None::<&RedditAccount>, src, &config);
+        let d = resolve_dates(&over, None::<&RedditAccount>, src, &config);
         assert_eq!(d.max_age_days, 99);
 
         // no flag → global
-        let d = DateSettings::resolve(
+        let d = resolve_dates(
             &DateOverrides::default(),
             None::<&RedditAccount>,
             src,
@@ -2356,7 +2331,7 @@ mod tests {
         // global unset → built-in default
         let config = Config::default();
         let src = &config.defaults.reddit;
-        let d = DateSettings::resolve(
+        let d = resolve_dates(
             &DateOverrides::default(),
             None::<&RedditAccount>,
             src,
@@ -2712,10 +2687,8 @@ mod tests {
         };
         assert_eq!(args.dates.use_post_date, None);
 
-        let over = args
-            .dates
-            .overrides()
-            .with_top_level(&cmd.dates.overrides());
+        let over =
+            DateOverrides::from(&args.dates).with_top_level(&DateOverrides::from(&cmd.dates));
         assert_eq!(over.use_post_date, Some(true));
     }
 
@@ -2731,10 +2704,8 @@ mod tests {
         };
         assert_eq!(args.dates.use_post_date, Some(false));
 
-        let over = args
-            .dates
-            .overrides()
-            .with_top_level(&cmd.dates.overrides());
+        let over =
+            DateOverrides::from(&args.dates).with_top_level(&DateOverrides::from(&cmd.dates));
         assert_eq!(over.use_post_date, Some(false));
     }
 

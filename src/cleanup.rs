@@ -25,22 +25,8 @@ pub struct RedditCleanupOpts {
     pub nsfw_tag: String,
     /// Reddit host that URLs are rewritten to (default `old.reddit.com`).
     pub domain: String,
-    /// Re-date bookmarks to the source post date (within the age cap).
-    pub use_post_date: bool,
-    /// Backdate age cap, in days.
-    pub max_age_days: u64,
-    /// Re-date posts older than the cap to "now" instead of leaving them.
-    pub cleanup_stale_to_now: bool,
-}
-
-impl RedditCleanupOpts {
-    fn date_opts(&self) -> DateOpts {
-        DateOpts {
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
-            stale_to_now: self.cleanup_stale_to_now,
-        }
-    }
+    /// Whether and how to re-date bookmarks by the source post date.
+    pub dates: DateOpts,
 }
 
 /// Authoritative per-post data from `/api/info`.
@@ -72,7 +58,7 @@ pub async fn run<S: BookmarkStore + AccountState, R: PostInfo>(
 
     let info = fetch_post_info(reddit, opts, &reddit_bms).await?;
     let pass = RedditCleanupPass { info, opts };
-    run_pass(store, &reddit_bms, "reddit", opts.date_opts(), &pass)
+    run_pass(store, &reddit_bms, "reddit", opts.dates, &pass)
         .await
         .into_result()
 }
@@ -172,7 +158,7 @@ async fn fetch_post_info<R: PostInfo>(
     bookmarks: &[Bookmark],
 ) -> Result<HashMap<String, RedditPostMeta>, SourceError> {
     let mut map = HashMap::new();
-    if !(opts.mark_nsfw || opts.fix_titles || opts.use_post_date) {
+    if !(opts.mark_nsfw || opts.fix_titles || opts.dates.use_post_date) {
         return Ok(map);
     }
     let Some(reddit) = reddit else {
@@ -542,11 +528,20 @@ mod loop_tests {
             subreddit_tag_prefix: "subreddit:".into(),
             nsfw_tag: "nsfw".into(),
             domain: "old.reddit.com".into(),
-            use_post_date: false,
-            max_age_days: 30,
-            cleanup_stale_to_now: false,
+            dates: DateOpts {
+                use_post_date: false,
+                max_age_days: 30,
+                stale_to_now: false,
+            },
         }
     }
+
+    /// Dating on, with a cap so large the (old) test post is always "within" it.
+    const DATED: DateOpts = DateOpts {
+        use_post_date: true,
+        max_age_days: 1_000_000,
+        stale_to_now: false,
+    };
 
     fn bookmark(url: &str, description: &str, tags: &str) -> Bookmark {
         PinboardBookmark {
@@ -749,8 +744,7 @@ mod loop_tests {
         };
         // A huge cap so the (old) post is always "within" it; nsfw/titles off.
         let opts = RedditCleanupOpts {
-            use_post_date: true,
-            max_age_days: 1_000_000,
+            dates: DATED,
             mark_nsfw: false,
             fix_titles: false,
             ..opts()
@@ -1060,8 +1054,7 @@ mod loop_tests {
             ..Default::default()
         };
         let opts = RedditCleanupOpts {
-            use_post_date: true,
-            max_age_days: 1_000_000,
+            dates: DATED,
             mark_nsfw: false,
             fix_titles: false,
             ..opts()

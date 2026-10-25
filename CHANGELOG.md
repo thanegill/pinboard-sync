@@ -31,6 +31,7 @@ All notable changes to this project are documented here. The format is based on
 - A Reddit cookie of only quotes, whitespace, `;` or `=` counts as no cookie.
 - Reddit cookie messages name the setting the cookie came from.
 - GitHub 401 errors name the setting the token came from.
+- The missing Reddit cookie and GitHub token errors list every setting each can come from.
 
 ## [0.5.2] - 2026-10-24
 

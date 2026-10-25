@@ -396,7 +396,7 @@ fn unnamed_cookie_warning(source: &str) -> String {
 
 /// What to do about a session Reddit refused, naming the setting the cookie came from, or
 /// the settings to use when none was configured.
-fn refused_cookie_advice(cookie_source: Option<&str>) -> String {
+pub(crate) fn refused_cookie_advice(cookie_source: Option<&str>) -> String {
     match cookie_source {
         Some(source) => format!(
             "The cookie from {source} has likely expired or isn't a reddit_session value; \

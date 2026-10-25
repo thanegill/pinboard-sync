@@ -400,10 +400,13 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     for pair in &planned_pairs {
         let (original, planned) = (pair.0, &pair.1);
         let key = &planned.url;
-        if !groups.contains_key(key) {
-            group_order.push(key);
-        }
-        groups.entry(key).or_default().push((original, planned));
+        groups
+            .entry(key)
+            .or_insert_with(|| {
+                group_order.push(key);
+                Vec::new()
+            })
+            .push((original, planned));
     }
 
     // The stored URLs of the bookmarks this pass actually planned. They are excluded from

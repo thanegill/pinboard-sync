@@ -291,9 +291,11 @@ pub fn merge_json_pages(bodies: &[&str]) -> Result<(Value, Count)> {
 /// makes overwrite-without-pruning safe. HTML comments are inert, so each page's bytes
 /// are still verbatim.
 pub fn merge_html_pages(bodies: &[&str]) -> String {
+    use std::fmt::Write;
+
     let mut out = String::new();
     for (i, body) in bodies.iter().enumerate() {
-        out.push_str(&format!("<!-- pinboard-sync page {} -->\n", i + 1));
+        let _ = writeln!(out, "<!-- pinboard-sync page {} -->", i + 1);
         out.push_str(body);
         if !body.ends_with('\n') {
             out.push('\n');

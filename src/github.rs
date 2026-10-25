@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use log::{debug, warn};
 use serde::Deserialize;
+use time::OffsetDateTime;
 
 use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
@@ -478,17 +479,14 @@ pub async fn cleanup<S: BookmarkStore + AccountState>(
         .collect();
 
     // `starred_at` isn't on the per-repo lookup, so for use_post_date fetch the star
-    // list once and map url_key -> star epoch. A repo no longer starred won't be here
+    // list once and map url_key -> star time. A repo no longer starred won't be here
     // (it keeps its existing time).
-    let star_dates: HashMap<String, i64> = if dates.use_post_date {
+    let star_dates: HashMap<String, OffsetDateTime> = if dates.use_post_date {
         client
             .fetch()
             .await?
             .into_iter()
-            .filter_map(|d| {
-                let key = url_key(&d.bookmark.url)?;
-                Some((key, d.bookmark.timestamp?.unix_timestamp()))
-            })
+            .filter_map(|d| Some((url_key(&d.bookmark.url)?, d.bookmark.timestamp?)))
             .collect()
     } else {
         HashMap::new()
@@ -511,7 +509,7 @@ pub async fn cleanup<S: BookmarkStore + AccountState>(
 struct GitHubCleanupPass<'a> {
     client: &'a GitHubClient,
     config: &'a GitHubConfig,
-    star_dates: HashMap<String, i64>,
+    star_dates: HashMap<String, OffsetDateTime>,
 }
 
 impl CleanupPass for GitHubCleanupPass<'_> {
@@ -531,28 +529,22 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         let mut title = html_to_plain(&bookmark.title);
         let mut note = bookmark.note.clone();
         let mut tags = bookmark.tags.clone();
-        match self.client.repo(&owner, &repo).await {
-            Ok(Some(info)) => {
-                title = html_to_plain(&info.full_name);
-                // Rebuild the notes from fresh data so old bookmarks retrofit to the
-                // <blockquote> shape (sync skips already-present bookmarks).
-                note = github_extended(
-                    info.description.as_deref(),
-                    info.homepage.as_deref(),
-                    &info.html_url,
-                );
-                tags = refresh_tags(bookmark.tags.clone(), &info, self.config);
-                url = Url::parse(&info.html_url).unwrap_or(url); // follows renames/transfers
-            }
-            Ok(None) => {}
-            // A failed lookup is surfaced to the driver, which logs and counts it
-            // (or, for a dead credential, aborts the pass).
-            Err(e) => return Err(e),
+        // A failed lookup is surfaced to the driver, which logs and counts it (or, for a
+        // dead credential, aborts the pass).
+        if let Some(info) = self.client.repo(&owner, &repo).await? {
+            title = html_to_plain(&info.full_name);
+            // Rebuild the notes from fresh data so old bookmarks retrofit to the
+            // <blockquote> shape (sync skips already-present bookmarks).
+            note = github_extended(
+                info.description.as_deref(),
+                info.homepage.as_deref(),
+                &info.html_url,
+            );
+            tags = refresh_tags(bookmark.tags.clone(), &info, self.config);
+            url = Url::parse(&info.html_url).unwrap_or(url); // follows renames/transfers
         }
 
-        let timestamp = url_key(&url)
-            .and_then(|k| self.star_dates.get(&k).copied())
-            .and_then(crate::timefmt::from_unix);
+        let timestamp = url_key(&url).and_then(|k| self.star_dates.get(&k).copied());
         Ok(Plan::Bookmark(Bookmark {
             url,
             title,

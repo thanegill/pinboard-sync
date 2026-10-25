@@ -39,6 +39,9 @@ const RETRY_DELAY: Duration = Duration::from_secs(2);
 /// times over -- it only bounds a response that keeps returning a non-null cursor; the
 /// cursor-repeat case is caught by the `visited` guard.
 const MAX_SAVED_PAGES: u32 = 100;
+/// The pause before each saved page or `/api/info` batch after the first, to be gentle
+/// with Reddit's rate limit.
+const REQUEST_PAUSE: Duration = Duration::from_millis(1000);
 
 /// Reddit `/api/info` lookups by fullname (used by `cleanup` for over_18/title).
 #[allow(async_fn_in_trait)]
@@ -201,6 +204,9 @@ impl RedditClient {
                 ));
                 break;
             }
+            if page > 1 {
+                crate::http::sleep(REQUEST_PAUSE).await;
+            }
             let after_ref = after.as_deref();
             let resp = send_retrying(
                 "saved listing",
@@ -243,8 +249,6 @@ impl RedditClient {
                 }
                 _ => break,
             }
-            // Be gentle with Reddit's rate limit between pages.
-            crate::http::sleep(Duration::from_millis(1000)).await;
         }
 
         Ok(())
@@ -277,9 +281,8 @@ impl PostInfo for RedditClient {
             let listing: RedditListing =
                 decode_reddit_json(resp, "api/info", self.cookie.as_ref()).await?;
             out.extend(listing.data.children);
-            // Be gentle with Reddit's rate limit between requests.
             if i + 1 < chunks.len() {
-                crate::http::sleep(Duration::from_millis(1000)).await;
+                crate::http::sleep(REQUEST_PAUSE).await;
             }
         }
         Ok(out)
@@ -1470,11 +1473,9 @@ mod net_tests {
         let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
         // Page 1 (no cursor) records the cursor; page 2 (after=t3_loop) re-sees it and
         // breaks, so exactly two pages are fetched.
-        let entries = crate::http::recording_waits(client.fetch_saved())
-            .await
-            .0
-            .unwrap();
-        assert_eq!(entries.len(), 2);
+        let (entries, waits) = crate::http::recording_waits(client.fetch_saved()).await;
+        assert_eq!(entries.unwrap().len(), 2);
+        assert_eq!(waits, [REQUEST_PAUSE]);
     }
 
     #[tokio::test]
@@ -1707,11 +1708,10 @@ mod net_tests {
         three_saved_pages(&server, [1, 1, 0]).await;
 
         let client = saved_client(&server);
-        let drafts = crate::http::recording_waits(client.fetch_incremental(&second_page_synced()))
-            .await
-            .0
-            .unwrap();
-        assert_eq!(titles(&drafts), ["n", "o"]);
+        let (drafts, waits) =
+            crate::http::recording_waits(client.fetch_incremental(&second_page_synced())).await;
+        assert_eq!(titles(&drafts.unwrap()), ["n", "o"]);
+        assert_eq!(waits, [REQUEST_PAUSE], "one pause, between the two pages");
     }
 
     #[tokio::test]
@@ -1720,11 +1720,42 @@ mod net_tests {
         three_saved_pages(&server, [1, 1, 1]).await;
 
         let client = saved_client(&server);
-        let drafts = crate::http::recording_waits(client.fetch_incremental(&[]))
-            .await
-            .0
-            .unwrap();
-        assert_eq!(titles(&drafts), ["n", "o", "p"]);
+        let (drafts, waits) = crate::http::recording_waits(client.fetch_incremental(&[])).await;
+        assert_eq!(titles(&drafts.unwrap()), ["n", "o", "p"]);
+        assert_eq!(
+            waits, [REQUEST_PAUSE; 2],
+            "a pause between pages, none after"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_page_cap_stops_without_a_pause_after_the_last_page() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user/psophis/saved.json"))
+            .respond_with(|request: &wiremock::Request| {
+                let page = request
+                    .url
+                    .query_pairs()
+                    .find(|(key, _)| key == "after")
+                    .map_or(0, |(_, after)| after[3..].parse::<u32>().unwrap() + 1);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "kind": "Listing",
+                    "data": { "after": format!("t3_{page}"), "children": [
+                        { "kind": "t3", "data": { "name": format!("t3_{page}"),
+                          "subreddit": "rust", "title": "t",
+                          "permalink": format!("/r/rust/comments/{page}/x/") } }
+                    ] }
+                }))
+            })
+            .expect(u64::from(MAX_SAVED_PAGES))
+            .mount(&server)
+            .await;
+
+        let (entries, waits) =
+            crate::http::recording_waits(saved_client(&server).fetch_saved()).await;
+        assert_eq!(entries.unwrap().len(), MAX_SAVED_PAGES as usize);
+        assert_eq!(waits, vec![REQUEST_PAUSE; MAX_SAVED_PAGES as usize - 1]);
     }
 
     #[tokio::test]

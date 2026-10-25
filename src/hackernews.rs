@@ -16,7 +16,9 @@ use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PassOutcome, Plan};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
-use crate::http::{client_builder, send_retrying, ConnectBudget};
+use crate::http::{
+    client_builder, retry_after_up_to, send_retrying, send_retrying_with, ConnectBudget,
+};
 use crate::source::{
     extend_unique, push_prefixed, push_tag, push_tags, url_key, BookmarkDraft, Source, SourceError,
     UrlKey,
@@ -32,6 +34,9 @@ const ALGOLIA_BASE: &str = "https://hn.algolia.com";
 const ITEM_BATCH: usize = 100;
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
+/// The longest `Retry-After` a favorites-page 429 is waited out for, once. A 429 asking
+/// for longer, or for nothing, fails the fetch at once rather than holding the run open.
+const FAVORITES_MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
 /// Cap on favorites pages followed via the "More" link (30 items per page, so this
 /// covers thousands of favorites). Bounds a malformed or looping "More" link so the
 /// scrape can't spin forever.
@@ -310,19 +315,32 @@ impl HackerNewsClient {
                 );
                 break;
             }
-            let resp = send_retrying(
+            let resp = send_retrying_with(
                 "hn favorites",
                 &self.connect_budget,
                 MAX_RETRIES,
                 RETRY_DELAY,
+                retry_after_up_to(FAVORITES_MAX_RETRY_AFTER),
                 || self.http.get(&url),
             )
             .await?;
             let status = resp.status();
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let retry_after = resp
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .map(|value| format!(" (Retry-After: {value})"))
+                    .unwrap_or_default();
+                return Err(SourceError::RateLimited(format!(
+                    "hn {stream} for '{}' returned {status}{retry_after}",
+                    self.username
+                )));
+            }
             let body = resp.text().await.unwrap_or_default();
             if !status.is_success() {
                 return Err(anyhow::anyhow!(
-                    "hn favorites for '{}' returned {status}",
+                    "hn {stream} for '{}' returned {status}",
                     self.username
                 )
                 .into());
@@ -1697,6 +1715,98 @@ mod net_tests {
         );
         let drafts = client.fetch().await.unwrap();
         assert!(drafts.is_empty());
+    }
+
+    fn favorites_client(hn: &MockServer) -> HackerNewsClient {
+        HackerNewsClient::with_base_urls(
+            "psophis".into(),
+            HackernewsConfig::default(),
+            hn.uri(),
+            "http://unused.invalid".into(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_favorites_429_without_retry_after_is_not_retried() {
+        let hn = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .respond_with(ResponseTemplate::new(429))
+            .expect(1)
+            .mount(&hn)
+            .await;
+
+        let err = favorites_client(&hn).fetch().await.unwrap_err();
+
+        let SourceError::RateLimited(message) = err else {
+            panic!("expected RateLimited, got {err:?}");
+        };
+        assert!(message.contains("hn favorites"), "{message}");
+        assert!(message.contains("429"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_favorites_429_with_a_long_retry_after_is_not_retried() {
+        let hn = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "3600"))
+            .expect(1)
+            .mount(&hn)
+            .await;
+
+        let err = favorites_client(&hn).fetch().await.unwrap_err();
+
+        let SourceError::RateLimited(message) = err else {
+            panic!("expected RateLimited, got {err:?}");
+        };
+        assert!(message.contains("Retry-After: 3600"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_favorites_429_with_a_short_retry_after_is_retried_once() {
+        let hn = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .and(query_param_is_missing("comments"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&hn)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<html op="favorites"><body><table id="hnmain"></table></body></html>"#,
+            ))
+            .expect(2)
+            .mount(&hn)
+            .await;
+
+        let start = tokio::time::Instant::now();
+        let drafts = favorites_client(&hn).fetch().await.unwrap();
+
+        assert!(drafts.is_empty());
+        let waited = start.elapsed();
+        assert!(
+            waited < RETRY_DELAY,
+            "the retry waits out the Retry-After, not the linear backoff: {waited:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_second_favorites_429_stops_the_fetch() {
+        let hn = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "1"))
+            .expect(2)
+            .mount(&hn)
+            .await;
+
+        let err = favorites_client(&hn).fetch().await.unwrap_err();
+
+        assert!(matches!(err, SourceError::RateLimited(_)), "got {err:?}");
     }
 
     #[tokio::test(start_paused = true)]

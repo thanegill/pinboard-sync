@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- A HackerNews favorites `429` is no longer retried blindly: it's retried once, only for
+  a `Retry-After` of 2 minutes or less, and otherwise fails as rate-limited without firing
+  the auth-failure hook.
+
 ## [0.5.2] - 2026-10-24
 
 ### Fixed

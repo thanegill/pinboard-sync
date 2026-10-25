@@ -397,16 +397,16 @@ query) instead. An error quotes a response body only through
 `http::error_with_body`, which puts a one-line excerpt of at most 300 bytes in the error
 and logs the whole body at debug level (`-v`, or `RUST_LOG=pinboard_sync=debug`), in any
 build, escaped as one string literal so a hostile body can't forge log lines. Tests read
-the log through `test_support::capturing_logs`. Both carry the body as given, so a secret
-is redacted before the call: a Pinboard error body could echo the request back, so any
-text from a Pinboard response that goes into an error (a non-success body via
-`PinboardClient::status_error`, or a `result_code`) goes through `redacted_error`, which
-redacts the token, its secret part (which also covers it percent-encoded) and any
-`auth_token=` value from the whole text first. GitHub, Reddit and Algolia bodies go in
-unredacted: the GitHub token and Reddit cookie travel in headers, which their error
-bodies don't echo, and HackerNews has no credential. A body worth seeing under `-v`
-that no error quotes (Reddit's unrecognised 401/403 page) goes through
-`http::log_body_at_debug`, the same escaped line, under the same redaction rule.
+the log through `test_support::capturing_logs`. Every caller passes its client's secrets
+(the GitHub token; the Reddit `Cookie` header and its session value; none for Algolia),
+and `http::redact` replaces them in the whole body before either the log line or the
+excerpt is made, so the cut can't leave part of one behind. Pinboard's echo can take more
+forms, so any text from a Pinboard response that goes into an error (a non-success body
+via `PinboardClient::status_error`, or a `result_code`) goes through `redacted_error`,
+which redacts the token, its secret part (which also covers it percent-encoded) and any
+`auth_token=` value from the whole text first. A body worth seeing under `-v` that no
+error quotes (Reddit's unrecognised 401/403 page) goes through `http::log_body_at_debug`,
+the same escaped line, under the same redaction rule.
 
 **`SourceError::RateLimited` is the third case, and deliberately not either of those.**
 GitHub answers both its primary and secondary rate limits with a **403 or 429** — the

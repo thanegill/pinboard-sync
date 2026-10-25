@@ -52,6 +52,24 @@ struct SessionCookie {
     source: &'static str,
 }
 
+impl SessionCookie {
+    /// What to [redact](crate::http::redact) from a response body that is logged or
+    /// quoted: the whole header and its `reddit_session` value, without the whitespace and
+    /// quotes a server would drop before echoing it.
+    fn secrets(&self) -> Vec<&str> {
+        let session = self
+            .header
+            .split(';')
+            .find_map(session_value)
+            .map(|session| session.trim().trim_matches('"'))
+            .filter(|session| !session.is_empty());
+        [Some(self.header.as_str()), session]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+}
+
 impl TryFrom<ConfiguredSecret> for SessionCookie {
     type Error = NoSession;
     fn try_from(cookie: ConfiguredSecret) -> Result<Self, Self::Error> {
@@ -129,10 +147,6 @@ impl RedditClient {
             None => req,
         }
     }
-
-    fn cookie_source(&self) -> Option<&'static str> {
-        self.cookie.as_ref().map(|cookie| cookie.source)
-    }
 }
 
 impl RedditClient {
@@ -205,7 +219,7 @@ impl RedditClient {
                 },
             )
             .await?;
-            let body = reddit_body(resp, "saved listing", self.cookie_source()).await?;
+            let body = reddit_body(resp, "saved listing", self.cookie.as_ref()).await?;
             sink.push("", RawKind::Json, &body);
             let listing: RedditListing = serde_json::from_str(&body)
                 .context("parsing saved listing response")
@@ -261,7 +275,7 @@ impl PostInfo for RedditClient {
             )
             .await?;
             let listing: RedditListing =
-                decode_reddit_json(resp, "api/info", self.cookie_source()).await?;
+                decode_reddit_json(resp, "api/info", self.cookie.as_ref()).await?;
             out.extend(listing.data.children);
             // Be gentle with Reddit's rate limit between requests.
             if i + 1 < chunks.len() {
@@ -558,15 +572,19 @@ fn redirect_error(
 /// since the body is usually a large HTML page and isn't echoed (one that is neither edge
 /// page is logged at debug level instead). Redirects are not followed (see
 /// [`redirect_error`]). Any other non-success status becomes [`SourceError::Other`].
-/// `what` names the request, and `cookie_source` the setting the cookie came from.
+/// `what` names the request, and `cookie` is the one it sent: its setting is named in
+/// advice and its [secrets](SessionCookie::secrets) are redacted from a logged or quoted
+/// body.
 async fn reddit_body(
     resp: reqwest::Response,
     what: &str,
-    cookie_source: Option<&str>,
+    cookie: Option<&SessionCookie>,
 ) -> Result<String, SourceError> {
     use reqwest::header::CONTENT_TYPE;
     use reqwest::StatusCode;
 
+    let cookie_source = cookie.map(|cookie| cookie.source);
+    let secrets = cookie.map(SessionCookie::secrets).unwrap_or_default();
     let status = resp.status();
     if status.is_redirection() {
         return Err(redirect_error(&resp, what, cookie_source));
@@ -600,15 +618,22 @@ async fn reddit_body(
                      recognised edge page; treating it as an expired cookie",
                     body.len()
                 );
-                crate::http::log_body_at_debug(&format!("{what} returned {status}"), &body);
+                crate::http::log_body_at_debug(
+                    &format!("{what} returned {status}"),
+                    &body,
+                    &secrets,
+                );
                 SourceError::ReauthRequired(reauth)
             }
         });
     }
     if !status.is_success() {
-        return Err(
-            crate::http::error_with_body(&format!("{what} returned {status}"), &body).into(),
-        );
+        return Err(crate::http::error_with_body(
+            &format!("{what} returned {status}"),
+            &body,
+            &secrets,
+        )
+        .into());
     }
     Ok(body)
 }
@@ -656,9 +681,9 @@ fn edge_page(status: reqwest::StatusCode, content_type: &str, body: &str) -> Opt
 async fn decode_reddit_json<T: DeserializeOwned>(
     resp: reqwest::Response,
     what: &str,
-    cookie_source: Option<&str>,
+    cookie: Option<&SessionCookie>,
 ) -> Result<T, SourceError> {
-    let body = reddit_body(resp, what, cookie_source).await?;
+    let body = reddit_body(resp, what, cookie).await?;
     serde_json::from_str(&body)
         .with_context(|| format!("parsing {what} response"))
         .map_err(Into::into)
@@ -698,16 +723,71 @@ mod tests {
         )
     }
 
+    fn test_cookie() -> SessionCookie {
+        SessionCookie {
+            header: "a=1; reddit_session=test-session; token_v2=x".into(),
+            source: TEST_COOKIE_SOURCE,
+        }
+    }
+
+    #[test]
+    fn a_cookie_secret_is_the_session_as_a_server_would_echo_it() {
+        let quoted = SessionCookie {
+            header: "reddit_session=\"abc\" ; a=1".into(),
+            source: TEST_COOKIE_SOURCE,
+        };
+        assert_eq!(quoted.secrets(), [quoted.header.as_str(), "abc"]);
+        let unnamed = SessionCookie {
+            header: "a=1".into(),
+            source: TEST_COOKIE_SOURCE,
+        };
+        assert_eq!(unnamed.secrets(), ["a=1"]);
+    }
+
+    #[tokio::test]
+    async fn redacts_the_cookie_from_a_logged_or_quoted_body() {
+        let echo = "sent a=1; reddit_session=test-session; token_v2=x, session test-session";
+        let redacted = "sent [redacted], session [redacted]";
+        let (result, logs) = crate::test_support::capturing_logs(decode_reddit_json::<Sample>(
+            response(500, echo),
+            "req",
+            Some(&test_cookie()),
+        ))
+        .await;
+        let Err(SourceError::Other(err)) = result else {
+            panic!("a 500 is a plain error: {result:?}");
+        };
+        assert_eq!(
+            err.to_string(),
+            format!("req returned 500 Internal Server Error: {redacted}")
+        );
+        assert_eq!(
+            logs,
+            [format!(
+                "DEBUG req returned 500 Internal Server Error; full response body: {redacted:?}"
+            )]
+        );
+
+        let (result, logs) = crate::test_support::capturing_logs(decode_reddit_json::<Sample>(
+            html_response(403, echo),
+            "req",
+            Some(&test_cookie()),
+        ))
+        .await;
+        assert!(matches!(result, Err(SourceError::ReauthRequired(_))));
+        let [_, debug] = logs.as_slice() else {
+            panic!("expected the size warning and the body, got {logs:?}");
+        };
+        assert!(debug.ends_with(&format!("{redacted:?}")), "{debug}");
+    }
+
     #[tokio::test]
     async fn maps_401_and_403_to_reauth() {
         for code in [401u16, 403] {
-            let err = decode_reddit_json::<Sample>(
-                response(code, "denied"),
-                "req",
-                Some(TEST_COOKIE_SOURCE),
-            )
-            .await
-            .unwrap_err();
+            let err =
+                decode_reddit_json::<Sample>(response(code, "denied"), "req", Some(&test_cookie()))
+                    .await
+                    .unwrap_err();
             assert!(
                 matches!(err, SourceError::ReauthRequired(_)),
                 "status {code} should require re-auth"
@@ -803,7 +883,7 @@ mod tests {
         let err = decode_reddit_json::<Sample>(
             html_response(403, NETWORK_POLICY_PAGE),
             "req",
-            Some(TEST_COOKIE_SOURCE),
+            Some(&test_cookie()),
         )
         .await
         .unwrap_err();
@@ -834,7 +914,7 @@ mod tests {
                 response(403, BLOCK_PAGE),
             ),
         ] {
-            let err = decode_reddit_json::<Sample>(resp, "req", Some(TEST_COOKIE_SOURCE))
+            let err = decode_reddit_json::<Sample>(resp, "req", Some(&test_cookie()))
                 .await
                 .unwrap_err();
             assert!(
@@ -850,7 +930,7 @@ mod tests {
         let (result, logs) = crate::test_support::capturing_logs(decode_reddit_json::<Sample>(
             html_response(403, page),
             "req",
-            Some(TEST_COOKIE_SOURCE),
+            Some(&test_cookie()),
         ))
         .await;
         assert!(matches!(result, Err(SourceError::ReauthRequired(_))));
@@ -876,7 +956,7 @@ mod tests {
         let err = decode_reddit_json::<Sample>(
             html_response(403, BLOCK_PAGE),
             "req",
-            Some(TEST_COOKIE_SOURCE),
+            Some(&test_cookie()),
         )
         .await
         .unwrap_err();
@@ -889,10 +969,9 @@ mod tests {
 
     #[tokio::test]
     async fn maps_500_to_other() {
-        let err =
-            decode_reddit_json::<Sample>(response(500, "boom"), "req", Some(TEST_COOKIE_SOURCE))
-                .await
-                .unwrap_err();
+        let err = decode_reddit_json::<Sample>(response(500, "boom"), "req", Some(&test_cookie()))
+            .await
+            .unwrap_err();
         assert!(matches!(err, SourceError::Other(_)));
     }
 
@@ -901,19 +980,16 @@ mod tests {
         let ok = decode_reddit_json::<Sample>(
             response(200, r#"{"ok":true}"#),
             "req",
-            Some(TEST_COOKIE_SOURCE),
+            Some(&test_cookie()),
         )
         .await
         .unwrap();
         assert_eq!(ok, Sample { ok: true });
 
-        let err = decode_reddit_json::<Sample>(
-            response(200, "not json"),
-            "req",
-            Some(TEST_COOKIE_SOURCE),
-        )
-        .await
-        .unwrap_err();
+        let err =
+            decode_reddit_json::<Sample>(response(200, "not json"), "req", Some(&test_cookie()))
+                .await
+                .unwrap_err();
         assert!(matches!(err, SourceError::Other(_)));
     }
 
@@ -934,7 +1010,7 @@ mod tests {
             let err = decode_reddit_json::<Sample>(
                 redirect(Some(location)),
                 "req",
-                Some(TEST_COOKIE_SOURCE),
+                Some(&test_cookie()),
             )
             .await
             .unwrap_err();
@@ -953,10 +1029,9 @@ mod tests {
             Some("/logins"),
             None,
         ] {
-            let err =
-                decode_reddit_json::<Sample>(redirect(location), "req", Some(TEST_COOKIE_SOURCE))
-                    .await
-                    .unwrap_err();
+            let err = decode_reddit_json::<Sample>(redirect(location), "req", Some(&test_cookie()))
+                .await
+                .unwrap_err();
             assert!(
                 matches!(err, SourceError::Other(_)),
                 "{location:?} is not a login redirect: {err:?}"
@@ -988,9 +1063,13 @@ mod tests {
     #[tokio::test]
     async fn names_the_cookie_setting_in_every_refusal() {
         let source = "the config's `cookie_file`";
+        let cookie = SessionCookie {
+            source,
+            ..test_cookie()
+        };
         let refusals = [
-            decode_reddit_json::<Sample>(response(403, "denied"), "req", Some(source)),
-            decode_reddit_json::<Sample>(redirect(Some("/login")), "req", Some(source)),
+            decode_reddit_json::<Sample>(response(403, "denied"), "req", Some(&cookie)),
+            decode_reddit_json::<Sample>(redirect(Some("/login")), "req", Some(&cookie)),
         ];
         for refusal in refusals {
             let SourceError::ReauthRequired(message) = refusal.await.unwrap_err() else {

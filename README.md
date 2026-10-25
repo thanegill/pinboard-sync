@@ -33,14 +33,17 @@ Every source lists what you saved newest first, so by default (`limit = "auto"`)
 stops reading a source at the first page with nothing new to write. Once an account is
 caught up, a run reads one page per source (one each for HN stories and comments)
 instead of every page: Reddit and GitHub return 100 items a page, so an account with
-about 600 saves and 1,100 stars drops from 7 and 11 requests to 1 each. This has three
+about 600 saves and 1,100 stars drops from 7 and 11 requests to 1 each. New items are
+written oldest first, so a run interrupted partway leaves the newest unwritten, and the
+next run reads down to the ones already written and writes the rest. This has three
 known limits:
 
 - An older saved item you deleted from Pinboard is not added back.
-- If a run that is catching up on many new items is interrupted after writing the newest
-  ones, or one of its writes fails, later runs won't reach the older ones.
-- The first sync of an account whose newest items are already on Pinboard (from another
-  tool, say, or saved by hand) stops there and doesn't backfill the older ones.
+- If a write fails and at least a page's worth of newer items in the same run succeed,
+  later runs won't reach the failed item.
+- A page whose items are all already on Pinboard stops the read, even when older items
+  below it are missing. That happens on a first sync whose newest items you saved by hand
+  or with another tool, or when such items shift above an unwritten one between runs.
 
 `sync <source> --limit all` reads every page once and writes whatever is missing.
 

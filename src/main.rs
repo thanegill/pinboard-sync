@@ -1071,7 +1071,8 @@ fn build_github_job(
     ovr: &SyncOverrides,
     config: &Config,
 ) -> Result<SyncJob> {
-    let token = resolve_github_token(ovr.github_token.clone(), account).context("missing GitHub token (set --github-token, GITHUB_TOKEN, or `token`/`token_file` in the config)")?;
+    let token =
+        resolve_github_token(ovr.github_token.clone(), account).context(MISSING_GITHUB_TOKEN)?;
     let github_config = account
         .map(GitHubAccount::github_config)
         .unwrap_or_default();
@@ -1692,7 +1693,7 @@ async fn cleanup_github_for<S: BookmarkStore + AccountState>(
     let github_config = account
         .map(GitHubAccount::github_config)
         .unwrap_or_default();
-    let token = resolve_github_token(token_flag, account).context("missing GitHub token (set --github-token, GITHUB_TOKEN, or `token`/`token_file` in the config)")?;
+    let token = resolve_github_token(token_flag, account).context(MISSING_GITHUB_TOKEN)?;
     let hook = cleanup_hook(
         account.and_then(|a| a.on_auth_failure.as_deref()),
         config.defaults.github.on_auth_failure.as_deref(),
@@ -1753,7 +1754,7 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     // the source post (the post's created_utc comes from /api/info too).
     let reddit = if opts.mark_nsfw || opts.fix_titles || opts.use_post_date {
         let cookie = resolve_reddit_cookie(args.reddit_cookie.clone(), account)
-        .context("missing Reddit cookie (set --reddit-cookie, REDDIT_COOKIE, or pass --no-nsfw --no-titles and disable use_post_date)")?;
+            .context(MISSING_REDDIT_COOKIE)?;
         Some(RedditClient::for_info(Some(cookie))?)
     } else {
         None
@@ -1958,6 +1959,13 @@ fn reddit_cookie_source(rung: SecretRung) -> &'static str {
         SecretRung::ConfigFile => "the config's `cookie_file`",
     }
 }
+
+const MISSING_REDDIT_COOKIE: &str = "missing Reddit cookie (set --reddit-cookie, \
+     $REDDIT_COOKIE, $REDDIT_COOKIE_FILE, or the config's `cookie` or `cookie_file`, or \
+     pass --no-nsfw --no-titles and disable use_post_date)";
+
+const MISSING_GITHUB_TOKEN: &str = "missing GitHub token (set --github-token, \
+     $GITHUB_TOKEN, $GITHUB_TOKEN_FILE, or the config's `token` or `token_file`)";
 
 /// The GitHub token setting a rung reads, as messages name it.
 fn github_token_source(rung: SecretRung) -> &'static str {
@@ -2233,6 +2241,20 @@ mod tests {
         };
         let from_flag = resolve_reddit_cookie(Some("abc".into()), Some(&account)).unwrap();
         assert_eq!(from_flag.source, "--reddit-cookie");
+    }
+
+    #[test]
+    fn missing_secret_errors_list_every_setting() {
+        fn assert_lists_every_setting(message: &str, source: fn(SecretRung) -> &'static str) {
+            let words: Vec<&str> = message.split([' ', ',', '(', ')']).collect();
+            for rung in SecretRung::ALL {
+                let setting = source(rung).rsplit(' ').next().unwrap();
+                assert!(words.contains(&setting), "{setting} missing from {message}");
+            }
+        }
+        assert_lists_every_setting(MISSING_REDDIT_COOKIE, reddit_cookie_source);
+        assert_lists_every_setting(&reddit::refused_cookie_advice(None), reddit_cookie_source);
+        assert_lists_every_setting(MISSING_GITHUB_TOKEN, github_token_source);
     }
 
     #[test]

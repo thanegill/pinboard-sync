@@ -6,12 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `limit` / `--limit` take `auto` (default), `all` or a positive number,
+  and `0` is rejected. Under `auto`, HackerNews stops paging once caught up; `all` reads
+  every page. Replace `limit = 0` with `"auto"`, or delete it.
+
 ### Fixed
 
 - HackerNews `sync` stops reading favorites pages once it reaches ones already synced,
   instead of fetching every page each run. A favorite deleted from Pinboard is no longer
-  re-added; after an interrupted backfill, run `sync hackernews --limit N`
-  (`N` above the backlog) once.
+  re-added; after an interrupted backfill, run `sync hackernews --limit all` once.
 - A HackerNews favorites `429` is no longer retried blindly: it's retried once, only for
   a `Retry-After` of 2 minutes or less, and otherwise fails as rate-limited without firing
   the auth-failure hook.

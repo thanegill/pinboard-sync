@@ -183,12 +183,15 @@ boundary.
 maps an existing Pinboard URL to that source's dedup key. `run_sync_jobs` (`main.rs`)
 fetches drafts, and `sync::prepare_new_drafts` builds the set of existing keys by mapping
 `pinboard.all()` through `source.dedup_key` and keeps the drafts whose `dedup_key` isn't
-present. `sync` fetches through `SyncJob::fetch`, which calls
-`Source::fetch_incremental(existing)` rather than `fetch()`: it defaults to the full
-fetch, and a source may override it to stop paging once it reaches items already on
-Pinboard (HackerNews does). A job with a `limit` takes the full `fetch()`, because a
-capped run writes only the newest drafts and leaves older ones behind pages that already
-look synced. `backup` and `doctor` keep the full traversal. To add
+present. `sync` fetches through `SyncJob::fetch`, which picks the traversal from the
+job's `config::SyncLimit` (`limit` / `--limit`, parsed by one `FromStr` + `Deserialize`
+pair): `auto`, the default, calls `Source::fetch_incremental(existing)`, which defaults to
+the full fetch and which a source may override to stop paging once it reaches items
+already on Pinboard (HackerNews does); `all` and a cap `N` call the full `fetch()`. A
+capped run writes only the newest drafts, so an incremental read would never reach the
+rest again. There is no `0`: it used to mean "no cap", and since that now splits into
+`auto` and `all` it is rejected rather than guessed. A bad value's error names the field,
+never the value. `backup` and `doctor` keep the full traversal. To add
 a source, implement `Source` and wire it into `main.rs` + `config.rs`. The clients
 also sit behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a
 `&Bookmark`) so the loops are unit-tested with
@@ -213,7 +216,7 @@ would page down to every such item on every run. Items gone from Algolia make no
 so they don't hold the walk open either. Favorites list newest first, so later pages
 hold nothing new, with two known gaps: an older favorite deleted from Pinboard is not
 re-added, and a backfill interrupted (or with a failed write) after the newest page was
-written leaves the older favorites unwritten. `sync hackernews --limit N` reads every
+written leaves the older favorites unwritten. `sync hackernews --limit all` reads every
 page and recovers them. `backup` keeps the full traversal with its batched lookup.
 `cleanup hackernews --link-discussions` (default off) is the reverse: for article
 bookmarks carrying the `link_tag` marker (default `find-hn`), it looks each up on HN

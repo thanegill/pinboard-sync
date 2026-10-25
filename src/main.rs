@@ -29,7 +29,7 @@ use log::{debug, error, info, warn};
 
 use backup::BackupSource;
 use bookmark::{AccountState, AccountView, Bookmark, BookmarkStore, CleanupStore};
-use config::{Config, GitHubAccount, HackernewsAccount, RedditAccount};
+use config::{Config, GitHubAccount, HackernewsAccount, RedditAccount, SyncLimit};
 use github::GitHubClient;
 use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackernewsConfig};
 use pinboard::{PinboardClient, RATE_LIMIT_SECS};
@@ -240,9 +240,11 @@ struct RedditSyncArgs {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
-    /// Cap on new bookmarks written this run (overrides config; unset = config / no cap).
+    /// `auto` (the default: no cap; stop paging once caught up, where the source can),
+    /// `all` (no cap; read every page), or N (write at most N; read every page).
+    /// Overrides config.
     #[arg(long)]
-    limit: Option<usize>,
+    limit: Option<SyncLimit>,
     /// Only backdate posts newer than N days; older use "now" (overrides config).
     #[arg(long)]
     max_age_days: Option<u64>,
@@ -277,9 +279,11 @@ struct GitHubSyncArgs {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
-    /// Cap on new bookmarks written this run (overrides config; unset = config / no cap).
+    /// `auto` (the default: no cap; stop paging once caught up, where the source can),
+    /// `all` (no cap; read every page), or N (write at most N; read every page).
+    /// Overrides config.
     #[arg(long)]
-    limit: Option<usize>,
+    limit: Option<SyncLimit>,
     /// Only backdate posts newer than N days; older use "now" (overrides config).
     #[arg(long)]
     max_age_days: Option<u64>,
@@ -313,9 +317,11 @@ struct HackernewsSyncArgs {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
-    /// Cap on new bookmarks written this run (overrides config; unset = config / no cap).
+    /// `auto` (the default: no cap; stop paging once caught up, where the source can),
+    /// `all` (no cap; read every page), or N (write at most N; read every page).
+    /// Overrides config.
     #[arg(long)]
-    limit: Option<usize>,
+    limit: Option<SyncLimit>,
     /// Only backdate posts newer than N days; older use "now" (overrides config).
     #[arg(long)]
     max_age_days: Option<u64>,
@@ -698,7 +704,7 @@ struct SyncOverrides {
     hackernews_username: Option<String>,
     pinboard_token: Option<String>,
     on_auth_failure: Option<String>,
-    limit: Option<usize>,
+    limit: Option<SyncLimit>,
     toread: Option<bool>,
     public: Option<bool>,
     use_post_date: Option<bool>,
@@ -821,7 +827,7 @@ struct SyncJob {
     /// Human label for logs, e.g. `reddit[alice]`.
     label: String,
     hook: Option<String>,
-    limit: usize,
+    limit: SyncLimit,
     /// Resolved to-read flag for this account's new bookmarks.
     toread: bool,
     /// Resolved public/shared flag for this account's new bookmarks.
@@ -833,13 +839,12 @@ struct SyncJob {
 }
 
 impl SyncJob {
-    /// The source's drafts, read incrementally against `existing` unless a `limit` is
-    /// set: a capped run writes only the newest drafts, so older ones sit behind pages
-    /// that already look synced and an incremental read would never reach them again.
+    /// The source's drafts: read incrementally against `existing` under
+    /// [`SyncLimit::Auto`], else in full.
     async fn fetch(&self, existing: &[Bookmark]) -> Result<Vec<BookmarkDraft>, SourceError> {
         match self.limit {
-            0 => self.client.fetch_incremental(existing).await,
-            _ => self.client.fetch().await,
+            SyncLimit::Auto => self.client.fetch_incremental(existing).await,
+            SyncLimit::All | SyncLimit::Max(_) => self.client.fetch().await,
         }
     }
 
@@ -849,7 +854,7 @@ impl SyncJob {
             shared: self.shared,
             use_post_date: self.use_post_date,
             max_age_days: self.max_age_days,
-            limit: self.limit,
+            limit: self.limit.write_cap(),
         }
     }
 }
@@ -990,7 +995,7 @@ impl UrlKey for SourceClient {
 /// each on the flag → account → per-source default → `[pinboard]` global ladder. Leaves
 /// client/secret/hook construction to each source builder.
 struct JobCommon {
-    limit: usize,
+    limit: SyncLimit,
     toread: bool,
     shared: bool,
     dates: DateSettings,
@@ -1007,7 +1012,7 @@ fn resolve_job_common(
             ovr.limit,
             account.and_then(|a| a.limit()),
             src.limit,
-            config.pinboard.limit.unwrap_or(0),
+            config.pinboard.limit.unwrap_or_default(),
         ),
         toread: resolve_setting(
             ovr.toread,
@@ -2054,6 +2059,7 @@ pub(crate) fn preview(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::test_support::scratch_dir;
+    use std::num::NonZeroUsize;
 
     /// Serializes tests that read or write `PINBOARD_SYNC_ON_AUTH_FAILURE`, since
     /// the env var is process-global and clap reads it at parse time.
@@ -2205,7 +2211,7 @@ mod tests {
     /// `SyncJob` field (e.g. `public` into the `toread` slot) fails the assertions.
     fn wiring_overrides() -> SyncOverrides {
         SyncOverrides {
-            limit: Some(7),
+            limit: Some(SyncLimit::Max(NonZeroUsize::new(7).unwrap())),
             toread: Some(true),        // global default is false
             public: Some(false),       // distinct from toread, so a swap is caught
             use_post_date: Some(true), // global default is false
@@ -2215,7 +2221,11 @@ mod tests {
     }
 
     fn assert_wired(job: &SyncJob) {
-        assert_eq!(job.limit, 7, "limit");
+        assert_eq!(
+            job.limit,
+            SyncLimit::Max(NonZeroUsize::new(7).unwrap()),
+            "limit"
+        );
         assert!(job.toread, "toread");
         assert!(!job.shared, "shared (from --public=false)");
         assert!(job.use_post_date, "use_post_date");
@@ -2275,6 +2285,31 @@ mod tests {
             prebuilt_failures >= 1,
             "the tokenless github account is counted, not aborted"
         );
+    }
+
+    #[test]
+    fn limit_flag_takes_auto_all_or_a_count() {
+        use clap::Parser;
+        let limit = |value: &str| {
+            let argv = ["pinboard-sync", "sync", "hackernews", "--limit", value];
+            match Cli::try_parse_from(argv).map(|cli| cli.command) {
+                Ok(Command::Sync(SyncCmd {
+                    source: Some(SyncSource::Hackernews(args)),
+                    ..
+                })) => Ok(args.limit),
+                Ok(_) => panic!("expected `sync hackernews`"),
+                Err(err) => Err(err.to_string()),
+            }
+        };
+        let max = |count| Some(SyncLimit::Max(NonZeroUsize::new(count).unwrap()));
+
+        assert_eq!(limit("auto"), Ok(Some(SyncLimit::Auto)));
+        assert_eq!(limit("all"), Ok(Some(SyncLimit::All)));
+        assert_eq!(limit("25"), Ok(max(25)));
+        for bad in ["0", "everything"] {
+            let err = limit(bad).unwrap_err();
+            assert!(err.contains("`limit` must be `auto` (no cap;"), "{err}");
+        }
     }
 
     /// Parse `sync <extra>` (no source subcommand) and return the top-level command.
@@ -2787,13 +2822,14 @@ mod tests {
 mod net_tests {
     use super::*;
     use serde_json::json;
+    use std::num::NonZeroUsize;
     use wiremock::matchers::{method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Fetches through a HackerNews `SyncJob` capped at `limit`, against favorites whose
     /// first page (both streams) is already synced and links to a second page that is
     /// expected `second_page_hits` times.
-    async fn fetch_hackernews_job(limit: usize, second_page_hits: u64) {
+    async fn fetch_hackernews_job(limit: SyncLimit, second_page_hits: u64) {
         let hn = MockServer::start().await;
         let page = |rows: &str| {
             ResponseTemplate::new(200).set_body_string(format!(
@@ -2855,12 +2891,17 @@ mod net_tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_sync_job_fetches_hackernews_incrementally() {
-        fetch_hackernews_job(0, 0).await;
+    async fn an_auto_sync_job_fetches_hackernews_incrementally() {
+        fetch_hackernews_job(SyncLimit::Auto, 0).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_all_sync_job_reads_every_favorites_page() {
+        fetch_hackernews_job(SyncLimit::All, 2).await;
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_capped_sync_job_reads_every_favorites_page() {
-        fetch_hackernews_job(5, 2).await;
+        fetch_hackernews_job(SyncLimit::Max(NonZeroUsize::new(5).unwrap()), 2).await;
     }
 }

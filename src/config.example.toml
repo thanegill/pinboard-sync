@@ -28,7 +28,7 @@
 public = false                           # write bookmarks public (default: private)
 toread = false                           # mark new bookmarks unread (default: false)
 rate_limit_secs = 3                      # seconds between posts/add writes (default: 3)
-# limit = 0                              # global cap on new bookmarks per run (0/unset = none)
+# limit = "auto"                         # "auto" (default), "all", or a cap on new bookmarks per run
 use_post_date = false                    # date bookmarks by the source post date (default: false)
 post_date_max_age_days = 30              # only backdate posts this recent; older use "now" (default: 30)
 cleanup_stale_to_now = false             # on cleanup, re-date too-old posts to now (default: false → keep existing)
@@ -61,7 +61,7 @@ name = "main"                            # optional selector; defaults to `usern
 # cookie = "reddit_session=…"            # or:
 # cookie_file = "/run/secrets/reddit-cookie"
 # on_auth_failure = "…"                  # per-account override of [hooks].on_auth_failure
-# limit = 0                              # cap new bookmarks per run (0 = all)
+# limit = "auto"                         # "auto", "all", or a cap on new bookmarks per run
 # toread = true                          # override [pinboard].toread for this account
 # public = true                          # override [pinboard].public for this account
 # use_post_date = true                   # override use_post_date for this account
@@ -88,7 +88,7 @@ name = "personal"                        # selector; GitHub has no username to d
 # token = "ghp_…"                        # a personal access token, or:
 # token_file = "/run/secrets/github-token"
 # on_auth_failure = "…"                  # per-account override of [hooks].on_auth_failure
-# limit = 0                              # cap new bookmarks per run (0 = all)
+# limit = "auto"                         # "auto", "all", or a cap on new bookmarks per run
 # toread = true                          # override [pinboard].toread for this account
 # public = true                          # override [pinboard].public for this account
 # use_post_date = true                   # override use_post_date for this account
@@ -103,7 +103,7 @@ tag_lang_prefix = "lang:"                # lang:<language>
 [[hackernews]]
 name = "me"                              # optional selector; defaults to `username`
 # username = "your-hn-username"          # public; whose favorites to read (env HN_USERNAME)
-# limit = 0                              # cap new bookmarks per run (0 = all)
+# limit = "auto"                         # "auto", "all", or a cap on new bookmarks per run
 # toread = true                          # override [pinboard].toread for this account
 # public = true                          # override [pinboard].public for this account
 # use_post_date = true                   # override use_post_date for this account

@@ -354,10 +354,10 @@ impl UrlKey for RedditClient {
 /// bare session value, including one ending in base64 `=` padding, becomes
 /// `reddit_session=<value>`, since Reddit only recognises the session by that name. Other
 /// cookies without a `reddit_session` are sent as is with a warning: naming them would
-/// only produce a garbled header. See [`cookie_form`] for what counts as no cookie.
+/// only produce a garbled header. See [`NoSession`] for what counts as no cookie.
 fn session_cookie(raw: &str) -> Option<String> {
     let value = unquoted(raw);
-    match cookie_form(value)? {
+    match CookieForm::try_from(value).ok()? {
         CookieForm::Named => Some(value.to_string()),
         CookieForm::Bare => Some(format!("reddit_session={value}")),
         CookieForm::OtherCookies => {
@@ -374,7 +374,7 @@ fn session_cookie(raw: &str) -> Option<String> {
 /// Whether `raw` configures a Reddit session at all, so secret resolution can skip one
 /// that doesn't (blank, or an empty `reddit_session=`) as it skips a blank value.
 pub fn is_configured_cookie(raw: &str) -> bool {
-    cookie_form(unquoted(raw)).is_some()
+    CookieForm::try_from(unquoted(raw)).is_ok()
 }
 
 /// `raw` trimmed, without one pair of surrounding double quotes, as an env file or shell
@@ -398,27 +398,37 @@ enum CookieForm {
     OtherCookies,
 }
 
-/// The shape of a cookie value, or `None` if it configures no session: blank, or naming
-/// `reddit_session` only with an empty value.
-fn cookie_form(value: &str) -> Option<CookieForm> {
-    if value.is_empty() {
-        return None;
+/// The cookie value configures no session: blank, or naming `reddit_session` only with an
+/// empty value.
+#[derive(Debug, PartialEq, Eq)]
+struct NoSession;
+
+/// The shape of a cookie value, or [`NoSession`]. Expects [`unquoted`]'s output: a quoted
+/// value reads as other cookies.
+impl TryFrom<&str> for CookieForm {
+    type Error = NoSession;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        if value.is_empty() {
+            return Err(NoSession);
+        }
+        let sessions: Vec<&str> = value
+            .split(';')
+            .filter_map(|pair| pair.trim_start().strip_prefix("reddit_session="))
+            .collect();
+        if !sessions.is_empty() {
+            let any_session_set = sessions.iter().any(|session| !session.trim().is_empty());
+            return any_session_set
+                .then_some(CookieForm::Named)
+                .ok_or(NoSession);
+        }
+        Ok(
+            if value.contains(';') || value.trim_end_matches('=').contains('=') {
+                CookieForm::OtherCookies
+            } else {
+                CookieForm::Bare
+            },
+        )
     }
-    let sessions: Vec<&str> = value
-        .split(';')
-        .filter_map(|pair| pair.trim_start().strip_prefix("reddit_session="))
-        .collect();
-    if !sessions.is_empty() {
-        let any_session_set = sessions.iter().any(|session| !session.trim().is_empty());
-        return any_session_set.then_some(CookieForm::Named);
-    }
-    Some(
-        if value.contains(';') || value.trim_end_matches('=').contains('=') {
-            CookieForm::OtherCookies
-        } else {
-            CookieForm::Bare
-        },
-    )
 }
 
 /// The error for a redirect. A redirect to `/login` means Reddit wants a session it
@@ -886,9 +896,9 @@ mod tests {
             ("token_v2=x", CookieForm::OtherCookies),
         ];
         for (trimmed, form) in cases {
-            assert_eq!(cookie_form(trimmed), Some(form), "{trimmed:?}");
+            assert_eq!(CookieForm::try_from(trimmed), Ok(form), "{trimmed:?}");
         }
-        assert_eq!(cookie_form(""), None);
+        assert_eq!(CookieForm::try_from(""), Err(NoSession));
     }
 
     #[test]

@@ -323,11 +323,17 @@ pub const ELLIPSIS: &str = "…";
 /// left out. Both carry the body as given, so a caller whose body could echo a secret
 /// redacts it before passing it in.
 pub fn error_with_body(what: &str, body: &str) -> anyhow::Error {
-    log::debug!("{}", body_debug_line(what, body));
+    log_body_at_debug(what, body);
     anyhow!("{what}: {}", error_excerpt(body))
 }
 
-/// The debug line [`error_with_body`] logs: the whole body, uncut, as an escaped string
+/// Logs [`body_debug_line`] at debug level, for a body worth seeing under `-v` whether or
+/// not an error quotes it. The body goes out as given, so redact any secret first.
+pub fn log_body_at_debug(what: &str, body: &str) {
+    log::debug!("{}", body_debug_line(what, body));
+}
+
+/// The debug line [`log_body_at_debug`] logs: the whole body, uncut, as an escaped string
 /// literal, so its newlines can't start what looks like a separate log line in the journal.
 fn body_debug_line(what: &str, body: &str) -> String {
     format!("{what}; full response body: {body:?}")

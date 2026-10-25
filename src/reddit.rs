@@ -450,9 +450,10 @@ fn redirect_error(resp: &reqwest::Response, what: &str) -> SourceError {
 /// The body text of a Reddit response, centralizing status handling. Reddit's
 /// network-security page (see [`edge_page`]) becomes [`SourceError::Blocked`] and any
 /// other 401/403 [`SourceError::ReauthRequired`]; both carry a fixed, actionable message,
-/// since the body is usually a large HTML page and isn't echoed. Redirects are not
-/// followed (see [`redirect_error`]). Any other non-success status becomes
-/// [`SourceError::Other`]. `what` names the request.
+/// since the body is usually a large HTML page and isn't echoed (one that is neither edge
+/// page is logged at debug level instead). Redirects are not followed (see
+/// [`redirect_error`]). Any other non-success status becomes [`SourceError::Other`].
+/// `what` names the request.
 async fn reddit_body(resp: reqwest::Response, what: &str) -> Result<String, SourceError> {
     use reqwest::header::CONTENT_TYPE;
     use reqwest::StatusCode;
@@ -490,6 +491,7 @@ async fn reddit_body(resp: reqwest::Response, what: &str) -> Result<String, Sour
                      recognised edge page; treating it as an expired cookie",
                     body.len()
                 );
+                crate::http::log_body_at_debug(&format!("{what} returned {status}"), &body);
                 SourceError::ReauthRequired(reauth)
             }
         });
@@ -713,6 +715,32 @@ mod tests {
                 "{label}: got {err:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn logs_an_unrecognised_refusal_page_at_debug() {
+        let page = "<html>\n<title>reddit: log in</title>\n</html>";
+        let (result, logs) = crate::test_support::capturing_logs(decode_reddit_json::<Sample>(
+            html_response(403, page),
+            "req",
+        ))
+        .await;
+        assert!(matches!(result, Err(SourceError::ReauthRequired(_))));
+        let [warning, debug] = logs.as_slice() else {
+            panic!("expected the size warning and the body, got {logs:?}");
+        };
+        assert!(
+            warning.starts_with("WARN req returned 403 Forbidden ("),
+            "{warning}"
+        );
+        assert!(
+            warning.contains(&format!("{} bytes", page.len())),
+            "{warning}"
+        );
+        assert_eq!(
+            debug,
+            &format!("DEBUG req returned 403 Forbidden; full response body: {page:?}")
+        );
     }
 
     #[tokio::test]

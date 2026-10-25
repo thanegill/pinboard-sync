@@ -200,8 +200,9 @@ which overrides `-v`. Under the NixOS service these lines land in the journal
 
 An error that quotes a server's response body shows at most 300 bytes of it, on one line.
 At debug level (`-v`, or `RUST_LOG=pinboard_sync=debug`) the full body is logged too, with
-the Pinboard token redacted. Under the NixOS service, set it on the unit you are
-debugging (`pinboard-sync`, `pinboard-sync-cleanup` or `pinboard-sync-backup`), e.g.
+the Pinboard token redacted. So is the page behind a Reddit 401/403 that isn't one of the
+edge pages it recognises. Under the NixOS service, set it on the unit you are debugging
+(`pinboard-sync`, `pinboard-sync-cleanup` or `pinboard-sync-backup`), e.g.
 `systemd.services.pinboard-sync-cleanup.environment.RUST_LOG = "pinboard_sync=debug";`.
 
 ## What `cleanup` does

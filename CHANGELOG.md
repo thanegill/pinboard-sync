@@ -11,6 +11,8 @@ All notable changes to this project are documented here. The format is based on
 - **Breaking:** `limit` / `--limit` take `auto` (default), `all` or a positive number,
   and `0` is rejected. Under `auto`, HackerNews stops paging once caught up; `all` reads
   every page. Replace `limit = 0` with `"auto"`, or delete it.
+- Reddit and GitHub `sync` stop paging once caught up under `limit = "auto"`, like
+  HackerNews, so a caught-up run reads one page of each instead of every page.
 - GitHub stars are fetched 100 per page instead of 30, so a full read takes about 11
   requests for 1,100 stars instead of about 37.
 

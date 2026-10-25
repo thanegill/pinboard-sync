@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use log::warn;
+use log::{debug, warn};
 use serde::Deserialize;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
@@ -14,8 +14,8 @@ use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Plan};
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::{client_builder, send_retrying, ConnectBudget};
 use crate::source::{
-    deserialize_lenient, extend_unique, push_prefixed, push_tags, url_key, BookmarkDraft, Source,
-    SourceError, UrlExt, UrlKey,
+    deserialize_lenient, extend_unique, page_is_caught_up, push_prefixed, push_tags, url_key,
+    BookmarkDraft, Source, SourceError, UrlExt, UrlKey,
 };
 use url::Url;
 
@@ -290,15 +290,30 @@ impl GitHubClient {
 
 impl Source for GitHubClient {
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
-        self.fetch_capturing(&mut RawSink::disabled()).await
+        self.fetch_capturing(None, &mut RawSink::disabled()).await
+    }
+
+    /// Stars list newest first, so paging stops at the first page that would give `sync`
+    /// nothing to write.
+    async fn fetch_incremental(
+        &self,
+        existing: &[Bookmark],
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        self.fetch_capturing(Some(&self.synced_keys(existing)), &mut RawSink::disabled())
+            .await
     }
 }
 
 impl GitHubClient {
     /// [`Source::fetch`], pushing each `/user/starred` page body to `sink` as it arrives
     /// so `backup` gets the verbatim response — including the ~75 repo fields
-    /// [`GitHubStarredRepo`] doesn't keep — out of the same traversal.
-    async fn fetch_capturing(&self, sink: &mut RawSink) -> Result<Vec<BookmarkDraft>, SourceError> {
+    /// [`GitHubStarredRepo`] doesn't keep — out of the same traversal. With
+    /// `synced_keys`, it stops at the first page with nothing new ([`page_is_caught_up`]).
+    async fn fetch_capturing(
+        &self,
+        synced_keys: Option<&HashSet<String>>,
+        sink: &mut RawSink,
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
         let endpoint = format!("{}/user/starred", self.base);
         let mut out = Vec::new();
         let mut page: u32 = 1;
@@ -330,7 +345,11 @@ impl GitHubClient {
                     self.http
                         .get(&endpoint)
                         .header(reqwest::header::ACCEPT, "application/vnd.github.star+json")
-                        .query(&[("sort", "created"), ("per_page", STARRED_PER_PAGE)])
+                        .query(&[
+                            ("sort", "created"),
+                            ("direction", "desc"),
+                            ("per_page", STARRED_PER_PAGE),
+                        ])
                         .query(&[("page", page)])
                 },
             )
@@ -377,8 +396,17 @@ impl GitHubClient {
                          deserialize — the API response shape may have changed"
                     ))
                 })?;
-            for starred in repos {
-                out.extend(starred.into_draft(&self.config));
+            let page_len = repos.len();
+            let page_drafts: Vec<BookmarkDraft> = repos
+                .into_iter()
+                .filter_map(|starred| starred.into_draft(&self.config))
+                .collect();
+            let caught_up =
+                synced_keys.is_some_and(|keys| page_is_caught_up(page_len, &page_drafts, keys));
+            out.extend(page_drafts);
+            if caught_up {
+                debug!("github starred: page {page} has nothing new; stopping");
+                break;
             }
 
             match next {
@@ -393,7 +421,7 @@ impl GitHubClient {
 impl BackupSource for GitHubClient {
     async fn dump(&self) -> Result<BackupDump, SourceError> {
         let mut sink = RawSink::collecting();
-        let drafts = self.fetch_capturing(&mut sink).await?;
+        let drafts = self.fetch_capturing(None, &mut sink).await?;
         let (raw, truncated) = sink.into_parts();
         Ok(BackupDump {
             raw,
@@ -606,7 +634,7 @@ fn parse_link_next(link: &str) -> Option<u32> {
 
 #[cfg(test)]
 impl GitHubClient {
-    fn with_base_url(token: String, config: GitHubConfig, base: String) -> Self {
+    pub(crate) fn with_base_url(token: String, config: GitHubConfig, base: String) -> Self {
         Self::build(token, config, base).unwrap()
     }
 }
@@ -820,6 +848,41 @@ mod tests {
         assert_eq!(
             parse_link_next("<https://api.github.com/user/starred?page=1>; rel=\"prev\""),
             None
+        );
+    }
+
+    #[test]
+    fn a_starred_page_is_caught_up_when_its_stars_are_on_pinboard() {
+        use crate::test_support::stored_at;
+        let star = |name: &str, html_url: &str| -> GitHubStarredRepo {
+            serde_json::from_value(json!({ "starred_at": "2023-01-02T03:04:05Z",
+                "repo": { "full_name": name, "html_url": html_url } }))
+            .unwrap()
+        };
+        let repo = |name: &str| star(name, &format!("https://github.com/{name}"));
+        let client =
+            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), "unused".into());
+        let synced_keys = client.synced_keys(&[
+            stored_at("https://github.com/a/one"),
+            stored_at("https://www.github.com/b/two"),
+        ]);
+        let caught_up = |page: Vec<GitHubStarredRepo>| {
+            let page_len = page.len();
+            let page_drafts: Vec<BookmarkDraft> = page
+                .into_iter()
+                .filter_map(|starred| starred.into_draft(&GitHubConfig::default()))
+                .collect();
+            page_is_caught_up(page_len, &page_drafts, &synced_keys)
+        };
+
+        assert!(
+            caught_up(vec![repo("A/One"), repo("b/two")]),
+            "stars already on Pinboard, in any case, with or without www."
+        );
+        assert!(!caught_up(vec![repo("a/one"), repo("c/new")]), "a new star");
+        assert!(
+            caught_up(vec![repo("a/one"), star("d/bad", "not a url")]),
+            "a star that makes no draft adds nothing"
         );
     }
 
@@ -1704,5 +1767,110 @@ mod net_tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["repo"]["full_name"], "a/one");
         assert_eq!(items[1]["repo"]["full_name"], "b/two");
+    }
+
+    /// Mounts three `/user/starred` pages, most recently starred first, one star per page
+    /// (`s/n`, `s/o`, then `s/p`), expecting each page `hits` times. Only a request that
+    /// pins the newest-first order matches.
+    async fn three_star_pages(server: &MockServer, hits: [u64; 3]) {
+        let pages = ["s/n", "s/o", "s/p"];
+        for (index, (name, hits)) in pages.into_iter().zip(hits).enumerate() {
+            let page = index + 1;
+            let mut response = ResponseTemplate::new(200).set_body_json(json!([
+                { "starred_at": "2023-01-02T03:04:05Z",
+                  "repo": { "full_name": name, "html_url": format!("https://github.com/{name}") } }
+            ]));
+            if page < pages.len() {
+                let next = format!(
+                    "<{}/user/starred?page={}>; rel=\"next\"",
+                    server.uri(),
+                    page + 1
+                );
+                response = response.insert_header("link", next.as_str());
+            }
+            Mock::given(method("GET"))
+                .and(path("/user/starred"))
+                .and(query_param("sort", "created"))
+                .and(query_param("direction", "desc"))
+                .and(query_param("page", page.to_string().as_str()))
+                .respond_with(response)
+                .expect(hits)
+                .mount(server)
+                .await;
+        }
+    }
+
+    fn star_client(server: &MockServer) -> GitHubClient {
+        GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri())
+    }
+
+    fn titles(drafts: &[BookmarkDraft]) -> Vec<&str> {
+        drafts.iter().map(|d| d.bookmark.title.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn incremental_fetch_stops_at_the_first_page_with_nothing_new() {
+        let server = MockServer::start().await;
+        three_star_pages(&server, [1, 1, 0]).await;
+
+        let existing = [crate::test_support::stored_at("https://github.com/s/o")];
+        let drafts = star_client(&server)
+            .fetch_incremental(&existing)
+            .await
+            .unwrap();
+        assert_eq!(titles(&drafts), ["s/n", "s/o"]);
+    }
+
+    #[tokio::test]
+    async fn incremental_fetch_reads_on_while_every_page_has_something_new() {
+        let server = MockServer::start().await;
+        three_star_pages(&server, [1, 1, 1]).await;
+
+        let drafts = star_client(&server).fetch_incremental(&[]).await.unwrap();
+        assert_eq!(titles(&drafts), ["s/n", "s/o", "s/p"]);
+    }
+
+    #[tokio::test]
+    async fn dump_reads_every_star_page() {
+        let server = MockServer::start().await;
+        three_star_pages(&server, [1, 1, 1]).await;
+
+        let dump = star_client(&server).dump().await.unwrap();
+        assert_eq!(dump.raw.len(), 3);
+    }
+
+    /// `cleanup github` dates bookmarks from the whole star list, so it must not stop at
+    /// the first page that is already on Pinboard the way `sync` does.
+    #[tokio::test]
+    async fn cleanup_with_post_dates_reads_every_star_page() {
+        use crate::test_support::{stored_at, FakePinboard};
+
+        let server = MockServer::start().await;
+        three_star_pages(&server, [1, 1, 1]).await;
+        Mock::given(method("GET"))
+            .and(path("/repos/s/n"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!(
+                { "full_name": "s/n", "html_url": "https://github.com/s/n" }
+            )))
+            .mount(&server)
+            .await;
+        let pinboard = FakePinboard {
+            all: vec![stored_at("https://github.com/s/n")],
+            ..Default::default()
+        };
+        let bookmarks = pinboard.all.clone();
+
+        cleanup(
+            &CleanupStore::new(&pinboard, AccountView::new(bookmarks), false),
+            &star_client(&server),
+            &GitHubConfig::default(),
+            &GitHubCleanupOpts {
+                use_post_date: true,
+                max_age_days: 30,
+                cleanup_stale_to_now: false,
+            },
+        )
+        .await
+        .unwrap();
     }
 }

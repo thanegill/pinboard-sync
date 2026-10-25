@@ -29,6 +29,22 @@ same item saved under any subdomain (or already bookmarked from elsewhere) is le
 alone. `--limit N` is an optional per-run write cap, not correctness — Reddit also
 caps any listing at ~1000 items.
 
+Every source lists what you saved newest first, so under `auto` `sync` stops reading a
+source at the first page with nothing new to write. Once an account is caught up, a run
+reads one page per source (one each for HN stories and comments) instead of every page:
+Reddit and GitHub return 100 items a page, so an account with about 600 saves and 1,100
+stars drops from 7 and 11 requests to 1 each. This has three known limits:
+
+- An older saved item you deleted from Pinboard is not added back.
+- If a run that is catching up on many new items is interrupted after writing the newest
+  ones, or one of its writes fails, later runs won't reach the older ones.
+- The first sync of an account whose newest items are already on Pinboard (from another
+  tool, say, or saved by hand) stops there and doesn't backfill the older ones.
+
+`sync <source> --limit all` reads every page once and writes whatever is missing.
+
+`backup`, `doctor` and `cleanup github` with `use_post_date` always read every page.
+
 ## Install
 
 With Nix (provides the binary plus shell completions and an example config):
@@ -157,7 +173,7 @@ variables for them.
 
 | Flag | Commands | Setting |
 | --- | --- | --- |
-| `--limit <auto\|all\|N>` | `sync` | `auto` (default): no cap, and HackerNews stops reading favorites pages at the first one with nothing new. `all`: no cap, read every page. `N`: write at most N new bookmarks, reading every page. `0` is rejected. |
+| `--limit <auto\|all\|N>` | `sync` | `auto` (default): no cap, and each source stops reading pages at the first one with nothing new. `all`: no cap, read every page. `N`: write at most N new bookmarks, reading every page. `0` is rejected. |
 | `--max-age-days <N>` | `sync`, `cleanup` | Only backdate posts newer than N days; older use "now". |
 | `--toread[=BOOL]` | `sync` | Mark new bookmarks to-read. |
 | `--public[=BOOL]` | `sync` | Create bookmarks public (default private). |
@@ -357,7 +373,7 @@ silently doing nothing.
 | `public` | bool | `false` | Write bookmarks public. |
 | `toread` | bool | `false` | Mark new bookmarks unread. |
 | `rate_limit_secs` | int | `3` | Seconds between `posts/add` writes. |
-| `limit` | `"auto"`, `"all"` or int | `"auto"` | As `--limit`: `"auto"` is no cap with HackerNews stopping once caught up, `"all"` no cap reading every page, a positive N a cap. `0` is rejected. |
+| `limit` | `"auto"`, `"all"` or int | `"auto"` | As `--limit`: `"auto"` is no cap with each source stopping once caught up, `"all"` no cap reading every page, a positive N a cap. `0` is rejected. |
 | `use_post_date` | bool | `false` | Date bookmarks by the source post date instead of now. |
 | `post_date_max_age_days` | int | `30` | Only backdate posts newer than this. |
 | `cleanup_stale_to_now` | bool | `false` | On `cleanup`, re-date too-old posts to now instead of keeping their date. |
@@ -608,11 +624,6 @@ Planned but not yet implemented:
   Pinboard **API v2** — the v1 API has no bundle support, and v2 (which does) is a
   documented 2021 draft that hasn't been deployed, so this is on hold until v2
   ships.
-- **Incremental / early-stop fetch.** Stop paginating the page-based sources (Reddit,
-  GitHub) once already-synced items are reached, to cut API calls on large accounts.
-  Deferred: it needs an existing-keys parameter on the source `fetch`, and HackerNews
-  can't fully participate (article dedup keys aren't known until after the Algolia
-  lookup). Runs are already idempotent, so this is purely an efficiency win.
 - **Prune / reconcile mode.** Optionally remove Pinboard bookmarks a source no longer
   has (opt-in, dry-run-first) — sync is additive-only today.
 - **More sources.** Generic RSS/Atom, Mastodon bookmarks, Lobsters; and extending the

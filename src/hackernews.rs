@@ -18,8 +18,8 @@ use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PassOutcome, Plan};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::{client_builder, send_retrying, send_retrying_with, ConnectBudget, On429};
 use crate::source::{
-    extend_unique, push_prefixed, push_tag, push_tags, url_key, BookmarkDraft, Source, SourceError,
-    UrlKey,
+    extend_unique, page_is_caught_up, push_prefixed, push_tag, push_tags, url_key, BookmarkDraft,
+    Source, SourceError, UrlKey,
 };
 use url::Url;
 
@@ -507,11 +507,7 @@ impl Source for HackerNewsClient {
         &self,
         existing: &[Bookmark],
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
-        let synced_keys: HashSet<String> = existing
-            .iter()
-            .filter_map(|bookmark| self.dedup_key(&bookmark.url))
-            .collect();
-        self.fetch_capturing(Some(&synced_keys), &mut RawSink::disabled())
+        self.fetch_capturing(Some(&self.synced_keys(existing)), &mut RawSink::disabled())
             .await
     }
 }
@@ -721,11 +717,11 @@ fn is_caught_up(
     drafts: &HashMap<HackerNewsItemId, BookmarkDraft>,
     synced_keys: &HashSet<String>,
 ) -> bool {
-    !page.is_empty()
-        && page
-            .iter()
-            .filter_map(|id| drafts.get(id))
-            .all(|draft| synced_keys.contains(&draft.dedup_key))
+    page_is_caught_up(
+        page.len(),
+        page.iter().filter_map(|id| drafts.get(id)),
+        synced_keys,
+    )
 }
 
 /// Appends the `HN Link: <url>` back-link line to a note, skipping when the note already

@@ -274,11 +274,16 @@ impl HackerNewsClient {
     }
 
     /// Collect favorited item IDs from the stories page (`comments=false`) or the
-    /// comments page (`comments=true`), following the "More" link across pages.
+    /// comments page (`comments=true`), following the "More" link across pages. With
+    /// `synced_keys`, each page's items are looked up as it is read and shaped into
+    /// `drafts`, and the walk stops at the first page that has nothing new
+    /// ([`is_caught_up`]).
     async fn collect_ids(
         &self,
         comments: bool,
+        synced_keys: Option<&HashSet<String>>,
         out: &mut Vec<HackerNewsItemId>,
+        drafts: &mut HashMap<HackerNewsItemId, BookmarkDraft>,
         sink: &mut RawSink,
     ) -> Result<(), SourceError> {
         // The scraped page is the only record of a favorite HN's API never exposes, so
@@ -357,7 +362,24 @@ impl HackerNewsClient {
                     .into());
                 }
             };
-            out.extend(ids.into_iter().map(HackerNewsItemId::from));
+            let ids: Vec<HackerNewsItemId> = ids.into_iter().map(HackerNewsItemId::from).collect();
+            let caught_up = match synced_keys {
+                Some(synced_keys) => {
+                    let page_drafts = self.drafts_by_id(self.fetch_items(&ids, sink).await?);
+                    let caught_up = is_caught_up(&ids, &page_drafts, synced_keys);
+                    drafts.extend(page_drafts);
+                    caught_up
+                }
+                None => false,
+            };
+            out.extend(ids);
+            if caught_up {
+                debug!(
+                    "hn {stream} for '{}': page {page} has nothing new; stopping",
+                    self.username
+                );
+                break;
+            }
             next = more.and_then(|href| self.resolve(&href));
             // Be gentle between page fetches.
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -476,34 +498,67 @@ impl HackerNewsClient {
 
 impl Source for HackerNewsClient {
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
-        self.fetch_capturing(&mut RawSink::disabled()).await
+        self.fetch_capturing(None, &mut RawSink::disabled()).await
+    }
+
+    /// Favorites list newest first, so each stream stops paging at its first page that
+    /// would give `sync` nothing to write.
+    async fn fetch_incremental(
+        &self,
+        existing: &[Bookmark],
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        let synced_keys: HashSet<String> = existing
+            .iter()
+            .filter_map(|bookmark| self.dedup_key(&bookmark.url))
+            .collect();
+        self.fetch_capturing(Some(&synced_keys), &mut RawSink::disabled())
+            .await
     }
 }
 
 impl HackerNewsClient {
     /// [`Source::fetch`], pushing the scraped favorites pages and every Algolia response
-    /// to `sink` so `backup` gets both verbatim out of the same traversal.
-    async fn fetch_capturing(&self, sink: &mut RawSink) -> Result<Vec<BookmarkDraft>, SourceError> {
+    /// to `sink` so `backup` gets both verbatim out of the same traversal. With
+    /// `synced_keys`, each stream stops at its first page with nothing new, and items are
+    /// looked up page by page to tell; without, every page is read and the items are
+    /// looked up in batches at the end.
+    async fn fetch_capturing(
+        &self,
+        synced_keys: Option<&HashSet<String>>,
+        sink: &mut RawSink,
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
         let mut ids: Vec<HackerNewsItemId> = Vec::new();
-        self.collect_ids(false, &mut ids, sink).await?;
-        self.collect_ids(true, &mut ids, sink).await?;
+        let mut drafts = HashMap::new();
+        self.collect_ids(false, synced_keys, &mut ids, &mut drafts, sink)
+            .await?;
+        self.collect_ids(true, synced_keys, &mut ids, &mut drafts, sink)
+            .await?;
         // De-dup IDs while preserving order (newest first).
         let mut seen = HashSet::new();
         ids.retain(|id| seen.insert(id.clone()));
 
-        let items = self.fetch_items(&ids, sink).await?;
-        Ok(ids
-            .iter()
-            .filter_map(|id| items.get(id).cloned())
-            .filter_map(|item| item.into_draft(&self.config))
-            .collect())
+        if synced_keys.is_none() {
+            drafts = self.drafts_by_id(self.fetch_items(&ids, sink).await?);
+        }
+        Ok(ids.iter().filter_map(|id| drafts.remove(id)).collect())
+    }
+
+    /// Each item shaped into its draft, keyed by id; items that make none are dropped.
+    fn drafts_by_id(
+        &self,
+        items: HashMap<HackerNewsItemId, HackerNewsItem>,
+    ) -> HashMap<HackerNewsItemId, BookmarkDraft> {
+        items
+            .into_iter()
+            .filter_map(|(id, item)| item.into_draft(&self.config).map(|draft| (id, draft)))
+            .collect()
     }
 }
 
 impl BackupSource for HackerNewsClient {
     async fn dump(&self) -> Result<BackupDump, SourceError> {
         let mut sink = RawSink::collecting();
-        let drafts = self.fetch_capturing(&mut sink).await?;
+        let drafts = self.fetch_capturing(None, &mut sink).await?;
         let (raw, truncated) = sink.into_parts();
         Ok(BackupDump {
             raw,
@@ -654,6 +709,23 @@ fn hn_link_marker_id(note: &str) -> Option<HackerNewsItemId> {
         .find_map(|line| line.trim().strip_prefix("HN Link:"))
         .and_then(|rest| Url::parse(rest.trim()).ok())
         .and_then(|url| HackerNewsItemId::try_from(&url).ok())
+}
+
+/// Whether a favorites page would give `sync` nothing to write: every item on it that
+/// has a draft in `drafts` has its `dedup_key` among `synced_keys`. Favorites list newest
+/// first, so the pages after it hold nothing new either. A page whose items make no draft
+/// at all (gone from Algolia, or unparseable) is caught up too; an empty page proves
+/// nothing.
+fn is_caught_up(
+    page: &[HackerNewsItemId],
+    drafts: &HashMap<HackerNewsItemId, BookmarkDraft>,
+    synced_keys: &HashSet<String>,
+) -> bool {
+    !page.is_empty()
+        && page
+            .iter()
+            .filter_map(|id| drafts.get(id))
+            .all(|draft| synced_keys.contains(&draft.dedup_key))
 }
 
 /// Appends the `HN Link: <url>` back-link line to a note, skipping when the note already
@@ -889,7 +961,7 @@ fn special_type(title: &str) -> Option<String> {
 
 #[cfg(test)]
 impl HackerNewsClient {
-    fn with_base_urls(
+    pub(crate) fn with_base_urls(
         username: String,
         config: HackernewsConfig,
         base: String,
@@ -910,6 +982,56 @@ mod tests {
 
     fn url(s: &str) -> Url {
         Url::parse(s).unwrap()
+    }
+
+    fn ids(items: &[u64]) -> Vec<HackerNewsItemId> {
+        items.iter().copied().map(HackerNewsItemId::from).collect()
+    }
+
+    #[test]
+    fn a_page_is_caught_up_only_when_it_has_no_new_draft() {
+        let items: HashMap<HackerNewsItemId, HackerNewsItem> = [
+            json!({ "id": 1, "type": "comment", "by": "a", "text": "c" }),
+            json!({ "id": 2, "type": "story", "by": "a", "title": "T",
+                    "url": "https://example.com/two" }),
+            json!({ "id": 3, "type": "story", "by": "a", "title": "Ask HN: q" }),
+            json!({ "id": 4, "type": "comment", "by": "a", "text": "new" }),
+            json!({ "id": 6, "type": "story", "by": "a", "url": "not a url" }),
+        ]
+        .into_iter()
+        .map(|value| {
+            let item = item(value);
+            (HackerNewsItemId::from(item.id), item)
+        })
+        .collect();
+        let client = HackerNewsClient::new("u".into(), HackernewsConfig::default()).unwrap();
+        let synced_keys: HashSet<String> = [
+            "https://news.ycombinator.com/item?id=1",
+            "https://example.com/two",
+            "https://news.ycombinator.com/item?id=3",
+        ]
+        .into_iter()
+        .filter_map(|stored| client.dedup_key(&url(stored)))
+        .collect();
+        let drafts = client.drafts_by_id(items);
+        let caught_up = |page: &[u64]| is_caught_up(&ids(page), &drafts, &synced_keys);
+
+        assert!(
+            caught_up(&[1, 3]),
+            "a comment and a text post at their permalinks"
+        );
+        assert!(
+            caught_up(&[2]),
+            "a story whose article was saved by hand, with no HN Link note"
+        );
+        assert!(
+            caught_up(&[1, 5, 6]),
+            "items that make no draft add nothing"
+        );
+        assert!(caught_up(&[5, 6]), "a page that makes no draft at all");
+        assert!(!caught_up(&[4, 1]), "a new favorite");
+        assert!(!caught_up(&[1, 4]), "an unsynced older one");
+        assert!(!caught_up(&[]), "an empty page");
     }
 
     #[test]
@@ -1726,6 +1848,158 @@ mod net_tests {
         )
     }
 
+    fn favorites_page(ids: &[u64], more: Option<&str>) -> ResponseTemplate {
+        let rows: String = ids
+            .iter()
+            .map(|id| format!(r#"<tr class="athing" id="{id}"><td>x</td></tr>"#))
+            .collect();
+        let more = more
+            .map(|href| format!(r#"<tr><td><a class="morelink" href="{href}">More</a></td></tr>"#))
+            .unwrap_or_default();
+        ResponseTemplate::new(200).set_body_string(format!(
+            r#"<html op="favorites"><body><table>{rows}{more}</table></body></html>"#
+        ))
+    }
+
+    /// Mounts two favorites streams of two pages each, expecting each page `hits` times:
+    /// stories 1, 2 then 3, comments 11 then 12, 13. Every item exists on Algolia; story 2
+    /// links to the article `https://example.com/two`, the rest are text posts.
+    async fn two_page_favorites(hn: &MockServer, algolia: &MockServer, hits: [u64; 4]) {
+        let streams = [
+            (
+                false,
+                [
+                    (&[1, 2][..], Some("favorites?id=psophis&amp;p=2")),
+                    (&[3][..], None),
+                ],
+            ),
+            (
+                true,
+                [
+                    (
+                        &[11][..],
+                        Some("favorites?id=psophis&amp;comments=t&amp;p=2"),
+                    ),
+                    (&[12, 13][..], None),
+                ],
+            ),
+        ];
+        let mut hits = hits.into_iter();
+        for (comments, pages) in streams {
+            for (page, (ids, more)) in pages.into_iter().enumerate() {
+                let stream = match comments {
+                    true => Mock::given(query_param("comments", "t")),
+                    false => Mock::given(query_param_is_missing("comments")),
+                };
+                let numbered = match page {
+                    0 => stream.and(query_param_is_missing("p")),
+                    _ => stream.and(query_param("p", "2")),
+                };
+                numbered
+                    .and(method("GET"))
+                    .and(path("/favorites"))
+                    .respond_with(favorites_page(ids, more))
+                    .expect(hits.next().unwrap())
+                    .mount(hn)
+                    .await;
+            }
+        }
+        let hits: Vec<_> = [1, 2, 3, 11, 12, 13]
+            .iter()
+            .map(|id| {
+                let article = (*id == 2).then_some("https://example.com/two");
+                json!({ "objectID": id.to_string(), "title": format!("Item {id}"),
+                        "url": article, "author": "alice", "_tags": ["story"] })
+            })
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "hits": hits })))
+            .mount(algolia)
+            .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn incremental_fetch_stops_each_stream_at_a_synced_page() {
+        let (hn, algolia) = (MockServer::start().await, MockServer::start().await);
+        two_page_favorites(&hn, &algolia, [1, 0, 1, 1]).await;
+        let client = HackerNewsClient::with_base_urls(
+            "psophis".into(),
+            HackernewsConfig::default(),
+            hn.uri(),
+            algolia.uri(),
+        );
+        let existing: Vec<Bookmark> = [
+            ("https://news.ycombinator.com/item?id=1", ""),
+            ("https://example.com/two", ""),
+            ("https://news.ycombinator.com/item?id=12", ""),
+            ("https://news.ycombinator.com/item?id=13", ""),
+        ]
+        .into_iter()
+        .map(|(url, note)| Bookmark {
+            url: Url::parse(url).unwrap(),
+            title: String::new(),
+            note: note.into(),
+            tags: Vec::new(),
+            timestamp: None,
+            public: false,
+            read_later: false,
+        })
+        .collect();
+
+        let drafts = client.fetch_incremental(&existing).await.unwrap();
+
+        let fetched: Vec<String> = drafts.iter().map(|d| d.bookmark.url.to_string()).collect();
+        let permalink = |id| format!("https://news.ycombinator.com/item?id={id}");
+        assert_eq!(
+            fetched,
+            [
+                permalink(1),
+                "https://example.com/two".into(),
+                permalink(11),
+                permalink(12),
+                permalink(13),
+            ],
+            "stories stop after page 1, whose article story was saved by hand; comments \
+             page 1 has a new favorite, so page 2 is read"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn incremental_fetch_reads_every_page_when_nothing_is_synced() {
+        let (hn, algolia) = (MockServer::start().await, MockServer::start().await);
+        two_page_favorites(&hn, &algolia, [1, 1, 1, 1]).await;
+        let client = HackerNewsClient::with_base_urls(
+            "psophis".into(),
+            HackernewsConfig::default(),
+            hn.uri(),
+            algolia.uri(),
+        );
+
+        let drafts = client.fetch_incremental(&[]).await.unwrap();
+
+        assert_eq!(drafts.len(), 6);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn backup_reads_every_favorites_page() {
+        let (hn, algolia) = (MockServer::start().await, MockServer::start().await);
+        two_page_favorites(&hn, &algolia, [1, 1, 1, 1]).await;
+        let client = HackerNewsClient::with_base_urls(
+            "psophis".into(),
+            HackernewsConfig::default(),
+            hn.uri(),
+            algolia.uri(),
+        );
+
+        let dump = client.dump().await.unwrap();
+
+        let pages = |stream: &str| dump.raw.iter().filter(|p| p.stream == stream).count();
+        assert_eq!(pages("favorites"), 2);
+        assert_eq!(pages("favorites-comments"), 2);
+        assert_eq!(pages(""), 1, "one batched Algolia lookup, not one per page");
+    }
+
     #[tokio::test]
     async fn a_favorites_429_without_retry_after_is_not_retried() {
         let hn = MockServer::start().await;
@@ -1850,7 +2124,13 @@ mod net_tests {
         );
         let mut ids = Vec::new();
         client
-            .collect_ids(false, &mut ids, &mut RawSink::disabled())
+            .collect_ids(
+                false,
+                None,
+                &mut ids,
+                &mut HashMap::new(),
+                &mut RawSink::disabled(),
+            )
             .await
             .unwrap();
         assert_eq!(hits.load(Ordering::SeqCst), MAX_FAVORITES_PAGES);

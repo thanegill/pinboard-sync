@@ -180,9 +180,15 @@ boundary.
 **Every source is a `Source`; the sync loop is generic over it.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `Vec<BookmarkDraft>` (a
 `Bookmark` plus the `dedup_key`), and the `UrlKey::dedup_key()` supertrait method
-maps an existing Pinboard URL to that source's dedup key. `sync::run` fetches drafts,
-builds the set of existing keys by mapping `pinboard.all()` through
-`source.dedup_key`, and writes the drafts whose `dedup_key` isn't present. To add
+maps an existing Pinboard URL to that source's dedup key. `run_sync_jobs` (`main.rs`)
+fetches drafts, and `sync::prepare_new_drafts` builds the set of existing keys by mapping
+`pinboard.all()` through `source.dedup_key` and keeps the drafts whose `dedup_key` isn't
+present. `sync` fetches through `SyncJob::fetch`, which calls
+`Source::fetch_incremental(existing)` rather than `fetch()`: it defaults to the full
+fetch, and a source may override it to stop paging once it reaches items already on
+Pinboard (HackerNews does). A job with a `limit` takes the full `fetch()`, because a
+capped run writes only the newest drafts and leaves older ones behind pages that already
+look synced. `backup` and `doctor` keep the full traversal. To add
 a source, implement `Source` and wire it into `main.rs` + `config.rs`. The clients
 also sit behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a
 `&Bookmark`) so the loops are unit-tested with
@@ -195,7 +201,20 @@ constructors.
 ([`github.rs`](src/github.rs) — `/user/starred` with Link-header pagination),
 HackerNews ([`hackernews.rs`](src/hackernews.rs) — scrapes `/favorites` for item IDs
 then batch-reads item details from the Algolia HN search API — `objectID:… OR …`,
-chunked, so hundreds of favorites cost a couple of queries, not one per item).
+chunked, so hundreds of favorites cost a couple of queries, not one per item). The
+favorites pages are the costly half (they are what HN answers with 429), so `sync`
+stops following "More" in each stream (stories, comments) at the first page that would
+give it nothing to write (`is_caught_up`). To tell, `fetch_incremental` looks each page's
+items up on Algolia as it is read (one query per page) and checks every draft's
+`dedup_key` against Pinboard's, the same test `sync::filter_new` applies. That is
+deliberately not "is this item ID bookmarked": a favorited story whose article was
+already saved by hand dedups by URL and never gets an `HN Link:` note, and an ID test
+would page down to every such item on every run. Items gone from Algolia make no draft,
+so they don't hold the walk open either. Favorites list newest first, so later pages
+hold nothing new, with two known gaps: an older favorite deleted from Pinboard is not
+re-added, and a backfill interrupted (or with a failed write) after the newest page was
+written leaves the older favorites unwritten. `sync hackernews --limit N` reads every
+page and recovers them. `backup` keeps the full traversal with its batched lookup.
 `cleanup hackernews --link-discussions` (default off) is the reverse: for article
 bookmarks carrying the `link_tag` marker (default `find-hn`), it looks each up on HN
 by URL (one Algolia query each) and adds the discussion link. Reddit's bookmark/tag

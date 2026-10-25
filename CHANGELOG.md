@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- HackerNews `sync` stops reading favorites pages once it reaches ones already synced,
+  instead of fetching every page each run. A favorite deleted from Pinboard is no longer
+  re-added; after an interrupted backfill, run `sync hackernews --limit N`
+  (`N` above the backlog) once.
 - A HackerNews favorites `429` is no longer retried blindly: it's retried once, only for
   a `Retry-After` of 2 minutes or less, and otherwise fails as rate-limited without firing
   the auth-failure hook.

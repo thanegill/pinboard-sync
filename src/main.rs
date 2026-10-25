@@ -833,6 +833,16 @@ struct SyncJob {
 }
 
 impl SyncJob {
+    /// The source's drafts, read incrementally against `existing` unless a `limit` is
+    /// set: a capped run writes only the newest drafts, so older ones sit behind pages
+    /// that already look synced and an incremental read would never reach them again.
+    async fn fetch(&self, existing: &[Bookmark]) -> Result<Vec<BookmarkDraft>, SourceError> {
+        match self.limit {
+            0 => self.client.fetch_incremental(existing).await,
+            _ => self.client.fetch().await,
+        }
+    }
+
     fn settings(&self) -> sync::JobSettings {
         sync::JobSettings {
             toread: self.toread,
@@ -940,6 +950,17 @@ impl Source for SourceClient {
             SourceClient::Reddit(c) => c.fetch().await,
             SourceClient::Github(c) => c.fetch().await,
             SourceClient::Hackernews(c) => c.fetch().await,
+        }
+    }
+
+    async fn fetch_incremental(
+        &self,
+        existing: &[Bookmark],
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        match self {
+            SourceClient::Reddit(c) => c.fetch_incremental(existing).await,
+            SourceClient::Github(c) => c.fetch_incremental(existing).await,
+            SourceClient::Hackernews(c) => c.fetch_incremental(existing).await,
         }
     }
 }
@@ -1123,7 +1144,7 @@ async fn run_sync_jobs(
     );
     let now = timefmt::now_unix();
     let fetched = futures::future::join_all(jobs.iter().map(|job| async move {
-        let drafts = job.client.fetch().await?;
+        let drafts = job.fetch(bookmarks).await?;
         let fetched = drafts.len();
         let new = sync::prepare_new_drafts(&job.client, drafts, bookmarks, &job.settings(), now);
         info!(
@@ -2758,5 +2779,88 @@ mod tests {
             resolve_backup_dir(Some("/from-flag".into()), &config).unwrap(),
             PathBuf::from("/from-flag")
         );
+    }
+}
+
+/// Tests that need a socket; the flake skips `net_tests` in the Nix build sandbox.
+#[cfg(test)]
+mod net_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Fetches through a HackerNews `SyncJob` capped at `limit`, against favorites whose
+    /// first page (both streams) is already synced and links to a second page that is
+    /// expected `second_page_hits` times.
+    async fn fetch_hackernews_job(limit: usize, second_page_hits: u64) {
+        let hn = MockServer::start().await;
+        let page = |rows: &str| {
+            ResponseTemplate::new(200).set_body_string(format!(
+                r#"<html op="favorites"><body><table>{rows}</table></body></html>"#
+            ))
+        };
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .and(query_param_is_missing("p"))
+            .respond_with(page(
+                r#"<tr class="athing" id="1"><td>x</td></tr>
+                   <tr><td><a class="morelink" href="favorites?id=u&amp;p=2">More</a></td></tr>"#,
+            ))
+            .expect(2)
+            .mount(&hn)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .and(query_param("p", "2"))
+            .respond_with(page(r#"<tr class="athing" id="2"><td>x</td></tr>"#))
+            .expect(second_page_hits)
+            .mount(&hn)
+            .await;
+        let algolia = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "hits": [
+                { "objectID": "1", "title": "Ask HN: one", "author": "a", "_tags": ["story"] },
+                { "objectID": "2", "title": "Ask HN: two", "author": "a", "_tags": ["story"] },
+            ] })))
+            .mount(&algolia)
+            .await;
+        let job = SyncJob {
+            client: SourceClient::Hackernews(HackerNewsClient::with_base_urls(
+                "u".into(),
+                HackernewsConfig::default(),
+                hn.uri(),
+                algolia.uri(),
+            )),
+            label: "hackernews[u]".into(),
+            hook: None,
+            limit,
+            toread: false,
+            shared: false,
+            use_post_date: false,
+            max_age_days: 30,
+        };
+        let existing = [Bookmark {
+            url: Url::parse("https://news.ycombinator.com/item?id=1").unwrap(),
+            title: String::new(),
+            note: String::new(),
+            tags: Vec::new(),
+            timestamp: None,
+            public: false,
+            read_later: false,
+        }];
+
+        job.fetch(&existing).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sync_job_fetches_hackernews_incrementally() {
+        fetch_hackernews_job(0, 0).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_capped_sync_job_reads_every_favorites_page() {
+        fetch_hackernews_job(5, 2).await;
     }
 }

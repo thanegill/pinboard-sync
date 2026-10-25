@@ -727,11 +727,17 @@ mod net_tests {
 
         let (result, logs) = capturing_logs(leak_client(&server).all()).await;
         assert!(result.is_err());
-        let [line] = logs.as_slice() else {
-            panic!("expected one log line, got {logs:?}");
+        for line in &logs {
+            assert!(!line.contains(LEAK_SECRET), "token logged: {line}");
+        }
+        let body_lines: Vec<_> = logs
+            .iter()
+            .filter(|line| line.contains("full response body"))
+            .collect();
+        let [line] = body_lines.as_slice() else {
+            panic!("expected one body line, got {logs:?}");
         };
         assert!(line.starts_with("DEBUG Pinboard "), "{line}");
-        assert!(!line.contains(LEAK_SECRET), "token logged: {line}");
         assert!(line.contains("auth_token=[redacted]"), "{line}");
         assert!(line.contains(ERROR_PAGE_TAIL), "body cut: {line}");
         assert!(!line.contains('\n'), "not escaped: {line}");

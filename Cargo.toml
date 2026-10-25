@@ -22,7 +22,7 @@ futures = { version = "0.3", default-features = false, features = ["std", "async
 # is built with native-tls. On Linux that pulls in OpenSSL (hence pkg-config + openssl
 # at build time); on macOS it uses the Security framework. See CLAUDE.md.
 # native-tls-alpn: the edge also rejects a ClientHello with no ALPN extension (#78).
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls", "native-tls-alpn"] }
+reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "native-tls", "native-tls-alpn"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -39,7 +39,8 @@ time = { version = "0.3", default-features = false, features = ["std", "formatti
 htmd = "0.5"
 
 [dev-dependencies]
+h2 = "0.4"
 http = "1"
 tempfile = "3"
-tokio = { version = "1", features = ["test-util"] }
+tokio = { version = "1", features = ["net", "test-util"] }
 wiremock = "0.6"

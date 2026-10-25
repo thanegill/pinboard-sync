@@ -50,9 +50,32 @@ where
 /// `fields` holds its payload.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RedditListingEntry {
-    pub kind: String,
+    pub kind: RedditKind,
     #[serde(rename = "data")]
     pub fields: RedditEntryFields,
+}
+
+/// A listing entry's `kind`: Reddit's type prefix for the thing it holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedditKind {
+    /// `t3`.
+    Post,
+    /// `t1`.
+    Comment,
+    /// Any other thing (a subreddit, an award, ...), which never becomes a bookmark.
+    Other,
+}
+
+/// From a string only. A derived enum impl would also accept a single-key map such as
+/// `{"t3": null}`, letting a malformed entry through the lenient listing parse.
+impl<'de> Deserialize<'de> for RedditKind {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(deserializer)?.as_str() {
+            "t3" => RedditKind::Post,
+            "t1" => RedditKind::Comment,
+            _ => RedditKind::Other,
+        })
+    }
 }
 
 /// The union of the fields we care about across posts and comments. Reddit
@@ -129,19 +152,18 @@ impl RedditListingEntry {
     /// still deserializes (as `None`) and slips past the listing's all-fail guard — the
     /// warning keeps that silent loss visible.
     pub fn into_saved_item(self, domain: &str) -> Option<RedditSavedItem> {
-        let is_comment = match self.kind.as_str() {
-            "t1" => true,
-            "t3" => false,
-            _ => return None,
+        let (is_comment, wire_kind) = match self.kind {
+            RedditKind::Comment => (true, "t1"),
+            RedditKind::Post => (false, "t3"),
+            RedditKind::Other => return None,
         };
         let fields = self.fields;
         let (subreddit, permalink) = match (fields.subreddit, fields.permalink) {
             (Some(subreddit), Some(permalink)) => (subreddit, permalink),
             _ => {
                 log::warn!(
-                    "skipping reddit {} entry: missing subreddit/permalink — \
-                     the saved-listing response shape may have changed",
-                    self.kind
+                    "skipping reddit {wire_kind} entry: missing subreddit/permalink — \
+                     the saved-listing response shape may have changed"
                 );
                 return None;
             }
@@ -735,6 +757,17 @@ mod tests {
         }))
         .unwrap();
         assert!(entry.into_saved_item("old.reddit.com").is_none());
+    }
+
+    #[test]
+    fn a_kind_that_is_not_a_string_is_malformed() {
+        for kind in [serde_json::json!({ "t3": null }), serde_json::json!(3)] {
+            let entry = serde_json::from_value::<RedditListingEntry>(serde_json::json!({
+                "kind": kind,
+                "data": { "subreddit": "rust", "permalink": "/r/rust/comments/a/x/" }
+            }));
+            assert!(entry.is_err(), "accepted kind {kind}");
+        }
     }
 
     #[test]

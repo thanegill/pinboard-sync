@@ -30,8 +30,9 @@ use log::{debug, error, info, warn};
 use backup::BackupSource;
 use bookmark::{AccountState, AccountView, Bookmark, BookmarkStore, CleanupStore};
 use config::{Config, GitHubAccount, HackernewsAccount, RedditAccount, SyncLimit};
-use github::GitHubClient;
+use github::{GitHubClient, GitHubConfig};
 use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackernewsConfig};
+use model::RedditConfig;
 use pinboard::{PinboardClient, RATE_LIMIT_SECS};
 use reddit::RedditClient;
 use source::{
@@ -1046,9 +1047,7 @@ fn build_reddit_job(
     )
     .context("missing Reddit username (set --reddit-username, REDDIT_USERNAME, or `username` in the config)")?;
     let cookie = resolve_reddit_cookie(ovr.reddit_cookie.clone(), account);
-    let reddit_config = account
-        .map(RedditAccount::reddit_config)
-        .unwrap_or_default();
+    let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
     let src = &config.defaults.reddit;
     let hook = resolve_hook(
         ovr.on_auth_failure.clone(),
@@ -1076,9 +1075,7 @@ fn build_github_job(
 ) -> Result<SyncJob> {
     let token = resolve_github_token(ovr.github_token.clone(), account)
         .with_context(missing_github_token)?;
-    let github_config = account
-        .map(GitHubAccount::github_config)
-        .unwrap_or_default();
+    let github_config = account.map(GitHubConfig::from).unwrap_or_default();
     let src = &config.defaults.github;
     let hook = resolve_hook(
         ovr.on_auth_failure.clone(),
@@ -1113,9 +1110,7 @@ fn build_hackernews_job(
     .context(
         "missing HackerNews username (set --username, HN_USERNAME, or `username` in the config)",
     )?;
-    let hn_config = account
-        .map(HackernewsAccount::hackernews_config)
-        .unwrap_or_default();
+    let hn_config = account.map(HackernewsConfig::from).unwrap_or_default();
     let src = &config.defaults.hackernews;
     let common = resolve_job_common(account, ovr, src, config);
     Ok(SyncJob {
@@ -1693,9 +1688,7 @@ async fn cleanup_github_for<S: BookmarkStore + AccountState>(
     opts: &github::GitHubCleanupOpts,
     config: &Config,
 ) -> Result<()> {
-    let github_config = account
-        .map(GitHubAccount::github_config)
-        .unwrap_or_default();
+    let github_config = account.map(GitHubConfig::from).unwrap_or_default();
     let token = resolve_github_token(token_flag, account).with_context(missing_github_token)?;
     let hook = cleanup_hook(
         account.and_then(|a| a.on_auth_failure.as_deref()),
@@ -1737,9 +1730,7 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     store: &S,
     config: &Config,
 ) -> Result<()> {
-    let reddit_config = account
-        .map(RedditAccount::reddit_config)
-        .unwrap_or_default();
+    let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
     let dates = DateSettings::resolve(over, account, &config.defaults.reddit, config);
     let opts = cleanup::RedditCleanupOpts {
         mark_nsfw: !args.no_nsfw,
@@ -1804,9 +1795,7 @@ fn resolve_hackernews_cleanup_config(
     account: Option<&HackernewsAccount>,
     link_tag: Option<String>,
 ) -> Result<HackernewsConfig> {
-    let mut hn_config = account
-        .map(HackernewsAccount::hackernews_config)
-        .unwrap_or_default();
+    let mut hn_config = account.map(HackernewsConfig::from).unwrap_or_default();
     if let Some(tag) = link_tag {
         config::reject_whitespace("--link-tag", &tag)?;
         hn_config.link_tag = tag;

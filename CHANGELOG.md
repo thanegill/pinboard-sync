@@ -36,6 +36,7 @@ All notable changes to this project are documented here. The format is based on
   `reddit_session` pairs are dropped.
 - A Reddit cookie of only quotes or whitespace counts as no cookie.
 - Reddit cookie messages name the setting the cookie came from.
+- GitHub 401 errors name the setting the token came from.
 
 ## [0.5.2] - 2026-10-24
 

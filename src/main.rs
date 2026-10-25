@@ -1071,13 +1071,7 @@ fn build_github_job(
     ovr: &SyncOverrides,
     config: &Config,
 ) -> Result<SyncJob> {
-    let token = resolve_secret(
-        ovr.github_token.clone(),
-        "GITHUB_TOKEN",
-        account.and_then(|a| a.token.clone()),
-        account.and_then(|a| a.token_file.as_deref()),
-    )
-    .context("missing GitHub token (set --github-token, GITHUB_TOKEN, or `token`/`token_file` in the config)")?;
+    let token = resolve_github_token(ovr.github_token.clone(), account).context("missing GitHub token (set --github-token, GITHUB_TOKEN, or `token`/`token_file` in the config)")?;
     let github_config = account
         .map(GitHubAccount::github_config)
         .unwrap_or_default();
@@ -1698,13 +1692,7 @@ async fn cleanup_github_for<S: BookmarkStore + AccountState>(
     let github_config = account
         .map(GitHubAccount::github_config)
         .unwrap_or_default();
-    let token = resolve_secret(
-        token_flag,
-        "GITHUB_TOKEN",
-        account.and_then(|a| a.token.clone()),
-        account.and_then(|a| a.token_file.as_deref()),
-    )
-    .context("missing GitHub token (set --github-token, GITHUB_TOKEN, or `token`/`token_file` in the config)")?;
+    let token = resolve_github_token(token_flag, account).context("missing GitHub token (set --github-token, GITHUB_TOKEN, or `token`/`token_file` in the config)")?;
     let hook = cleanup_hook(
         account.and_then(|a| a.on_auth_failure.as_deref()),
         config.defaults.github.on_auth_failure.as_deref(),
@@ -1971,6 +1959,17 @@ fn reddit_cookie_source(rung: SecretRung) -> &'static str {
     }
 }
 
+/// The GitHub token setting a rung reads, as messages name it.
+fn github_token_source(rung: SecretRung) -> &'static str {
+    match rung {
+        SecretRung::Flag => "--github-token",
+        SecretRung::Env => "$GITHUB_TOKEN",
+        SecretRung::EnvFile => "$GITHUB_TOKEN_FILE",
+        SecretRung::ConfigInline => "the config's `token`",
+        SecretRung::ConfigFile => "the config's `token_file`",
+    }
+}
+
 /// The Reddit cookie through [`resolve_secret`]'s ladder, skipping a candidate that
 /// configures no session (see [`reddit::is_configured_cookie`]) as a blank one is skipped.
 fn resolve_reddit_cookie(
@@ -1983,6 +1982,26 @@ fn resolve_reddit_cookie(
         account.and_then(|a| a.cookie.clone()),
         account.and_then(|a| a.cookie_file.as_deref()),
     ))
+}
+
+/// The GitHub token through [`resolve_secret`]'s ladder, with the setting it came from.
+fn resolve_github_token(
+    flag: Option<String>,
+    account: Option<&GitHubAccount>,
+) -> Option<ConfiguredSecret> {
+    first_configured_token(secret_ladder(
+        flag,
+        "GITHUB_TOKEN",
+        account.and_then(|a| a.token.clone()),
+        account.and_then(|a| a.token_file.as_deref()),
+    ))
+}
+
+/// The first non-blank GitHub token, with the setting it came from.
+fn first_configured_token(
+    candidates: impl IntoIterator<Item = (SecretRung, Option<String>)>,
+) -> Option<ConfiguredSecret> {
+    first_configured(candidates, is_nonblank, github_token_source)
 }
 
 /// The first candidate that configures a Reddit session, with the setting it came from.
@@ -2214,6 +2233,32 @@ mod tests {
         };
         let from_flag = resolve_reddit_cookie(Some("abc".into()), Some(&account)).unwrap();
         assert_eq!(from_flag.source, "--reddit-cookie");
+    }
+
+    #[test]
+    fn github_token_names_the_setting_it_came_from() {
+        assert_eq!(
+            SecretRung::ALL.map(github_token_source),
+            [
+                "--github-token",
+                "$GITHUB_TOKEN",
+                "$GITHUB_TOKEN_FILE",
+                "the config's `token`",
+                "the config's `token_file`",
+            ]
+        );
+        let ladder = [
+            None,
+            None,
+            None,
+            Some(" \n".to_string()),
+            Some("tok".into()),
+        ];
+        let from_file = first_configured_token(SecretRung::ALL.into_iter().zip(ladder)).unwrap();
+        assert_eq!(
+            (from_file.value.as_str(), from_file.source),
+            ("tok", "the config's `token_file`")
+        );
     }
 
     #[test]

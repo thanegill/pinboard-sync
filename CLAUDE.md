@@ -347,7 +347,11 @@ hundreds of bookmarks, since `plan_failed` doesn't halt a pass. `send_retrying` 
 the request URL from every client's transport error before wrapping it, because
 Pinboard's `auth_token` rides in the query string and `reqwest::Error` prints the URL in
 `Display` and `Debug`. Never put a request URL with a query into a message: Pinboard
-errors name the endpoint (no query) instead.
+errors name the endpoint (no query) instead. A Pinboard error body could echo the request
+back, so any text from a Pinboard response that goes into an error (a non-success body
+via `PinboardClient::status_error`, or a `result_code`) goes through `redacted_excerpt`
+first: it redacts the token, its secret part (which also covers it percent-encoded) and
+any `auth_token=` value, collapses the text to one line, and caps it at 300 bytes.
 
 **`SourceError::RateLimited` is the third case, and deliberately not either of those.**
 GitHub answers both its primary and secondary rate limits with a **403 or 429** — the

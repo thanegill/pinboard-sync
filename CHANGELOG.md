@@ -26,6 +26,8 @@ All notable changes to this project are documented here. The format is based on
 - A HackerNews favorites `429` is no longer retried blindly: it's retried once, only for
   a `Retry-After` of 2 minutes or less, and otherwise fails as rate-limited without firing
   the auth-failure hook.
+- Pinboard errors no longer quote the response raw: the API token is redacted, and the
+  quoted text is cut to one line of at most 300 bytes.
 
 ## [0.5.2] - 2026-10-24
 

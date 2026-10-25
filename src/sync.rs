@@ -45,8 +45,14 @@ pub struct JobSettings {
 /// duplicate-key drafts consume slots), each stamped with the account's resolved
 /// `toread`/`shared` flags and post date (kept only when `use_post_date` is on and the
 /// post is within the age cap relative to `now`, else cleared so Pinboard defaults to
-/// "now"), and truncated to the per-job `limit`, if any. `now` is a parameter so
-/// tests are deterministic.
+/// "now"), and truncated to the per-job `limit`, if any, which keeps the newest.
+///
+/// Returned oldest first, the reverse of the source's newest-first order, so a run cut
+/// short leaves the *newest* items unwritten: they sit on the source's first pages, where
+/// the next run's caught-up check sees them and keeps paging down to the written ones.
+/// Newest first, an interrupted backfill would leave page 1 fully written, and the next
+/// run would stop there and never reach the older items. `now` is a parameter so tests
+/// are deterministic.
 pub fn prepare_new_drafts<S: Source>(
     source: &S,
     drafts: Vec<BookmarkDraft>,
@@ -71,6 +77,7 @@ pub fn prepare_new_drafts<S: Source>(
     if let Some(limit) = settings.limit {
         new.truncate(limit.get());
     }
+    new.reverse();
     new
 }
 
@@ -151,10 +158,81 @@ pub async fn write_drafts<P: BookmarkStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::Source;
-    use crate::test_support::{listing_entry, FakePinboard, FakeReddit};
+    use crate::source::{page_is_caught_up, Source, SourceError, UrlKey};
+    use crate::test_support::{listing_entry, replay, FakePinboard, FakeReddit};
     use serde_json::json;
     use url::Url;
+
+    /// A source serving one or more streams of pages, each newest first and concatenated
+    /// in order (as HackerNews serves stories then comments). Its incremental read stops
+    /// each stream at its first caught-up page, as the real sources' do. Its dedup key is
+    /// the URL itself.
+    struct PagedSource {
+        streams: Vec<Vec<Vec<BookmarkDraft>>>,
+    }
+
+    impl PagedSource {
+        fn single(pages: Vec<Vec<BookmarkDraft>>) -> Self {
+            Self {
+                streams: vec![pages],
+            }
+        }
+    }
+
+    impl UrlKey for PagedSource {
+        fn dedup_key(&self, url: &Url) -> Option<String> {
+            Some(url.to_string())
+        }
+    }
+
+    impl Source for PagedSource {
+        async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
+            Ok(self.streams.concat().concat())
+        }
+
+        async fn fetch_incremental(
+            &self,
+            existing: &[Bookmark],
+        ) -> Result<Vec<BookmarkDraft>, SourceError> {
+            let synced_keys = self.synced_keys(existing);
+            let mut drafts = Vec::new();
+            for stream in &self.streams {
+                for page in stream {
+                    drafts.extend(page.iter().cloned());
+                    if page_is_caught_up(page.len(), page, &synced_keys) {
+                        break;
+                    }
+                }
+            }
+            Ok(drafts)
+        }
+    }
+
+    fn tagged_draft(url: &str, tag: &str) -> BookmarkDraft {
+        BookmarkDraft {
+            bookmark: Bookmark {
+                tags: vec![tag.into()],
+                ..bookmark(url)
+            },
+            dedup_key: url.into(),
+        }
+    }
+
+    fn draft(url: &str) -> BookmarkDraft {
+        BookmarkDraft {
+            bookmark: bookmark(url),
+            dedup_key: url.into(),
+        }
+    }
+
+    fn added_urls(pinboard: &FakePinboard) -> Vec<String> {
+        pinboard
+            .added
+            .borrow()
+            .iter()
+            .map(|add| add.url.clone())
+            .collect()
+    }
 
     fn post(name: &str, permalink: &str) -> crate::model::RedditListingEntry {
         listing_entry(
@@ -456,9 +534,9 @@ mod tests {
             0,
         );
         let keys: Vec<&str> = new.iter().map(|d| d.dedup_key.as_str()).collect();
-        assert_eq!(keys, vec!["k", "kB"]);
+        assert_eq!(keys, vec!["kB", "k"]);
         // The kept duplicate is the first occurrence.
-        assert_eq!(new[0].bookmark.url.as_str(), "http://example.com/x");
+        assert_eq!(new[1].bookmark.url.as_str(), "http://example.com/x");
     }
 
     #[tokio::test]
@@ -561,5 +639,163 @@ mod tests {
         let added = pinboard.added.borrow();
         let urls: Vec<&str> = added.iter().map(|a| a.url.as_str()).collect();
         assert_eq!(urls, vec!["https://a.test/", "https://c.test/"]);
+    }
+
+    #[tokio::test]
+    async fn new_drafts_are_written_oldest_first() {
+        let source = PagedSource::single(vec![
+            vec![draft("https://c.test/"), draft("https://b.test/")],
+            vec![draft("https://a.test/")],
+        ]);
+        let new = prepare_new_drafts(
+            &source,
+            source.fetch().await.unwrap(),
+            &[],
+            &settings(false, 30, None),
+            0,
+        );
+        let pinboard = FakePinboard::default();
+        write_drafts(&pinboard, &new, false).await;
+        assert_eq!(
+            added_urls(&pinboard),
+            ["https://a.test/", "https://b.test/", "https://c.test/"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_capped_job_writes_its_newest_drafts_oldest_first() {
+        let source = PagedSource::single(vec![vec![
+            draft("https://d.test/"),
+            draft("https://c.test/"),
+            draft("https://b.test/"),
+            draft("https://a.test/"),
+        ]]);
+        let new = prepare_new_drafts(
+            &source,
+            source.fetch().await.unwrap(),
+            &[],
+            &settings(false, 30, NonZeroUsize::new(2)),
+            0,
+        );
+        let pinboard = FakePinboard::default();
+        write_drafts(&pinboard, &new, false).await;
+        assert_eq!(
+            added_urls(&pinboard),
+            ["https://c.test/", "https://d.test/"]
+        );
+    }
+
+    /// For every point at which a first `auto` sync of `source` could be killed, a second,
+    /// uninterrupted one writes everything the first didn't.
+    async fn assert_any_interrupted_backfill_resumes(source: &PagedSource) {
+        let mut every_url: Vec<String> = source
+            .fetch()
+            .await
+            .unwrap()
+            .iter()
+            .map(|d| d.bookmark.url.to_string())
+            .collect();
+        every_url.sort();
+        for killed_after in 0..every_url.len() {
+            assert_eq!(
+                write_after_interrupting(source, killed_after).await,
+                every_url,
+                "killed after {killed_after} writes"
+            );
+        }
+    }
+
+    /// Run an `auto` sync of `source` that is killed after `killed_after` writes, then a
+    /// second, uninterrupted one, and return every URL written across both, sorted.
+    async fn write_after_interrupting(source: &PagedSource, killed_after: usize) -> Vec<String> {
+        let job = settings(false, 30, None);
+        let pinboard = FakePinboard::default();
+
+        let first_run = prepare_new_drafts(
+            source,
+            source.fetch_incremental(&[]).await.unwrap(),
+            &[],
+            &job,
+            0,
+        );
+        write_drafts(&pinboard, &first_run[..killed_after], false).await;
+
+        let account = replay(&[], &pinboard.ops.borrow());
+        let second_run = prepare_new_drafts(
+            source,
+            source.fetch_incremental(&account).await.unwrap(),
+            &account,
+            &job,
+            0,
+        );
+        write_drafts(&pinboard, &second_run, false).await;
+
+        let mut written = added_urls(&pinboard);
+        written.sort();
+        written
+    }
+
+    #[tokio::test]
+    async fn the_run_after_an_interrupted_backfill_writes_the_rest() {
+        let source = PagedSource::single(vec![
+            vec![draft("https://e.test/"), draft("https://d.test/")],
+            vec![draft("https://c.test/"), draft("https://b.test/")],
+            vec![draft("https://a.test/")],
+        ]);
+        assert_any_interrupted_backfill_resumes(&source).await;
+    }
+
+    #[tokio::test]
+    async fn the_run_after_an_interrupted_backfill_writes_the_rest_of_both_hn_streams() {
+        let source = PagedSource {
+            streams: vec![
+                vec![
+                    vec![draft("https://s4.test/"), draft("https://s3.test/")],
+                    vec![draft("https://s2.test/"), draft("https://s1.test/")],
+                ],
+                vec![
+                    vec![draft("https://c4.test/"), draft("https://c3.test/")],
+                    vec![draft("https://c2.test/"), draft("https://c1.test/")],
+                ],
+            ],
+        };
+        assert_any_interrupted_backfill_resumes(&source).await;
+    }
+
+    #[tokio::test]
+    async fn jobs_are_written_in_turn_each_oldest_first_and_the_earlier_keeps_a_shared_item() {
+        let job = settings(false, 30, None);
+        let first_job = PagedSource::single(vec![vec![
+            draft("https://a2.test/"),
+            tagged_draft("https://shared.test/", "first"),
+            draft("https://a1.test/"),
+        ]]);
+        let second_job = PagedSource::single(vec![vec![
+            tagged_draft("https://shared.test/", "second"),
+            draft("https://b1.test/"),
+        ]]);
+        let mut per_job = Vec::new();
+        for source in [&first_job, &second_job] {
+            per_job.push(prepare_new_drafts(
+                source,
+                source.fetch().await.unwrap(),
+                &[],
+                &job,
+                0,
+            ));
+        }
+        let pinboard = FakePinboard::default();
+        write_drafts(&pinboard, &merge_deduped(per_job), false).await;
+
+        assert_eq!(
+            added_urls(&pinboard),
+            [
+                "https://a1.test/",
+                "https://shared.test/",
+                "https://a2.test/",
+                "https://b1.test/",
+            ]
+        );
+        assert_eq!(pinboard.added.borrow()[1].tags, ["first"]);
     }
 }

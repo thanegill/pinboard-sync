@@ -8,26 +8,22 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
-- **Breaking:** `limit` / `--limit` take `auto` (default), `all` or a positive number,
-  and `0` is rejected. Under `auto`, `sync` stops paging once caught up; `all` reads
-  every page. Replace `limit = 0` with `"auto"`, or delete it.
-- Reddit and GitHub `sync` stop paging once caught up under `limit = "auto"`, like
-  HackerNews, with the same limits: an item deleted from Pinboard isn't re-added, and a
-  first sync whose newest items are already on Pinboard doesn't backfill. Run
-  `sync <source> --limit all` once to fill either gap.
-- GitHub stars are fetched 100 per page instead of 30, so a full read takes about 11
-  requests for 1,100 stars instead of about 37.
+- **Breaking:** `limit` / `--limit` take `auto` (default), `all` or a positive number;
+  `0` is rejected. Replace `limit = 0` with `"auto"`, or delete it.
+- Under `auto`, `sync` stops reading each source at the first page with nothing new;
+  `all` reads every page. See the README for the known limits; `--limit all` fills any
+  gap.
+- GitHub stars are fetched 100 per page instead of 30.
 
 ### Fixed
 
-- HackerNews `sync` stops reading favorites pages once it reaches ones already synced,
-  instead of fetching every page each run. A favorite deleted from Pinboard is no longer
-  re-added; after an interrupted backfill, run `sync hackernews --limit all` once.
-- A HackerNews favorites `429` is no longer retried blindly: it's retried once, only for
-  a `Retry-After` of 2 minutes or less, and otherwise fails as rate-limited without firing
-  the auth-failure hook.
-- Pinboard errors no longer quote the response raw: the API token is redacted, and the
-  quoted text is cut to one line of at most 300 bytes.
+- HackerNews `sync` no longer fetches every favorites page on every run.
+- A HackerNews favorites `429` is retried once, only for a `Retry-After` of 2 minutes or
+  less; otherwise the run fails as rate-limited.
+- Pinboard errors redact the API token and quote at most one 300-byte line of the
+  response.
+- `sync` writes each source's new items oldest first, so an interrupted backfill
+  finishes on the next run.
 
 ## [0.5.2] - 2026-10-24
 

@@ -79,7 +79,7 @@ impl Default for HackernewsConfig {
 struct HackerNewsItem {
     id: u64,
     #[serde(rename = "type", default)]
-    kind: String,
+    kind: HackerNewsItemKind,
     #[serde(default)]
     by: String,
     #[serde(default)]
@@ -91,6 +91,35 @@ struct HackerNewsItem {
     /// Item creation time (unix epoch seconds), when known.
     #[serde(default)]
     created_at: Option<i64>,
+}
+
+/// What an HN item is. Algolia carries it in a hit's `_tags`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum HackerNewsItemKind {
+    #[default]
+    Story,
+    Comment,
+    Poll,
+    Job,
+}
+
+impl HackerNewsItemKind {
+    /// HN's own name for the kind, as `_tags` spells it.
+    fn as_str(self) -> &'static str {
+        match self {
+            HackerNewsItemKind::Story => "story",
+            HackerNewsItemKind::Comment => "comment",
+            HackerNewsItemKind::Poll => "poll",
+            HackerNewsItemKind::Job => "job",
+        }
+    }
+}
+
+impl std::fmt::Display for HackerNewsItemKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// An Algolia HN search response.
@@ -125,11 +154,15 @@ struct AlgoliaHit {
 impl From<AlgoliaHit> for HackerNewsItem {
     fn from(h: AlgoliaHit) -> Self {
         // The item type is carried in `_tags` (e.g. "story"/"comment"/"poll"/"job").
-        let kind = ["comment", "poll", "job", "story"]
-            .into_iter()
-            .find(|k| h.tags.iter().any(|t| t == k))
-            .unwrap_or("story")
-            .to_string();
+        let kind = [
+            HackerNewsItemKind::Comment,
+            HackerNewsItemKind::Poll,
+            HackerNewsItemKind::Job,
+            HackerNewsItemKind::Story,
+        ]
+        .into_iter()
+        .find(|kind| h.tags.iter().any(|tag| tag == kind.as_str()))
+        .unwrap_or_default();
         HackerNewsItem {
             id: h.object_id.parse().unwrap_or(0),
             kind,
@@ -150,7 +183,7 @@ impl HackerNewsItem {
         let item_id = HackerNewsItemId::from(self.id);
         // The HN discussion permalink (always valid — the id sits in the query string).
         let hn_url = Url::from(&item_id);
-        let is_comment = self.kind == "comment";
+        let is_comment = self.kind == HackerNewsItemKind::Comment;
 
         let mut tags = Vec::new();
         push_tags(&mut tags, &cfg.tags);

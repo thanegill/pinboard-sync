@@ -1866,19 +1866,15 @@ impl AllRun {
 
 /// Map a `SourceError` to an `anyhow::Error`, firing the auth-failure hook when
 /// re-authentication is required.
+///
+/// Only [`SourceError::ReauthRequired`] fires it: no credential change clears a rate limit
+/// or an edge block, so waking the operator to rotate a token would send them after the
+/// wrong problem.
 fn handle_source_err(e: SourceError, hook: Option<&str>) -> anyhow::Error {
-    match e {
-        SourceError::ReauthRequired(msg) => {
-            run_auth_failure_hook(hook, &msg);
-            anyhow!("{msg}")
-        }
-        // Deliberately no hook: no credential change clears a rate limit, so waking the
-        // operator to rotate a token would send them after the wrong problem.
-        SourceError::RateLimited(msg) => anyhow!("{msg}"),
-        // Nor here: the edge refuses whatever credential is sent.
-        SourceError::Blocked(msg) => anyhow!("{msg}"),
-        SourceError::Other(e) => e,
+    if let SourceError::ReauthRequired(msg) = &e {
+        run_auth_failure_hook(hook, msg);
     }
+    e.into_anyhow()
 }
 
 fn run_auth_failure_hook(cmd: Option<&str>, err: &str) {

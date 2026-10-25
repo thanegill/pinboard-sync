@@ -374,19 +374,10 @@ impl PinboardClient {
             .map(|(i, _)| i)
             .chain(std::iter::once(extended.len()))
             .collect();
-        let fits = |cut: usize| url_len(&format!("{}{}", &extended[..cut], TRUNCATION_MARKER));
-        let (mut lo, mut hi, mut best) = (0usize, boundaries.len() - 1, 0usize);
-        while lo <= hi {
-            let mid = (lo + hi) / 2;
-            if fits(boundaries[mid]) <= budget {
-                best = boundaries[mid];
-                lo = mid + 1;
-            } else if mid == 0 {
-                break;
-            } else {
-                hi = mid - 1;
-            }
-        }
+        let fitting = boundaries.partition_point(|&cut| {
+            url_len(&format!("{}{}", &extended[..cut], TRUNCATION_MARKER)) <= budget
+        });
+        let best = fitting.checked_sub(1).map_or(0, |last| boundaries[last]);
 
         // Trim only when the marked result is actually shorter than the note, so a note
         // barely over budget isn't replaced by a longer, fabricated "[truncated]" note.

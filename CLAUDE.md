@@ -355,11 +355,20 @@ hundreds of bookmarks, since `plan_failed` doesn't halt a pass. `send_retrying` 
 the request URL from every client's transport error before wrapping it, because
 Pinboard's `auth_token` rides in the query string and `reqwest::Error` prints the URL in
 `Display` and `Debug`. Never put a request URL with a query into a message: Pinboard
-errors name the endpoint (no query) instead. A Pinboard error body could echo the request
-back, so any text from a Pinboard response that goes into an error (a non-success body
-via `PinboardClient::status_error`, or a `result_code`) goes through `redacted_excerpt`
-first: it redacts the token, its secret part (which also covers it percent-encoded) and
-any `auth_token=` value, collapses the text to one line, and caps it at 300 bytes.
+errors name the endpoint (no query) instead. An error quotes a response body only through
+`http::error_with_body`, which puts a one-line excerpt of at most 300 bytes in the error
+and logs the whole body at debug level (`-v`, or `RUST_LOG=pinboard_sync=debug`), in any
+build, escaped as one string literal so a hostile body can't forge log lines. Tests read
+the log through `test_support::capturing_logs`. Both carry the body as given, so a secret
+is redacted before the call: a Pinboard error body could echo the request back, so any
+text from a Pinboard response that goes into an error (a non-success body via
+`PinboardClient::status_error`, or a `result_code`) goes through `redacted_error`, which
+redacts the token, its secret part (which also covers it percent-encoded) and any
+`auth_token=` value from the whole text first. GitHub, Reddit and Algolia bodies go in
+unredacted: the GitHub token and Reddit cookie travel in headers, which their error
+bodies don't echo, and HackerNews has no credential. A body worth seeing under `-v`
+that no error quotes (Reddit's unrecognised 401/403 page) goes through
+`http::log_body_at_debug`, the same escaped line, under the same redaction rule.
 
 **`SourceError::RateLimited` is the third case, and deliberately not either of those.**
 GitHub answers both its primary and secondary rate limits with a **403 or 429** — the

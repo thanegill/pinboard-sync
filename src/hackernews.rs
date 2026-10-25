@@ -448,9 +448,11 @@ impl HackerNewsClient {
             let status = resp.status();
             if !status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
-                return Err(
-                    anyhow::anyhow!("hn algolia returned {status}: {}", body.trim()).into(),
-                );
+                return Err(crate::http::error_with_body(
+                    &format!("hn algolia returned {status}"),
+                    &body,
+                )
+                .into());
             }
             let body = resp.text().await.context("reading hn algolia response")?;
             sink.push("", RawKind::Json, &body);
@@ -485,9 +487,9 @@ impl HackerNewsClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!(
-                "hn algolia url search returned {status}: {}",
-                body.trim()
+            return Err(crate::http::error_with_body(
+                &format!("hn algolia url search returned {status}"),
+                &body,
             )
             .into());
         }
@@ -2307,5 +2309,49 @@ mod net_tests {
         let html =
             std::fs::read_to_string(dir.join("raw/hackernews-psophis-favorites.html")).unwrap();
         assert!(html.contains(r#"id="42""#));
+    }
+
+    async fn algolia_answering_with_a_long_error_page() -> (MockServer, HackerNewsClient) {
+        let algolia = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_string(crate::test_support::long_error_page()),
+            )
+            .mount(&algolia)
+            .await;
+        let client = HackerNewsClient::with_base_urls(
+            "psophis".into(),
+            HackernewsConfig::default(),
+            "http://unused.invalid".into(),
+            algolia.uri(),
+        );
+        (algolia, client)
+    }
+
+    #[tokio::test]
+    async fn algolia_item_error_quotes_a_capped_one_line_excerpt() {
+        let (_algolia, client) = algolia_answering_with_a_long_error_page().await;
+        let err = client
+            .fetch_items(&[HackerNewsItemId::from(1)], &mut RawSink::disabled())
+            .await
+            .unwrap_err();
+        crate::test_support::assert_quotes_capped_excerpt(
+            &err.to_string(),
+            "hn algolia returned 400 Bad Request",
+        );
+    }
+
+    #[tokio::test]
+    async fn algolia_url_search_error_quotes_a_capped_one_line_excerpt() {
+        let (_algolia, client) = algolia_answering_with_a_long_error_page().await;
+        let err = client
+            .search_by_url(&Url::parse("https://example.com/a").unwrap())
+            .await
+            .unwrap_err();
+        crate::test_support::assert_quotes_capped_excerpt(
+            &err.to_string(),
+            "hn algolia url search returned 400 Bad Request",
+        );
     }
 }

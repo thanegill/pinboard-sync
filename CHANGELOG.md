@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- `-v` logs the full response body when an error quotes one, with the Pinboard token
+  redacted.
+
 ### Changed
 
 - **Breaking:** `limit` / `--limit` take `auto` (default), `all` or a positive number;
@@ -26,6 +31,7 @@ All notable changes to this project are documented here. The format is based on
   finishes on the next run.
 - HTTP connects time out after 30 s, so an unreachable host fails a request in about
   5.5 minutes instead of 15.
+- GitHub, Algolia and Reddit errors quote at most one 300-byte line of the response.
 
 ## [0.5.2] - 2026-10-24
 

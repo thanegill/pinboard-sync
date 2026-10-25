@@ -193,14 +193,7 @@ async fn fetch_post_info<R: PostInfo>(
         return Ok(map);
     }
 
-    // Keep the variant: an expired cookie has to stay `ReauthRequired` all the way to
-    // `main`, which is what fires the auth-failure hook.
-    let entries = reddit.info(&fullnames).await.map_err(|e| match e {
-        SourceError::ReauthRequired(m) => SourceError::ReauthRequired(format!(
-            "{m}\nSet a fresh REDDIT_COOKIE (reddit_session) and retry."
-        )),
-        other => other,
-    })?;
+    let entries = reddit.info(&fullnames).await?;
     for entry in entries {
         if let Some(name) = entry.fields.name.clone() {
             // Rebuild the notes from authoritative data the same way sync does, so the
@@ -1188,8 +1181,8 @@ mod loop_tests {
 
     #[tokio::test]
     async fn an_api_info_block_stays_a_block() {
-        // The cookie hint appended to a re-auth must not land on a block, which no cookie
-        // fixes, and the variant must survive so `main` withholds the hook.
+        // The variant must survive so `main` withholds the hook, which no cookie change
+        // would make useful for a block.
         let pinboard = FakePinboard {
             all: vec![bookmark(
                 "https://www.reddit.com/r/rust/comments/abc/x/",

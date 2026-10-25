@@ -37,7 +37,11 @@ const RETRY_DELAY: Duration = Duration::from_secs(2);
 /// The longest `Retry-After` a favorites-page 429 is waited out for, once. A 429 asking
 /// for longer, or for nothing, fails the fetch at once rather than holding the run open.
 const FAVORITES_MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
+/// The pause before each favorites page after a fetch's first, the comments stream's
+/// first page included.
 const FAVORITES_PAGE_PAUSE: Duration = Duration::from_millis(500);
+/// The pause before each Algolia item chunk after the first.
+const ALGOLIA_CHUNK_PAUSE: Duration = Duration::from_millis(300);
 /// Cap on favorites pages followed via the "More" link (30 items per page, so this
 /// covers thousands of favorites). Bounds a malformed or looping "More" link so the
 /// scrape can't spin forever.
@@ -322,6 +326,9 @@ impl HackerNewsClient {
                 );
                 break;
             }
+            if page > 1 {
+                crate::http::sleep(FAVORITES_PAGE_PAUSE).await;
+            }
             let resp = send_retrying_with(
                 &label,
                 &self.connect_budget,
@@ -383,8 +390,6 @@ impl HackerNewsClient {
                 break;
             }
             next = more.and_then(|href| self.resolve(&href, stream));
-            // Be gentle between page fetches.
-            crate::http::sleep(FAVORITES_PAGE_PAUSE).await;
         }
         Ok(())
     }
@@ -417,7 +422,10 @@ impl HackerNewsClient {
     ) -> Result<HashMap<HackerNewsItemId, HackerNewsItem>, SourceError> {
         let endpoint = format!("{}/api/v1/search", self.algolia);
         let mut out = HashMap::new();
-        for chunk in ids.chunks(ITEM_BATCH) {
+        for (i, chunk) in ids.chunks(ITEM_BATCH).enumerate() {
+            if i > 0 {
+                crate::http::sleep(ALGOLIA_CHUNK_PAUSE).await;
+            }
             let filters = chunk
                 .iter()
                 .map(|id| format!("objectID:{id}"))
@@ -452,8 +460,6 @@ impl HackerNewsClient {
                 let item = HackerNewsItem::from(hit);
                 out.insert(HackerNewsItemId::from(item.id), item);
             }
-            // Be gentle between chunk queries.
-            crate::http::sleep(Duration::from_millis(300)).await;
         }
         Ok(out)
     }
@@ -530,6 +536,7 @@ impl HackerNewsClient {
         let mut drafts = HashMap::new();
         self.collect_ids(false, synced_keys, &mut ids, &mut drafts, sink)
             .await?;
+        crate::http::sleep(FAVORITES_PAGE_PAUSE).await;
         self.collect_ids(true, synced_keys, &mut ids, &mut drafts, sink)
             .await?;
         // De-dup IDs while preserving order (newest first).
@@ -2006,12 +2013,13 @@ mod net_tests {
             algolia.uri(),
         );
 
-        let drafts = crate::http::recording_waits(client.fetch_incremental(&[]))
-            .await
-            .0
-            .unwrap();
+        let (drafts, waits) = crate::http::recording_waits(client.fetch_incremental(&[])).await;
 
-        assert_eq!(drafts.len(), 6);
+        assert_eq!(drafts.unwrap().len(), 6);
+        assert_eq!(
+            waits, [FAVORITES_PAGE_PAUSE; 3],
+            "one pause before each of the three pages after the first, none after the last"
+        );
     }
 
     #[tokio::test]
@@ -2095,13 +2103,9 @@ mod net_tests {
         assert!(drafts.unwrap().is_empty());
         assert_eq!(
             waits,
-            [
-                Duration::from_secs(30),
-                FAVORITES_PAGE_PAUSE,
-                FAVORITES_PAGE_PAUSE
-            ],
-            "the retry waits out the Retry-After, not the linear backoff, then each \
-             stream's page pauses"
+            [Duration::from_secs(30), FAVORITES_PAGE_PAUSE],
+            "the retry waits out the Retry-After, not the linear backoff, then pauses once \
+             before the comments page, and not after it"
         );
     }
 
@@ -2174,6 +2178,32 @@ mod net_tests {
         .unwrap();
         assert_eq!(hits.load(Ordering::SeqCst), MAX_FAVORITES_PAGES);
         assert_eq!(ids.len(), MAX_FAVORITES_PAGES);
+    }
+
+    #[tokio::test]
+    async fn fetch_items_pauses_only_between_algolia_chunks() {
+        let algolia = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "hits": [] })))
+            .expect(2)
+            .mount(&algolia)
+            .await;
+        let client = HackerNewsClient::with_base_urls(
+            "u".into(),
+            HackernewsConfig::default(),
+            "http://unused.invalid".into(),
+            algolia.uri(),
+        );
+        let ids: Vec<HackerNewsItemId> = (0..=ITEM_BATCH as u64)
+            .map(HackerNewsItemId::from)
+            .collect();
+
+        let (items, waits) =
+            crate::http::recording_waits(client.fetch_items(&ids, &mut RawSink::disabled())).await;
+
+        assert!(items.unwrap().is_empty());
+        assert_eq!(waits, [ALGOLIA_CHUNK_PAUSE]);
     }
 
     #[tokio::test]

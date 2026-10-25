@@ -19,7 +19,8 @@ use crate::bookmark::Bookmark;
 use crate::http::{client_builder, send_retrying, ConnectBudget};
 use crate::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
 use crate::source::{
-    page_is_caught_up, BookmarkDraft, ConfiguredSecret, Source, SourceError, UrlKey,
+    page_is_caught_up, reddit_cookie_settings, BookmarkDraft, ConfiguredSecret, Source,
+    SourceError, UrlKey,
 };
 
 /// Descriptive User-Agent built from the crate name + version. Reddit rejects
@@ -408,10 +409,11 @@ pub(crate) fn refused_cookie_advice(cookie_source: Option<&str>) -> String {
             "The cookie from {source} has likely expired or isn't a reddit_session value; \
              re-copy reddit_session from a logged-in browser."
         ),
-        None => "No Reddit cookie is configured; set --reddit-cookie, $REDDIT_COOKIE, \
-                 $REDDIT_COOKIE_FILE, or the config's `cookie` or `cookie_file` to \
-                 reddit_session from a logged-in browser."
-            .to_string(),
+        None => format!(
+            "No Reddit cookie is configured; set {} to reddit_session from a logged-in \
+             browser.",
+            reddit_cookie_settings()
+        ),
     }
 }
 

@@ -292,7 +292,9 @@ environment. Don't add a secret that only reads `$VAR`. `secret_ladder` tags eac
 with its `SecretRung`, so `resolve_reddit_cookie` and `resolve_github_token` return a
 `source::ConfiguredSecret` naming the setting it came from, and every Reddit cookie
 warning and re-auth message and every GitHub token error names that setting, never the
-value.
+value. A message listing every setting a secret can come from builds that list from the
+same rung labels (`source::reddit_cookie_settings`/`github_token_settings`), never by
+hand.
 
 **`sync <source> [account]` / `cleanup <source> [account]` select one account**
 (by name, else the first, else an implicit CLI/env account). `--all` (per-source or

@@ -34,7 +34,10 @@ use github::GitHubClient;
 use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackernewsConfig};
 use pinboard::{PinboardClient, RATE_LIMIT_SECS};
 use reddit::RedditClient;
-use source::{BookmarkDraft, ConfiguredSecret, Source, SourceError, UrlKey};
+use source::{
+    github_token_settings, github_token_source, reddit_cookie_settings, reddit_cookie_source,
+    BookmarkDraft, ConfiguredSecret, SecretRung, Source, SourceError, UrlKey,
+};
 use url::Url;
 
 #[derive(Parser)]
@@ -1071,8 +1074,8 @@ fn build_github_job(
     ovr: &SyncOverrides,
     config: &Config,
 ) -> Result<SyncJob> {
-    let token =
-        resolve_github_token(ovr.github_token.clone(), account).context(MISSING_GITHUB_TOKEN)?;
+    let token = resolve_github_token(ovr.github_token.clone(), account)
+        .with_context(missing_github_token)?;
     let github_config = account
         .map(GitHubAccount::github_config)
         .unwrap_or_default();
@@ -1693,7 +1696,7 @@ async fn cleanup_github_for<S: BookmarkStore + AccountState>(
     let github_config = account
         .map(GitHubAccount::github_config)
         .unwrap_or_default();
-    let token = resolve_github_token(token_flag, account).context(MISSING_GITHUB_TOKEN)?;
+    let token = resolve_github_token(token_flag, account).with_context(missing_github_token)?;
     let hook = cleanup_hook(
         account.and_then(|a| a.on_auth_failure.as_deref()),
         config.defaults.github.on_auth_failure.as_deref(),
@@ -1754,7 +1757,7 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     // the source post (the post's created_utc comes from /api/info too).
     let reddit = if opts.mark_nsfw || opts.fix_titles || opts.use_post_date {
         let cookie = resolve_reddit_cookie(args.reddit_cookie.clone(), account)
-            .context(MISSING_REDDIT_COOKIE)?;
+            .with_context(missing_reddit_cookie)?;
         Some(RedditClient::for_info(Some(cookie))?)
     } else {
         None
@@ -1928,54 +1931,16 @@ fn resolve_secret(
     first_nonempty(secret_ladder(flag, var, cfg_inline, cfg_file).map(|(_, value)| value))
 }
 
-/// Which rung of [`secret_ladder`] a candidate came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SecretRung {
-    Flag,
-    Env,
-    EnvFile,
-    ConfigInline,
-    ConfigFile,
+fn missing_reddit_cookie() -> String {
+    format!(
+        "missing Reddit cookie (set {}, or pass --no-nsfw --no-titles and disable \
+         use_post_date)",
+        reddit_cookie_settings()
+    )
 }
 
-#[cfg(test)]
-impl SecretRung {
-    const ALL: [SecretRung; 5] = [
-        SecretRung::Flag,
-        SecretRung::Env,
-        SecretRung::EnvFile,
-        SecretRung::ConfigInline,
-        SecretRung::ConfigFile,
-    ];
-}
-
-/// The Reddit cookie setting a rung reads, as messages name it.
-fn reddit_cookie_source(rung: SecretRung) -> &'static str {
-    match rung {
-        SecretRung::Flag => "--reddit-cookie",
-        SecretRung::Env => "$REDDIT_COOKIE",
-        SecretRung::EnvFile => "$REDDIT_COOKIE_FILE",
-        SecretRung::ConfigInline => "the config's `cookie`",
-        SecretRung::ConfigFile => "the config's `cookie_file`",
-    }
-}
-
-const MISSING_REDDIT_COOKIE: &str = "missing Reddit cookie (set --reddit-cookie, \
-     $REDDIT_COOKIE, $REDDIT_COOKIE_FILE, or the config's `cookie` or `cookie_file`, or \
-     pass --no-nsfw --no-titles and disable use_post_date)";
-
-const MISSING_GITHUB_TOKEN: &str = "missing GitHub token (set --github-token, \
-     $GITHUB_TOKEN, $GITHUB_TOKEN_FILE, or the config's `token` or `token_file`)";
-
-/// The GitHub token setting a rung reads, as messages name it.
-fn github_token_source(rung: SecretRung) -> &'static str {
-    match rung {
-        SecretRung::Flag => "--github-token",
-        SecretRung::Env => "$GITHUB_TOKEN",
-        SecretRung::EnvFile => "$GITHUB_TOKEN_FILE",
-        SecretRung::ConfigInline => "the config's `token`",
-        SecretRung::ConfigFile => "the config's `token_file`",
-    }
+fn missing_github_token() -> String {
+    format!("missing GitHub token (set {})", github_token_settings())
 }
 
 /// The Reddit cookie through [`resolve_secret`]'s ladder, skipping a candidate that
@@ -2293,17 +2258,6 @@ mod tests {
 
     #[test]
     fn reddit_cookie_names_the_setting_it_came_from() {
-        let sources = SecretRung::ALL.map(reddit_cookie_source);
-        assert_eq!(
-            sources,
-            [
-                "--reddit-cookie",
-                "$REDDIT_COOKIE",
-                "$REDDIT_COOKIE_FILE",
-                "the config's `cookie`",
-                "the config's `cookie_file`",
-            ]
-        );
         assert_eq!(
             first_cookie_on([Some("abc"), None, None, Some("reddit_session=x"), None]),
             Some(("abc".into(), "--reddit-cookie"))
@@ -2311,31 +2265,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_secret_errors_list_every_setting() {
-        fn assert_lists_every_setting(message: &str, source: fn(SecretRung) -> &'static str) {
-            let words: Vec<&str> = message.split([' ', ',', '(', ')']).collect();
-            for rung in SecretRung::ALL {
-                let setting = source(rung).rsplit(' ').next().unwrap();
-                assert!(words.contains(&setting), "{setting} missing from {message}");
-            }
-        }
-        assert_lists_every_setting(MISSING_REDDIT_COOKIE, reddit_cookie_source);
-        assert_lists_every_setting(&reddit::refused_cookie_advice(None), reddit_cookie_source);
-        assert_lists_every_setting(MISSING_GITHUB_TOKEN, github_token_source);
-    }
-
-    #[test]
     fn github_token_names_the_setting_it_came_from() {
-        assert_eq!(
-            SecretRung::ALL.map(github_token_source),
-            [
-                "--github-token",
-                "$GITHUB_TOKEN",
-                "$GITHUB_TOKEN_FILE",
-                "the config's `token`",
-                "the config's `token_file`",
-            ]
-        );
         let ladder = [
             None,
             None,

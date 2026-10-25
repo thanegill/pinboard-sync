@@ -208,7 +208,7 @@ impl RedditClient {
                 _ => break,
             }
             // Be gentle with Reddit's rate limit between pages.
-            tokio::time::sleep(Duration::from_millis(1000)).await;
+            crate::http::sleep(Duration::from_millis(1000)).await;
         }
 
         Ok(())
@@ -242,7 +242,7 @@ impl PostInfo for RedditClient {
             out.extend(listing.data.children);
             // Be gentle with Reddit's rate limit between requests.
             if i + 1 < chunks.len() {
-                tokio::time::sleep(Duration::from_millis(1000)).await;
+                crate::http::sleep(Duration::from_millis(1000)).await;
             }
         }
         Ok(out)
@@ -940,9 +940,9 @@ mod net_tests {
             Some("psophis".into()),
             server.uri(),
         );
-        let items: Vec<_> = client
-            .fetch_saved()
+        let items: Vec<_> = crate::http::recording_waits(client.fetch_saved())
             .await
+            .0
             .unwrap()
             .into_iter()
             .filter_map(|e| e.into_saved_item("old.reddit.com"))
@@ -1072,7 +1072,10 @@ mod net_tests {
         let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
         // Page 1 (no cursor) records the cursor; page 2 (after=t3_loop) re-sees it and
         // breaks, so exactly two pages are fetched.
-        let entries = client.fetch_saved().await.unwrap();
+        let entries = crate::http::recording_waits(client.fetch_saved())
+            .await
+            .0
+            .unwrap();
         assert_eq!(entries.len(), 2);
     }
 
@@ -1283,33 +1286,39 @@ mod net_tests {
         drafts.iter().map(|d| d.bookmark.title.as_str()).collect()
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn incremental_fetch_stops_at_the_first_page_with_nothing_new() {
         let server = MockServer::start().await;
         three_saved_pages(&server, [1, 1, 0]).await;
 
-        let drafts = saved_client(&server)
-            .fetch_incremental(&second_page_synced())
+        let client = saved_client(&server);
+        let drafts = crate::http::recording_waits(client.fetch_incremental(&second_page_synced()))
             .await
+            .0
             .unwrap();
         assert_eq!(titles(&drafts), ["n", "o"]);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn incremental_fetch_reads_on_while_every_page_has_something_new() {
         let server = MockServer::start().await;
         three_saved_pages(&server, [1, 1, 1]).await;
 
-        let drafts = saved_client(&server).fetch_incremental(&[]).await.unwrap();
+        let client = saved_client(&server);
+        let drafts = crate::http::recording_waits(client.fetch_incremental(&[]))
+            .await
+            .0
+            .unwrap();
         assert_eq!(titles(&drafts), ["n", "o", "p"]);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn dump_reads_every_saved_page() {
         let server = MockServer::start().await;
         three_saved_pages(&server, [1, 1, 1]).await;
 
-        let dump = saved_client(&server).dump().await.unwrap();
+        let client = saved_client(&server);
+        let dump = crate::http::recording_waits(client.dump()).await.0.unwrap();
         assert_eq!(dump.raw.len(), 3);
     }
 }

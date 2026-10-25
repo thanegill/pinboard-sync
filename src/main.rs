@@ -2887,20 +2887,23 @@ mod net_tests {
             read_later: false,
         }];
 
-        job.fetch(&existing).await.unwrap();
+        crate::http::recording_waits(job.fetch(&existing))
+            .await
+            .0
+            .unwrap();
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn an_auto_sync_job_fetches_hackernews_incrementally() {
         fetch_hackernews_job(SyncLimit::Auto, 0).await;
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn an_all_sync_job_reads_every_favorites_page() {
         fetch_hackernews_job(SyncLimit::All, 2).await;
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn a_capped_sync_job_reads_every_favorites_page() {
         fetch_hackernews_job(SyncLimit::Max(NonZeroUsize::new(5).unwrap()), 2).await;
     }
@@ -2933,14 +2936,17 @@ mod net_tests {
                 max_age_days: 30,
             };
 
-            job.fetch(existing).await.unwrap();
+            crate::http::recording_waits(job.fetch(existing))
+                .await
+                .0
+                .unwrap();
             let requests = server.received_requests().await.unwrap();
             let second_page_reads = requests.iter().filter(|r| is_second_page(r)).count();
             assert_eq!(second_page_reads, expected_reads, "under {limit:?}");
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn only_an_auto_sync_job_stops_reddit_at_a_synced_page() {
         let mount = async |server: &MockServer| {
             for (after, id, next) in [(None, "n", Some("t3_n")), (Some("t3_n"), "o", None)] {

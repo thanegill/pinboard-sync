@@ -116,7 +116,7 @@ impl PinboardClient {
     /// the first (a failed attempt still hit the API, so it counts).
     async fn pace(&self) {
         if self.wrote.get() {
-            tokio::time::sleep(Duration::from_secs(self.rate_limit_secs)).await;
+            crate::http::sleep(Duration::from_secs(self.rate_limit_secs)).await;
         }
         self.wrote.set(true);
     }

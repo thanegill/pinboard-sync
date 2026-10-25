@@ -23,8 +23,10 @@ const UA: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"))
 const API_BASE: &str = "https://api.github.com";
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
+/// The most stars `/user/starred` returns per page; GitHub's default is 30.
+const STARRED_PER_PAGE: &str = "100";
 /// Backstop against a malformed `Link: rel="next"` chain that never terminates.
-/// At GitHub's default 30 results per page this covers hundreds of thousands of stars,
+/// At [`STARRED_PER_PAGE`] results per page this covers a million stars,
 /// far beyond any real account -- it is only a backstop against a `Link` header that
 /// increments forever; the per-page repeat case is caught by the `visited` guard.
 const MAX_STARRED_PAGES: u32 = 10_000;
@@ -328,7 +330,7 @@ impl GitHubClient {
                     self.http
                         .get(&endpoint)
                         .header(reqwest::header::ACCEPT, "application/vnd.github.star+json")
-                        .query(&[("sort", "created")])
+                        .query(&[("sort", "created"), ("per_page", STARRED_PER_PAGE)])
                         .query(&[("page", page)])
                 },
             )
@@ -811,6 +813,9 @@ mod tests {
         let link = "<https://api.github.com/user/starred?sort=created&page=2>; rel=\"next\", \
                     <https://api.github.com/user/starred?sort=created&page=5>; rel=\"last\"";
         assert_eq!(parse_link_next(link), Some(2));
+        let with_per_page = "<https://api.github.com/user/starred?sort=created&direction=desc\
+                             &per_page=100&page=3>; rel=\"next\"";
+        assert_eq!(parse_link_next(with_per_page), Some(3));
         // No next link (last page).
         assert_eq!(
             parse_link_next("<https://api.github.com/user/starred?page=1>; rel=\"prev\""),
@@ -1094,6 +1099,7 @@ mod net_tests {
         Mock::given(method("GET"))
             .and(path("/user/starred"))
             .and(query_param("page", "1"))
+            .and(query_param("per_page", "100"))
             .and(header("authorization", "Bearer tok"))
             // The client requests the star+json media type to get `starred_at`.
             .and(header("accept", "application/vnd.github.star+json"))

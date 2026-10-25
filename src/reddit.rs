@@ -372,14 +372,14 @@ fn session_cookie(raw: &str) -> Option<String> {
     }
 }
 
-/// Whether `raw` configures a Reddit session at all, so secret resolution can skip one
-/// that doesn't (blank, or an empty `reddit_session=`) as it skips a blank value.
+/// Whether `raw` configures a Reddit session at all (see [`cookie_form`]), so secret
+/// resolution can skip one that doesn't as it skips a blank value.
 pub fn is_configured_cookie(raw: &str) -> bool {
     cookie_form(unquoted(raw)).is_some()
 }
 
 /// `raw` trimmed, without one pair of surrounding double quotes, as an env file or shell
-/// assignment can leave them.
+/// assignment can leave them. A lone quote at either end is kept: it isn't a pair.
 fn unquoted(raw: &str) -> &str {
     let trimmed = raw.trim();
     trimmed
@@ -399,16 +399,16 @@ enum CookieForm {
     OtherCookies,
 }
 
-/// The shape of a cookie value, or `None` if it configures no session: blank, or naming
-/// `reddit_session` only with an empty value.
+/// The shape of a cookie value, or `None` if it configures no session: [blank](is_blank),
+/// or naming `reddit_session` only with blank values.
 fn cookie_form(value: &str) -> Option<CookieForm> {
-    if value.is_empty() {
+    if is_blank(value) {
         return None;
     }
     let mut sessions = value.split(';').filter_map(session_value).peekable();
     if sessions.peek().is_some() {
         return sessions
-            .any(|session| !session.trim().is_empty())
+            .any(|session| !is_blank(session))
             .then_some(CookieForm::Named);
     }
     Some(
@@ -418,6 +418,14 @@ fn cookie_form(value: &str) -> Option<CookieForm> {
             CookieForm::Bare
         },
     )
+}
+
+/// Whether a cookie or session value holds nothing but whitespace and double quotes, which
+/// no real session is.
+fn is_blank(value: &str) -> bool {
+    value
+        .trim_matches(|c: char| c == '"' || c.is_whitespace())
+        .is_empty()
 }
 
 /// The value of a `reddit_session=<value>` cookie pair, or `None` for any other pair.
@@ -435,7 +443,7 @@ fn with_one_session(value: &str) -> String {
         .filter(|pair| !pair.trim().is_empty())
         .filter(|pair| match session_value(pair) {
             None => true,
-            Some(session) if session_kept || session.trim().is_empty() => false,
+            Some(session) if session_kept || is_blank(session) => false,
             Some(_) => {
                 session_kept = true;
                 true
@@ -843,7 +851,6 @@ mod tests {
             ("a=1; b=2", "a=1; b=2"),
             ("\"abc\"", "reddit_session=abc"),
             (" \"reddit_session=abc\"\n", "reddit_session=abc"),
-            ("\"abc", "reddit_session=\"abc"),
         ];
         for (raw, sent) in cases {
             assert_eq!(session_cookie(raw).as_deref(), Some(sent), "{raw:?}");
@@ -861,6 +868,35 @@ mod tests {
             assert!(!is_configured_cookie(unset), "{unset:?}");
         }
         assert!(is_configured_cookie("abc"));
+    }
+
+    #[test]
+    fn strips_only_a_matched_quote_pair_and_treats_bare_quotes_as_unset() {
+        let cases = [
+            ("\"abc", "reddit_session=\"abc"),
+            ("abc\"", "reddit_session=abc\""),
+            ("\"\"abc\"\"", "reddit_session=\"abc\""),
+            (
+                "reddit_session=\"; reddit_session=abc",
+                "reddit_session=abc",
+            ),
+        ];
+        for (raw, sent) in cases {
+            assert_eq!(session_cookie(raw).as_deref(), Some(sent), "{raw:?}");
+        }
+        for unset in [
+            "\"",
+            " \" \n",
+            "\"\"\"",
+            "\"\"\"\"",
+            "\" \"",
+            "reddit_session=\"",
+            "reddit_session=\"\"",
+            "a=1; reddit_session=\" \"",
+        ] {
+            assert_eq!(session_cookie(unset), None, "{unset:?}");
+            assert!(!is_configured_cookie(unset), "{unset:?}");
+        }
     }
 
     #[test]

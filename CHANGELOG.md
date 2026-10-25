@@ -28,6 +28,7 @@ All notable changes to this project are documented here. The format is based on
   5.5 minutes instead of 15.
 - Only the first non-empty `reddit_session` in a Reddit cookie is sent, and empty pairs
   are dropped.
+- A Reddit cookie of only quotes or whitespace counts as no cookie.
 
 ## [0.5.2] - 2026-10-24
 

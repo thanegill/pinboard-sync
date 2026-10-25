@@ -208,15 +208,12 @@ fn retry_after_verdict(
     }
 }
 
-/// The starting point for every client's `reqwest::Client`: HTTP/1.1 only, so the TLS
-/// ClientHello offers ALPN `http/1.1` alone. Reddit's edge 403s a ClientHello with no ALPN
-/// extension (#78), and `native-tls-alpn` otherwise offers `h2` too, which this build
-/// (no `http2` feature) cannot speak if a server picks it. Connecting (DNS, TCP and the TLS
-/// handshake) is bounded by [`CONNECT_TIMEOUT`].
+/// The starting point for every client's `reqwest::Client`. The TLS ClientHello offers
+/// ALPN `h2, http/1.1`, and the client speaks whichever the server picks. Reddit's edge
+/// 403s a ClientHello with no ALPN extension (#78), which `native-tls-alpn` adds.
+/// Connecting (DNS, TCP and the TLS handshake) is bounded by [`CONNECT_TIMEOUT`].
 pub fn client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
-        .http1_only()
-        .connect_timeout(CONNECT_TIMEOUT)
+    reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT)
 }
 
 /// Send a request, retrying *transient* failures. A request that could not establish a
@@ -311,6 +308,18 @@ where
     .await
     .map_err(reqwest::Error::without_url)
     .with_context(|| format!("{label} failed after {} attempts", attempts.get()))
+    .inspect(|resp| log::debug!("{}", protocol_debug_line(resp)))
+}
+
+/// The debug line naming the protocol a response came over, for checking what each
+/// service negotiates. It names the host alone, since the URL can carry a credential in
+/// its query (Pinboard's `auth_token`).
+fn protocol_debug_line(resp: &reqwest::Response) -> String {
+    format!(
+        "{} answered over {:?}",
+        resp.url().host_str().unwrap_or("an unnamed host"),
+        resp.version()
+    )
 }
 
 /// The longest [`error_excerpt`] returns, in bytes, including [`ELLIPSIS`].
@@ -820,6 +829,8 @@ mod tests {
 mod net_tests {
     use super::tests::assert_error_hides;
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     /// The ALPN protocol names a TLS ClientHello offers, or `None` when it has no ALPN
     /// extension. `hello` starts at the TLS record header.
@@ -857,7 +868,7 @@ mod net_tests {
     }
 
     #[tokio::test]
-    async fn client_hello_offers_alpn_http1_only() {
+    async fn client_hello_offers_alpn_h2_and_http1() {
         use std::io::Read;
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -895,7 +906,10 @@ mod net_tests {
 
         assert!(sent.is_err(), "the listener never completes the handshake");
         let hello = read_hello.join().unwrap();
-        assert_eq!(offered_alpn(&hello), Some(vec!["http/1.1".to_string()]));
+        assert_eq!(
+            offered_alpn(&hello),
+            Some(vec!["h2".to_string(), "http/1.1".to_string()])
+        );
     }
 
     #[tokio::test]
@@ -969,5 +983,163 @@ mod net_tests {
         );
         assert_eq!(start.elapsed(), CONNECT_TIMEOUT * 4);
         drop(silent_listener);
+    }
+
+    /// What [`h2c_server`] does with each request it receives, in order, whichever
+    /// connection it arrives on.
+    #[derive(Clone, Copy)]
+    enum H2Reply {
+        Ok,
+        /// Answer 200, then start a graceful shutdown (GOAWAY `NO_ERROR`), as a server
+        /// retiring an idle or long-lived connection does.
+        OkThenGoAway,
+        Reset(h2::Reason),
+        /// Shut the whole connection down instead of answering: a GOAWAY that counts
+        /// this stream as processed, then the socket closes under it.
+        Abort,
+    }
+
+    /// An HTTP/2 server without TLS on a local port, answering per `replies`, and a
+    /// count of the TCP connections it has accepted. Without TLS there is no ALPN, so a
+    /// client must speak h2 by prior knowledge; past the handshake hyper drives an
+    /// ALPN-negotiated connection the same way.
+    async fn h2c_server(replies: Vec<H2Reply>) -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let accepted = Arc::clone(&connections);
+        let replies = Arc::new(Mutex::new(replies.into_iter()));
+        tokio::spawn(async move {
+            loop {
+                let (socket, _) = listener.accept().await.unwrap();
+                accepted.fetch_add(1, Ordering::SeqCst);
+                let replies = Arc::clone(&replies);
+                tokio::spawn(async move {
+                    let mut conn = h2::server::handshake(socket).await.unwrap();
+                    while let Some(Ok((_, mut respond))) = conn.accept().await {
+                        let reply = replies.lock().unwrap().next().expect("no reply left");
+                        let ok = || http::Response::new(());
+                        match reply {
+                            H2Reply::Ok => drop(respond.send_response(ok(), true)),
+                            H2Reply::OkThenGoAway => {
+                                drop(respond.send_response(ok(), true));
+                                conn.graceful_shutdown();
+                            }
+                            H2Reply::Reset(reason) => respond.send_reset(reason),
+                            H2Reply::Abort => {
+                                conn.abrupt_shutdown(h2::Reason::INTERNAL_ERROR);
+                                let _ = std::future::poll_fn(|cx| conn.poll_closed(cx)).await;
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        (addr, connections)
+    }
+
+    const H2_LINEAR_DELAY: Duration = Duration::from_secs(1);
+    const H2_CONNECT_BACKOFF: [Duration; 3] = [Duration::from_secs(60); 3];
+
+    /// One `send_retrying` GET to `url` over `http`, with the waits it took. The linear
+    /// and connect schedules differ, so the waits show which one an error was given.
+    async fn h2_get(
+        http: &reqwest::Client,
+        url: &str,
+    ) -> (Result<reqwest::Response>, Vec<Duration>) {
+        recording_waits(send_with_connect_backoff(
+            "h2c",
+            &ConnectBudget::default(),
+            3,
+            H2_LINEAR_DELAY,
+            &H2_CONNECT_BACKOFF,
+            backoff_if_transient,
+            || http.get(url),
+        ))
+        .await
+    }
+
+    fn h2_client() -> reqwest::Client {
+        client_builder()
+            .no_proxy()
+            .http2_prior_knowledge()
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_reset_h2_stream_is_retried_on_the_linear_backoff() {
+        let (addr, connections) = h2c_server(vec![
+            H2Reply::Reset(h2::Reason::INTERNAL_ERROR),
+            H2Reply::Ok,
+        ])
+        .await;
+
+        let (sent, waits) = h2_get(&h2_client(), &format!("http://{addr}/")).await;
+
+        assert_eq!(sent.unwrap().version(), reqwest::Version::HTTP_2);
+        assert_eq!(waits, [H2_LINEAR_DELAY]);
+        assert_eq!(connections.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn each_response_logs_its_protocol_naming_the_host_alone() {
+        let (addr, _) = h2c_server(vec![H2Reply::Ok]).await;
+        let url = format!("http://{addr}/v1/posts/all?auth_token=user:SECRET123");
+
+        let ((sent, _), logs) =
+            crate::test_support::capturing_logs(h2_get(&h2_client(), &url)).await;
+
+        assert_eq!(sent.unwrap().status(), 200);
+        assert_eq!(logs, ["DEBUG 127.0.0.1 answered over HTTP/2.0"]);
+    }
+
+    #[tokio::test]
+    async fn an_h2_connection_that_dies_mid_run_is_replaced_on_the_linear_backoff() {
+        let (addr, connections) = h2c_server(vec![H2Reply::Ok, H2Reply::Abort, H2Reply::Ok]).await;
+        let url = format!("http://{addr}/");
+        let http = h2_client();
+
+        let (sent, waits) = h2_get(&http, &url).await;
+        assert_eq!(sent.unwrap().status(), 200);
+        assert!(waits.is_empty(), "{waits:?}");
+
+        let (sent, waits) = h2_get(&http, &url).await;
+        assert_eq!(sent.unwrap().status(), 200);
+        assert_eq!(
+            waits,
+            [H2_LINEAR_DELAY],
+            "a request on a connection the server kills is not a connect error"
+        );
+        assert_eq!(connections.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn reqwest_itself_retries_a_refused_h2_stream() {
+        let (addr, _) = h2c_server(vec![
+            H2Reply::Reset(h2::Reason::REFUSED_STREAM),
+            H2Reply::Ok,
+        ])
+        .await;
+
+        let (sent, waits) = h2_get(&h2_client(), &format!("http://{addr}/")).await;
+
+        assert_eq!(sent.unwrap().status(), 200);
+        assert!(waits.is_empty(), "{waits:?}");
+    }
+
+    #[tokio::test]
+    async fn a_connection_retired_between_requests_costs_no_retry() {
+        let (addr, connections) = h2c_server(vec![H2Reply::OkThenGoAway, H2Reply::Ok]).await;
+        let url = format!("http://{addr}/");
+        let http = h2_client();
+
+        for _ in 0..2 {
+            let (sent, waits) = h2_get(&http, &url).await;
+            assert_eq!(sent.unwrap().status(), 200);
+            assert!(waits.is_empty(), "{waits:?}");
+        }
+        assert_eq!(connections.load(Ordering::SeqCst), 2);
     }
 }

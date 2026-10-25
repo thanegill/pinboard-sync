@@ -10,6 +10,8 @@ All notable changes to this project are documented here. The format is based on
 
 - `-v` logs the full response body when an error quotes one, with the Pinboard token
   redacted.
+- `-v` logs which protocol (HTTP/1.1 or HTTP/2) each response came over, naming only the
+  host.
 
 ### Changed
 
@@ -19,6 +21,8 @@ All notable changes to this project are documented here. The format is based on
   `all` reads every page. See the README for the known limits; `--limit all` fills any
   gap.
 - GitHub stars are fetched 100 per page instead of 30.
+- Every HTTP client now offers HTTP/2 and uses it where the server supports it.
+  ([#91](https://github.com/thanegill/pinboard-sync/issues/91))
 
 ### Fixed
 

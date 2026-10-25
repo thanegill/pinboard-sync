@@ -376,17 +376,18 @@ impl UrlKey for RedditClient {
 /// its first non-empty `reddit_session` (see [`with_one_session`]); a bare session value,
 /// including one ending in base64 `=` padding, becomes `reddit_session=<value>`, since
 /// Reddit only recognises the session by that name. Other cookies without a
-/// `reddit_session` are sent as is with a warning: naming them would only produce a garbled
-/// header. See [`NoSession`] for what counts as no cookie. `source` names the setting in
-/// that warning.
+/// `reddit_session` are sent with a warning: naming them would only produce a garbled
+/// header. Every form goes out [without blank pairs](without_blank_pairs), so a stray `;`
+/// doesn't turn a bare value into other cookies. See [`NoSession`] for what counts as no
+/// cookie. `source` names the setting in that warning.
 fn session_cookie(raw: &str, source: &str) -> Option<String> {
-    let value = unquoted(raw);
-    match CookieForm::try_from(value).ok()? {
-        CookieForm::Named => Some(with_one_session(value)),
+    let value = without_blank_pairs(raw);
+    match CookieForm::try_from(value.as_str()).ok()? {
+        CookieForm::Named => Some(with_one_session(&value)),
         CookieForm::Bare => Some(format!("reddit_session={value}")),
         CookieForm::OtherCookies => {
             warn!("{}", unnamed_cookie_warning(source));
-            Some(value.to_string())
+            Some(value)
         }
     }
 }
@@ -417,17 +418,31 @@ pub(crate) fn refused_cookie_advice(cookie_source: Option<&str>) -> String {
 /// Whether `raw` configures a Reddit session at all (see [`NoSession`]), so secret
 /// resolution can skip one that doesn't as it skips a blank value.
 pub fn is_configured_cookie(raw: &str) -> bool {
-    CookieForm::try_from(unquoted(raw)).is_ok()
+    CookieForm::try_from(without_blank_pairs(raw).as_str()).is_ok()
 }
 
-/// `raw` trimmed, without one pair of surrounding double quotes, as an env file or shell
-/// assignment can leave them. A lone quote at either end is kept: it isn't a pair.
+/// `raw` [`unquoted`], without its [blank](is_blank) cookie pairs, so with no `;` at either
+/// end or next to another.
+fn without_blank_pairs(raw: &str) -> String {
+    unquoted(raw)
+        .split(';')
+        .filter(|pair| !is_blank(pair))
+        .collect::<Vec<_>>()
+        .join(";")
+        .trim()
+        .to_string()
+}
+
+/// `raw` trimmed of whitespace and `;`, without one pair of surrounding double quotes, as
+/// an env file or shell assignment can leave them. A lone quote at either end is kept: it
+/// isn't a pair.
 fn unquoted(raw: &str) -> &str {
-    let trimmed = raw.trim();
+    let is_edge = |c: char| c == ';' || c.is_whitespace();
+    let trimmed = raw.trim_matches(is_edge);
     trimmed
         .strip_prefix('"')
         .and_then(|inner| inner.strip_suffix('"'))
-        .map_or(trimmed, str::trim)
+        .map_or(trimmed, |inner| inner.trim_matches(is_edge))
 }
 
 /// How a configured cookie value is shaped; see [`session_cookie`].
@@ -447,8 +462,9 @@ enum CookieForm {
 #[derive(Debug, PartialEq, Eq)]
 struct NoSession;
 
-/// The shape of a cookie value, or [`NoSession`]. Expects [`unquoted`]'s output: a quoted
-/// value reads as other cookies.
+/// The shape of a cookie value, or [`NoSession`]. Expects [`without_blank_pairs`]'s
+/// output: a quoted `name=value` reads as other cookies, and so does a bare value with a
+/// stray `;`.
 impl TryFrom<&str> for CookieForm {
     type Error = NoSession;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
@@ -485,14 +501,13 @@ fn session_value(pair: &str) -> Option<&str> {
     pair.trim_start().strip_prefix("reddit_session=")
 }
 
-/// `value`'s cookie pairs, in order, without [blank](is_blank) pairs or any
-/// `reddit_session` but the first non-empty one. Sent several, Reddit would pick one by its
-/// own rule, so an empty pair could mask the real session.
+/// `value`'s cookie pairs, in order, without any `reddit_session` but the first non-empty
+/// one. Sent several, Reddit would pick one by its own rule, so an empty pair could mask
+/// the real session. Expects [`without_blank_pairs`]'s output.
 fn with_one_session(value: &str) -> String {
     let mut session_kept = false;
     let pairs: Vec<&str> = value
         .split(';')
-        .filter(|pair| !is_blank(pair))
         .filter(|pair| match session_value(pair) {
             None => true,
             Some(session) if session_kept || is_blank(session) => false,
@@ -1095,6 +1110,14 @@ mod tests {
             ("reddit_session==; reddit_session=abc", "reddit_session=abc"),
             ("reddit_session=abc; =; ;", "reddit_session=abc"),
             ("abc=", "reddit_session=abc="),
+            ("abc;", "reddit_session=abc"),
+            (" ;abc; \n", "reddit_session=abc"),
+            ("YWJj==;", "reddit_session=YWJj=="),
+            ("\"abc;\"", "reddit_session=abc"),
+            ("\"abc\";", "reddit_session=abc"),
+            (";;reddit_session=x;", "reddit_session=x"),
+            ("a=1;;", "a=1"),
+            ("a=1; ;b=2;", "a=1;b=2"),
         ];
         for (raw, sent) in cases {
             assert_eq!(

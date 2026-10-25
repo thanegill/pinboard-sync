@@ -19,10 +19,7 @@ pub fn filter_new<S: Source>(
     drafts: Vec<BookmarkDraft>,
     existing: &[Bookmark],
 ) -> Vec<BookmarkDraft> {
-    let keys: HashSet<String> = existing
-        .iter()
-        .filter_map(|b| source.dedup_key(&b.url))
-        .collect();
+    let keys = source.synced_keys(existing);
     drafts
         .into_iter()
         .filter(|d| !keys.contains(&d.dedup_key))

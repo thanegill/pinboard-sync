@@ -5,6 +5,8 @@ use std::future::Future;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use time::format_description::well_known::Rfc2822;
+use time::OffsetDateTime;
 
 /// The waits before each retry of a request that could not establish a connection (a
 /// DNS, TCP or TLS failure). Exponential and long, about 2.5 minutes of waiting in all,
@@ -34,14 +36,37 @@ pub struct ConnectBudget {
     spent: Cell<bool>,
 }
 
+/// What [`retry`] does with a successful `op` outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    /// Return it to the caller.
+    Done,
+    /// Transient: retry on the linear backoff.
+    Backoff,
+    /// Retry once after this wait; return it if it comes back again.
+    RetryOnceAfter(Duration),
+}
+
+/// How a request treats an HTTP 429.
+#[derive(Debug, Clone, Copy)]
+pub enum On429 {
+    /// As transient, like a 5xx: retried on the linear backoff.
+    Backoff,
+    /// Retried at most once, after the wait its `Retry-After` asks for, and only when that
+    /// is at most `max_wait`. Any other 429 is returned to the caller.
+    HonorRetryAfter { max_wait: Duration },
+}
+
 /// Retry an async operation. While `budget` is unspent, an `Err` for which
 /// `is_connect_error` is true is retried after each delay in `connect_backoff` in turn;
 /// once they run out the error is returned and `budget` is spent. Any other `Err` (a
 /// transport failure, or a connect failure once `budget` is spent), or an `Ok(value)`
-/// for which `retry_on_ok` is true (a transient response, e.g. HTTP 429/5xx), is
+/// that `classify` calls [`Verdict::Backoff`] (a transient response, e.g. HTTP 5xx), is
 /// retried with linear backoff (`base_delay * n`) for up to `max_attempts` such
-/// attempts. Otherwise returns the value as-is. The two budgets are separate, so one
-/// request can make up to `connect_backoff.len() + max_attempts` attempts.
+/// attempts. An `Ok(value)` it calls [`Verdict::RetryOnceAfter`] is retried after that
+/// wait the first time and returned the second. Otherwise returns the value as-is. The
+/// budgets are separate, so one request can make up to
+/// `connect_backoff.len() + max_attempts + 1` attempts.
 ///
 /// Transport-agnostic so it can be unit-tested without any network — see tests.
 async fn retry<T, E, F, Fut>(
@@ -49,7 +74,7 @@ async fn retry<T, E, F, Fut>(
     max_attempts: u32,
     base_delay: Duration,
     connect_backoff: &[Duration],
-    retry_on_ok: impl Fn(&T) -> bool,
+    classify: impl Fn(&T) -> Verdict,
     is_connect_error: impl Fn(&E) -> bool,
     mut op: F,
 ) -> Result<T, E>
@@ -59,6 +84,7 @@ where
 {
     let mut connect_delays = connect_backoff.iter().copied();
     let mut other_attempts: u32 = 0;
+    let mut waited_once = false;
     loop {
         let delay = match op().await {
             Err(err) if !budget.spent.get() && is_connect_error(&err) => {
@@ -71,18 +97,65 @@ where
                 }
             }
             outcome => {
-                other_attempts += 1;
-                let transient = match &outcome {
-                    Ok(value) => retry_on_ok(value),
-                    Err(_) => true,
+                let verdict = match &outcome {
+                    Ok(value) => classify(value),
+                    Err(_) => Verdict::Backoff,
                 };
-                if !transient || other_attempts >= max_attempts {
-                    return outcome;
+                match verdict {
+                    Verdict::Done => return outcome,
+                    Verdict::RetryOnceAfter(_) if waited_once => return outcome,
+                    Verdict::RetryOnceAfter(wait) => {
+                        waited_once = true;
+                        wait
+                    }
+                    Verdict::Backoff => {
+                        other_attempts += 1;
+                        if other_attempts >= max_attempts {
+                            return outcome;
+                        }
+                        base_delay * other_attempts
+                    }
                 }
-                base_delay * other_attempts
             }
         };
         tokio::time::sleep(delay).await;
+    }
+}
+
+/// The wait a `Retry-After` header asks for, as of `now`: delta-seconds, or an HTTP-date
+/// (one already past is no wait). `None` when the header is absent or unparseable.
+fn retry_after(headers: &reqwest::header::HeaderMap, now: OffsetDateTime) -> Option<Duration> {
+    let value = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let at = OffsetDateTime::parse(value, &Rfc2822).ok()?;
+    Some((at - now).try_into().unwrap_or(Duration::ZERO))
+}
+
+/// How a response with `status` and `headers` is retried under `on_429`, as of `now`.
+fn response_verdict(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    on_429: On429,
+    now: OffsetDateTime,
+) -> Verdict {
+    if status.is_server_error() {
+        return Verdict::Backoff;
+    }
+    if status != reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Verdict::Done;
+    }
+    match on_429 {
+        On429::Backoff => Verdict::Backoff,
+        On429::HonorRetryAfter { max_wait } => match retry_after(headers, now) {
+            Some(wait) if wait <= max_wait => Verdict::RetryOnceAfter(wait),
+            _ => Verdict::Done,
+        },
     }
 }
 
@@ -121,12 +194,38 @@ pub async fn send_retrying<F>(
 where
     F: FnMut() -> reqwest::RequestBuilder,
 {
+    send_retrying_with(
+        label,
+        budget,
+        max_attempts,
+        base_delay,
+        On429::Backoff,
+        build,
+    )
+    .await
+}
+
+/// [`send_retrying`], treating an HTTP 429 as `on_429` says instead of always as
+/// transient. A 429 it does not retry comes back as the response, for the caller to
+/// report.
+pub async fn send_retrying_with<F>(
+    label: &str,
+    budget: &ConnectBudget,
+    max_attempts: u32,
+    base_delay: Duration,
+    on_429: On429,
+    build: F,
+) -> Result<reqwest::Response>
+where
+    F: FnMut() -> reqwest::RequestBuilder,
+{
     send_with_connect_backoff(
         label,
         budget,
         max_attempts,
         base_delay,
         &CONNECT_BACKOFF,
+        on_429,
         build,
     )
     .await
@@ -138,6 +237,7 @@ async fn send_with_connect_backoff<F>(
     max_attempts: u32,
     base_delay: Duration,
     connect_backoff: &[Duration],
+    on_429: On429,
     mut build: F,
 ) -> Result<reqwest::Response>
 where
@@ -150,8 +250,12 @@ where
         base_delay,
         connect_backoff,
         |resp: &reqwest::Response| {
-            resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
-                || resp.status().is_server_error()
+            response_verdict(
+                resp.status(),
+                resp.headers(),
+                on_429,
+                OffsetDateTime::now_utc(),
+            )
         },
         reqwest::Error::is_connect,
         || {
@@ -180,9 +284,26 @@ mod tests {
         Transport,
     }
 
+    fn backoff_on_429_and_5xx(status: &u16) -> Verdict {
+        if *status == 429 || (500..600).contains(status) {
+            Verdict::Backoff
+        } else {
+            Verdict::Done
+        }
+    }
+
+    /// The [`On429::HonorRetryAfter`] shape, with every 429 carrying a short wait.
+    fn retry_429_once(status: &u16) -> Verdict {
+        match *status {
+            429 => Verdict::RetryOnceAfter(NO_DELAY),
+            500..600 => Verdict::Backoff,
+            _ => Verdict::Done,
+        }
+    }
+
     /// Retry over a canned sequence of outcomes (status code, or `Err`), counting
-    /// how many attempts were made. `retry_on_ok` treats 429/5xx as transient, and
-    /// `Failure::Connect` gets the three-step `NO_CONNECT_BACKOFF` on a fresh budget.
+    /// how many attempts were made. 429/5xx are transient, and `Failure::Connect` gets
+    /// the three-step `NO_CONNECT_BACKOFF` on a fresh budget.
     async fn run(outcomes: Vec<Result<u16, Failure>>, max: u32) -> (Result<u16, Failure>, usize) {
         run_on(&ConnectBudget::default(), outcomes, max).await
     }
@@ -193,6 +314,16 @@ mod tests {
         outcomes: Vec<Result<u16, Failure>>,
         max: u32,
     ) -> (Result<u16, Failure>, usize) {
+        run_classified(budget, outcomes, max, backoff_on_429_and_5xx).await
+    }
+
+    /// [`run_on`], with `classify` deciding how each status is retried.
+    async fn run_classified(
+        budget: &ConnectBudget,
+        outcomes: Vec<Result<u16, Failure>>,
+        max: u32,
+        classify: fn(&u16) -> Verdict,
+    ) -> (Result<u16, Failure>, usize) {
         let calls = RefCell::new(0usize);
         let seq = RefCell::new(outcomes.into_iter());
         let result = retry(
@@ -200,7 +331,7 @@ mod tests {
             max,
             NO_DELAY,
             &NO_CONNECT_BACKOFF,
-            |s: &u16| *s == 429 || (500..600).contains(s),
+            classify,
             |failure: &Failure| *failure == Failure::Connect,
             || {
                 *calls.borrow_mut() += 1;
@@ -210,6 +341,145 @@ mod tests {
         )
         .await;
         (result, calls.into_inner())
+    }
+
+    #[tokio::test]
+    async fn a_retry_after_wait_is_taken_once() {
+        let budget = ConnectBudget::default();
+        let once = |outcomes| run_classified(&budget, outcomes, 5, retry_429_once);
+
+        let (result, calls) = once(vec![Ok(429), Ok(200)]).await;
+        assert_eq!(result, Ok(200));
+        assert_eq!(calls, 2);
+
+        let (result, calls) = once(vec![Ok(429), Ok(429)]).await;
+        assert_eq!(result, Ok(429), "a second 429 goes back to the caller");
+        assert_eq!(calls, 2);
+
+        let (result, calls) = once(vec![Ok(503), Ok(429), Ok(503), Ok(429)]).await;
+        assert_eq!(result, Ok(429), "5xx retries don't reset the one wait");
+        assert_eq!(calls, 4);
+    }
+
+    #[tokio::test]
+    async fn a_retry_after_wait_keeps_the_linear_budget() {
+        let (result, calls) = run_classified(
+            &ConnectBudget::default(),
+            vec![Ok(503), Ok(429), Ok(503), Ok(200)],
+            3,
+            retry_429_once,
+        )
+        .await;
+        assert_eq!(result, Ok(200));
+        assert_eq!(calls, 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_retry_after_wait_sleeps_that_long() {
+        let start = tokio::time::Instant::now();
+        let attempt_offsets = RefCell::new(Vec::new());
+        let statuses = RefCell::new(vec![429u16, 200].into_iter());
+        let result: Result<u16, Failure> = retry(
+            &ConnectBudget::default(),
+            5,
+            Duration::from_secs(2),
+            &NO_CONNECT_BACKOFF,
+            |status: &u16| match *status {
+                429 => Verdict::RetryOnceAfter(Duration::from_secs(90)),
+                _ => Verdict::Done,
+            },
+            |failure: &Failure| *failure == Failure::Connect,
+            || {
+                attempt_offsets.borrow_mut().push(start.elapsed().as_secs());
+                let status = statuses.borrow_mut().next().unwrap();
+                async move { Ok(status) }
+            },
+        )
+        .await;
+
+        assert_eq!(result, Ok(200));
+        assert_eq!(attempt_offsets.into_inner(), [0, 90]);
+    }
+
+    fn headers(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
+        pairs
+            .iter()
+            .map(|(name, value)| {
+                (
+                    reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                    reqwest::header::HeaderValue::from_str(value).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    fn at(rfc3339: &str) -> OffsetDateTime {
+        crate::timefmt::parse_rfc3339(rfc3339).unwrap()
+    }
+
+    #[test]
+    fn retry_after_reads_seconds_and_http_dates() {
+        let now = at("2026-10-25T05:30:00Z");
+        assert_eq!(
+            retry_after(&headers(&[("retry-after", "120")]), now),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(
+            retry_after(
+                &headers(&[("retry-after", "Sun, 25 Oct 2026 05:31:30 GMT")]),
+                now
+            ),
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(
+            retry_after(
+                &headers(&[("retry-after", "Sun, 25 Oct 2026 05:29:00 GMT")]),
+                now
+            ),
+            Some(Duration::ZERO),
+            "a date already past asks for no wait"
+        );
+        assert_eq!(retry_after(&headers(&[]), now), None);
+        assert_eq!(retry_after(&headers(&[("retry-after", "soon")]), now), None);
+        assert_eq!(retry_after(&headers(&[("retry-after", "-5")]), now), None);
+    }
+
+    #[test]
+    fn a_429_is_retried_once_only_for_a_short_retry_after() {
+        let now = at("2026-10-25T05:30:00Z");
+        let honor = On429::HonorRetryAfter {
+            max_wait: Duration::from_secs(120),
+        };
+        let too_many = reqwest::StatusCode::TOO_MANY_REQUESTS;
+        let verdict =
+            |pairs: &[(&str, &str)]| response_verdict(too_many, &headers(pairs), honor, now);
+
+        assert_eq!(
+            verdict(&[("retry-after", "120")]),
+            Verdict::RetryOnceAfter(Duration::from_secs(120))
+        );
+        assert_eq!(
+            verdict(&[("retry-after", "Sun, 25 Oct 2026 05:31:00 GMT")]),
+            Verdict::RetryOnceAfter(Duration::from_secs(60))
+        );
+        assert_eq!(verdict(&[("retry-after", "121")]), Verdict::Done);
+        assert_eq!(
+            verdict(&[("retry-after", "Sun, 25 Oct 2026 06:30:00 GMT")]),
+            Verdict::Done
+        );
+        assert_eq!(verdict(&[]), Verdict::Done);
+
+        assert_eq!(
+            response_verdict(too_many, &headers(&[]), On429::Backoff, now),
+            Verdict::Backoff,
+            "every other client still backs off on a 429"
+        );
+        for on_429 in [honor, On429::Backoff] {
+            let verdict = |status| response_verdict(status, &headers(&[]), on_429, now);
+            assert_eq!(verdict(reqwest::StatusCode::BAD_GATEWAY), Verdict::Backoff);
+            assert_eq!(verdict(reqwest::StatusCode::OK), Verdict::Done);
+            assert_eq!(verdict(reqwest::StatusCode::FORBIDDEN), Verdict::Done);
+        }
     }
 
     #[tokio::test]
@@ -305,7 +575,7 @@ mod tests {
             5,
             Duration::from_secs(3),
             &CONNECT_BACKOFF,
-            |_: &u16| false,
+            |_: &u16| Verdict::Done,
             |failure: &Failure| *failure == Failure::Connect,
             || {
                 attempt_offsets.borrow_mut().push(start.elapsed().as_secs());
@@ -388,6 +658,7 @@ mod tests {
             2,
             NO_DELAY,
             &NO_CONNECT_BACKOFF,
+            On429::Backoff,
             || {
                 http.get("ftp://api.pinboard.in/v1/posts/all")
                     .query(&[("auth_token", "user:SECRET123")])
@@ -499,6 +770,7 @@ mod net_tests {
                 2,
                 Duration::ZERO,
                 &[Duration::ZERO; 3],
+                On429::Backoff,
                 || http.get(&url).query(&[("auth_token", "user:SECRET123")]),
             )
         };

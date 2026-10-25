@@ -291,7 +291,14 @@ timer with it, so resolving from config alone would leave the hook dead for the
 deployment it exists to serve. Every client sends through
 `http::send_retrying`
 ([`src/http.rs`](src/http.rs)), which backs off on network errors / 429 / 5xx but
-returns other statuses as-is. A request that could not establish a connection
+returns other statuses as-is. The one exception is the HackerNews favorites pages, sent
+through `send_retrying_with(On429::HonorRetryAfter)`: four quick retries of a 429 there
+only prolong HN's block, so a 429 is retried at most once, and only after a
+`Retry-After` (delta-seconds or HTTP-date) of at most `FAVORITES_MAX_RETRY_AFTER`
+(120s). Any other 429 comes back as the response and becomes `SourceError::RateLimited`.
+The one wait is per page request, so a run that keeps drawing short `Retry-After`s can
+wait on each page. Their 5xx/transport/connect retries are unchanged, and Algolia and the
+other clients keep backing off on 429. A request that could not establish a connection
 (`is_connect`: any connector failure, so DNS, TCP connect, or the TLS handshake) gets its
 own exponential `CONNECT_BACKOFF` (5s … 80s, ~2.5 minutes in all), on top of and
 separate from the caller's linear `max_attempts` budget, so a resolver restart during a
@@ -318,7 +325,8 @@ out and GitHub asks for a minute on secondary limits, so it would only fail more
 The 403 form isn't retried; the **429** form still is, by the shared 429/5xx predicate, and
 those ~12s are simply wasted before the response is read — harmless, and the reason a
 `rate_limit_message` unit test uses a synthesized `HeaderMap` rather than a 429 over
-wiremock. Stopping the pass is the response instead.
+wiremock. Stopping the pass is the response instead. A HackerNews favorites-page 429
+(see above) is `RateLimited` too: the `sync` run still fails, but no hook fires.
 
 **`SourceError::Blocked` is the fourth: Reddit's edge refusing the request by policy.**
 Reddit's block is recognisable only by its body (it sends `retry-after: 0`, which must not

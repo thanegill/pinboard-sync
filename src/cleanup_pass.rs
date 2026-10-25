@@ -175,10 +175,11 @@ impl Refusal {
     }
 }
 
-impl Halt {
-    /// The halt `error` calls for, or `error` back when it is a per-item failure. Matched
-    /// exhaustively so a new [`SourceError`] variant has to choose a side here.
-    fn from_source_error(error: SourceError) -> Result<Halt, SourceError> {
+/// The halt an error calls for, or the error back when it is a per-item failure. Matched
+/// exhaustively so a new [`SourceError`] variant has to choose a side here.
+impl TryFrom<SourceError> for Halt {
+    type Error = SourceError;
+    fn try_from(error: SourceError) -> Result<Self, Self::Error> {
         match error {
             SourceError::ReauthRequired(message) => Ok(Halt::Reauth(message)),
             SourceError::RateLimited(message) => Ok(Halt::RateLimited(message)),
@@ -186,7 +187,9 @@ impl Halt {
             other @ SourceError::Other(_) => Err(other),
         }
     }
+}
 
+impl Halt {
     /// The operator-facing explanation, without a variant prefix.
     fn message(&self) -> &str {
         match self {
@@ -319,7 +322,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
                 continue;
             }
             Ok(Plan::Skipped) => continue,
-            Err(error) => match Halt::from_source_error(error) {
+            Err(error) => match Halt::try_from(error) {
                 // Every remaining lookup would fail the same way, so stop planning, but
                 // fall through to write the plans already made rather than discard them.
                 // This one and everything after it goes unplanned, so protect all of them:

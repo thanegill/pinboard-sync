@@ -2046,16 +2046,33 @@ fn secret_ladder(
 ) -> [(SecretRung, Option<String>); 5] {
     [
         (SecretRung::Flag, flag),
-        (SecretRung::Env, std::env::var(var).ok()),
+        (SecretRung::Env, secret_env(var)),
         (
             SecretRung::EnvFile,
-            std::env::var(format!("{var}_FILE"))
-                .ok()
-                .and_then(|p| read_file_secret(&p)),
+            secret_env(&format!("{var}_FILE")).and_then(|p| read_file_secret(&p)),
         ),
         (SecretRung::ConfigInline, cfg_inline),
         (SecretRung::ConfigFile, cfg_file.and_then(read_file_secret)),
     ]
+}
+
+#[cfg(not(test))]
+fn secret_env(var: &str) -> Option<String> {
+    std::env::var(var).ok()
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAKE_SECRET_ENV: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::default();
+}
+
+/// Tests read [`secret_ladder`]'s environment rungs only from the fake environment a
+/// `tests::FakeSecretEnv` sets, so a test that builds a job or resolves a secret can't
+/// pick up, or depend on, the developer's real credentials.
+#[cfg(test)]
+fn secret_env(var: &str) -> Option<String> {
+    FAKE_SECRET_ENV.with(|env| env.borrow().get(var).cloned())
 }
 
 /// The first value among the candidates that isn't blank.
@@ -2172,6 +2189,39 @@ mod tests {
         );
     }
 
+    /// Sets variables in the environment [`secret_env`] shows this test's thread, and
+    /// removes them on drop, so a setting can't outlive the test whichever thread runs the
+    /// next one.
+    #[must_use]
+    struct FakeSecretEnv {
+        vars: Vec<String>,
+    }
+
+    impl FakeSecretEnv {
+        fn set(vars: &[(&str, &str)]) -> Self {
+            FAKE_SECRET_ENV.with(|env| {
+                let mut env = env.borrow_mut();
+                for (var, value) in vars {
+                    env.insert(var.to_string(), value.to_string());
+                }
+            });
+            FakeSecretEnv {
+                vars: vars.iter().map(|(var, _)| var.to_string()).collect(),
+            }
+        }
+    }
+
+    impl Drop for FakeSecretEnv {
+        fn drop(&mut self) {
+            FAKE_SECRET_ENV.with(|env| {
+                let mut env = env.borrow_mut();
+                for var in &self.vars {
+                    env.remove(var);
+                }
+            });
+        }
+    }
+
     fn first_cookie_on(ladder: [Option<&str>; 5]) -> Option<(String, &'static str)> {
         first_configured_cookie(
             SecretRung::ALL
@@ -2202,23 +2252,42 @@ mod tests {
     #[test]
     fn secret_ladder_tags_each_value_with_its_rung() {
         let dir = scratch_dir("secret-ladder");
-        let cookie_file = dir.path().join("cookie");
-        std::fs::write(&cookie_file, "from-file\n").unwrap();
+        let env_file = dir.path().join("env-file");
+        std::fs::write(&env_file, "from-env-file\n").unwrap();
+        let config_file = dir.path().join("config-file");
+        std::fs::write(&config_file, "from-config-file\n").unwrap();
+        let _env = FakeSecretEnv::set(&[
+            ("TEST_SECRET", "from-env"),
+            ("TEST_SECRET_FILE", env_file.to_str().unwrap()),
+        ]);
         let ladder = secret_ladder(
             Some("from-flag".into()),
-            "PINBOARD_SYNC_TEST_NEVER_SET",
+            "TEST_SECRET",
             Some("inline".into()),
-            cookie_file.to_str(),
+            config_file.to_str(),
         );
         assert_eq!(
             ladder,
             [
                 (SecretRung::Flag, Some("from-flag".into())),
-                (SecretRung::Env, None),
-                (SecretRung::EnvFile, None),
+                (SecretRung::Env, Some("from-env".into())),
+                (SecretRung::EnvFile, Some("from-env-file".into())),
                 (SecretRung::ConfigInline, Some("inline".into())),
-                (SecretRung::ConfigFile, Some("from-file".into())),
+                (SecretRung::ConfigFile, Some("from-config-file".into())),
             ]
+        );
+    }
+
+    #[test]
+    fn github_token_from_its_env_file_names_that_setting() {
+        let dir = scratch_dir("github-token-file");
+        let token_file = dir.path().join("token");
+        std::fs::write(&token_file, "from-env-file\n").unwrap();
+        let _env = FakeSecretEnv::set(&[("GITHUB_TOKEN_FILE", token_file.to_str().unwrap())]);
+        let token = resolve_github_token(None, None).unwrap();
+        assert_eq!(
+            (token.value.as_str(), token.source),
+            ("from-env-file", "$GITHUB_TOKEN_FILE")
         );
     }
 
@@ -2235,12 +2304,10 @@ mod tests {
                 "the config's `cookie_file`",
             ]
         );
-        let account = RedditAccount {
-            cookie: Some("reddit_session=x".into()),
-            ..Default::default()
-        };
-        let from_flag = resolve_reddit_cookie(Some("abc".into()), Some(&account)).unwrap();
-        assert_eq!(from_flag.source, "--reddit-cookie");
+        assert_eq!(
+            first_cookie_on([Some("abc"), None, None, Some("reddit_session=x"), None]),
+            Some(("abc".into(), "--reddit-cookie"))
+        );
     }
 
     #[test]
@@ -2442,8 +2509,8 @@ mod tests {
 
     /// `sync --all`'s build phase must isolate a per-account build failure so the
     /// healthy accounts still yield jobs. Here a GitHub account with no resolvable
-    /// token (no inline token, no `token_file`, and no `GITHUB_TOKEN` in the test
-    /// environment) fails to build; it must be counted, not abort the whole run.
+    /// token (no inline token, no `token_file`, and this test sets no fake `$GITHUB_TOKEN`)
+    /// fails to build; it must be counted, not abort the whole run.
     #[test]
     fn build_all_jobs_isolates_a_failing_account() {
         let config = Config {

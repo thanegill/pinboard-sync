@@ -247,10 +247,13 @@ shaping lives in
 cookie through `reddit::session_cookie`, so every entry point sends the same header.
 `reddit_session` is the only name Reddit knows the session by, so a bare value (which may
 end in base64 `=` padding) is sent as `reddit_session=<value>`. A value counts as already
-named only when `reddit_session=` starts it or follows a `;`, never by substring. A value
-that sets no session — blank, or only an empty `reddit_session=` — is no cookie, and
-`main`'s `resolve_reddit_cookie` skips it through `reddit::is_configured_cookie` so the
-secret ladder falls through it exactly as it does a blank value.
+named only when `reddit_session=` starts it or follows a `;`, never by substring, and of
+several `reddit_session` pairs only the first non-empty one is sent. Only a matched pair
+of surrounding quotes is stripped, and a value of nothing but whitespace, quotes and the
+`;`/`=` separators counts as empty. A value that sets no session — blank, or only empty
+`reddit_session=` pairs — is no cookie, and `main`'s `resolve_reddit_cookie` skips it
+through `reddit::is_configured_cookie` so the secret ladder falls through it exactly as
+it does a blank value.
 
 **`backup` has one port and one driver, and captures raw bodies in the same traversal.**
 [`src/backup.rs`](src/backup.rs) is `cleanup_pass.rs`'s sibling: a service implements
@@ -287,7 +290,11 @@ Secrets resolve through one ladder in `main.rs` (`resolve_secret`): CLI flag →
 only (a direct file path, no `_FILE` form — it is already a file). **The `_FILE` form is
 load-bearing** — it's how the
 NixOS service feeds sops-nix secret *paths* without putting values in the unit
-environment. Don't add a secret that only reads `$VAR`.
+environment. Don't add a secret that only reads `$VAR`. `secret_ladder` tags each value
+with its `SecretRung`, so `resolve_reddit_cookie` and `resolve_github_token` return a
+`source::ConfiguredSecret` naming the setting it came from, and every Reddit cookie
+warning and re-auth message and every GitHub token error names that setting, never the
+value.
 
 **`sync <source> [account]` / `cleanup <source> [account]` select one account**
 (by name, else the first, else an implicit CLI/env account). `--all` (per-source or
@@ -441,6 +448,11 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   that timer firing may pair them. To skip the clients' pauses between pages, run the
   fetch inside `http::recording_waits`, which records each `http::sleep` instead of
   sleeping. A client's new pause goes through `http::sleep` for that reason.
+- **Tests never read a secret from the real environment.** Under `cfg(test)`,
+  `secret_ladder`'s `$VAR`/`$VAR_FILE` rungs read a per-thread fake environment, set with
+  the `tests::FakeSecretEnv` guard, so a test that builds a job can't pick up the
+  developer's real cookie or token. `std::env::set_var` on a secret does nothing in a
+  test; use `FakeSecretEnv` or a synthetic ladder (`first_cookie_on`).
 - **A test that touches the filesystem takes its directory from
   `test_support::scratch_dir`**, a `tempfile::TempDir` unique per call and removed on
   drop; keep the guard bound while the path is in use. A fixed path under

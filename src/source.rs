@@ -52,6 +52,13 @@ impl SourceError {
     }
 }
 
+/// A configured credential and the setting it came from, such as `$REDDIT_COOKIE_FILE`, so
+/// a message can point at that setting without quoting the credential.
+pub struct ConfiguredSecret {
+    pub value: String,
+    pub source: &'static str,
+}
+
 /// A bookmark ready to write to Pinboard, plus the key used to tell whether it is
 /// already present there. It's a [`Bookmark`] (the thing written) and the extra
 /// `dedup_key` that only matters before the write. Sources build `bookmark.public`/

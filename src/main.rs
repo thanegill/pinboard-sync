@@ -34,7 +34,7 @@ use github::GitHubClient;
 use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackernewsConfig};
 use pinboard::{PinboardClient, RATE_LIMIT_SECS};
 use reddit::RedditClient;
-use source::{BookmarkDraft, Source, SourceError, UrlKey};
+use source::{BookmarkDraft, ConfiguredSecret, Source, SourceError, UrlKey};
 use url::Url;
 
 #[derive(Parser)]
@@ -1071,13 +1071,8 @@ fn build_github_job(
     ovr: &SyncOverrides,
     config: &Config,
 ) -> Result<SyncJob> {
-    let token = resolve_secret(
-        ovr.github_token.clone(),
-        "GITHUB_TOKEN",
-        account.and_then(|a| a.token.clone()),
-        account.and_then(|a| a.token_file.as_deref()),
-    )
-    .context("missing GitHub token (set --github-token, GITHUB_TOKEN, or `token`/`token_file` in the config)")?;
+    let token =
+        resolve_github_token(ovr.github_token.clone(), account).context(MISSING_GITHUB_TOKEN)?;
     let github_config = account
         .map(GitHubAccount::github_config)
         .unwrap_or_default();
@@ -1698,13 +1693,7 @@ async fn cleanup_github_for<S: BookmarkStore + AccountState>(
     let github_config = account
         .map(GitHubAccount::github_config)
         .unwrap_or_default();
-    let token = resolve_secret(
-        token_flag,
-        "GITHUB_TOKEN",
-        account.and_then(|a| a.token.clone()),
-        account.and_then(|a| a.token_file.as_deref()),
-    )
-    .context("missing GitHub token (set --github-token, GITHUB_TOKEN, or `token`/`token_file` in the config)")?;
+    let token = resolve_github_token(token_flag, account).context(MISSING_GITHUB_TOKEN)?;
     let hook = cleanup_hook(
         account.and_then(|a| a.on_auth_failure.as_deref()),
         config.defaults.github.on_auth_failure.as_deref(),
@@ -1765,7 +1754,7 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     // the source post (the post's created_utc comes from /api/info too).
     let reddit = if opts.mark_nsfw || opts.fix_titles || opts.use_post_date {
         let cookie = resolve_reddit_cookie(args.reddit_cookie.clone(), account)
-        .context("missing Reddit cookie (set --reddit-cookie, REDDIT_COOKIE, or pass --no-nsfw --no-titles and disable use_post_date)")?;
+            .context(MISSING_REDDIT_COOKIE)?;
         Some(RedditClient::for_info(Some(cookie))?)
     } else {
         None
@@ -1936,12 +1925,65 @@ fn resolve_secret(
     cfg_inline: Option<String>,
     cfg_file: Option<&str>,
 ) -> Option<String> {
-    first_nonempty(secret_ladder(flag, var, cfg_inline, cfg_file))
+    first_nonempty(secret_ladder(flag, var, cfg_inline, cfg_file).map(|(_, value)| value))
+}
+
+/// Which rung of [`secret_ladder`] a candidate came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecretRung {
+    Flag,
+    Env,
+    EnvFile,
+    ConfigInline,
+    ConfigFile,
+}
+
+#[cfg(test)]
+impl SecretRung {
+    const ALL: [SecretRung; 5] = [
+        SecretRung::Flag,
+        SecretRung::Env,
+        SecretRung::EnvFile,
+        SecretRung::ConfigInline,
+        SecretRung::ConfigFile,
+    ];
+}
+
+/// The Reddit cookie setting a rung reads, as messages name it.
+fn reddit_cookie_source(rung: SecretRung) -> &'static str {
+    match rung {
+        SecretRung::Flag => "--reddit-cookie",
+        SecretRung::Env => "$REDDIT_COOKIE",
+        SecretRung::EnvFile => "$REDDIT_COOKIE_FILE",
+        SecretRung::ConfigInline => "the config's `cookie`",
+        SecretRung::ConfigFile => "the config's `cookie_file`",
+    }
+}
+
+const MISSING_REDDIT_COOKIE: &str = "missing Reddit cookie (set --reddit-cookie, \
+     $REDDIT_COOKIE, $REDDIT_COOKIE_FILE, or the config's `cookie` or `cookie_file`, or \
+     pass --no-nsfw --no-titles and disable use_post_date)";
+
+const MISSING_GITHUB_TOKEN: &str = "missing GitHub token (set --github-token, \
+     $GITHUB_TOKEN, $GITHUB_TOKEN_FILE, or the config's `token` or `token_file`)";
+
+/// The GitHub token setting a rung reads, as messages name it.
+fn github_token_source(rung: SecretRung) -> &'static str {
+    match rung {
+        SecretRung::Flag => "--github-token",
+        SecretRung::Env => "$GITHUB_TOKEN",
+        SecretRung::EnvFile => "$GITHUB_TOKEN_FILE",
+        SecretRung::ConfigInline => "the config's `token`",
+        SecretRung::ConfigFile => "the config's `token_file`",
+    }
 }
 
 /// The Reddit cookie through [`resolve_secret`]'s ladder, skipping a candidate that
 /// configures no session (see [`reddit::is_configured_cookie`]) as a blank one is skipped.
-fn resolve_reddit_cookie(flag: Option<String>, account: Option<&RedditAccount>) -> Option<String> {
+fn resolve_reddit_cookie(
+    flag: Option<String>,
+    account: Option<&RedditAccount>,
+) -> Option<ConfiguredSecret> {
     first_configured_cookie(secret_ladder(
         flag,
         "REDDIT_COOKIE",
@@ -1950,12 +1992,50 @@ fn resolve_reddit_cookie(flag: Option<String>, account: Option<&RedditAccount>) 
     ))
 }
 
-/// The first candidate that configures a Reddit session.
-fn first_configured_cookie(candidates: impl IntoIterator<Item = Option<String>>) -> Option<String> {
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|cookie| reddit::is_configured_cookie(cookie))
+/// The GitHub token through [`resolve_secret`]'s ladder, with the setting it came from.
+fn resolve_github_token(
+    flag: Option<String>,
+    account: Option<&GitHubAccount>,
+) -> Option<ConfiguredSecret> {
+    first_configured_token(secret_ladder(
+        flag,
+        "GITHUB_TOKEN",
+        account.and_then(|a| a.token.clone()),
+        account.and_then(|a| a.token_file.as_deref()),
+    ))
+}
+
+/// The first non-blank GitHub token, with the setting it came from.
+fn first_configured_token(
+    candidates: impl IntoIterator<Item = (SecretRung, Option<String>)>,
+) -> Option<ConfiguredSecret> {
+    first_configured(candidates, is_nonblank, github_token_source)
+}
+
+/// The first candidate that configures a Reddit session, with the setting it came from.
+fn first_configured_cookie(
+    candidates: impl IntoIterator<Item = (SecretRung, Option<String>)>,
+) -> Option<ConfiguredSecret> {
+    first_configured(
+        candidates,
+        reddit::is_configured_cookie,
+        reddit_cookie_source,
+    )
+}
+
+/// The first candidate `is_configured` accepts, with the setting `source` names its rung.
+fn first_configured(
+    candidates: impl IntoIterator<Item = (SecretRung, Option<String>)>,
+    is_configured: impl Fn(&str) -> bool,
+    source: impl Fn(SecretRung) -> &'static str,
+) -> Option<ConfiguredSecret> {
+    candidates.into_iter().find_map(|(rung, value)| {
+        let value = value.filter(|value| is_configured(value))?;
+        Some(ConfiguredSecret {
+            value,
+            source: source(rung),
+        })
+    })
 }
 
 fn secret_ladder(
@@ -1963,24 +2043,45 @@ fn secret_ladder(
     var: &str,
     cfg_inline: Option<String>,
     cfg_file: Option<&str>,
-) -> [Option<String>; 5] {
+) -> [(SecretRung, Option<String>); 5] {
     [
-        flag,
-        std::env::var(var).ok(),
-        std::env::var(format!("{var}_FILE"))
-            .ok()
-            .and_then(|p| read_file_secret(&p)),
-        cfg_inline,
-        cfg_file.and_then(read_file_secret),
+        (SecretRung::Flag, flag),
+        (SecretRung::Env, secret_env(var)),
+        (
+            SecretRung::EnvFile,
+            secret_env(&format!("{var}_FILE")).and_then(|p| read_file_secret(&p)),
+        ),
+        (SecretRung::ConfigInline, cfg_inline),
+        (SecretRung::ConfigFile, cfg_file.and_then(read_file_secret)),
     ]
+}
+
+#[cfg(not(test))]
+fn secret_env(var: &str) -> Option<String> {
+    std::env::var(var).ok()
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAKE_SECRET_ENV: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::default();
+}
+
+/// Tests read [`secret_ladder`]'s environment rungs only from the fake environment a
+/// `tests::FakeSecretEnv` sets, so a test that builds a job or resolves a secret can't
+/// pick up, or depend on, the developer's real credentials.
+#[cfg(test)]
+fn secret_env(var: &str) -> Option<String> {
+    FAKE_SECRET_ENV.with(|env| env.borrow().get(var).cloned())
 }
 
 /// The first value among the candidates that isn't blank.
 fn first_nonempty(candidates: impl IntoIterator<Item = Option<String>>) -> Option<String> {
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|s| !s.trim().is_empty())
+    candidates.into_iter().flatten().find(|s| is_nonblank(s))
+}
+
+fn is_nonblank(value: &str) -> bool {
+    !value.trim().is_empty()
 }
 
 /// Read a file's trimmed contents, or `None` if missing or empty.
@@ -2088,21 +2189,164 @@ mod tests {
         );
     }
 
+    /// Sets variables in the environment [`secret_env`] shows this test's thread, and
+    /// removes them on drop, so a setting can't outlive the test whichever thread runs the
+    /// next one.
+    #[must_use]
+    struct FakeSecretEnv {
+        vars: Vec<String>,
+    }
+
+    impl FakeSecretEnv {
+        fn set(vars: &[(&str, &str)]) -> Self {
+            FAKE_SECRET_ENV.with(|env| {
+                let mut env = env.borrow_mut();
+                for (var, value) in vars {
+                    env.insert(var.to_string(), value.to_string());
+                }
+            });
+            FakeSecretEnv {
+                vars: vars.iter().map(|(var, _)| var.to_string()).collect(),
+            }
+        }
+    }
+
+    impl Drop for FakeSecretEnv {
+        fn drop(&mut self) {
+            FAKE_SECRET_ENV.with(|env| {
+                let mut env = env.borrow_mut();
+                for var in &self.vars {
+                    env.remove(var);
+                }
+            });
+        }
+    }
+
+    fn first_cookie_on(ladder: [Option<&str>; 5]) -> Option<(String, &'static str)> {
+        first_configured_cookie(
+            SecretRung::ALL
+                .into_iter()
+                .zip(ladder.map(|v| v.map(String::from))),
+        )
+        .map(|cookie| (cookie.value, cookie.source))
+    }
+
     #[test]
     fn reddit_cookie_skips_candidates_that_set_no_session() {
         assert_eq!(
-            first_configured_cookie([
-                Some("reddit_session=".into()),
-                None,
-                Some(" ".into()),
-                Some("a=1; reddit_session=".into()),
-                Some("abc".into()),
+            first_cookie_on([
+                Some("reddit_session="),
+                Some("=;"),
+                Some(" "),
+                Some("a=1; reddit_session="),
+                Some("abc"),
             ]),
-            Some("abc".into())
+            Some(("abc".into(), "the config's `cookie_file`"))
         );
         assert_eq!(
-            first_configured_cookie([Some("reddit_session=".into()), Some("\"\"".into())]),
+            first_cookie_on([Some("reddit_session="), Some("\"\""), None, None, None]),
             None
+        );
+    }
+
+    #[test]
+    fn secret_ladder_tags_each_value_with_its_rung() {
+        let dir = scratch_dir("secret-ladder");
+        let env_file = dir.path().join("env-file");
+        std::fs::write(&env_file, "from-env-file\n").unwrap();
+        let config_file = dir.path().join("config-file");
+        std::fs::write(&config_file, "from-config-file\n").unwrap();
+        let _env = FakeSecretEnv::set(&[
+            ("TEST_SECRET", "from-env"),
+            ("TEST_SECRET_FILE", env_file.to_str().unwrap()),
+        ]);
+        let ladder = secret_ladder(
+            Some("from-flag".into()),
+            "TEST_SECRET",
+            Some("inline".into()),
+            config_file.to_str(),
+        );
+        assert_eq!(
+            ladder,
+            [
+                (SecretRung::Flag, Some("from-flag".into())),
+                (SecretRung::Env, Some("from-env".into())),
+                (SecretRung::EnvFile, Some("from-env-file".into())),
+                (SecretRung::ConfigInline, Some("inline".into())),
+                (SecretRung::ConfigFile, Some("from-config-file".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn github_token_from_its_env_file_names_that_setting() {
+        let dir = scratch_dir("github-token-file");
+        let token_file = dir.path().join("token");
+        std::fs::write(&token_file, "from-env-file\n").unwrap();
+        let _env = FakeSecretEnv::set(&[("GITHUB_TOKEN_FILE", token_file.to_str().unwrap())]);
+        let token = resolve_github_token(None, None).unwrap();
+        assert_eq!(
+            (token.value.as_str(), token.source),
+            ("from-env-file", "$GITHUB_TOKEN_FILE")
+        );
+    }
+
+    #[test]
+    fn reddit_cookie_names_the_setting_it_came_from() {
+        let sources = SecretRung::ALL.map(reddit_cookie_source);
+        assert_eq!(
+            sources,
+            [
+                "--reddit-cookie",
+                "$REDDIT_COOKIE",
+                "$REDDIT_COOKIE_FILE",
+                "the config's `cookie`",
+                "the config's `cookie_file`",
+            ]
+        );
+        assert_eq!(
+            first_cookie_on([Some("abc"), None, None, Some("reddit_session=x"), None]),
+            Some(("abc".into(), "--reddit-cookie"))
+        );
+    }
+
+    #[test]
+    fn missing_secret_errors_list_every_setting() {
+        fn assert_lists_every_setting(message: &str, source: fn(SecretRung) -> &'static str) {
+            let words: Vec<&str> = message.split([' ', ',', '(', ')']).collect();
+            for rung in SecretRung::ALL {
+                let setting = source(rung).rsplit(' ').next().unwrap();
+                assert!(words.contains(&setting), "{setting} missing from {message}");
+            }
+        }
+        assert_lists_every_setting(MISSING_REDDIT_COOKIE, reddit_cookie_source);
+        assert_lists_every_setting(&reddit::refused_cookie_advice(None), reddit_cookie_source);
+        assert_lists_every_setting(MISSING_GITHUB_TOKEN, github_token_source);
+    }
+
+    #[test]
+    fn github_token_names_the_setting_it_came_from() {
+        assert_eq!(
+            SecretRung::ALL.map(github_token_source),
+            [
+                "--github-token",
+                "$GITHUB_TOKEN",
+                "$GITHUB_TOKEN_FILE",
+                "the config's `token`",
+                "the config's `token_file`",
+            ]
+        );
+        let ladder = [
+            None,
+            None,
+            None,
+            Some(" \n".to_string()),
+            Some("tok".into()),
+        ];
+        let from_file = first_configured_token(SecretRung::ALL.into_iter().zip(ladder)).unwrap();
+        assert_eq!(
+            (from_file.value.as_str(), from_file.source),
+            ("tok", "the config's `token_file`")
         );
     }
 
@@ -2265,8 +2509,8 @@ mod tests {
 
     /// `sync --all`'s build phase must isolate a per-account build failure so the
     /// healthy accounts still yield jobs. Here a GitHub account with no resolvable
-    /// token (no inline token, no `token_file`, and no `GITHUB_TOKEN` in the test
-    /// environment) fails to build; it must be counted, not abort the whole run.
+    /// token (no inline token, no `token_file`, and this test sets no fake `$GITHUB_TOKEN`)
+    /// fails to build; it must be counted, not abort the whole run.
     #[test]
     fn build_all_jobs_isolates_a_failing_account() {
         let config = Config {

@@ -32,6 +32,12 @@ All notable changes to this project are documented here. The format is based on
 - HTTP connects time out after 30 s, so an unreachable host fails a request in about
   5.5 minutes instead of 15.
 - GitHub, Algolia and Reddit errors quote at most one 300-byte line of the response.
+- Only the first non-empty `reddit_session` in a Reddit cookie is sent, and empty
+  `reddit_session` pairs are dropped.
+- A Reddit cookie of only quotes, whitespace, `;` or `=` counts as no cookie.
+- Reddit cookie messages name the setting the cookie came from.
+- GitHub 401 errors name the setting the token came from.
+- The missing Reddit cookie and GitHub token errors list every setting each can come from.
 
 ## [0.5.2] - 2026-10-24
 

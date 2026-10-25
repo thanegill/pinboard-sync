@@ -15,7 +15,7 @@ use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::{client_builder, send_retrying, ConnectBudget};
 use crate::source::{
     deserialize_lenient, extend_unique, page_is_caught_up, push_prefixed, push_tags, url_key,
-    BookmarkDraft, Source, SourceError, UrlExt, UrlKey,
+    BookmarkDraft, ConfiguredSecret, Source, SourceError, UrlExt, UrlKey,
 };
 use url::Url;
 
@@ -206,20 +206,27 @@ pub struct GitHubClient {
     /// API base (overridden in tests).
     base: String,
     connect_budget: ConnectBudget,
+    /// The setting the token came from, for messages; never the token itself.
+    token_source: &'static str,
 }
 
 impl GitHubClient {
-    pub fn new(token: String, config: GitHubConfig) -> anyhow::Result<Self> {
+    pub fn new(token: ConfiguredSecret, config: GitHubConfig) -> anyhow::Result<Self> {
         Self::build(token, config, API_BASE.to_string())
     }
 
-    fn build(token: String, config: GitHubConfig, base: String) -> anyhow::Result<Self> {
+    fn build(token: ConfiguredSecret, config: GitHubConfig, base: String) -> anyhow::Result<Self> {
         use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
 
         // The auth/accept/version headers are constant for the client's lifetime, so
         // set them (and the User-Agent GitHub requires) once as defaults.
-        let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))
-            .context("invalid GitHub token (bad header bytes)")?;
+        let mut auth =
+            HeaderValue::from_str(&format!("Bearer {}", token.value)).with_context(|| {
+                format!(
+                    "invalid GitHub token from {} (bad header bytes)",
+                    token.source
+                )
+            })?;
         auth.set_sensitive(true);
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, auth);
@@ -242,7 +249,15 @@ impl GitHubClient {
             config,
             base,
             connect_budget: ConnectBudget::default(),
+            token_source: token.source,
         })
+    }
+
+    fn token_refused(&self) -> SourceError {
+        SourceError::ReauthRequired(format!(
+            "GitHub returned 401 — the token from {} is invalid or expired.",
+            self.token_source
+        ))
     }
 
     /// Look up a repo via `/repos/{owner}/{name}` (the API follows renames and
@@ -260,9 +275,7 @@ impl GitHubClient {
         .await?;
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(SourceError::ReauthRequired(
-                "GitHub returned 401 — the token (GITHUB_TOKEN) is invalid or expired.".to_string(),
-            ));
+            return Err(self.token_refused());
         }
         if status == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -361,10 +374,7 @@ impl GitHubClient {
 
             let status = resp.status();
             if status == reqwest::StatusCode::UNAUTHORIZED {
-                return Err(SourceError::ReauthRequired(
-                    "GitHub returned 401 — the token (GITHUB_TOKEN) is invalid or expired."
-                        .to_string(),
-                ));
+                return Err(self.token_refused());
             }
             let next = resp
                 .headers()
@@ -639,8 +649,15 @@ fn parse_link_next(link: &str) -> Option<u32> {
 }
 
 #[cfg(test)]
+const TEST_TOKEN_SOURCE: &str = "$GITHUB_TOKEN_FILE";
+
+#[cfg(test)]
 impl GitHubClient {
     pub(crate) fn with_base_url(token: String, config: GitHubConfig, base: String) -> Self {
+        let token = ConfiguredSecret {
+            value: token,
+            source: TEST_TOKEN_SOURCE,
+        };
         Self::build(token, config, base).unwrap()
     }
 }
@@ -893,8 +910,22 @@ mod tests {
     }
 
     #[test]
+    fn an_unsendable_token_names_its_setting_but_never_the_token() {
+        let token = ConfiguredSecret {
+            value: "SECRET\nTOKEN".into(),
+            source: "the config's `token`",
+        };
+        let Err(err) = GitHubClient::new(token, GitHubConfig::default()) else {
+            panic!("a token with a newline cannot be a header");
+        };
+        let message = format!("{err:#}");
+        assert!(message.contains("the config's `token`"), "{message}");
+        assert!(!message.contains("SECRET"), "{message}");
+    }
+
+    #[test]
     fn dedup_key_only_matches_github() {
-        let c = GitHubClient::new("t".into(), GitHubConfig::default()).unwrap();
+        let c = GitHubClient::with_base_url("t".into(), GitHubConfig::default(), API_BASE.into());
         assert_eq!(
             c.dedup_key(&url("https://github.com/o/r")).as_deref(),
             Some("github.com/o/r")
@@ -1333,18 +1364,30 @@ mod net_tests {
     }
 
     #[tokio::test]
-    async fn maps_401_to_reauth() {
+    async fn a_401_names_the_token_setting_but_never_the_token() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(401).set_body_string("bad creds"))
             .mount(&server)
             .await;
-        let client =
-            GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
-        assert!(matches!(
-            client.fetch().await,
-            Err(SourceError::ReauthRequired(_))
-        ));
+        let source = "the config's `token_file`";
+        let token = ConfiguredSecret {
+            value: "SECRET401".into(),
+            source,
+        };
+        let client = GitHubClient::build(token, GitHubConfig::default(), server.uri()).unwrap();
+        let refusals = [
+            client.fetch().await.unwrap_err(),
+            client.repo("o", "r").await.unwrap_err(),
+        ];
+        for err in refusals {
+            let SourceError::ReauthRequired(message) = &err else {
+                panic!("a 401 must ask for a new token: {err:?}");
+            };
+            assert!(message.contains(source), "{message}");
+            assert!(!message.contains("GITHUB_TOKEN"), "{message}");
+            assert!(!message.contains("SECRET401"), "{message}");
+        }
     }
 
     /// A repo lookup that can never succeed again reads as "gone", the same as a 404 —

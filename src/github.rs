@@ -613,15 +613,11 @@ fn repo_root(url: &Url) -> Option<(String, String)> {
         return None;
     }
     let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
-    if segments.len() != 2 {
+    let [owner, repo] = segments[..] else {
         return None;
-    }
-    let owner = segments[0].to_string();
-    let repo = segments[1]
-        .strip_suffix(".git")
-        .unwrap_or(segments[1])
-        .to_string();
-    Some((owner, repo))
+    };
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    Some((owner.to_string(), repo.to_string()))
 }
 
 /// Refresh the language tag from the current repo, keeping existing tags and
@@ -642,16 +638,12 @@ fn refresh_tags(existing: Vec<String>, repo: &GitHubRepo, cfg: &GitHubConfig) ->
 /// Extract the `page` number of the `rel="next"` link from a GitHub `Link` header,
 /// or `None` when there is no next page.
 fn parse_link_next(link: &str) -> Option<u32> {
-    for part in link.split(',') {
-        if part.contains("rel=\"next\"") {
-            let url = part.split('<').nth(1)?.split('>').next()?;
-            let page = url
-                .split(['?', '&'])
-                .find_map(|kv| kv.strip_prefix("page="))?;
-            return page.parse().ok();
-        }
-    }
-    None
+    let next = link.split(',').find(|part| part.contains("rel=\"next\""))?;
+    let url = next.split('<').nth(1)?.split('>').next()?;
+    url.split(['?', '&'])
+        .find_map(|kv| kv.strip_prefix("page="))?
+        .parse()
+        .ok()
 }
 
 #[cfg(test)]

@@ -272,9 +272,8 @@ fn to_reddit_domain(url: &Url, domain: &str) -> Option<Url> {
 
 /// Extract the subreddit name from a Reddit URL's `/r/<sub>/` segment.
 pub fn extract_subreddit(url: &Url) -> Option<String> {
-    let path = url.path();
-    let idx = path.find("/r/")?;
-    let sub: String = path[idx + 3..]
+    let (_, after) = url.path().split_once("/r/")?;
+    let sub: String = after
         .chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
         .collect();
@@ -284,12 +283,8 @@ pub fn extract_subreddit(url: &Url) -> Option<String> {
 /// The post fullname (`t3_<id>`) from a permalink's `/comments/<id>/` segment.
 /// Works for both post and comment permalinks (comments inherit the post id).
 pub fn post_fullname(url: &Url) -> Option<String> {
-    let path = url.path();
-    let idx = path.find("/comments/")?;
-    let id: String = path[idx + "/comments/".len()..]
-        .chars()
-        .take_while(|c| c.is_alphanumeric())
-        .collect();
+    let (_, after) = url.path().split_once("/comments/")?;
+    let id: String = after.chars().take_while(|c| c.is_alphanumeric()).collect();
     (!id.is_empty()).then(|| format!("t3_{id}"))
 }
 
@@ -297,11 +292,9 @@ pub fn post_fullname(url: &Url) -> Option<String> {
 /// than a post. Used to skip the notes retrofit for comments, whose own body `/api/info`
 /// never returns (it is keyed by the post fullname; see [`post_fullname`]).
 fn is_comment_url(url: &Url) -> bool {
-    let path = url.path();
-    let Some(idx) = path.find("/comments/") else {
+    let Some((_, rest)) = url.path().split_once("/comments/") else {
         return false;
     };
-    let rest = &path[idx + "/comments/".len()..];
     // `Url::path` excludes any query/fragment.
     // post → [id, slug]; comment → [id, slug, comment-id].
     rest.split('/').filter(|s| !s.is_empty()).count() >= 3

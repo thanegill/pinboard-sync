@@ -961,12 +961,14 @@ fn parse_favorite_ids(html: &str) -> FavoritesPage {
 /// The slug for a `Show/Ask/Tell/Launch HN:` title prefix (e.g. `Show HN:` →
 /// `show-hn`), or `None` for ordinary titles.
 fn special_type(title: &str) -> Option<String> {
-    for kind in ["Show HN", "Ask HN", "Tell HN", "Launch HN"] {
-        if title.starts_with(kind) && title[kind.len()..].starts_with(':') {
-            return Some(kind.to_lowercase().replace(' ', "-"));
-        }
-    }
-    None
+    ["Show HN", "Ask HN", "Tell HN", "Launch HN"]
+        .into_iter()
+        .find(|kind| {
+            title
+                .strip_prefix(kind)
+                .is_some_and(|rest| rest.starts_with(':'))
+        })
+        .map(|kind| kind.to_lowercase().replace(' ', "-"))
 }
 
 #[cfg(test)]

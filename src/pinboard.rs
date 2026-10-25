@@ -41,6 +41,17 @@ struct AddResponse {
     result_code: String,
 }
 
+impl AddResponse {
+    /// `Ok` when Pinboard reports the call `done`, else an error quoting its result code
+    /// as `what` failing, through [`redacted_error`].
+    fn into_result(self, what: &str, auth_token: &str) -> Result<()> {
+        if self.result_code == "done" {
+            return Ok(());
+        }
+        Err(redacted_error(what, &self.result_code, auth_token))
+    }
+}
+
 /// A bookmark exactly as `posts/all` returns it — the Pinboard wire shape, with its
 /// space-joined tag string, ISO-8601 `time`, and `"yes"/"no"` flags. Converted to the
 /// service-agnostic [`Bookmark`] on read (see the `From` impl below); nothing outside
@@ -228,14 +239,7 @@ impl BookmarkStore for PinboardClient {
             .json()
             .await
             .context("parsing Pinboard posts/delete response")?;
-        if parsed.result_code != "done" {
-            return Err(redacted_error(
-                "Pinboard posts/delete failed",
-                &parsed.result_code,
-                &self.auth_token,
-            ));
-        }
-        Ok(())
+        parsed.into_result("Pinboard posts/delete failed", &self.auth_token)
     }
 
     async fn add(&self, b: &Bookmark) -> Result<()> {
@@ -308,13 +312,7 @@ impl PinboardClient {
                 .json()
                 .await
                 .context("parsing Pinboard posts/add response")?;
-            if parsed.result_code != "done" {
-                return Err(redacted_error(
-                    "Pinboard posts/add failed",
-                    &parsed.result_code,
-                    &self.auth_token,
-                ));
-            }
+            parsed.into_result("Pinboard posts/add failed", &self.auth_token)?;
             // Warn once the trim is final, not inside the retry: a note Pinboard keeps
             // rejecting is re-trimmed at each halved budget, and warning per attempt reads
             // like several different notes were cut. Worth saying at all because the stored

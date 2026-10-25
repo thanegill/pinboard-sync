@@ -313,7 +313,7 @@ impl RedditSavedItem {
             push_prefixed(&mut tags, &cfg.author_prefix, author);
         }
         if let Some(flair) = &self.flair {
-            push_prefixed(&mut tags, &cfg.flair_prefix, &tag_slug(flair));
+            push_prefixed(&mut tags, &cfg.flair_prefix, &flair.to_lowercase());
         }
         if let Some(media_type) = &self.media_type {
             if cfg.media_types.iter().any(|t| t == media_type) {
@@ -352,14 +352,6 @@ impl RedditSavedItem {
             dedup_key,
         })
     }
-}
-
-/// Slugify free-form text (e.g. flair) into a space-free, lowercase tag value.
-fn tag_slug(text: &str) -> String {
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .join("-")
-        .to_lowercase()
 }
 
 /// Normalize a subreddit name for tagging: lowercase it, keeping the original

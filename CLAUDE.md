@@ -253,10 +253,7 @@ of surrounding quotes is stripped, and a value of nothing but whitespace and quo
 as empty. A value that sets no session — blank, or only empty `reddit_session=` pairs —
 is no cookie, and
 `main`'s `resolve_reddit_cookie` skips it through `reddit::is_configured_cookie` so the
-secret ladder falls through it exactly as it does a blank value. `secret_ladder` tags
-each value with its `SecretRung`, so `resolve_reddit_cookie` returns a
-`source::ConfiguredSecret` naming the setting it came from, and every cookie warning and
-re-auth message names that setting, never the cookie's value.
+secret ladder falls through it exactly as it does a blank value.
 
 **`backup` has one port and one driver, and captures raw bodies in the same traversal.**
 [`src/backup.rs`](src/backup.rs) is `cleanup_pass.rs`'s sibling: a service implements
@@ -293,7 +290,11 @@ Secrets resolve through one ladder in `main.rs` (`resolve_secret`): CLI flag →
 only (a direct file path, no `_FILE` form — it is already a file). **The `_FILE` form is
 load-bearing** — it's how the
 NixOS service feeds sops-nix secret *paths* without putting values in the unit
-environment. Don't add a secret that only reads `$VAR`.
+environment. Don't add a secret that only reads `$VAR`. `secret_ladder` tags each value
+with its `SecretRung`, so `resolve_reddit_cookie` and `resolve_github_token` return a
+`source::ConfiguredSecret` naming the setting it came from, and every Reddit cookie
+warning and re-auth message and every GitHub token error names that setting, never the
+value.
 
 **`sync <source> [account]` / `cleanup <source> [account]` select one account**
 (by name, else the first, else an implicit CLI/env account). `--all` (per-source or

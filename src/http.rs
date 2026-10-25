@@ -8,13 +8,18 @@ use anyhow::{Context, Result};
 use time::format_description::well_known::Rfc2822;
 use time::OffsetDateTime;
 
+/// How long one attempt may take to connect, from DNS through the TLS handshake.
+/// hyper-util, under reqwest, splits the TCP part evenly across each address family's
+/// resolved addresses. A connect that runs out of it is a connect error, so it is retried
+/// on [`CONNECT_BACKOFF`].
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The waits before each retry of a request that could not establish a connection (a
 /// DNS, TCP or TLS failure). Exponential and long, about 2.5 minutes of waiting in all,
 /// so a resolver or network that is down for a minute or two is ridden out. The attempts
-/// themselves add to that: no client sets a `connect_timeout`, so against a host that
-/// drops SYNs each one blocks for the OS connect timeout. Not every connect failure
-/// clears (a bad certificate, a wrong base URL); those also wait the schedule out before
-/// failing.
+/// themselves add to that: against a host that drops SYNs each one blocks for
+/// [`CONNECT_TIMEOUT`]. Not every connect failure clears (a bad certificate, a wrong base
+/// URL); those also wait the schedule out before failing.
 const CONNECT_BACKOFF: [Duration; 5] = [
     Duration::from_secs(5),
     Duration::from_secs(10),
@@ -205,21 +210,24 @@ fn retry_after_verdict(
 /// The starting point for every client's `reqwest::Client`: HTTP/1.1 only, so the TLS
 /// ClientHello offers ALPN `http/1.1` alone. Reddit's edge 403s a ClientHello with no ALPN
 /// extension (#78), and `native-tls-alpn` otherwise offers `h2` too, which this build
-/// (no `http2` feature) cannot speak if a server picks it.
+/// (no `http2` feature) cannot speak if a server picks it. Connecting (DNS, TCP and the TLS
+/// handshake) is bounded by [`CONNECT_TIMEOUT`].
 pub fn client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder().http1_only()
+    reqwest::Client::builder()
+        .http1_only()
+        .connect_timeout(CONNECT_TIMEOUT)
 }
 
 /// Send a request, retrying *transient* failures. A request that could not establish a
 /// connection (per `reqwest::Error::is_connect`: any connector failure, so DNS, TCP
-/// connect, or the TLS handshake) is retried on the long exponential
-/// [`CONNECT_BACKOFF`] (5s, 10s, 20s, 40s, 80s), so a short resolver or network outage
-/// doesn't fail the run — once per client, while its `budget` is unspent (see
-/// [`ConnectBudget`]). Other transport errors (timeouts, dropped connections), HTTP
-/// 429, and 5xx are retried with linear backoff, `base_delay * n` for up to
-/// `max_attempts` attempts. Responses that are not transient — 2xx and other 4xx (e.g.
-/// 401/403/400) — are returned as-is for the caller to interpret, since retrying them
-/// would not help.
+/// connect, or the TLS handshake, including one that runs past [`CONNECT_TIMEOUT`]) is
+/// retried on the long exponential [`CONNECT_BACKOFF`] (5s, 10s, 20s, 40s, 80s), so a
+/// short resolver or network outage doesn't fail the run — once per client, while its
+/// `budget` is unspent (see [`ConnectBudget`]). Other transport errors (a connection
+/// dropped mid-request), HTTP 429, and 5xx are retried with linear backoff,
+/// `base_delay * n` for up to `max_attempts` attempts. Responses that are not transient —
+/// 2xx and other 4xx (e.g. 401/403/400) — are returned as-is for the caller to interpret,
+/// since retrying them would not help.
 ///
 /// `build` is called once per attempt, so it must reconstruct the request (the
 /// request is consumed by `send`).
@@ -839,5 +847,43 @@ mod net_tests {
             format!("{err:#}").contains("failed after 2 attempts"),
             "the spent budget must leave only the linear retries: {err:#}"
         );
+    }
+
+    // A paused clock with a real socket fires timers early, which is sound only because
+    // this listener never answers: the timeout is the expected outcome either way.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_connect_times_out_onto_the_connect_backoff() {
+        let silent_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = silent_listener.local_addr().unwrap().port();
+        let http = client_builder().no_proxy().build().unwrap();
+        let start = tokio::time::Instant::now();
+
+        let sent = tokio::time::timeout(
+            CONNECT_TIMEOUT * 5,
+            send_with_connect_backoff(
+                "stalled",
+                &ConnectBudget::default(),
+                2,
+                Duration::ZERO,
+                &[Duration::ZERO; 3],
+                backoff_if_transient,
+                || http.get(format!("https://127.0.0.1:{port}/")),
+            ),
+        )
+        .await
+        .expect("the connect timeout never fired");
+
+        let err = sent.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("failed after 4 attempts"),
+            "a timed-out connect must take the connect backoff: {err:#}"
+        );
+        assert!(
+            err.downcast_ref::<reqwest::Error>()
+                .is_some_and(|err| err.is_connect() && err.is_timeout()),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(start.elapsed(), CONNECT_TIMEOUT * 4);
+        drop(silent_listener);
     }
 }

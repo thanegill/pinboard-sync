@@ -415,8 +415,10 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   what plain `native-tls` sends ([#78](https://github.com/thanegill/pinboard-sync/issues/78));
   header case and order are not the cause. With that feature reqwest offers `h2` as well
   unless told otherwise, and the crate has no `http2` feature, so every client starts
-  from `http::client_builder()` (`http1_only`, ALPN `http/1.1` alone). Build new clients
-  from it; `http::net_tests::client_hello_offers_alpn_http1_only` guards the ClientHello.
+  from `http::client_builder()` (`http1_only`, ALPN `http/1.1` alone, and the 30s
+  `CONNECT_TIMEOUT` that keeps a black-holed host from stalling each attempt for the OS
+  connect timeout). Build new clients from it;
+  `http::net_tests::client_hello_offers_alpn_http1_only` guards the ClientHello.
 - **The Nix package build runs the tests** (`buildRustPackage` `doCheck`), so a
   failing test blocks `nix build`/`nix flake check`. The `net_tests` modules bind a
   socket, which the sandbox forbids — the flake's `checkFlags = [ "--skip=net_tests" ]`
@@ -426,9 +428,10 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   `http::recording_waits`; only `http.rs`'s own tests can inject a zero schedule.
 - **No paused clock under a real socket.** `start_paused` auto-advances to the next
   timer whenever the runtime idles, including on wiremock I/O, so any timer live during a
-  request (a connect timeout, say) fires early. To skip the clients' pauses between
-  pages, run the fetch inside `http::recording_waits`, which records each `http::sleep`
-  instead of sleeping. A client's new pause goes through `http::sleep` for that reason.
+  request (a connect timeout, say) fires early; only a test whose expected outcome *is*
+  that timer firing may pair them. To skip the clients' pauses between pages, run the
+  fetch inside `http::recording_waits`, which records each `http::sleep` instead of
+  sleeping. A client's new pause goes through `http::sleep` for that reason.
 - **A test that touches the filesystem takes its directory from
   `test_support::scratch_dir`**, a `tempfile::TempDir` unique per call and removed on
   drop; keep the guard bound while the path is in use. A fixed path under

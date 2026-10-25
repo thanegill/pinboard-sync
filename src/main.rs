@@ -2112,7 +2112,7 @@ fn resolve_pinboard_token(flag: Option<String>, pb: &config::PinboardConfig) -> 
 /// dry-run output only. The full text is still sent to Pinboard's `extended`.
 pub(crate) fn preview(text: &str) -> String {
     const MAX: usize = 160;
-    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let one_line = htmltext::collapse_whitespace(text, " ");
     if one_line.chars().count() > MAX {
         let head: String = one_line.chars().take(MAX).collect();
         format!("{head}…")

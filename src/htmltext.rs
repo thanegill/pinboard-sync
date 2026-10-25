@@ -16,7 +16,20 @@ pub fn html_to_plain(s: &str) -> String {
     let escaped = s.replace('<', "&lt;").replace('>', "&gt;");
     let fragment = scraper::Html::parse_fragment(&escaped);
     let text: String = fragment.root_element().text().collect();
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    collapse_whitespace(&text, " ")
+}
+
+/// `text`'s whitespace-separated words joined by `separator`: every run of whitespace
+/// becomes one `separator`, and leading/trailing whitespace is dropped.
+pub fn collapse_whitespace(text: &str, separator: &str) -> String {
+    let mut collapsed = String::with_capacity(text.len());
+    for word in text.split_whitespace() {
+        if !collapsed.is_empty() {
+            collapsed.push_str(separator);
+        }
+        collapsed.push_str(word);
+    }
+    collapsed
 }
 
 /// Convert a HackerNews note body (raw HTML from Algolia `story_text`/`comment_text`)
@@ -69,6 +82,13 @@ mod tests {
             "line one line two"
         );
         assert_eq!(html_to_plain("  padded  "), "padded");
+    }
+
+    #[test]
+    fn collapse_whitespace_joins_words_with_the_separator() {
+        assert_eq!(collapse_whitespace("  a \t b\n\nc  ", "-"), "a-b-c");
+        assert_eq!(collapse_whitespace("one", " "), "one");
+        assert_eq!(collapse_whitespace(" \n ", " "), "");
     }
 
     #[test]

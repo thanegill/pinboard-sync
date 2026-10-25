@@ -615,7 +615,7 @@ fn body_debug_line(what: &str, body: &str) -> String {
 /// [`ERROR_BODY_MAX_BYTES`] on a char boundary, with [`ELLIPSIS`] marking the cut, so a
 /// large HTML error page stays out of the journal.
 fn error_excerpt(text: &str) -> String {
-    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let one_line = crate::htmltext::collapse_whitespace(text, " ");
     if one_line.len() <= ERROR_BODY_MAX_BYTES {
         return one_line;
     }

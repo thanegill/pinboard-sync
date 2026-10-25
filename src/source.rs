@@ -207,7 +207,7 @@ pub fn push_tags(tags: &mut Vec<String>, keys: &[String]) {
 /// `-` (Pinboard tags can't contain spaces — the API splits on them). Skipped if
 /// `prefix` is empty or `value` is empty/all-whitespace.
 pub fn push_prefixed(tags: &mut Vec<String>, prefix: &str, value: &str) {
-    let value = value.split_whitespace().collect::<Vec<_>>().join("-");
+    let value = crate::htmltext::collapse_whitespace(value, "-");
     if !prefix.is_empty() && !value.is_empty() {
         tags.push(format!("{prefix}{value}"));
     }

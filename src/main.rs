@@ -33,7 +33,7 @@ use config::{Config, GitHubAccount, HackernewsAccount, RedditAccount, SyncLimit}
 use github::GitHubClient;
 use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackernewsConfig};
 use pinboard::{PinboardClient, RATE_LIMIT_SECS};
-use reddit::RedditClient;
+use reddit::{ConfiguredCookie, RedditClient};
 use source::{BookmarkDraft, Source, SourceError, UrlKey};
 use url::Url;
 
@@ -1936,12 +1936,36 @@ fn resolve_secret(
     cfg_inline: Option<String>,
     cfg_file: Option<&str>,
 ) -> Option<String> {
-    first_nonempty(secret_ladder(flag, var, cfg_inline, cfg_file))
+    first_nonempty(secret_ladder(flag, var, cfg_inline, cfg_file).map(|(_, value)| value))
+}
+
+/// Which rung of [`secret_ladder`] a candidate came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecretRung {
+    Flag,
+    Env,
+    EnvFile,
+    ConfigInline,
+    ConfigFile,
+}
+
+/// The Reddit cookie setting a rung reads, as messages name it.
+fn reddit_cookie_source(rung: SecretRung) -> &'static str {
+    match rung {
+        SecretRung::Flag => "--reddit-cookie",
+        SecretRung::Env => "$REDDIT_COOKIE",
+        SecretRung::EnvFile => "$REDDIT_COOKIE_FILE",
+        SecretRung::ConfigInline => "the config's `cookie`",
+        SecretRung::ConfigFile => "the config's `cookie_file`",
+    }
 }
 
 /// The Reddit cookie through [`resolve_secret`]'s ladder, skipping a candidate that
 /// configures no session (see [`reddit::is_configured_cookie`]) as a blank one is skipped.
-fn resolve_reddit_cookie(flag: Option<String>, account: Option<&RedditAccount>) -> Option<String> {
+fn resolve_reddit_cookie(
+    flag: Option<String>,
+    account: Option<&RedditAccount>,
+) -> Option<ConfiguredCookie> {
     first_configured_cookie(secret_ladder(
         flag,
         "REDDIT_COOKIE",
@@ -1950,12 +1974,17 @@ fn resolve_reddit_cookie(flag: Option<String>, account: Option<&RedditAccount>) 
     ))
 }
 
-/// The first candidate that configures a Reddit session.
-fn first_configured_cookie(candidates: impl IntoIterator<Item = Option<String>>) -> Option<String> {
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|cookie| reddit::is_configured_cookie(cookie))
+/// The first candidate that configures a Reddit session, with the setting it came from.
+fn first_configured_cookie(
+    candidates: impl IntoIterator<Item = (SecretRung, Option<String>)>,
+) -> Option<ConfiguredCookie> {
+    candidates.into_iter().find_map(|(rung, value)| {
+        let value = value.filter(|cookie| reddit::is_configured_cookie(cookie))?;
+        Some(ConfiguredCookie {
+            value,
+            source: reddit_cookie_source(rung),
+        })
+    })
 }
 
 fn secret_ladder(
@@ -1963,15 +1992,18 @@ fn secret_ladder(
     var: &str,
     cfg_inline: Option<String>,
     cfg_file: Option<&str>,
-) -> [Option<String>; 5] {
+) -> [(SecretRung, Option<String>); 5] {
     [
-        flag,
-        std::env::var(var).ok(),
-        std::env::var(format!("{var}_FILE"))
-            .ok()
-            .and_then(|p| read_file_secret(&p)),
-        cfg_inline,
-        cfg_file.and_then(read_file_secret),
+        (SecretRung::Flag, flag),
+        (SecretRung::Env, std::env::var(var).ok()),
+        (
+            SecretRung::EnvFile,
+            std::env::var(format!("{var}_FILE"))
+                .ok()
+                .and_then(|p| read_file_secret(&p)),
+        ),
+        (SecretRung::ConfigInline, cfg_inline),
+        (SecretRung::ConfigFile, cfg_file.and_then(read_file_secret)),
     ]
 }
 
@@ -2088,22 +2120,85 @@ mod tests {
         );
     }
 
+    fn first_cookie_on(ladder: [Option<&str>; 5]) -> Option<(String, &'static str)> {
+        let rungs = [
+            SecretRung::Flag,
+            SecretRung::Env,
+            SecretRung::EnvFile,
+            SecretRung::ConfigInline,
+            SecretRung::ConfigFile,
+        ];
+        first_configured_cookie(rungs.into_iter().zip(ladder.map(|v| v.map(String::from))))
+            .map(|cookie| (cookie.value, cookie.source))
+    }
+
     #[test]
     fn reddit_cookie_skips_candidates_that_set_no_session() {
         assert_eq!(
-            first_configured_cookie([
-                Some("reddit_session=".into()),
+            first_cookie_on([
+                Some("reddit_session="),
                 None,
-                Some(" ".into()),
-                Some("a=1; reddit_session=".into()),
-                Some("abc".into()),
+                Some(" "),
+                Some("a=1; reddit_session="),
+                Some("abc"),
             ]),
-            Some("abc".into())
+            Some(("abc".into(), "the config's `cookie_file`"))
         );
         assert_eq!(
-            first_configured_cookie([Some("reddit_session=".into()), Some("\"\"".into())]),
+            first_cookie_on([Some("reddit_session="), Some("\"\""), None, None, None]),
             None
         );
+    }
+
+    #[test]
+    fn secret_ladder_tags_each_value_with_its_rung() {
+        let dir = scratch_dir("secret-ladder");
+        let cookie_file = dir.path().join("cookie");
+        std::fs::write(&cookie_file, "from-file\n").unwrap();
+        let ladder = secret_ladder(
+            Some("from-flag".into()),
+            "PINBOARD_SYNC_TEST_NEVER_SET",
+            Some("inline".into()),
+            cookie_file.to_str(),
+        );
+        assert_eq!(
+            ladder,
+            [
+                (SecretRung::Flag, Some("from-flag".into())),
+                (SecretRung::Env, None),
+                (SecretRung::EnvFile, None),
+                (SecretRung::ConfigInline, Some("inline".into())),
+                (SecretRung::ConfigFile, Some("from-file".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn reddit_cookie_names_the_setting_it_came_from() {
+        let sources = [
+            SecretRung::Flag,
+            SecretRung::Env,
+            SecretRung::EnvFile,
+            SecretRung::ConfigInline,
+            SecretRung::ConfigFile,
+        ]
+        .map(reddit_cookie_source);
+        assert_eq!(
+            sources,
+            [
+                "--reddit-cookie",
+                "$REDDIT_COOKIE",
+                "$REDDIT_COOKIE_FILE",
+                "the config's `cookie`",
+                "the config's `cookie_file`",
+            ]
+        );
+        let account = RedditAccount {
+            cookie: Some("reddit_session=x".into()),
+            ..Default::default()
+        };
+        let from_flag = resolve_reddit_cookie(Some("abc".into()), Some(&account)).unwrap();
+        assert_eq!(from_flag.source, "--reddit-cookie");
     }
 
     #[test]

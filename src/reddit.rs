@@ -43,12 +43,24 @@ pub trait PostInfo {
     async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError>;
 }
 
+/// A configured Reddit cookie and the setting it came from, such as `$REDDIT_COOKIE_FILE`,
+/// so a message can point at that setting without quoting the cookie.
+pub struct ConfiguredCookie {
+    pub value: String,
+    pub source: &'static str,
+}
+
+/// The `Cookie` header sent for a [`ConfiguredCookie`], as [`session_cookie`] shapes it.
+struct SessionCookie {
+    header: String,
+    source: &'static str,
+}
+
 /// Reads Reddit's saved listing and `/api/info.json`, authenticated by a session
 /// cookie over native-tls.
 pub struct RedditClient {
     http: reqwest::Client,
-    /// `Cookie` header value, e.g. `reddit_session=…`, as [`session_cookie`] shapes it.
-    cookie: Option<String>,
+    cookie: Option<SessionCookie>,
     /// Whose saved listing to read; required by `fetch_saved`.
     username: Option<String>,
     /// Host base for both endpoints (overridden in tests).
@@ -63,7 +75,7 @@ impl RedditClient {
     /// drafts using `config` (bookmark domain + tag vocabulary).
     pub fn for_user(
         username: String,
-        cookie: Option<String>,
+        cookie: Option<ConfiguredCookie>,
         config: RedditConfig,
     ) -> anyhow::Result<Self> {
         Self::build(cookie, Some(username), REDDIT_BASE.to_string(), config)
@@ -71,7 +83,7 @@ impl RedditClient {
 
     /// Client for `cleanup`: `/api/info.json` lookups only (no saved listing, so
     /// the bookmark domain/tag config are irrelevant).
-    pub fn for_info(cookie: Option<String>) -> anyhow::Result<Self> {
+    pub fn for_info(cookie: Option<ConfiguredCookie>) -> anyhow::Result<Self> {
         Self::build(
             cookie,
             None,
@@ -81,7 +93,7 @@ impl RedditClient {
     }
 
     fn build(
-        cookie: Option<String>,
+        cookie: Option<ConfiguredCookie>,
         username: Option<String>,
         base: String,
         config: RedditConfig,
@@ -96,7 +108,12 @@ impl RedditClient {
             .context("building HTTP client")?;
         Ok(Self {
             http,
-            cookie: cookie.as_deref().and_then(session_cookie),
+            cookie: cookie.and_then(|cookie| {
+                Some(SessionCookie {
+                    header: session_cookie(&cookie.value, cookie.source)?,
+                    source: cookie.source,
+                })
+            }),
             username,
             base,
             config,
@@ -107,9 +124,13 @@ impl RedditClient {
     /// Attach the session cookie to a request, if one is configured.
     fn with_cookie(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.cookie {
-            Some(cookie) => req.header(reqwest::header::COOKIE, cookie),
+            Some(cookie) => req.header(reqwest::header::COOKIE, &cookie.header),
             None => req,
         }
+    }
+
+    fn cookie_source(&self) -> Option<&'static str> {
+        self.cookie.as_ref().map(|cookie| cookie.source)
     }
 }
 
@@ -183,7 +204,7 @@ impl RedditClient {
                 },
             )
             .await?;
-            let body = reddit_body(resp, "saved listing").await?;
+            let body = reddit_body(resp, "saved listing", self.cookie_source()).await?;
             sink.push("", RawKind::Json, &body);
             let listing: RedditListing = serde_json::from_str(&body)
                 .context("parsing saved listing response")
@@ -238,7 +259,8 @@ impl PostInfo for RedditClient {
                 },
             )
             .await?;
-            let listing: RedditListing = decode_reddit_json(resp, "api/info").await?;
+            let listing: RedditListing =
+                decode_reddit_json(resp, "api/info", self.cookie_source()).await?;
             out.extend(listing.data.children);
             // Be gentle with Reddit's rate limit between requests.
             if i + 1 < chunks.len() {
@@ -355,20 +377,40 @@ impl UrlKey for RedditClient {
 /// including one ending in base64 `=` padding, becomes `reddit_session=<value>`, since
 /// Reddit only recognises the session by that name. Other cookies without a
 /// `reddit_session` are sent as is with a warning: naming them would only produce a garbled
-/// header. See [`NoSession`] for what counts as no cookie.
-fn session_cookie(raw: &str) -> Option<String> {
+/// header. See [`NoSession`] for what counts as no cookie. `source` names the setting in
+/// that warning.
+fn session_cookie(raw: &str, source: &str) -> Option<String> {
     let value = unquoted(raw);
     match CookieForm::try_from(value).ok()? {
         CookieForm::Named => Some(with_one_session(value)),
         CookieForm::Bare => Some(format!("reddit_session={value}")),
         CookieForm::OtherCookies => {
-            warn!(
-                "REDDIT_COOKIE doesn't name a reddit_session cookie (expected the bare value \
-                 or reddit_session=<value>, with no `Cookie:` prefix); sending it as is, and \
-                 Reddit will likely refuse it"
-            );
+            warn!("{}", unnamed_cookie_warning(source));
             Some(value.to_string())
         }
+    }
+}
+
+fn unnamed_cookie_warning(source: &str) -> String {
+    format!(
+        "the Reddit cookie from {source} doesn't name a reddit_session cookie (expected the \
+         bare value or reddit_session=<value>, with no `Cookie:` prefix); sending it as is, \
+         and Reddit will likely refuse it"
+    )
+}
+
+/// What to do about a session Reddit refused, naming the setting the cookie came from, or
+/// the settings to use when none was configured.
+fn refused_cookie_advice(cookie_source: Option<&str>) -> String {
+    match cookie_source {
+        Some(source) => format!(
+            "The cookie from {source} has likely expired or isn't a reddit_session value; \
+             re-copy reddit_session from a logged-in browser."
+        ),
+        None => "No Reddit cookie is configured; set --reddit-cookie, $REDDIT_COOKIE, \
+                 $REDDIT_COOKIE_FILE, or the config's `cookie` or `cookie_file` to \
+                 reddit_session from a logged-in browser."
+            .to_string(),
     }
 }
 
@@ -466,7 +508,11 @@ fn with_one_session(value: &str) -> String {
 /// The error for a redirect. A redirect to `/login` means Reddit wants a session it
 /// accepts (seen for a request with no cookie), so that becomes
 /// [`SourceError::ReauthRequired`]; any other target is a plain error.
-fn redirect_error(resp: &reqwest::Response, what: &str) -> SourceError {
+fn redirect_error(
+    resp: &reqwest::Response,
+    what: &str,
+    cookie_source: Option<&str>,
+) -> SourceError {
     let status = resp.status();
     let Some(location) = resp
         .headers()
@@ -482,8 +528,8 @@ fn redirect_error(resp: &reqwest::Response, what: &str) -> SourceError {
     if to_login {
         return SourceError::ReauthRequired(format!(
             "{what} returned {status}, redirecting to Reddit's login page: Reddit didn't \
-             accept the session cookie. REDDIT_COOKIE has expired, is missing, or isn't \
-             a reddit_session value; re-copy reddit_session from a logged-in browser."
+             accept the session cookie. {}",
+            refused_cookie_advice(cookie_source)
         ));
     }
     anyhow::anyhow!("{what} returned {status}, redirecting to {location:?}").into()
@@ -495,14 +541,18 @@ fn redirect_error(resp: &reqwest::Response, what: &str) -> SourceError {
 /// since the body is usually a large HTML page and isn't echoed (one that is neither edge
 /// page is logged at debug level instead). Redirects are not followed (see
 /// [`redirect_error`]). Any other non-success status becomes [`SourceError::Other`].
-/// `what` names the request.
-async fn reddit_body(resp: reqwest::Response, what: &str) -> Result<String, SourceError> {
+/// `what` names the request, and `cookie_source` the setting the cookie came from.
+async fn reddit_body(
+    resp: reqwest::Response,
+    what: &str,
+    cookie_source: Option<&str>,
+) -> Result<String, SourceError> {
     use reqwest::header::CONTENT_TYPE;
     use reqwest::StatusCode;
 
     let status = resp.status();
     if status.is_redirection() {
-        return Err(redirect_error(&resp, what));
+        return Err(redirect_error(&resp, what, cookie_source));
     }
     let content_type = resp
         .headers()
@@ -513,13 +563,13 @@ async fn reddit_body(resp: reqwest::Response, what: &str) -> Result<String, Sour
     let body = resp.text().await.unwrap_or_default();
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         let reauth = format!(
-            "{what} returned {status}. REDDIT_COOKIE (your reddit_session) likely expired \
-             or is missing; re-copy it from a logged-in browser."
+            "{what} returned {status}. {}",
+            refused_cookie_advice(cookie_source)
         );
         return Err(match edge_page(status, &content_type, &body) {
             Some(EdgePage::NetworkSecurity) => SourceError::Blocked(format!(
                 "{what} returned {status} — Reddit's edge blocked the request with its \
-                 network-security page. Re-copying REDDIT_COOKIE will not lift the \
+                 network-security page. Re-copying the cookie will not lift the \
                  block; tracked in https://github.com/thanegill/pinboard-sync/issues/78."
             )),
             Some(EdgePage::NetworkPolicy) => SourceError::ReauthRequired(format!(
@@ -589,17 +639,25 @@ fn edge_page(status: reqwest::StatusCode, content_type: &str, body: &str) -> Opt
 async fn decode_reddit_json<T: DeserializeOwned>(
     resp: reqwest::Response,
     what: &str,
+    cookie_source: Option<&str>,
 ) -> Result<T, SourceError> {
-    let body = reddit_body(resp, what).await?;
+    let body = reddit_body(resp, what, cookie_source).await?;
     serde_json::from_str(&body)
         .with_context(|| format!("parsing {what} response"))
         .map_err(Into::into)
 }
 
 #[cfg(test)]
+const TEST_COOKIE_SOURCE: &str = "$REDDIT_COOKIE_FILE";
+
+#[cfg(test)]
 impl RedditClient {
     /// Test constructor pointing both endpoints at a mock server.
     pub(crate) fn for_test(cookie: Option<String>, username: Option<String>, base: String) -> Self {
+        let cookie = cookie.map(|value| ConfiguredCookie {
+            value,
+            source: TEST_COOKIE_SOURCE,
+        });
         Self::build(cookie, username, base, RedditConfig::default()).unwrap()
     }
 }
@@ -626,9 +684,13 @@ mod tests {
     #[tokio::test]
     async fn maps_401_and_403_to_reauth() {
         for code in [401u16, 403] {
-            let err = decode_reddit_json::<Sample>(response(code, "denied"), "req")
-                .await
-                .unwrap_err();
+            let err = decode_reddit_json::<Sample>(
+                response(code, "denied"),
+                "req",
+                Some(TEST_COOKIE_SOURCE),
+            )
+            .await
+            .unwrap_err();
             assert!(
                 matches!(err, SourceError::ReauthRequired(_)),
                 "status {code} should require re-auth"
@@ -721,13 +783,17 @@ mod tests {
 
     #[tokio::test]
     async fn keeps_the_network_policy_page_a_credential_problem() {
-        let err = decode_reddit_json::<Sample>(html_response(403, NETWORK_POLICY_PAGE), "req")
-            .await
-            .unwrap_err();
+        let err = decode_reddit_json::<Sample>(
+            html_response(403, NETWORK_POLICY_PAGE),
+            "req",
+            Some(TEST_COOKIE_SOURCE),
+        )
+        .await
+        .unwrap_err();
         let SourceError::ReauthRequired(message) = err else {
             panic!("a junk credential must still fire the hook: {err:?}");
         };
-        assert!(message.contains("REDDIT_COOKIE"), "{message}");
+        assert!(message.contains(TEST_COOKIE_SOURCE), "{message}");
         assert!(message.contains("network policy"), "{message}");
     }
 
@@ -751,7 +817,9 @@ mod tests {
                 response(403, BLOCK_PAGE),
             ),
         ] {
-            let err = decode_reddit_json::<Sample>(resp, "req").await.unwrap_err();
+            let err = decode_reddit_json::<Sample>(resp, "req", Some(TEST_COOKIE_SOURCE))
+                .await
+                .unwrap_err();
             assert!(
                 matches!(err, SourceError::ReauthRequired(_)),
                 "{label}: got {err:?}"
@@ -765,6 +833,7 @@ mod tests {
         let (result, logs) = crate::test_support::capturing_logs(decode_reddit_json::<Sample>(
             html_response(403, page),
             "req",
+            Some(TEST_COOKIE_SOURCE),
         ))
         .await;
         assert!(matches!(result, Err(SourceError::ReauthRequired(_))));
@@ -787,9 +856,13 @@ mod tests {
 
     #[tokio::test]
     async fn maps_a_403_block_page_to_blocked_not_reauth() {
-        let err = decode_reddit_json::<Sample>(html_response(403, BLOCK_PAGE), "req")
-            .await
-            .unwrap_err();
+        let err = decode_reddit_json::<Sample>(
+            html_response(403, BLOCK_PAGE),
+            "req",
+            Some(TEST_COOKIE_SOURCE),
+        )
+        .await
+        .unwrap_err();
         let SourceError::Blocked(message) = err else {
             panic!("a block page must not ask for a new cookie: {err:?}");
         };
@@ -799,22 +872,31 @@ mod tests {
 
     #[tokio::test]
     async fn maps_500_to_other() {
-        let err = decode_reddit_json::<Sample>(response(500, "boom"), "req")
-            .await
-            .unwrap_err();
+        let err =
+            decode_reddit_json::<Sample>(response(500, "boom"), "req", Some(TEST_COOKIE_SOURCE))
+                .await
+                .unwrap_err();
         assert!(matches!(err, SourceError::Other(_)));
     }
 
     #[tokio::test]
     async fn parses_success_and_reports_bad_json_as_other() {
-        let ok = decode_reddit_json::<Sample>(response(200, r#"{"ok":true}"#), "req")
-            .await
-            .unwrap();
+        let ok = decode_reddit_json::<Sample>(
+            response(200, r#"{"ok":true}"#),
+            "req",
+            Some(TEST_COOKIE_SOURCE),
+        )
+        .await
+        .unwrap();
         assert_eq!(ok, Sample { ok: true });
 
-        let err = decode_reddit_json::<Sample>(response(200, "not json"), "req")
-            .await
-            .unwrap_err();
+        let err = decode_reddit_json::<Sample>(
+            response(200, "not json"),
+            "req",
+            Some(TEST_COOKIE_SOURCE),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, SourceError::Other(_)));
     }
 
@@ -832,9 +914,13 @@ mod tests {
             "https://old.reddit.com/login/?dest=https%3A%2F%2Fold.reddit.com%2Fuser%2Fx%2Fsaved.json",
             "/login",
         ] {
-            let err = decode_reddit_json::<Sample>(redirect(Some(location)), "req")
-                .await
-                .unwrap_err();
+            let err = decode_reddit_json::<Sample>(
+                redirect(Some(location)),
+                "req",
+                Some(TEST_COOKIE_SOURCE),
+            )
+            .await
+            .unwrap_err();
             let SourceError::ReauthRequired(message) = err else {
                 panic!("a login redirect to {location} must ask for a new cookie: {err:?}");
             };
@@ -850,9 +936,10 @@ mod tests {
             Some("/logins"),
             None,
         ] {
-            let err = decode_reddit_json::<Sample>(redirect(location), "req")
-                .await
-                .unwrap_err();
+            let err =
+                decode_reddit_json::<Sample>(redirect(location), "req", Some(TEST_COOKIE_SOURCE))
+                    .await
+                    .unwrap_err();
             assert!(
                 matches!(err, SourceError::Other(_)),
                 "{location:?} is not a login redirect: {err:?}"
@@ -862,16 +949,58 @@ mod tests {
 
     #[test]
     fn every_entry_point_names_a_bare_cookie() {
-        let named = Some("reddit_session=bare-value");
+        let configured = |value: &str| {
+            Some(ConfiguredCookie {
+                value: value.into(),
+                source: TEST_COOKIE_SOURCE,
+            })
+        };
+        let sent = |client: &RedditClient| client.cookie.as_ref().map(|c| c.header.clone());
+        let named = Some("reddit_session=bare-value".to_string());
         let sync = RedditClient::for_user(
             "psophis".into(),
-            Some(" bare-value ".into()),
+            configured(" bare-value "),
             RedditConfig::default(),
         )
         .unwrap();
-        assert_eq!(sync.cookie.as_deref(), named);
-        let cleanup = RedditClient::for_info(Some("bare-value\n".into())).unwrap();
-        assert_eq!(cleanup.cookie.as_deref(), named);
+        assert_eq!(sent(&sync), named);
+        let cleanup = RedditClient::for_info(configured("bare-value\n")).unwrap();
+        assert_eq!(sent(&cleanup), named);
+    }
+
+    #[tokio::test]
+    async fn names_the_cookie_setting_in_every_refusal() {
+        let source = "the config's `cookie_file`";
+        let refusals = [
+            decode_reddit_json::<Sample>(response(403, "denied"), "req", Some(source)),
+            decode_reddit_json::<Sample>(redirect(Some("/login")), "req", Some(source)),
+        ];
+        for refusal in refusals {
+            let SourceError::ReauthRequired(message) = refusal.await.unwrap_err() else {
+                panic!("a refused cookie must ask for a new one");
+            };
+            assert!(message.contains(source), "{message}");
+            assert!(!message.contains("REDDIT_COOKIE"), "{message}");
+        }
+        assert!(unnamed_cookie_warning(source).contains(source));
+        assert!(!unnamed_cookie_warning(source).contains("REDDIT_COOKIE"));
+    }
+
+    #[tokio::test]
+    async fn says_no_cookie_is_configured_when_none_was() {
+        let refusals = [
+            decode_reddit_json::<Sample>(response(403, "denied"), "req", None),
+            decode_reddit_json::<Sample>(redirect(Some("/login")), "req", None),
+        ];
+        for refusal in refusals {
+            let SourceError::ReauthRequired(message) = refusal.await.unwrap_err() else {
+                panic!("a refusal without a cookie must ask for one");
+            };
+            assert!(
+                message.contains("No Reddit cookie is configured"),
+                "{message}"
+            );
+        }
     }
 
     #[test]
@@ -893,7 +1022,11 @@ mod tests {
             (" \"reddit_session=abc\"\n", "reddit_session=abc"),
         ];
         for (raw, sent) in cases {
-            assert_eq!(session_cookie(raw).as_deref(), Some(sent), "{raw:?}");
+            assert_eq!(
+                session_cookie(raw, TEST_COOKIE_SOURCE).as_deref(),
+                Some(sent),
+                "{raw:?}"
+            );
         }
         for unset in [
             " \n",
@@ -904,7 +1037,7 @@ mod tests {
             "a=1; reddit_session=",
             "reddit_session= ; a=1",
         ] {
-            assert_eq!(session_cookie(unset), None, "{unset:?}");
+            assert_eq!(session_cookie(unset, TEST_COOKIE_SOURCE), None, "{unset:?}");
             assert!(!is_configured_cookie(unset), "{unset:?}");
         }
         assert!(is_configured_cookie("abc"));
@@ -922,7 +1055,11 @@ mod tests {
             ),
         ];
         for (raw, sent) in cases {
-            assert_eq!(session_cookie(raw).as_deref(), Some(sent), "{raw:?}");
+            assert_eq!(
+                session_cookie(raw, TEST_COOKIE_SOURCE).as_deref(),
+                Some(sent),
+                "{raw:?}"
+            );
         }
         for unset in [
             "\"",
@@ -934,7 +1071,7 @@ mod tests {
             "reddit_session=\"\"",
             "a=1; reddit_session=\" \"",
         ] {
-            assert_eq!(session_cookie(unset), None, "{unset:?}");
+            assert_eq!(session_cookie(unset, TEST_COOKIE_SOURCE), None, "{unset:?}");
             assert!(!is_configured_cookie(unset), "{unset:?}");
         }
     }
@@ -957,7 +1094,11 @@ mod tests {
         ];
         for (raw, sent) in cases {
             assert!(is_configured_cookie(raw), "{raw:?}");
-            assert_eq!(session_cookie(raw).as_deref(), Some(sent), "{raw:?}");
+            assert_eq!(
+                session_cookie(raw, TEST_COOKIE_SOURCE).as_deref(),
+                Some(sent),
+                "{raw:?}"
+            );
         }
         assert!(!is_configured_cookie("reddit_session=; reddit_session= "));
     }
@@ -1134,6 +1275,8 @@ mod net_tests {
             panic!("a login redirect must ask for a new cookie: {err:?}");
         };
         assert!(message.contains("login page"), "{message}");
+        assert!(message.contains(TEST_COOKIE_SOURCE), "{message}");
+        assert!(!message.contains("stale"), "{message}");
     }
 
     #[tokio::test]
@@ -1279,6 +1422,23 @@ mod net_tests {
             client.fetch_saved().await,
             Err(SourceError::ReauthRequired(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn info_names_the_cookie_setting_in_a_403_but_never_the_cookie() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("denied"))
+            .mount(&server)
+            .await;
+        let client =
+            RedditClient::for_test(Some("reddit_session=SECRET403".into()), None, server.uri());
+        let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
+        let SourceError::ReauthRequired(message) = &err else {
+            panic!("a 403 must ask for a new cookie: {err:?}");
+        };
+        assert!(message.contains(TEST_COOKIE_SOURCE), "{message}");
+        assert!(!message.contains("SECRET403"), "{message}");
     }
 
     /// The block as Reddit serves it, headers included.

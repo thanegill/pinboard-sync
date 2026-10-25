@@ -174,7 +174,7 @@ impl HackerNewsItem {
                     public: false,
                     read_later: false,
                 },
-                dedup_key: format!("hn:{item_id}"),
+                dedup_key: item_id.dedup_key(),
             });
         }
 
@@ -187,7 +187,7 @@ impl HackerNewsItem {
                     // back through `HackerNewsClient::dedup_key`; a generic host+path key
                     // would drop the id query and re-add the bookmark every sync.
                     let key = HackerNewsItemId::try_from(&parsed)
-                        .map(|id| format!("hn:{id}"))
+                        .map(|id| id.dedup_key())
                         .unwrap_or_else(|_| url_key(&parsed).unwrap_or_else(|| parsed.to_string()));
                     (parsed, key)
                 }
@@ -196,7 +196,7 @@ impl HackerNewsItem {
                     return None;
                 }
             },
-            None => (hn_url.clone(), format!("hn:{item_id}")),
+            None => (hn_url.clone(), item_id.dedup_key()),
         };
         let title = html_to_plain(
             &self
@@ -460,7 +460,7 @@ impl HackerNewsClient {
 
     /// Find the HN story id discussing `url`, via the Algolia URL search. Returns
     /// the id only when a hit's URL matches `url` (so loose matches are ignored).
-    async fn search_by_url(&self, url: &Url) -> Result<Option<String>, SourceError> {
+    async fn search_by_url(&self, url: &Url) -> Result<Option<HackerNewsItemId>, SourceError> {
         let endpoint = format!("{}/api/v1/search", self.algolia);
         let resp = send_retrying(
             "hn algolia url",
@@ -486,7 +486,7 @@ impl HackerNewsClient {
                 .as_deref()
                 .and_then(|s| Url::parse(s).ok())
                 .and_then(|u| url_key(&u));
-            (want.is_some() && hit_key == want).then_some(h.object_id)
+            (want.is_some() && hit_key == want).then(|| HackerNewsItemId::from(h.object_id))
         }))
     }
 }
@@ -561,7 +561,7 @@ impl UrlKey for HackerNewsClient {
     fn dedup_key(&self, url: &Url) -> Option<String> {
         HackerNewsItemId::try_from(url)
             .ok()
-            .map(|id| format!("hn:{id}"))
+            .map(|id| id.dedup_key())
             .or_else(|| url_key(url))
     }
 }
@@ -804,12 +804,11 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
         // Unlike the other passes' early exits, this one is an *answer* from Algolia —
         // the search ran and the article simply has no discussion — so it counts as
         // having reached the source.
-        let id = match self.client.search_by_url(&bookmark.url).await? {
-            Some(id) => id,
-            None => return Ok(Plan::Unchanged),
+        let Some(id) = self.client.search_by_url(&bookmark.url).await? else {
+            return Ok(Plan::Unchanged);
         };
 
-        let hn_link = format!("HN Link: https://news.ycombinator.com/item?id={id}");
+        let hn_link = format!("HN Link: {}", Url::from(&id));
         let note = ensure_hn_link_note(&bookmark.note, &hn_link);
 
         // Clean the title (arbitrary article bookmarks may carry HTML entities).
@@ -847,6 +846,14 @@ pub struct HackerNewsItemId(String);
 impl std::fmt::Display for HackerNewsItemId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+impl HackerNewsItemId {
+    /// The key `sync` dedups a favorited HN item on: `hn:<id>`, matching however the
+    /// bookmark is stored.
+    fn dedup_key(&self) -> String {
+        format!("hn:{self}")
     }
 }
 

@@ -422,8 +422,13 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   socket, which the sandbox forbids — the flake's `checkFlags = [ "--skip=net_tests" ]`
   excludes them there; they still run under `cargo test`. Keep all *other* tests
   hermetic (no network/sockets). A `net_tests` case that points a real client at a dead
-  port sleeps the real ~2.5-minute `CONNECT_BACKOFF`; only `http.rs`'s own tests can
-  inject a zero schedule.
+  port sleeps the real ~2.5-minute `CONNECT_BACKOFF` unless it runs inside
+  `http::recording_waits`; only `http.rs`'s own tests can inject a zero schedule.
+- **No paused clock under a real socket.** `start_paused` auto-advances to the next
+  timer whenever the runtime idles, including on wiremock I/O, so any timer live during a
+  request (a connect timeout, say) fires early. To skip the clients' pauses between
+  pages, run the fetch inside `http::recording_waits`, which records each `http::sleep`
+  instead of sleeping. A client's new pause goes through `http::sleep` for that reason.
 - **A test that touches the filesystem takes its directory from
   `test_support::scratch_dir`**, a `tempfile::TempDir` unique per call and removed on
   drop; keep the guard bound while the path is in use. A fixed path under

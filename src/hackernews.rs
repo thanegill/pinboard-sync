@@ -37,6 +37,7 @@ const RETRY_DELAY: Duration = Duration::from_secs(2);
 /// The longest `Retry-After` a favorites-page 429 is waited out for, once. A 429 asking
 /// for longer, or for nothing, fails the fetch at once rather than holding the run open.
 const FAVORITES_MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
+const FAVORITES_PAGE_PAUSE: Duration = Duration::from_millis(500);
 /// Cap on favorites pages followed via the "More" link (30 items per page, so this
 /// covers thousands of favorites). Bounds a malformed or looping "More" link so the
 /// scrape can't spin forever.
@@ -382,7 +383,7 @@ impl HackerNewsClient {
             }
             next = more.and_then(|href| self.resolve(&href));
             // Be gentle between page fetches.
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            crate::http::sleep(FAVORITES_PAGE_PAUSE).await;
         }
         Ok(())
     }
@@ -450,7 +451,7 @@ impl HackerNewsClient {
                 out.insert(HackerNewsItemId::from(item.id), item);
             }
             // Be gentle between chunk queries.
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            crate::http::sleep(Duration::from_millis(300)).await;
         }
         Ok(out)
     }
@@ -1483,7 +1484,10 @@ mod net_tests {
             hn.uri(),
             algolia.uri(),
         );
-        let drafts = client.fetch().await.unwrap();
+        let drafts = crate::http::recording_waits(client.fetch())
+            .await
+            .0
+            .unwrap();
         assert_eq!(drafts.len(), 2);
         assert_eq!(drafts[0].bookmark.url.as_str(), "https://example.com/x");
         assert_eq!(
@@ -1831,7 +1835,10 @@ mod net_tests {
             hn.uri(),
             "http://unused.invalid".into(),
         );
-        let drafts = client.fetch().await.unwrap();
+        let drafts = crate::http::recording_waits(client.fetch())
+            .await
+            .0
+            .unwrap();
         assert!(drafts.is_empty());
     }
 
@@ -1915,7 +1922,7 @@ mod net_tests {
             .await;
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn incremental_fetch_stops_each_stream_at_a_synced_page() {
         let (hn, algolia) = (MockServer::start().await, MockServer::start().await);
         two_page_favorites(&hn, &algolia, [1, 0, 1, 1]).await;
@@ -1943,7 +1950,10 @@ mod net_tests {
         })
         .collect();
 
-        let drafts = client.fetch_incremental(&existing).await.unwrap();
+        let drafts = crate::http::recording_waits(client.fetch_incremental(&existing))
+            .await
+            .0
+            .unwrap();
 
         let fetched: Vec<String> = drafts.iter().map(|d| d.bookmark.url.to_string()).collect();
         let permalink = |id| format!("https://news.ycombinator.com/item?id={id}");
@@ -1961,7 +1971,7 @@ mod net_tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn incremental_fetch_reads_every_page_when_nothing_is_synced() {
         let (hn, algolia) = (MockServer::start().await, MockServer::start().await);
         two_page_favorites(&hn, &algolia, [1, 1, 1, 1]).await;
@@ -1972,12 +1982,15 @@ mod net_tests {
             algolia.uri(),
         );
 
-        let drafts = client.fetch_incremental(&[]).await.unwrap();
+        let drafts = crate::http::recording_waits(client.fetch_incremental(&[]))
+            .await
+            .0
+            .unwrap();
 
         assert_eq!(drafts.len(), 6);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn backup_reads_every_favorites_page() {
         let (hn, algolia) = (MockServer::start().await, MockServer::start().await);
         two_page_favorites(&hn, &algolia, [1, 1, 1, 1]).await;
@@ -1988,7 +2001,7 @@ mod net_tests {
             algolia.uri(),
         );
 
-        let dump = client.dump().await.unwrap();
+        let dump = crate::http::recording_waits(client.dump()).await.0.unwrap();
 
         let pages = |stream: &str| dump.raw.iter().filter(|p| p.stream == stream).count();
         assert_eq!(pages("favorites"), 2);
@@ -2058,12 +2071,17 @@ mod net_tests {
         assert!(drafts.unwrap().is_empty());
         assert_eq!(
             waits,
-            [Duration::from_secs(30)],
-            "the retry waits out the Retry-After, not the linear backoff"
+            [
+                Duration::from_secs(30),
+                FAVORITES_PAGE_PAUSE,
+                FAVORITES_PAGE_PAUSE
+            ],
+            "the retry waits out the Retry-After, not the linear backoff, then each \
+             stream's page pauses"
         );
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn a_second_favorites_429_stops_the_fetch() {
         let hn = MockServer::start().await;
         Mock::given(method("GET"))
@@ -2073,19 +2091,21 @@ mod net_tests {
             .mount(&hn)
             .await;
 
-        let err = favorites_client(&hn).fetch().await.unwrap_err();
+        let (result, waits) = crate::http::recording_waits(favorites_client(&hn).fetch()).await;
 
+        let err = result.unwrap_err();
         assert!(matches!(err, SourceError::RateLimited(_)), "got {err:?}");
+        assert_eq!(waits, [Duration::from_secs(1)]);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn collect_ids_stops_at_the_page_cap() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
         use wiremock::{Request, Respond};
 
         // Every page advertises a fresh "More" link, so only the page cap can stop
-        // the walk. `start_paused` makes the inter-page sleeps virtual.
+        // the walk. `recording_waits` skips the inter-page pauses.
         struct PagingFavorites {
             hits: Arc<AtomicUsize>,
         }
@@ -2118,16 +2138,16 @@ mod net_tests {
             "http://unused.invalid".into(),
         );
         let mut ids = Vec::new();
-        client
-            .collect_ids(
-                false,
-                None,
-                &mut ids,
-                &mut HashMap::new(),
-                &mut RawSink::disabled(),
-            )
-            .await
-            .unwrap();
+        crate::http::recording_waits(client.collect_ids(
+            false,
+            None,
+            &mut ids,
+            &mut HashMap::new(),
+            &mut RawSink::disabled(),
+        ))
+        .await
+        .0
+        .unwrap();
         assert_eq!(hits.load(Ordering::SeqCst), MAX_FAVORITES_PAGES);
         assert_eq!(ids.len(), MAX_FAVORITES_PAGES);
     }
@@ -2174,7 +2194,7 @@ mod net_tests {
             hn.uri(),
             algolia.uri(),
         );
-        let dump = client.dump().await.unwrap();
+        let dump = crate::http::recording_waits(client.dump()).await.0.unwrap();
 
         // Three streams' worth of pages: two scraped HTML pages and one Algolia response.
         let by_stream = |s: &str| -> Vec<&crate::backup::RawPage> {
@@ -2207,9 +2227,15 @@ mod net_tests {
         // End to end: fetch through the driver and land the snapshot on disk.
         let scratch = crate::test_support::scratch_dir("hn-backup-e2e");
         let dir = scratch.path();
-        crate::backup::run_job(&client, "hackernews-psophis", dir, false)
-            .await
-            .unwrap();
+        crate::http::recording_waits(crate::backup::run_job(
+            &client,
+            "hackernews-psophis",
+            dir,
+            false,
+        ))
+        .await
+        .0
+        .unwrap();
 
         let raw_json = std::fs::read_to_string(dir.join("raw/hackernews-psophis.json")).unwrap();
         let raw: serde_json::Value = serde_json::from_str(&raw_json).unwrap();

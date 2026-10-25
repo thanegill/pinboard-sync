@@ -119,7 +119,7 @@ tokio::task_local! {
 }
 
 /// Sleeps for `delay`, or, inside `recording_waits`, records it and returns at once.
-async fn sleep(delay: Duration) {
+pub(crate) async fn sleep(delay: Duration) {
     #[cfg(test)]
     if RECORDED_WAITS
         .try_with(|waits| waits.borrow_mut().push(delay))
@@ -130,9 +130,10 @@ async fn sleep(delay: Duration) {
     tokio::time::sleep(delay).await;
 }
 
-/// Runs `fut` with every retry wait recorded instead of slept, returning its output and
+/// Runs `fut` with every wait recorded instead of slept, returning its output and
 /// the waits in order. For a test that must know how long a request waited without
-/// timing it.
+/// timing it, or that talks to a real socket and must not sleep: a paused clock
+/// auto-advances to the next timer whenever the runtime idles on I/O.
 #[cfg(test)]
 pub(crate) async fn recording_waits<T>(fut: impl Future<Output = T>) -> (T, Vec<Duration>) {
     RECORDED_WAITS

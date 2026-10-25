@@ -33,8 +33,8 @@ use config::{Config, GitHubAccount, HackernewsAccount, RedditAccount, SyncLimit}
 use github::GitHubClient;
 use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackernewsConfig};
 use pinboard::{PinboardClient, RATE_LIMIT_SECS};
-use reddit::{ConfiguredCookie, RedditClient};
-use source::{BookmarkDraft, Source, SourceError, UrlKey};
+use reddit::RedditClient;
+use source::{BookmarkDraft, ConfiguredSecret, Source, SourceError, UrlKey};
 use url::Url;
 
 #[derive(Parser)]
@@ -1949,6 +1949,17 @@ enum SecretRung {
     ConfigFile,
 }
 
+#[cfg(test)]
+impl SecretRung {
+    const ALL: [SecretRung; 5] = [
+        SecretRung::Flag,
+        SecretRung::Env,
+        SecretRung::EnvFile,
+        SecretRung::ConfigInline,
+        SecretRung::ConfigFile,
+    ];
+}
+
 /// The Reddit cookie setting a rung reads, as messages name it.
 fn reddit_cookie_source(rung: SecretRung) -> &'static str {
     match rung {
@@ -1965,7 +1976,7 @@ fn reddit_cookie_source(rung: SecretRung) -> &'static str {
 fn resolve_reddit_cookie(
     flag: Option<String>,
     account: Option<&RedditAccount>,
-) -> Option<ConfiguredCookie> {
+) -> Option<ConfiguredSecret> {
     first_configured_cookie(secret_ladder(
         flag,
         "REDDIT_COOKIE",
@@ -1977,12 +1988,25 @@ fn resolve_reddit_cookie(
 /// The first candidate that configures a Reddit session, with the setting it came from.
 fn first_configured_cookie(
     candidates: impl IntoIterator<Item = (SecretRung, Option<String>)>,
-) -> Option<ConfiguredCookie> {
+) -> Option<ConfiguredSecret> {
+    first_configured(
+        candidates,
+        reddit::is_configured_cookie,
+        reddit_cookie_source,
+    )
+}
+
+/// The first candidate `is_configured` accepts, with the setting `source` names its rung.
+fn first_configured(
+    candidates: impl IntoIterator<Item = (SecretRung, Option<String>)>,
+    is_configured: impl Fn(&str) -> bool,
+    source: fn(SecretRung) -> &'static str,
+) -> Option<ConfiguredSecret> {
     candidates.into_iter().find_map(|(rung, value)| {
-        let value = value.filter(|cookie| reddit::is_configured_cookie(cookie))?;
-        Some(ConfiguredCookie {
+        let value = value.filter(|value| is_configured(value))?;
+        Some(ConfiguredSecret {
             value,
-            source: reddit_cookie_source(rung),
+            source: source(rung),
         })
     })
 }
@@ -2009,10 +2033,11 @@ fn secret_ladder(
 
 /// The first value among the candidates that isn't blank.
 fn first_nonempty(candidates: impl IntoIterator<Item = Option<String>>) -> Option<String> {
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|s| !s.trim().is_empty())
+    candidates.into_iter().flatten().find(|s| is_nonblank(s))
+}
+
+fn is_nonblank(value: &str) -> bool {
+    !value.trim().is_empty()
 }
 
 /// Read a file's trimmed contents, or `None` if missing or empty.
@@ -2121,15 +2146,12 @@ mod tests {
     }
 
     fn first_cookie_on(ladder: [Option<&str>; 5]) -> Option<(String, &'static str)> {
-        let rungs = [
-            SecretRung::Flag,
-            SecretRung::Env,
-            SecretRung::EnvFile,
-            SecretRung::ConfigInline,
-            SecretRung::ConfigFile,
-        ];
-        first_configured_cookie(rungs.into_iter().zip(ladder.map(|v| v.map(String::from))))
-            .map(|cookie| (cookie.value, cookie.source))
+        first_configured_cookie(
+            SecretRung::ALL
+                .into_iter()
+                .zip(ladder.map(|v| v.map(String::from))),
+        )
+        .map(|cookie| (cookie.value, cookie.source))
     }
 
     #[test]
@@ -2175,14 +2197,7 @@ mod tests {
 
     #[test]
     fn reddit_cookie_names_the_setting_it_came_from() {
-        let sources = [
-            SecretRung::Flag,
-            SecretRung::Env,
-            SecretRung::EnvFile,
-            SecretRung::ConfigInline,
-            SecretRung::ConfigFile,
-        ]
-        .map(reddit_cookie_source);
+        let sources = SecretRung::ALL.map(reddit_cookie_source);
         assert_eq!(
             sources,
             [

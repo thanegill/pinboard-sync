@@ -18,7 +18,9 @@ use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::http::{client_builder, send_retrying, ConnectBudget};
 use crate::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
-use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey};
+use crate::source::{
+    page_is_caught_up, BookmarkDraft, ConfiguredSecret, Source, SourceError, UrlKey,
+};
 
 /// Descriptive User-Agent built from the crate name + version. Reddit rejects
 /// generic or missing User-Agents.
@@ -43,14 +45,7 @@ pub trait PostInfo {
     async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError>;
 }
 
-/// A configured Reddit cookie and the setting it came from, such as `$REDDIT_COOKIE_FILE`,
-/// so a message can point at that setting without quoting the cookie.
-pub struct ConfiguredCookie {
-    pub value: String,
-    pub source: &'static str,
-}
-
-/// The `Cookie` header sent for a [`ConfiguredCookie`], as [`session_cookie`] shapes it.
+/// The `Cookie` header sent for a configured cookie, as [`session_cookie`] shapes it.
 struct SessionCookie {
     header: String,
     source: &'static str,
@@ -75,7 +70,7 @@ impl RedditClient {
     /// drafts using `config` (bookmark domain + tag vocabulary).
     pub fn for_user(
         username: String,
-        cookie: Option<ConfiguredCookie>,
+        cookie: Option<ConfiguredSecret>,
         config: RedditConfig,
     ) -> anyhow::Result<Self> {
         Self::build(cookie, Some(username), REDDIT_BASE.to_string(), config)
@@ -83,7 +78,7 @@ impl RedditClient {
 
     /// Client for `cleanup`: `/api/info.json` lookups only (no saved listing, so
     /// the bookmark domain/tag config are irrelevant).
-    pub fn for_info(cookie: Option<ConfiguredCookie>) -> anyhow::Result<Self> {
+    pub fn for_info(cookie: Option<ConfiguredSecret>) -> anyhow::Result<Self> {
         Self::build(
             cookie,
             None,
@@ -93,7 +88,7 @@ impl RedditClient {
     }
 
     fn build(
-        cookie: Option<ConfiguredCookie>,
+        cookie: Option<ConfiguredSecret>,
         username: Option<String>,
         base: String,
         config: RedditConfig,
@@ -641,7 +636,7 @@ const TEST_COOKIE_SOURCE: &str = "$REDDIT_COOKIE_FILE";
 impl RedditClient {
     /// Test constructor pointing both endpoints at a mock server.
     pub(crate) fn for_test(cookie: Option<String>, username: Option<String>, base: String) -> Self {
-        let cookie = cookie.map(|value| ConfiguredCookie {
+        let cookie = cookie.map(|value| ConfiguredSecret {
             value,
             source: TEST_COOKIE_SOURCE,
         });
@@ -910,7 +905,7 @@ mod tests {
     #[test]
     fn every_entry_point_names_a_bare_cookie() {
         let configured = |value: &str| {
-            Some(ConfiguredCookie {
+            Some(ConfiguredSecret {
                 value: value.into(),
                 source: TEST_COOKIE_SOURCE,
             })

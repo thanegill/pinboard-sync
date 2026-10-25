@@ -254,9 +254,9 @@ as empty. A value that sets no session — blank, or only empty `reddit_session=
 is no cookie, and
 `main`'s `resolve_reddit_cookie` skips it through `reddit::is_configured_cookie` so the
 secret ladder falls through it exactly as it does a blank value. `secret_ladder` tags
-each value with its `SecretRung`, so `resolve_reddit_cookie` returns a `ConfiguredCookie`
-naming the setting it came from, and every cookie warning and re-auth message names that
-setting, never the cookie's value.
+each value with its `SecretRung`, so `resolve_reddit_cookie` returns a
+`source::ConfiguredSecret` naming the setting it came from, and every cookie warning and
+re-auth message names that setting, never the cookie's value.
 
 **`backup` has one port and one driver, and captures raw bodies in the same traversal.**
 [`src/backup.rs`](src/backup.rs) is `cleanup_pass.rs`'s sibling: a service implements

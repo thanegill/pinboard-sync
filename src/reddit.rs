@@ -10,14 +10,15 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::Context;
-use log::warn;
+use log::{debug, warn};
 use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
+use crate::bookmark::Bookmark;
 use crate::http::{client_builder, send_retrying, ConnectBudget};
 use crate::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
-use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
+use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey};
 
 /// Descriptive User-Agent built from the crate name + version. Reddit rejects
 /// generic or missing User-Agents.
@@ -126,12 +127,28 @@ impl RedditClient {
         &self,
         sink: &mut RawSink,
     ) -> Result<Vec<RedditListingEntry>, SourceError> {
+        let mut out: Vec<RedditListingEntry> = Vec::new();
+        self.walk_saved(sink, |page| {
+            out.extend(page);
+            false
+        })
+        .await?;
+        Ok(out)
+    }
+
+    /// Follow the saved listing's `after` cursor, handing each page's entries to
+    /// `on_page`, until the listing ends, `on_page` returns true (caught up), the cursor
+    /// loops back, or [`MAX_SAVED_PAGES`] is reached.
+    async fn walk_saved(
+        &self,
+        sink: &mut RawSink,
+        mut on_page: impl FnMut(Vec<RedditListingEntry>) -> bool,
+    ) -> Result<(), SourceError> {
         let username = self
             .username
             .as_deref()
             .context("no username configured (set REDDIT_USERNAME)")?;
         let endpoint = format!("{}/user/{}/saved.json", self.base, username);
-        let mut out: Vec<RedditListingEntry> = Vec::new();
         let mut after: Option<String> = None;
         let mut visited: HashSet<String> = HashSet::new();
         let mut page: u32 = 0;
@@ -172,7 +189,10 @@ impl RedditClient {
                 .context("parsing saved listing response")
                 .map_err(SourceError::Other)?;
             let got = listing.data.children.len();
-            out.extend(listing.data.children);
+            if on_page(listing.data.children) {
+                debug!("reddit saved for '{username}': page {page} has nothing new; stopping");
+                break;
+            }
 
             match listing.data.after {
                 Some(a) if got > 0 => {
@@ -191,7 +211,7 @@ impl RedditClient {
             tokio::time::sleep(Duration::from_millis(1000)).await;
         }
 
-        Ok(out)
+        Ok(())
     }
 }
 
@@ -237,6 +257,27 @@ impl Source for RedditClient {
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
         self.drafts_from(self.fetch_saved().await?)
     }
+
+    /// The saved listing is newest-saved first, so paging stops at its first page that
+    /// would give `sync` nothing to write.
+    async fn fetch_incremental(
+        &self,
+        existing: &[Bookmark],
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        let synced_keys = self.synced_keys(existing);
+        let mut entry_count = 0;
+        let mut drafts = Vec::new();
+        self.walk_saved(&mut RawSink::disabled(), |page| {
+            let page_len = page.len();
+            entry_count += page_len;
+            let page_drafts = self.shape(page);
+            let caught_up = page_is_caught_up(page_len, &page_drafts, &synced_keys);
+            drafts.extend(page_drafts);
+            caught_up
+        })
+        .await?;
+        not_all_dropped(entry_count, drafts)
+    }
 }
 
 impl RedditClient {
@@ -249,20 +290,33 @@ impl RedditClient {
         entries: Vec<RedditListingEntry>,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
         let entry_count = entries.len();
-        let drafts: Vec<BookmarkDraft> = entries
+        not_all_dropped(entry_count, self.shape(entries))
+    }
+
+    /// The drafts `entries` make, skipping (with a warning) any that make none.
+    fn shape(&self, entries: Vec<RedditListingEntry>) -> Vec<BookmarkDraft> {
+        entries
             .into_iter()
             .filter_map(|e| e.into_saved_item(&self.config.domain))
             .filter_map(|it| it.into_draft(&self.config))
-            .collect();
-        if entry_count > 0 && drafts.is_empty() {
-            return Err(anyhow::anyhow!(
-                "all {entry_count} saved reddit entries were dropped (none yielded a \
-                 bookmark) — the saved-listing response shape may have changed"
-            )
-            .into());
-        }
-        Ok(drafts)
+            .collect()
     }
+}
+
+/// `drafts`, unless `entry_count` saved entries made none at all: see
+/// [`RedditClient::drafts_from`].
+fn not_all_dropped(
+    entry_count: usize,
+    drafts: Vec<BookmarkDraft>,
+) -> Result<Vec<BookmarkDraft>, SourceError> {
+    if entry_count > 0 && drafts.is_empty() {
+        return Err(anyhow::anyhow!(
+            "all {entry_count} saved reddit entries were dropped (none yielded a \
+             bookmark) — the saved-listing response shape may have changed"
+        )
+        .into());
+    }
+    Ok(drafts)
 }
 
 impl BackupSource for RedditClient {
@@ -499,7 +553,7 @@ async fn decode_reddit_json<T: DeserializeOwned>(
 #[cfg(test)]
 impl RedditClient {
     /// Test constructor pointing both endpoints at a mock server.
-    fn for_test(cookie: Option<String>, username: Option<String>, base: String) -> Self {
+    pub(crate) fn for_test(cookie: Option<String>, username: Option<String>, base: String) -> Self {
         Self::build(cookie, username, base, RedditConfig::default()).unwrap()
     }
 }
@@ -805,6 +859,38 @@ mod tests {
             assert_eq!(cookie_form(trimmed), Some(form), "{trimmed:?}");
         }
         assert_eq!(cookie_form(""), None);
+    }
+
+    #[test]
+    fn a_saved_page_is_caught_up_when_its_saves_are_on_pinboard() {
+        use crate::test_support::{listing_entry, stored_at};
+        let post = |id: &str| {
+            listing_entry(
+                "t3",
+                serde_json::json!({ "name": format!("t3_{id}"), "subreddit": "rust",
+                                    "permalink": format!("/r/rust/comments/{id}/x/"),
+                                    "title": "T" }),
+            )
+        };
+        let unshapable = listing_entry("t3", serde_json::json!({ "name": "t3_gone" }));
+        let client = RedditClient::for_test(None, None, "http://unused.invalid".into());
+        let synced_keys = client.synced_keys(&[
+            stored_at("https://www.reddit.com/r/rust/comments/a/x/"),
+            stored_at("https://old.reddit.com/r/Rust/comments/b/x/"),
+        ]);
+        let caught_up = |page: Vec<RedditListingEntry>| {
+            page_is_caught_up(page.len(), &client.shape(page), &synced_keys)
+        };
+
+        assert!(
+            caught_up(vec![post("a"), post("b")]),
+            "saves already on Pinboard, under any reddit host or case"
+        );
+        assert!(!caught_up(vec![post("a"), post("c")]), "a new save");
+        assert!(
+            caught_up(vec![post("a"), unshapable]),
+            "an entry that makes no draft adds nothing"
+        );
     }
 }
 
@@ -1152,5 +1238,78 @@ mod net_tests {
         let entries = client.info(&["t3_a".to_string()]).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert!(entries[0].fields.over_18);
+    }
+
+    /// Mounts a three-page saved listing, newest first, one post per page (`n`, `o`,
+    /// then `p`), expecting each page `hits` times.
+    async fn three_saved_pages(server: &MockServer, hits: [u64; 3]) {
+        let pages = [
+            (None, "n", Some("t3_n")),
+            (Some("t3_n"), "o", Some("t3_o")),
+            (Some("t3_o"), "p", None),
+        ];
+        for ((after, id, next), hits) in pages.into_iter().zip(hits) {
+            let saved = Mock::given(method("GET")).and(path("/user/psophis/saved.json"));
+            let saved = match after {
+                None => saved.and(query_param_is_missing("after")),
+                Some(after) => saved.and(query_param("after", after)),
+            };
+            saved
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "kind": "Listing",
+                    "data": { "after": next, "children": [
+                        { "kind": "t3", "data": { "name": format!("t3_{id}"), "subreddit": "rust",
+                          "permalink": format!("/r/rust/comments/{id}/x/"), "title": id } }
+                    ] }
+                })))
+                .expect(hits)
+                .mount(server)
+                .await;
+        }
+    }
+
+    fn saved_client(server: &MockServer) -> RedditClient {
+        RedditClient::for_test(None, Some("psophis".into()), server.uri())
+    }
+
+    /// Pinboard already holds the second page's save, so that page has nothing new.
+    fn second_page_synced() -> [Bookmark; 1] {
+        [crate::test_support::stored_at(
+            "https://www.reddit.com/r/rust/comments/o/x/",
+        )]
+    }
+
+    fn titles(drafts: &[BookmarkDraft]) -> Vec<&str> {
+        drafts.iter().map(|d| d.bookmark.title.as_str()).collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn incremental_fetch_stops_at_the_first_page_with_nothing_new() {
+        let server = MockServer::start().await;
+        three_saved_pages(&server, [1, 1, 0]).await;
+
+        let drafts = saved_client(&server)
+            .fetch_incremental(&second_page_synced())
+            .await
+            .unwrap();
+        assert_eq!(titles(&drafts), ["n", "o"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn incremental_fetch_reads_on_while_every_page_has_something_new() {
+        let server = MockServer::start().await;
+        three_saved_pages(&server, [1, 1, 1]).await;
+
+        let drafts = saved_client(&server).fetch_incremental(&[]).await.unwrap();
+        assert_eq!(titles(&drafts), ["n", "o", "p"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dump_reads_every_saved_page() {
+        let server = MockServer::start().await;
+        three_saved_pages(&server, [1, 1, 1]).await;
+
+        let dump = saved_client(&server).dump().await.unwrap();
+        assert_eq!(dump.raw.len(), 3);
     }
 }

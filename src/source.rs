@@ -2,6 +2,8 @@
 //! it yields [`BookmarkDraft`]s to write to Pinboard and maps an existing Pinboard
 //! URL back to a dedup key, so the sync loop stays service-agnostic.
 
+use std::collections::HashSet;
+
 use url::Url;
 
 use crate::bookmark::Bookmark;
@@ -71,6 +73,15 @@ pub struct BookmarkDraft {
 /// HackerNews uses `hn:<id>` (else the host+path key for article bookmarks).
 pub trait UrlKey {
     fn dedup_key(&self, url: &Url) -> Option<String>;
+
+    /// The dedup keys of the `existing` bookmarks this source manages: a draft whose
+    /// `dedup_key` is among them is already synced.
+    fn synced_keys(&self, existing: &[Bookmark]) -> HashSet<String> {
+        existing
+            .iter()
+            .filter_map(|bookmark| self.dedup_key(&bookmark.url))
+            .collect()
+    }
 }
 
 /// A service that yields saveable items as [`BookmarkDraft`]s. Abstracted from the
@@ -81,6 +92,33 @@ pub trait UrlKey {
 pub trait Source: UrlKey {
     /// All saveable items as drafts, newest first.
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError>;
+
+    /// [`Source::fetch`] for `sync`, which already holds the destination's bookmarks:
+    /// a source may use `existing` to stop paging once it reaches items already synced.
+    /// What it returns still goes through the caller's dedup, so it may include items in
+    /// `existing`. By default, the full fetch.
+    async fn fetch_incremental(
+        &self,
+        existing: &[Bookmark],
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        let _ = existing;
+        self.fetch().await
+    }
+}
+
+/// Whether a page of `page_len` source items, shaped into `page_drafts`, would give
+/// `sync` nothing to write: every draft's `dedup_key` is among `synced_keys`. Sources list
+/// newest first, so the pages after it hold nothing new either. Items that make no draft
+/// add nothing, so a page of only those is caught up too; an empty page proves nothing.
+pub fn page_is_caught_up<'a>(
+    page_len: usize,
+    page_drafts: impl IntoIterator<Item = &'a BookmarkDraft>,
+    synced_keys: &HashSet<String>,
+) -> bool {
+    page_len > 0
+        && page_drafts
+            .into_iter()
+            .all(|draft| synced_keys.contains(&draft.dedup_key))
 }
 
 /// Append `key` to `tags` unless it is empty (empty = the tag is disabled).
@@ -203,6 +241,42 @@ pub fn url_key(url: &Url) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_is_caught_up_only_when_it_has_no_new_draft() {
+        let draft = |key: &str| BookmarkDraft {
+            bookmark: Bookmark {
+                url: Url::parse("https://example.com/").unwrap(),
+                title: String::new(),
+                note: String::new(),
+                tags: Vec::new(),
+                timestamp: None,
+                public: false,
+                read_later: false,
+            },
+            dedup_key: key.into(),
+        };
+        let synced_keys: HashSet<String> = ["a".into(), "b".into()].into();
+        let caught_up =
+            |page_len, drafts: &[BookmarkDraft]| page_is_caught_up(page_len, drafts, &synced_keys);
+
+        assert!(caught_up(2, &[draft("a"), draft("b")]), "all synced");
+        assert!(!caught_up(2, &[draft("c"), draft("a")]), "a new item");
+        assert!(
+            !caught_up(2, &[draft("a"), draft("c")]),
+            "an unsynced older one"
+        );
+        assert!(
+            caught_up(3, &[draft("a")]),
+            "items that make no draft add nothing"
+        );
+        assert!(caught_up(1, &[]), "a page of only items that make no draft");
+        assert!(!caught_up(0, &[]), "an empty page");
+        assert!(
+            !page_is_caught_up(1, &[draft("a")], &HashSet::new()),
+            "nothing synced"
+        );
+    }
 
     #[test]
     fn push_prefixed_slugs_internal_whitespace() {

@@ -5,6 +5,7 @@
 //! be unit-tested with in-memory fakes.
 
 use std::collections::HashSet;
+use std::num::NonZeroUsize;
 
 use log::{debug, error};
 
@@ -18,10 +19,7 @@ pub fn filter_new<S: Source>(
     drafts: Vec<BookmarkDraft>,
     existing: &[Bookmark],
 ) -> Vec<BookmarkDraft> {
-    let keys: HashSet<String> = existing
-        .iter()
-        .filter_map(|b| source.dedup_key(&b.url))
-        .collect();
+    let keys = source.synced_keys(existing);
     drafts
         .into_iter()
         .filter(|d| !keys.contains(&d.dedup_key))
@@ -37,7 +35,8 @@ pub struct JobSettings {
     pub shared: bool,
     pub use_post_date: bool,
     pub max_age_days: u64,
-    pub limit: usize,
+    /// The most new bookmarks to write, if capped.
+    pub limit: Option<NonZeroUsize>,
 }
 
 /// The new drafts for one account, ready to write: those not already on Pinboard
@@ -46,7 +45,7 @@ pub struct JobSettings {
 /// duplicate-key drafts consume slots), each stamped with the account's resolved
 /// `toread`/`shared` flags and post date (kept only when `use_post_date` is on and the
 /// post is within the age cap relative to `now`, else cleared so Pinboard defaults to
-/// "now"), and truncated to the per-job `limit` (0 = unlimited). `now` is a parameter so
+/// "now"), and truncated to the per-job `limit`, if any. `now` is a parameter so
 /// tests are deterministic.
 pub fn prepare_new_drafts<S: Source>(
     source: &S,
@@ -69,8 +68,8 @@ pub fn prepare_new_drafts<S: Source>(
             None
         };
     }
-    if settings.limit > 0 && new.len() > settings.limit {
-        new.truncate(settings.limit);
+    if let Some(limit) = settings.limit {
+        new.truncate(limit.get());
     }
     new
 }
@@ -171,7 +170,11 @@ mod tests {
         )
     }
 
-    fn settings(use_post_date: bool, max_age_days: u64, limit: usize) -> JobSettings {
+    fn settings(
+        use_post_date: bool,
+        max_age_days: u64,
+        limit: Option<NonZeroUsize>,
+    ) -> JobSettings {
         JobSettings {
             toread: false,
             shared: false,
@@ -349,7 +352,7 @@ mod tests {
             shared: true,
             use_post_date: true,
             max_age_days: 30,
-            limit: 0,
+            limit: None,
         };
         let drafts = reddit.fetch().await.unwrap();
         let new = prepare_new_drafts(&reddit, drafts, &[], &job, now);
@@ -386,7 +389,7 @@ mod tests {
             &reddit,
             reddit.fetch().await.unwrap(),
             &[],
-            &settings(false, 30, 0),
+            &settings(false, 30, None),
             now,
         );
         assert_eq!(new.len(), 1);
@@ -403,12 +406,11 @@ mod tests {
             ],
             ..Default::default()
         };
-        // limit 0 means unlimited.
         let all = prepare_new_drafts(
             &reddit,
             reddit.fetch().await.unwrap(),
             &[],
-            &settings(false, 30, 0),
+            &settings(false, 30, None),
             0,
         );
         assert_eq!(all.len(), 3);
@@ -417,7 +419,7 @@ mod tests {
             &reddit,
             reddit.fetch().await.unwrap(),
             &[],
-            &settings(false, 30, 2),
+            &settings(false, 30, NonZeroUsize::new(2)),
             0,
         );
         assert_eq!(capped.len(), 2);
@@ -450,7 +452,7 @@ mod tests {
             &FakeReddit::default(),
             drafts,
             &[],
-            &settings(false, 30, 2),
+            &settings(false, 30, NonZeroUsize::new(2)),
             0,
         );
         let keys: Vec<&str> = new.iter().map(|d| d.dedup_key.as_str()).collect();
@@ -467,7 +469,7 @@ mod tests {
             saved: vec![post("t3_a", "/r/rust/comments/a/x/")],
             ..Default::default()
         };
-        let job = settings(false, 30, 0);
+        let job = settings(false, 30, None);
         let one = prepare_new_drafts(&reddit, reddit.fetch().await.unwrap(), &[], &job, 0);
         let two = prepare_new_drafts(&reddit, reddit.fetch().await.unwrap(), &[], &job, 0);
         assert_eq!(one.len(), 1);

@@ -179,23 +179,56 @@ boundary.
 
 **Every source is a `Source`; the sync loop is generic over it.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `Vec<BookmarkDraft>` (a
-`Bookmark` plus the `dedup_key`), and the `UrlKey::dedup_key()` supertrait method
-maps an existing Pinboard URL to that source's dedup key. `sync::run` fetches drafts,
-builds the set of existing keys by mapping `pinboard.all()` through
-`source.dedup_key`, and writes the drafts whose `dedup_key` isn't present. To add
-a source, implement `Source` and wire it into `main.rs` + `config.rs`. The clients
-also sit behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a
-`&Bookmark`) so the loops are unit-tested with
-in-memory fakes ([`src/test_support.rs`](src/test_support.rs)); real clients are
-covered by `net_tests` against a wiremock server via test-only `with_base_url(s)`
-constructors.
+`Bookmark` plus the `dedup_key`), and the `UrlKey::dedup_key()` supertrait method maps
+an existing Pinboard URL to that source's dedup key. `run_sync_jobs` (`main.rs`) fetches
+drafts, and `sync::prepare_new_drafts` builds the set of existing keys by mapping
+`pinboard.all()` through `source.dedup_key` (`UrlKey::synced_keys`) and keeps the drafts
+whose `dedup_key` isn't present. `sync` fetches through `SyncJob::fetch`, which picks
+the traversal from the job's `config::SyncLimit` (`limit` / `--limit`, parsed by one
+`FromStr` + `Deserialize` pair): `auto`, the default, calls
+`Source::fetch_incremental(existing)`, which defaults to the full fetch and which a
+source may override to stop paging once it reaches items already on Pinboard (all three
+do, through one rule, `source::page_is_caught_up`); `all` and a cap `N` call the full
+`fetch()`. A capped run writes only the newest drafts, so an incremental read would
+never reach the rest again. There is no `0`: it used to mean "no cap", and since that
+now splits into `auto` and `all` it is rejected rather than guessed. A bad value's error
+names the field, never the value. `backup`, `doctor` and `cleanup github`'s
+`use_post_date` star dates call `fetch()`, so they keep the full traversal. To add a
+source, implement `Source` and wire it into `main.rs` + `config.rs`. The clients also
+sit behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a `&Bookmark`)
+so the loops are unit-tested with in-memory fakes
+([`src/test_support.rs`](src/test_support.rs)); real clients are covered by `net_tests`
+against a wiremock server via test-only `with_base_url(s)` constructors.
 
 **Sources:** Reddit ([`reddit.rs`](src/reddit.rs) — cookie-authenticated
 `saved.json`/`api/info.json`, plus the `PostInfo` port for cleanup), GitHub
-([`github.rs`](src/github.rs) — `/user/starred` with Link-header pagination),
+([`github.rs`](src/github.rs) — `/user/starred` with Link-header pagination, 100 per
+page, `sort=created&direction=desc` pinned rather than left to GitHub's defaults because
+the incremental read depends on newest-starred-first), HackerNews (below). Reddit's saved
+listing is newest-saved first with no sort parameter. Both stop their incremental read at
+the first page whose drafts all have their `dedup_key` among `synced_keys`
+(`page_is_caught_up`: an entry that makes no draft adds nothing, an empty page proves
+nothing). Each page is shaped once and its drafts kept, so a dropped entry warns once
+(Reddit's `walk_saved` hands pages to a callback for this). They share HackerNews' two
+known gaps below and a third that applies to all three: the first sync of an account
+whose newest items are already on Pinboard by another route stops there and never
+backfills. `--limit all` recovers all three.
 HackerNews ([`hackernews.rs`](src/hackernews.rs) — scrapes `/favorites` for item IDs
 then batch-reads item details from the Algolia HN search API — `objectID:… OR …`,
-chunked, so hundreds of favorites cost a couple of queries, not one per item).
+chunked, so hundreds of favorites cost a couple of queries, not one per item). The
+favorites pages are the costly half (they are what HN answers with 429), so `sync`
+stops following "More" in each stream (stories, comments) at the first page that would
+give it nothing to write (`is_caught_up`). To tell, `fetch_incremental` looks each page's
+items up on Algolia as it is read (one query per page) and checks every draft's
+`dedup_key` against Pinboard's, the same test `sync::filter_new` applies. That is
+deliberately not "is this item ID bookmarked": a favorited story whose article was
+already saved by hand dedups by URL and never gets an `HN Link:` note, and an ID test
+would page down to every such item on every run. Items gone from Algolia make no draft,
+so they don't hold the walk open either. Favorites list newest first, so later pages
+hold nothing new, with two known gaps: an older favorite deleted from Pinboard is not
+re-added, and a backfill interrupted (or with a failed write) after the newest page was
+written leaves the older favorites unwritten. `sync hackernews --limit all` reads every
+page and recovers them. `backup` keeps the full traversal with its batched lookup.
 `cleanup hackernews --link-discussions` (default off) is the reverse: for article
 bookmarks carrying the `link_tag` marker (default `find-hn`), it looks each up on HN
 by URL (one Algolia query each) and adds the discussion link. Reddit's bookmark/tag
@@ -291,7 +324,17 @@ timer with it, so resolving from config alone would leave the hook dead for the
 deployment it exists to serve. Every client sends through
 `http::send_retrying`
 ([`src/http.rs`](src/http.rs)), which backs off on network errors / 429 / 5xx but
-returns other statuses as-is. A request that could not establish a connection
+returns other statuses as-is. Which responses retry, and how, is a classifier returning
+an `http::Verdict` (`Done`, `Backoff`, `RetryOnceAfter(wait)`): `send_retrying` uses
+`backoff_if_transient`, and `send_retrying_with` takes any other. The one other today is
+the HackerNews favorites pages' `retry_after_up_to(FAVORITES_MAX_RETRY_AFTER)`, which
+shares the 5xx rule: four quick retries of a 429 there only prolong HN's block, so a 429
+is retried at most once, and only after a
+`Retry-After` (delta-seconds or HTTP-date) of at most `FAVORITES_MAX_RETRY_AFTER`
+(120s). Any other 429 comes back as the response and becomes `SourceError::RateLimited`.
+The one wait is per page request, so a run that keeps drawing short `Retry-After`s can
+wait on each page. Their 5xx/transport/connect retries are unchanged, and Algolia and the
+other clients keep backing off on 429. A request that could not establish a connection
 (`is_connect`: any connector failure, so DNS, TCP connect, or the TLS handshake) gets its
 own exponential `CONNECT_BACKOFF` (5s … 80s, ~2.5 minutes in all), on top of and
 separate from the caller's linear `max_attempts` budget, so a resolver restart during a
@@ -315,10 +358,11 @@ clears a quota, and firing the hook would send the operator after the wrong prob
 a permanent skip like the `451` arm. Retrying is not the answer either: `send_retrying`'s
 2s-linear backoff over 4 attempts totals ~12s, while a primary limit resets up to an hour
 out and GitHub asks for a minute on secondary limits, so it would only fail more slowly.
-The 403 form isn't retried; the **429** form still is, by the shared 429/5xx predicate, and
-those ~12s are simply wasted before the response is read — harmless, and the reason a
-`rate_limit_message` unit test uses a synthesized `HeaderMap` rather than a 429 over
-wiremock. Stopping the pass is the response instead.
+The 403 form isn't retried; the **429** form still is, by the default
+`backoff_if_transient` classifier, and those ~12s are simply wasted before the response
+is read — harmless, and the reason a `rate_limit_message` unit test uses a synthesized
+`HeaderMap` rather than a 429 over wiremock. Stopping the pass is the response instead. A HackerNews favorites-page 429
+(see above) is `RateLimited` too: the `sync` run still fails, but no hook fires.
 
 **`SourceError::Blocked` is the fourth: Reddit's edge refusing the request by policy.**
 Reddit's block is recognisable only by its body (it sends `retry-after: 0`, which must not

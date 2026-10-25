@@ -7,6 +7,8 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::num::NonZeroUsize;
+use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
@@ -58,7 +60,7 @@ pub struct Defaults {
 pub struct SourceDefaults {
     pub toread: Option<bool>,
     pub public: Option<bool>,
-    pub limit: Option<usize>,
+    pub limit: Option<SyncLimit>,
     pub on_auth_failure: Option<String>,
     pub use_post_date: Option<bool>,
     pub post_date_max_age_days: Option<u64>,
@@ -97,9 +99,9 @@ pub struct PinboardConfig {
     pub toread: bool,
     /// Seconds to pause between `posts/add` writes (default 3, what Pinboard asks for).
     pub rate_limit_secs: Option<u64>,
-    /// Global cap on new bookmarks written per run (per-source/per-account overridable;
-    /// 0 / unset = no cap). The CLI `--limit` still wins.
-    pub limit: Option<usize>,
+    /// Global [`SyncLimit`] (per-source/per-account overridable; unset = `auto`). The CLI
+    /// `--limit` still wins.
+    pub limit: Option<SyncLimit>,
     /// Set a bookmark's creation date to the source post date (default false).
     /// Per-source/per-account overridable.
     #[serde(default)]
@@ -117,6 +119,92 @@ pub struct PinboardConfig {
 /// Built-in default backdate window (days) when no config sets `post_date_max_age_days`.
 pub const DEFAULT_MAX_AGE_DAYS: u64 = 30;
 
+/// How much one `sync` run writes and reads: the `limit` config key at every tier and
+/// the `--limit` flag. Written `auto`, `all`, or a positive number. `0`, which used to
+/// mean "no cap", is rejected rather than quietly mapped to either word.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SyncLimit {
+    /// No write cap; a source may stop paging once it reaches items already synced.
+    #[default]
+    Auto,
+    /// No write cap, and every page of the source is read.
+    All,
+    /// Write at most this many new bookmarks, reading every page: the ones a capped run
+    /// leaves unwritten sit behind pages that already look synced.
+    Max(NonZeroUsize),
+}
+
+/// The complaint about a malformed `limit`. It names the field and never the value, which
+/// could be a credential pasted into the wrong key.
+const SYNC_LIMIT_EXPECTED: &str = "`limit` must be `auto` (no cap; stop paging once \
+     caught up), `all` (no cap; read every page) or a positive number of bookmarks";
+
+impl SyncLimit {
+    fn from_count<E: serde::de::Error>(count: impl TryInto<usize>) -> Result<Self, E> {
+        count
+            .try_into()
+            .ok()
+            .and_then(NonZeroUsize::new)
+            .map(Self::Max)
+            .ok_or_else(|| E::custom(SYNC_LIMIT_EXPECTED))
+    }
+
+    /// The cap on new bookmarks written, if any.
+    pub fn write_cap(self) -> Option<NonZeroUsize> {
+        match self {
+            Self::Max(cap) => Some(cap),
+            Self::Auto | Self::All => None,
+        }
+    }
+}
+
+impl FromStr for SyncLimit {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text.trim() {
+            "auto" => Ok(Self::Auto),
+            "all" => Ok(Self::All),
+            count => count
+                .parse::<NonZeroUsize>()
+                .map(Self::Max)
+                .map_err(|_| SYNC_LIMIT_EXPECTED.to_string()),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SyncLimit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct SyncLimitVisitor;
+
+        impl serde::de::Visitor<'_> for SyncLimitVisitor {
+            type Value = SyncLimit;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("`limit` as `auto`, `all` or a positive number of bookmarks")
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, count: u64) -> Result<SyncLimit, E> {
+                SyncLimit::from_count(count)
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, count: i64) -> Result<SyncLimit, E> {
+                SyncLimit::from_count(count)
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<SyncLimit, E> {
+                Err(E::custom(SYNC_LIMIT_EXPECTED))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<SyncLimit, E> {
+                text.parse().map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_any(SyncLimitVisitor)
+    }
+}
+
 /// One reddit account: whose saves to read, the session cookie, and the
 /// (non-secret) tag/domain vocabulary.
 #[derive(Default, Deserialize)]
@@ -127,7 +215,7 @@ pub struct RedditAccount {
     pub cookie: Option<String>,
     pub cookie_file: Option<String>,
     pub on_auth_failure: Option<String>,
-    pub limit: Option<usize>,
+    pub limit: Option<SyncLimit>,
     /// Override `[pinboard].toread` for this account's new bookmarks.
     pub toread: Option<bool>,
     /// Override `[pinboard].public` for this account's new bookmarks.
@@ -339,7 +427,7 @@ pub struct GitHubAccount {
     pub token: Option<String>,
     pub token_file: Option<String>,
     pub on_auth_failure: Option<String>,
-    pub limit: Option<usize>,
+    pub limit: Option<SyncLimit>,
     /// Override `[pinboard].toread` for this account's new bookmarks.
     pub toread: Option<bool>,
     /// Override `[pinboard].public` for this account's new bookmarks.
@@ -373,7 +461,7 @@ impl GitHubAccount {
 pub struct HackernewsAccount {
     pub name: Option<String>,
     pub username: Option<String>,
-    pub limit: Option<usize>,
+    pub limit: Option<SyncLimit>,
     /// Override `[pinboard].toread` for this account's new bookmarks.
     pub toread: Option<bool>,
     /// Override `[pinboard].public` for this account's new bookmarks.
@@ -555,7 +643,7 @@ impl_named!(RedditAccount => username, GitHubAccount, HackernewsAccount => usern
 /// generically (see `tier`/`DateSettings` in `main`). The method names normalize the
 /// two longer field names (`post_date_max_age_days`, `cleanup_stale_to_now`).
 pub trait Account: Named {
-    fn limit(&self) -> Option<usize>;
+    fn limit(&self) -> Option<SyncLimit>;
     fn toread(&self) -> Option<bool>;
     fn public(&self) -> Option<bool>;
     fn use_post_date(&self) -> Option<bool>;
@@ -568,7 +656,7 @@ pub trait Account: Named {
 macro_rules! impl_account {
     ($($t:ty),+ $(,)?) => {
         $(impl Account for $t {
-            fn limit(&self) -> Option<usize> { self.limit }
+            fn limit(&self) -> Option<SyncLimit> { self.limit }
             fn toread(&self) -> Option<bool> { self.toread }
             fn public(&self) -> Option<bool> { self.public }
             fn use_post_date(&self) -> Option<bool> { self.use_post_date }
@@ -643,11 +731,50 @@ mod tests {
     }
 
     #[test]
+    fn limit_takes_auto_all_or_a_positive_count() {
+        let limit = |value: &str| {
+            Config::parse(&format!("[pinboard]\nlimit = {value}\n"))
+                .unwrap()
+                .pinboard
+                .limit
+        };
+        assert_eq!(limit("\"auto\""), Some(SyncLimit::Auto));
+        assert_eq!(limit("\"all\""), Some(SyncLimit::All));
+        assert_eq!(
+            limit("25"),
+            Some(SyncLimit::Max(NonZeroUsize::new(25).unwrap()))
+        );
+        assert_eq!(Config::parse("").unwrap().pinboard.limit, None);
+        assert_eq!(SyncLimit::default(), SyncLimit::Auto);
+    }
+
+    #[test]
+    fn a_bad_limit_names_the_field_not_the_value() {
+        for (value, column) in [("0", 9), ("-3", 9), ("\"SECRET42\"", 9), ("1.5", 9)] {
+            assert_error_hides(
+                &format!("[[hackernews]]\nlimit = {value}\n"),
+                "SECRET42",
+                &format!("line 2, column {column}: `limit` must be `auto` (no cap;"),
+            );
+        }
+        assert_error_hides(
+            "[[hackernews]]\nlimit = [\"SECRET43\"]\n",
+            "SECRET43",
+            "line 2, column 9: invalid type: sequence, expected `limit` as `auto`",
+        );
+        assert_error_hides(
+            "[[hackernews]]\nlimit = true\n",
+            "`true`",
+            "line 2, column 9: invalid type: boolean, expected `limit` as `auto`",
+        );
+    }
+
+    #[test]
     fn secret_under_a_non_string_key_is_not_quoted_back() {
         assert_error_hides(
-            "[pinboard]\nlimit = \"user:SECRET321\"\n",
+            "[pinboard]\nrate_limit_secs = \"user:SECRET321\"\n",
             "SECRET321",
-            "line 2, column 9: invalid type: string, expected usize",
+            "line 2, column 19: invalid type: string, expected u64",
         );
         assert_error_hides(
             "[[reddit]]\ntoread = \"reddit_session=SECRET654, expected x\"\n",
@@ -767,7 +894,10 @@ mod tests {
 
         assert!(cfg.pinboard.toread);
         assert_eq!(cfg.defaults.reddit.toread, Some(false));
-        assert_eq!(cfg.defaults.reddit.limit, Some(7));
+        assert_eq!(
+            cfg.defaults.reddit.limit,
+            Some(SyncLimit::Max(NonZeroUsize::new(7).unwrap()))
+        );
         assert_eq!(cfg.reddit[0].toread, Some(true));
         assert_eq!(cfg.reddit[1].toread, None);
         // An unknown key inside the per-source table is still rejected.

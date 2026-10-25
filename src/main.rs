@@ -29,7 +29,7 @@ use log::{debug, error, info, warn};
 
 use backup::BackupSource;
 use bookmark::{AccountState, AccountView, Bookmark, BookmarkStore, CleanupStore};
-use config::{Config, GitHubAccount, HackernewsAccount, RedditAccount};
+use config::{Config, GitHubAccount, HackernewsAccount, RedditAccount, SyncLimit};
 use github::GitHubClient;
 use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackernewsConfig};
 use pinboard::{PinboardClient, RATE_LIMIT_SECS};
@@ -240,9 +240,11 @@ struct RedditSyncArgs {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
-    /// Cap on new bookmarks written this run (overrides config; unset = config / no cap).
+    /// `auto` (the default: no cap; stop paging once caught up),
+    /// `all` (no cap; read every page), or N (write at most N; read every page).
+    /// Overrides config.
     #[arg(long)]
-    limit: Option<usize>,
+    limit: Option<SyncLimit>,
     /// Only backdate posts newer than N days; older use "now" (overrides config).
     #[arg(long)]
     max_age_days: Option<u64>,
@@ -277,9 +279,11 @@ struct GitHubSyncArgs {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
-    /// Cap on new bookmarks written this run (overrides config; unset = config / no cap).
+    /// `auto` (the default: no cap; stop paging once caught up),
+    /// `all` (no cap; read every page), or N (write at most N; read every page).
+    /// Overrides config.
     #[arg(long)]
-    limit: Option<usize>,
+    limit: Option<SyncLimit>,
     /// Only backdate posts newer than N days; older use "now" (overrides config).
     #[arg(long)]
     max_age_days: Option<u64>,
@@ -313,9 +317,11 @@ struct HackernewsSyncArgs {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
-    /// Cap on new bookmarks written this run (overrides config; unset = config / no cap).
+    /// `auto` (the default: no cap; stop paging once caught up),
+    /// `all` (no cap; read every page), or N (write at most N; read every page).
+    /// Overrides config.
     #[arg(long)]
-    limit: Option<usize>,
+    limit: Option<SyncLimit>,
     /// Only backdate posts newer than N days; older use "now" (overrides config).
     #[arg(long)]
     max_age_days: Option<u64>,
@@ -698,7 +704,7 @@ struct SyncOverrides {
     hackernews_username: Option<String>,
     pinboard_token: Option<String>,
     on_auth_failure: Option<String>,
-    limit: Option<usize>,
+    limit: Option<SyncLimit>,
     toread: Option<bool>,
     public: Option<bool>,
     use_post_date: Option<bool>,
@@ -821,7 +827,7 @@ struct SyncJob {
     /// Human label for logs, e.g. `reddit[alice]`.
     label: String,
     hook: Option<String>,
-    limit: usize,
+    limit: SyncLimit,
     /// Resolved to-read flag for this account's new bookmarks.
     toread: bool,
     /// Resolved public/shared flag for this account's new bookmarks.
@@ -833,13 +839,22 @@ struct SyncJob {
 }
 
 impl SyncJob {
+    /// The source's drafts: read incrementally against `existing` under
+    /// [`SyncLimit::Auto`], else in full.
+    async fn fetch(&self, existing: &[Bookmark]) -> Result<Vec<BookmarkDraft>, SourceError> {
+        match self.limit {
+            SyncLimit::Auto => self.client.fetch_incremental(existing).await,
+            SyncLimit::All | SyncLimit::Max(_) => self.client.fetch().await,
+        }
+    }
+
     fn settings(&self) -> sync::JobSettings {
         sync::JobSettings {
             toread: self.toread,
             shared: self.shared,
             use_post_date: self.use_post_date,
             max_age_days: self.max_age_days,
-            limit: self.limit,
+            limit: self.limit.write_cap(),
         }
     }
 }
@@ -942,6 +957,17 @@ impl Source for SourceClient {
             SourceClient::Hackernews(c) => c.fetch().await,
         }
     }
+
+    async fn fetch_incremental(
+        &self,
+        existing: &[Bookmark],
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        match self {
+            SourceClient::Reddit(c) => c.fetch_incremental(existing).await,
+            SourceClient::Github(c) => c.fetch_incremental(existing).await,
+            SourceClient::Hackernews(c) => c.fetch_incremental(existing).await,
+        }
+    }
 }
 
 impl BackupSource for SourceClient {
@@ -969,7 +995,7 @@ impl UrlKey for SourceClient {
 /// each on the flag → account → per-source default → `[pinboard]` global ladder. Leaves
 /// client/secret/hook construction to each source builder.
 struct JobCommon {
-    limit: usize,
+    limit: SyncLimit,
     toread: bool,
     shared: bool,
     dates: DateSettings,
@@ -986,7 +1012,7 @@ fn resolve_job_common(
             ovr.limit,
             account.and_then(|a| a.limit()),
             src.limit,
-            config.pinboard.limit.unwrap_or(0),
+            config.pinboard.limit.unwrap_or_default(),
         ),
         toread: resolve_setting(
             ovr.toread,
@@ -1123,7 +1149,7 @@ async fn run_sync_jobs(
     );
     let now = timefmt::now_unix();
     let fetched = futures::future::join_all(jobs.iter().map(|job| async move {
-        let drafts = job.client.fetch().await?;
+        let drafts = job.fetch(bookmarks).await?;
         let fetched = drafts.len();
         let new = sync::prepare_new_drafts(&job.client, drafts, bookmarks, &job.settings(), now);
         info!(
@@ -2033,6 +2059,7 @@ pub(crate) fn preview(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::test_support::scratch_dir;
+    use std::num::NonZeroUsize;
 
     /// Serializes tests that read or write `PINBOARD_SYNC_ON_AUTH_FAILURE`, since
     /// the env var is process-global and clap reads it at parse time.
@@ -2184,7 +2211,7 @@ mod tests {
     /// `SyncJob` field (e.g. `public` into the `toread` slot) fails the assertions.
     fn wiring_overrides() -> SyncOverrides {
         SyncOverrides {
-            limit: Some(7),
+            limit: Some(SyncLimit::Max(NonZeroUsize::new(7).unwrap())),
             toread: Some(true),        // global default is false
             public: Some(false),       // distinct from toread, so a swap is caught
             use_post_date: Some(true), // global default is false
@@ -2194,7 +2221,11 @@ mod tests {
     }
 
     fn assert_wired(job: &SyncJob) {
-        assert_eq!(job.limit, 7, "limit");
+        assert_eq!(
+            job.limit,
+            SyncLimit::Max(NonZeroUsize::new(7).unwrap()),
+            "limit"
+        );
         assert!(job.toread, "toread");
         assert!(!job.shared, "shared (from --public=false)");
         assert!(job.use_post_date, "use_post_date");
@@ -2254,6 +2285,31 @@ mod tests {
             prebuilt_failures >= 1,
             "the tokenless github account is counted, not aborted"
         );
+    }
+
+    #[test]
+    fn limit_flag_takes_auto_all_or_a_count() {
+        use clap::Parser;
+        let limit = |value: &str| {
+            let argv = ["pinboard-sync", "sync", "hackernews", "--limit", value];
+            match Cli::try_parse_from(argv).map(|cli| cli.command) {
+                Ok(Command::Sync(SyncCmd {
+                    source: Some(SyncSource::Hackernews(args)),
+                    ..
+                })) => Ok(args.limit),
+                Ok(_) => panic!("expected `sync hackernews`"),
+                Err(err) => Err(err.to_string()),
+            }
+        };
+        let max = |count| Some(SyncLimit::Max(NonZeroUsize::new(count).unwrap()));
+
+        assert_eq!(limit("auto"), Ok(Some(SyncLimit::Auto)));
+        assert_eq!(limit("all"), Ok(Some(SyncLimit::All)));
+        assert_eq!(limit("25"), Ok(max(25)));
+        for bad in ["0", "everything"] {
+            let err = limit(bad).unwrap_err();
+            assert!(err.contains("`limit` must be `auto` (no cap;"), "{err}");
+        }
     }
 
     /// Parse `sync <extra>` (no source subcommand) and return the top-level command.
@@ -2758,5 +2814,205 @@ mod tests {
             resolve_backup_dir(Some("/from-flag".into()), &config).unwrap(),
             PathBuf::from("/from-flag")
         );
+    }
+}
+
+/// Tests that need a socket; the flake skips `net_tests` in the Nix build sandbox.
+#[cfg(test)]
+mod net_tests {
+    use super::*;
+    use serde_json::json;
+    use std::num::NonZeroUsize;
+    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Fetches through a HackerNews `SyncJob` capped at `limit`, against favorites whose
+    /// first page (both streams) is already synced and links to a second page that is
+    /// expected `second_page_hits` times.
+    async fn fetch_hackernews_job(limit: SyncLimit, second_page_hits: u64) {
+        let hn = MockServer::start().await;
+        let page = |rows: &str| {
+            ResponseTemplate::new(200).set_body_string(format!(
+                r#"<html op="favorites"><body><table>{rows}</table></body></html>"#
+            ))
+        };
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .and(query_param_is_missing("p"))
+            .respond_with(page(
+                r#"<tr class="athing" id="1"><td>x</td></tr>
+                   <tr><td><a class="morelink" href="favorites?id=u&amp;p=2">More</a></td></tr>"#,
+            ))
+            .expect(2)
+            .mount(&hn)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .and(query_param("p", "2"))
+            .respond_with(page(r#"<tr class="athing" id="2"><td>x</td></tr>"#))
+            .expect(second_page_hits)
+            .mount(&hn)
+            .await;
+        let algolia = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "hits": [
+                { "objectID": "1", "title": "Ask HN: one", "author": "a", "_tags": ["story"] },
+                { "objectID": "2", "title": "Ask HN: two", "author": "a", "_tags": ["story"] },
+            ] })))
+            .mount(&algolia)
+            .await;
+        let job = SyncJob {
+            client: SourceClient::Hackernews(HackerNewsClient::with_base_urls(
+                "u".into(),
+                HackernewsConfig::default(),
+                hn.uri(),
+                algolia.uri(),
+            )),
+            label: "hackernews[u]".into(),
+            hook: None,
+            limit,
+            toread: false,
+            shared: false,
+            use_post_date: false,
+            max_age_days: 30,
+        };
+        let existing = [Bookmark {
+            url: Url::parse("https://news.ycombinator.com/item?id=1").unwrap(),
+            title: String::new(),
+            note: String::new(),
+            tags: Vec::new(),
+            timestamp: None,
+            public: false,
+            read_later: false,
+        }];
+
+        job.fetch(&existing).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_auto_sync_job_fetches_hackernews_incrementally() {
+        fetch_hackernews_job(SyncLimit::Auto, 0).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_all_sync_job_reads_every_favorites_page() {
+        fetch_hackernews_job(SyncLimit::All, 2).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_capped_sync_job_reads_every_favorites_page() {
+        fetch_hackernews_job(SyncLimit::Max(NonZeroUsize::new(5).unwrap()), 2).await;
+    }
+
+    /// Under each limit, fetches through a job built by `client` against two mocked
+    /// pages whose first is already on Pinboard (`existing`), and asserts how often the
+    /// second page was read: never under `auto`, once under `all` and a count.
+    async fn assert_second_page_reads(
+        mount: impl AsyncFn(&MockServer),
+        client: impl Fn(&MockServer) -> SourceClient,
+        is_second_page: impl Fn(&wiremock::Request) -> bool,
+        existing: &[Bookmark],
+    ) {
+        let limits = [
+            (SyncLimit::Auto, 0),
+            (SyncLimit::All, 1),
+            (SyncLimit::Max(NonZeroUsize::new(5).unwrap()), 1),
+        ];
+        for (limit, expected_reads) in limits {
+            let server = MockServer::start().await;
+            mount(&server).await;
+            let job = SyncJob {
+                client: client(&server),
+                label: "test".into(),
+                hook: None,
+                limit,
+                toread: false,
+                shared: false,
+                use_post_date: false,
+                max_age_days: 30,
+            };
+
+            job.fetch(existing).await.unwrap();
+            let requests = server.received_requests().await.unwrap();
+            let second_page_reads = requests.iter().filter(|r| is_second_page(r)).count();
+            assert_eq!(second_page_reads, expected_reads, "under {limit:?}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_an_auto_sync_job_stops_reddit_at_a_synced_page() {
+        let mount = async |server: &MockServer| {
+            for (after, id, next) in [(None, "n", Some("t3_n")), (Some("t3_n"), "o", None)] {
+                let saved = Mock::given(method("GET")).and(path("/user/u/saved.json"));
+                let saved = match after {
+                    None => saved.and(query_param_is_missing("after")),
+                    Some(after) => saved.and(query_param("after", after)),
+                };
+                saved
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                        "kind": "Listing",
+                        "data": { "after": next, "children": [
+                            { "kind": "t3", "data": { "name": format!("t3_{id}"),
+                              "subreddit": "rust", "title": id,
+                              "permalink": format!("/r/rust/comments/{id}/x/") } }
+                        ] }
+                    })))
+                    .mount(server)
+                    .await;
+            }
+        };
+        assert_second_page_reads(
+            mount,
+            |server| {
+                SourceClient::Reddit(RedditClient::for_test(None, Some("u".into()), server.uri()))
+            },
+            |request| request.url.query_pairs().any(|(key, _)| key == "after"),
+            &[crate::test_support::stored_at(
+                "https://old.reddit.com/r/rust/comments/n/x/",
+            )],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn only_an_auto_sync_job_stops_github_at_a_synced_page() {
+        let mount = async |server: &MockServer| {
+            for (page, name) in [(1, "s/n"), (2, "s/o")] {
+                let mut response = ResponseTemplate::new(200).set_body_json(json!([
+                    { "starred_at": "2023-01-02T03:04:05Z",
+                      "repo": { "full_name": name,
+                                "html_url": format!("https://github.com/{name}") } }
+                ]));
+                if page == 1 {
+                    let next = format!("<{}/user/starred?page=2>; rel=\"next\"", server.uri());
+                    response = response.insert_header("link", next.as_str());
+                }
+                Mock::given(method("GET"))
+                    .and(path("/user/starred"))
+                    .and(query_param("page", page.to_string().as_str()))
+                    .respond_with(response)
+                    .mount(server)
+                    .await;
+            }
+        };
+        assert_second_page_reads(
+            mount,
+            |server| {
+                SourceClient::Github(GitHubClient::with_base_url(
+                    "tok".into(),
+                    github::GitHubConfig::default(),
+                    server.uri(),
+                ))
+            },
+            |request| {
+                request
+                    .url
+                    .query_pairs()
+                    .any(|(key, value)| key == "page" && value == "2")
+            },
+            &[crate::test_support::stored_at("https://github.com/s/n")],
+        )
+        .await;
     }
 }

@@ -294,6 +294,7 @@ impl HackerNewsClient {
         } else {
             "favorites"
         };
+        let label = format!("hn {stream}");
         let suffix = if comments { "&comments=t" } else { "" };
         let mut next = Some(format!(
             "{}/favorites?id={}{}",
@@ -305,7 +306,7 @@ impl HackerNewsClient {
             page += 1;
             if page > MAX_FAVORITES_PAGES {
                 warn!(
-                    "hn favorites for '{}': hit the {MAX_FAVORITES_PAGES}-page cap; \
+                    "hn {stream} for '{}': hit the {MAX_FAVORITES_PAGES}-page cap; \
                      stopping (some favorites may be missing)",
                     self.username
                 );
@@ -316,13 +317,13 @@ impl HackerNewsClient {
             }
             if !visited.insert(url.clone()) {
                 warn!(
-                    "hn favorites for '{}': 'More' link looped back to {url}; stopping",
+                    "hn {stream} for '{}': 'More' link looped back to {url}; stopping",
                     self.username
                 );
                 break;
             }
             let resp = send_retrying_with(
-                "hn favorites",
+                &label,
                 &self.connect_budget,
                 MAX_RETRIES,
                 RETRY_DELAY,
@@ -356,7 +357,7 @@ impl HackerNewsClient {
                 FavoritesPage::Recognized { ids, more } => (ids, more),
                 FavoritesPage::Unrecognized => {
                     return Err(anyhow::anyhow!(
-                        "hn favorites for '{}' had no recognizable favorites structure \
+                        "hn {stream} for '{}' had no recognizable favorites structure \
                          (page {page}); HN's markup may have changed",
                         self.username
                     )
@@ -381,7 +382,7 @@ impl HackerNewsClient {
                 );
                 break;
             }
-            next = more.and_then(|href| self.resolve(&href));
+            next = more.and_then(|href| self.resolve(&href, stream));
             // Be gentle between page fetches.
             crate::http::sleep(FAVORITES_PAGE_PAUSE).await;
         }
@@ -392,12 +393,13 @@ impl HackerNewsClient {
     /// against the favorites origin. Relative hrefs resolve against `base`; an
     /// absolute href whose host differs from `base` is refused (returns `None`)
     /// so a hostile favorites page can't steer the crawler at an arbitrary host.
-    fn resolve(&self, href: &str) -> Option<String> {
+    /// `stream` names the favorites page the link came from, for the warning.
+    fn resolve(&self, href: &str, stream: &str) -> Option<String> {
         let base = Url::parse(&self.base).ok()?;
         let resolved = base.join(href).ok()?;
         if resolved.host_str() != base.host_str() {
             warn!(
-                "hn favorites for '{}': ignoring 'More' link to foreign host {resolved}",
+                "hn {stream} for '{}': ignoring 'More' link to foreign host {resolved}",
                 self.username
             );
             return None;
@@ -1225,19 +1227,22 @@ mod tests {
         );
         // Relative "More" links resolve against the favorites origin.
         assert_eq!(
-            client.resolve("favorites?id=u&p=2").as_deref(),
+            client.resolve("favorites?id=u&p=2", "favorites").as_deref(),
             Some("https://news.ycombinator.com/favorites?id=u&p=2")
         );
         // An absolute same-host link is followed.
         assert_eq!(
             client
-                .resolve("https://news.ycombinator.com/favorites?id=u&p=3")
+                .resolve(
+                    "https://news.ycombinator.com/favorites?id=u&p=3",
+                    "favorites"
+                )
                 .as_deref(),
             Some("https://news.ycombinator.com/favorites?id=u&p=3")
         );
         // A hostile absolute "More" link to a foreign host is refused (SSRF guard).
         assert_eq!(
-            client.resolve("http://169.254.169.254/latest/meta-data/"),
+            client.resolve("http://169.254.169.254/latest/meta-data/", "favorites"),
             None
         );
     }
@@ -1798,6 +1803,15 @@ mod net_tests {
         let hn = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/favorites"))
+            .and(query_param_is_missing("comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<html op="favorites"><body><table id="hnmain"></table></body></html>"#,
+            ))
+            .mount(&hn)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/favorites"))
+            .and(query_param("comments", "t"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_string(
                     r#"<html op="news"><body><div>Site moved.</div></body></html>"#,
@@ -1812,8 +1826,18 @@ mod net_tests {
             hn.uri(),
             "http://unused.invalid".into(),
         );
-        let err = client.fetch().await.unwrap_err();
-        assert!(matches!(err, SourceError::Other(_)), "got {err:?}");
+        let err = crate::http::recording_waits(client.fetch())
+            .await
+            .0
+            .unwrap_err();
+        let SourceError::Other(err) = err else {
+            panic!("expected Other, got {err:?}");
+        };
+        assert!(
+            err.to_string()
+                .contains("hn favorites-comments for 'psophis'"),
+            "the error names the page whose markup broke: {err:#}"
+        );
     }
 
     #[tokio::test]

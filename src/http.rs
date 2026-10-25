@@ -109,8 +109,38 @@ where
                 }
             }
         };
-        tokio::time::sleep(delay).await;
+        sleep(delay).await;
     }
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static RECORDED_WAITS: std::cell::RefCell<Vec<Duration>>;
+}
+
+/// Sleeps for `delay`, or, inside `recording_waits`, records it and returns at once.
+async fn sleep(delay: Duration) {
+    #[cfg(test)]
+    if RECORDED_WAITS
+        .try_with(|waits| waits.borrow_mut().push(delay))
+        .is_ok()
+    {
+        return;
+    }
+    tokio::time::sleep(delay).await;
+}
+
+/// Runs `fut` with every retry wait recorded instead of slept, returning its output and
+/// the waits in order. For a test that must know how long a request waited without
+/// timing it.
+#[cfg(test)]
+pub(crate) async fn recording_waits<T>(fut: impl Future<Output = T>) -> (T, Vec<Duration>) {
+    RECORDED_WAITS
+        .scope(std::cell::RefCell::default(), async {
+            let output = fut.await;
+            (output, RECORDED_WAITS.with(std::cell::RefCell::take))
+        })
+        .await
 }
 
 /// The wait a `Retry-After` header asks for, as of `now`: delta-seconds, or an HTTP-date

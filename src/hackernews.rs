@@ -2039,7 +2039,7 @@ mod net_tests {
         Mock::given(method("GET"))
             .and(path("/favorites"))
             .and(query_param_is_missing("comments"))
-            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "30"))
             .up_to_n_times(1)
             .expect(1)
             .mount(&hn)
@@ -2053,14 +2053,13 @@ mod net_tests {
             .mount(&hn)
             .await;
 
-        let start = tokio::time::Instant::now();
-        let drafts = favorites_client(&hn).fetch().await.unwrap();
+        let (drafts, waits) = crate::http::recording_waits(favorites_client(&hn).fetch()).await;
 
-        assert!(drafts.is_empty());
-        let waited = start.elapsed();
-        assert!(
-            waited < RETRY_DELAY,
-            "the retry waits out the Retry-After, not the linear backoff: {waited:?}"
+        assert!(drafts.unwrap().is_empty());
+        assert_eq!(
+            waits,
+            [Duration::from_secs(30)],
+            "the retry waits out the Retry-After, not the linear backoff"
         );
     }
 

@@ -246,10 +246,12 @@ end in base64 `=` padding) is sent as `reddit_session=<value>`. A value counts a
 named only when `reddit_session=` starts it or follows a `;`, never by substring, and of
 several `reddit_session` pairs only the first non-empty one is sent. Only a matched pair
 of surrounding quotes is stripped, and a value of nothing but whitespace, quotes and the
-`;`/`=` separators counts as empty. A value that sets no session — blank, or only empty
-`reddit_session=` pairs — is no cookie, and `main`'s `resolve_reddit_cookie` skips it
-through `reddit::is_configured_cookie` so the secret ladder falls through it exactly as
-it does a blank value.
+`;`/`=` separators counts as empty. Pairs that are empty by that rule are dropped from
+every cookie before it is shaped, so a stray `;` leaves `abc;` a bare value and `a=1;;`
+just `a=1`. A value that sets no session — blank, or only empty `reddit_session=`
+pairs — is no cookie, and `main`'s `resolve_reddit_cookie` skips it through
+`reddit::is_configured_cookie` so the secret ladder falls through it exactly as it does
+a blank value.
 
 **`backup` has one port and one driver, and captures raw bodies in the same traversal.**
 [`src/backup.rs`](src/backup.rs) is `cleanup_pass.rs`'s sibling: a service implements
@@ -290,7 +292,9 @@ environment. Don't add a secret that only reads `$VAR`. `secret_ladder` tags eac
 with its `SecretRung`, so `resolve_reddit_cookie` and `resolve_github_token` return a
 `source::ConfiguredSecret` naming the setting it came from, and every Reddit cookie
 warning and re-auth message and every GitHub token error names that setting, never the
-value.
+value. A message listing every setting a secret can come from builds that list from the
+same rung labels (`source::reddit_cookie_settings`/`github_token_settings`), never by
+hand.
 
 **`sync <source> [account]` / `cleanup <source> [account]` select one account**
 (by name, else the first, else an implicit CLI/env account). `--all` (per-source or
@@ -393,16 +397,16 @@ query) instead. An error quotes a response body only through
 `http::error_with_body`, which puts a one-line excerpt of at most 300 bytes in the error
 and logs the whole body at debug level (`-v`, or `RUST_LOG=pinboard_sync=debug`), in any
 build, escaped as one string literal so a hostile body can't forge log lines. Tests read
-the log through `test_support::capturing_logs`. Both carry the body as given, so a secret
-is redacted before the call: a Pinboard error body could echo the request back, so any
-text from a Pinboard response that goes into an error (a non-success body via
-`PinboardClient::status_error`, or a `result_code`) goes through `redacted_error`, which
-redacts the token, its secret part (which also covers it percent-encoded) and any
-`auth_token=` value from the whole text first. GitHub, Reddit and Algolia bodies go in
-unredacted: the GitHub token and Reddit cookie travel in headers, which their error
-bodies don't echo, and HackerNews has no credential. A body worth seeing under `-v`
-that no error quotes (Reddit's unrecognised 401/403 page) goes through
-`http::log_body_at_debug`, the same escaped line, under the same redaction rule.
+the log through `test_support::capturing_logs`. Every caller passes its client's secrets
+(the GitHub token; the Reddit `Cookie` header and its session value; none for Algolia),
+and `http::redact` replaces them in the whole body before either the log line or the
+excerpt is made, so the cut can't leave part of one behind. Pinboard's echo can take more
+forms, so any text from a Pinboard response that goes into an error (a non-success body
+via `PinboardClient::status_error`, or a `result_code`) goes through `redacted_error`,
+which redacts the token, its secret part (which also covers it percent-encoded) and any
+`auth_token=` value from the whole text first. A body worth seeing under `-v` that no
+error quotes (Reddit's unrecognised 401/403 page) goes through `http::log_body_at_debug`,
+the same escaped line, under the same redaction rule.
 
 **`SourceError::RateLimited` is the third case, and deliberately not either of those.**
 GitHub answers both its primary and secondary rate limits with a **403 or 429** — the

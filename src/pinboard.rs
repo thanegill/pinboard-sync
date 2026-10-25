@@ -11,7 +11,9 @@ use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage};
 use crate::bookmark::{Bookmark, BookmarkStore};
-use crate::http::{client_builder, error_with_body, send_retrying, ConnectBudget};
+use crate::http::{
+    client_builder, error_with_body, redact, send_retrying, ConnectBudget, REDACTED,
+};
 use crate::source::SourceError;
 
 const DEFAULT_BASE: &str = "https://api.pinboard.in/v1";
@@ -33,7 +35,6 @@ const MAX_URL_BYTES: usize = 4000;
 const MIN_URL_BYTES: usize = 500;
 /// Appended to a trimmed `extended` so the truncation is visible in the bookmark.
 const TRUNCATION_MARKER: &str = "… [truncated]";
-const REDACTED: &str = "[redacted]";
 
 #[derive(Deserialize)]
 struct AddResponse {
@@ -156,7 +157,7 @@ impl BackupSource for PinboardClient {
 /// the error nor the debug-logged body carries it, and the excerpt's cut can't leave half
 /// a token behind.
 fn redacted_error(what: &str, text: &str, auth_token: &str) -> anyhow::Error {
-    error_with_body(what, &redact_token(text, auth_token))
+    error_with_body(what, &redact_token(text, auth_token), &[])
 }
 
 /// `text` with every occurrence of the `user:SECRET` token, and of its `SECRET` alone
@@ -166,12 +167,7 @@ fn redact_token(text: &str, auth_token: &str) -> String {
     let secret = auth_token
         .split_once(':')
         .map_or(auth_token, |(_, secret)| secret);
-    [auth_token, secret]
-        .into_iter()
-        .filter(|needle| !needle.is_empty())
-        .fold(redact_auth_token_values(text), |text, needle| {
-            text.replace(needle, REDACTED)
-        })
+    redact(&redact_auth_token_values(text), &[auth_token, secret])
 }
 
 /// `text` with the value of every `auth_token=` parameter replaced, up to the next `&`,

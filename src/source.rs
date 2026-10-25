@@ -59,6 +59,66 @@ pub struct ConfiguredSecret {
     pub source: &'static str,
 }
 
+/// Which rung of `main`'s secret ladder a candidate came from, in the ladder's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretRung {
+    Flag,
+    Env,
+    EnvFile,
+    ConfigInline,
+    ConfigFile,
+}
+
+impl SecretRung {
+    pub const ALL: [SecretRung; 5] = [
+        SecretRung::Flag,
+        SecretRung::Env,
+        SecretRung::EnvFile,
+        SecretRung::ConfigInline,
+        SecretRung::ConfigFile,
+    ];
+}
+
+/// The Reddit cookie setting a rung reads, as messages name it.
+pub fn reddit_cookie_source(rung: SecretRung) -> &'static str {
+    match rung {
+        SecretRung::Flag => "--reddit-cookie",
+        SecretRung::Env => "$REDDIT_COOKIE",
+        SecretRung::EnvFile => "$REDDIT_COOKIE_FILE",
+        SecretRung::ConfigInline => "the config's `cookie`",
+        SecretRung::ConfigFile => "the config's `cookie_file`",
+    }
+}
+
+/// The GitHub token setting a rung reads, as messages name it.
+pub fn github_token_source(rung: SecretRung) -> &'static str {
+    match rung {
+        SecretRung::Flag => "--github-token",
+        SecretRung::Env => "$GITHUB_TOKEN",
+        SecretRung::EnvFile => "$GITHUB_TOKEN_FILE",
+        SecretRung::ConfigInline => "the config's `token`",
+        SecretRung::ConfigFile => "the config's `token_file`",
+    }
+}
+
+/// Every setting a Reddit cookie can come from, as "A, B or C" for a message to follow
+/// "set".
+pub fn reddit_cookie_settings() -> String {
+    settings_list(reddit_cookie_source)
+}
+
+/// Every setting a GitHub token can come from, as "A, B or C" for a message to follow
+/// "set".
+pub fn github_token_settings() -> String {
+    settings_list(github_token_source)
+}
+
+/// The setting each rung reads, in ladder order, as "A, B or C".
+fn settings_list(setting: fn(SecretRung) -> &'static str) -> String {
+    let [rest @ .., last] = SecretRung::ALL.map(setting);
+    format!("{} or {last}", rest.join(", "))
+}
+
 /// A bookmark ready to write to Pinboard, plus the key used to tell whether it is
 /// already present there. It's a [`Bookmark`] (the thing written) and the extra
 /// `dedup_key` that only matters before the write. Sources build `bookmark.public`/
@@ -248,6 +308,20 @@ pub fn url_key(url: &Url) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_lists_name_every_rung_in_ladder_order() {
+        assert_eq!(
+            reddit_cookie_settings(),
+            "--reddit-cookie, $REDDIT_COOKIE, $REDDIT_COOKIE_FILE, the config's `cookie` or \
+             the config's `cookie_file`"
+        );
+        assert_eq!(
+            github_token_settings(),
+            "--github-token, $GITHUB_TOKEN, $GITHUB_TOKEN_FILE, the config's `token` or the \
+             config's `token_file`"
+        );
+    }
 
     #[test]
     fn a_page_is_caught_up_only_when_it_has_no_new_draft() {

@@ -451,6 +451,7 @@ impl HackerNewsClient {
                 return Err(crate::http::error_with_body(
                     &format!("hn algolia returned {status}"),
                     &body,
+                    &[],
                 )
                 .into());
             }
@@ -490,6 +491,7 @@ impl HackerNewsClient {
             return Err(crate::http::error_with_body(
                 &format!("hn algolia url search returned {status}"),
                 &body,
+                &[],
             )
             .into());
         }

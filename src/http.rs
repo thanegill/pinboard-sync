@@ -568,19 +568,41 @@ pub const ERROR_BODY_MAX_BYTES: usize = 300;
 /// Ends an [`error_excerpt`] that was cut.
 pub const ELLIPSIS: &str = "…";
 
+/// Stands in for a secret [`redact`] removed.
+pub const REDACTED: &str = "[redacted]";
+
 /// The error `"{what}: {excerpt}"`, quoting a response body as [`error_excerpt`] cuts it,
-/// with [`body_debug_line`] logged at debug level first so `-v` shows what the excerpt
-/// left out. Both carry the body as given, so a caller whose body could echo a secret
-/// redacts it before passing it in.
-pub fn error_with_body(what: &str, body: &str) -> anyhow::Error {
-    log_body_at_debug(what, body);
-    anyhow!("{what}: {}", error_excerpt(body))
+/// or just `"{what}"` when the body is blank, with [`body_debug_line`] logged at debug
+/// level first so `-v` shows what the excerpt left out. Both carry the body with `secrets`
+/// [redacted](redact) first, so the cut can't leave part of one behind.
+pub fn error_with_body(what: &str, body: &str, secrets: &[&str]) -> anyhow::Error {
+    let body = redact(body, secrets);
+    log::debug!("{}", body_debug_line(what, &body));
+    let excerpt = error_excerpt(&body);
+    if excerpt.is_empty() {
+        return anyhow!("{what}");
+    }
+    anyhow!("{what}: {excerpt}")
 }
 
-/// Logs [`body_debug_line`] at debug level, for a body worth seeing under `-v` whether or
-/// not an error quotes it. The body goes out as given, so redact any secret first.
-pub fn log_body_at_debug(what: &str, body: &str) {
-    log::debug!("{}", body_debug_line(what, body));
+/// Logs [`body_debug_line`] at debug level with `secrets` [redacted](redact), for a body
+/// worth seeing under `-v` whether or not an error quotes it.
+pub fn log_body_at_debug(what: &str, body: &str, secrets: &[&str]) {
+    log::debug!("{}", body_debug_line(what, &redact(body, secrets)));
+}
+
+/// `text` with every occurrence of each non-empty secret replaced by [`REDACTED`], the
+/// longest first, so a secret that contains another (a whole cookie and its session
+/// value) is replaced whole.
+pub fn redact(text: &str, secrets: &[&str]) -> String {
+    let mut longest_first = secrets.to_vec();
+    longest_first.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    longest_first
+        .into_iter()
+        .filter(|secret| !secret.is_empty())
+        .fold(text.to_string(), |text, secret| {
+            text.replace(secret, REDACTED)
+        })
 }
 
 /// The debug line [`log_body_at_debug`] logs: the whole body, uncut, as an escaped string
@@ -1402,8 +1424,58 @@ mod tests {
 
     #[test]
     fn error_with_body_quotes_the_excerpt_after_what() {
-        let err = error_with_body("github repo returned 500", "  oops\n  try again  ");
+        let err = error_with_body("github repo returned 500", "  oops\n  try again  ", &[]);
         assert_eq!(err.to_string(), "github repo returned 500: oops try again");
+    }
+
+    #[test]
+    fn error_with_body_quotes_nothing_for_a_blank_body() {
+        for blank in ["", " \n\t "] {
+            let err = error_with_body("github repo returned 502", blank, &[]);
+            assert_eq!(err.to_string(), "github repo returned 502", "{blank:?}");
+        }
+    }
+
+    #[test]
+    fn redact_replaces_the_longest_secret_first_and_skips_an_empty_one() {
+        assert_eq!(
+            redact(
+                "sent reddit_session=abc; a=1, then abc alone",
+                &["", "abc", "reddit_session=abc; a=1"]
+            ),
+            "sent [redacted], then [redacted] alone"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_with_body_redacts_the_logged_body_and_the_excerpt() {
+        let body = format!("bad token tok-123\n{}\ntok-123 again", "x".repeat(400));
+        let (err, logs) = crate::test_support::capturing_logs(async {
+            error_with_body("github repo returned 500", &body, &["tok-123"])
+        })
+        .await;
+        let [debug] = logs.as_slice() else {
+            panic!("expected the body at debug level, got {logs:?}");
+        };
+        assert!(debug.ends_with(r#"\n[redacted] again""#), "{debug}");
+        assert!(!debug.contains("tok-123"), "{debug}");
+        let message = err.to_string();
+        assert!(
+            message.starts_with("github repo returned 500: bad token [redacted] x"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn log_body_at_debug_redacts_the_body() {
+        let ((), logs) = crate::test_support::capturing_logs(async {
+            log_body_at_debug("req returned 403", "cookie abc echoed", &["abc"])
+        })
+        .await;
+        assert_eq!(
+            logs,
+            [r#"DEBUG req returned 403; full response body: "cookie [redacted] echoed""#]
+        );
     }
 
     #[test]

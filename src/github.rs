@@ -208,6 +208,9 @@ pub struct GitHubClient {
     connect_budget: ConnectBudget,
     /// The setting the token came from, for messages; never the token itself.
     token_source: &'static str,
+    /// Only to [redact](crate::http::redact) it from a response body that is logged or
+    /// quoted.
+    token: String,
 }
 
 impl GitHubClient {
@@ -250,6 +253,7 @@ impl GitHubClient {
             base,
             connect_budget: ConnectBudget::default(),
             token_source: token.source,
+            token: token.value.trim().to_string(),
         })
     }
 
@@ -297,6 +301,7 @@ impl GitHubClient {
             return Err(crate::http::error_with_body(
                 &format!("github repo returned {status}"),
                 &body,
+                &[&self.token],
             )
             .into());
         }
@@ -390,6 +395,7 @@ impl GitHubClient {
                 return Err(crate::http::error_with_body(
                     &format!("github starred returned {status}"),
                     &body,
+                    &[&self.token],
                 )
                 .into());
             }
@@ -1387,6 +1393,41 @@ mod net_tests {
             assert!(message.contains(source), "{message}");
             assert!(!message.contains("GITHUB_TOKEN"), "{message}");
             assert!(!message.contains("SECRET401"), "{message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_echoed_token_is_redacted_from_the_error_and_the_logged_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(422).set_body_string("bad request: Bearer SECRET422"),
+            )
+            .mount(&server)
+            .await;
+        let client =
+            GitHubClient::with_base_url("SECRET422 ".into(), Default::default(), server.uri());
+        let (errors, logs) = crate::test_support::capturing_logs(async {
+            [
+                client.fetch().await.unwrap_err(),
+                client.repo("o", "r").await.unwrap_err(),
+            ]
+        })
+        .await;
+        for err in errors {
+            let message = err.to_string();
+            assert!(
+                message.ends_with(": bad request: Bearer [redacted]"),
+                "{message}"
+            );
+        }
+        let bodies: Vec<_> = logs
+            .iter()
+            .filter(|line| line.contains("full response body"))
+            .collect();
+        assert_eq!(bodies.len(), 2, "{logs:?}");
+        for line in logs {
+            assert!(!line.contains("SECRET422"), "{line}");
         }
     }
 

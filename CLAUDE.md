@@ -439,6 +439,11 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   that timer firing may pair them. To skip the clients' pauses between pages, run the
   fetch inside `http::recording_waits`, which records each `http::sleep` instead of
   sleeping. A client's new pause goes through `http::sleep` for that reason.
+- **Tests never read a secret from the real environment.** Under `cfg(test)`,
+  `secret_ladder`'s `$VAR`/`$VAR_FILE` rungs read a per-thread fake environment, set with
+  the `tests::FakeSecretEnv` guard, so a test that builds a job can't pick up the
+  developer's real cookie or token. `std::env::set_var` on a secret does nothing in a
+  test; use `FakeSecretEnv` or a synthetic ladder (`first_cookie_on`).
 - **A test that touches the filesystem takes its directory from
   `test_support::scratch_dir`**, a `tempfile::TempDir` unique per call and removed on
   drop; keep the guard bound while the path is in use. A fixed path under

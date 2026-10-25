@@ -2,7 +2,7 @@
 //! it yields [`BookmarkDraft`]s to write to Pinboard and maps an existing Pinboard
 //! URL back to a dedup key, so the sync loop stays service-agnostic.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use url::Url;
 
@@ -225,15 +225,9 @@ pub fn extend_unique(tags: &mut Vec<String>, add: &[String]) {
     }
 }
 
-/// Whether two tag lists differ as sets (order- and duplicate-insensitive after sort).
+/// Whether two tag lists differ as sets (order- and duplicate-insensitive).
 pub fn tags_differ(a: &[String], b: &[String]) -> bool {
-    let mut a = a.to_vec();
-    let mut b = b.to_vec();
-    a.sort();
-    a.dedup();
-    b.sort();
-    b.dedup();
-    a != b
+    a.iter().collect::<BTreeSet<_>>() != b.iter().collect::<BTreeSet<_>>()
 }
 
 /// Whether `host` is `domain` or a subdomain of it (`*.domain`). `host` is assumed

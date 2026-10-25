@@ -26,7 +26,7 @@ sensible, fully-configurable tags:
 A favorited HN *story* is bookmarked as the linked article with the discussion in
 the notes; a favorited *comment* keeps the HN permalink. Dedup is by URL, so the
 same item saved under any subdomain (or already bookmarked from elsewhere) is left
-alone. `--limit` is an optional per-run write cap, not correctness — Reddit also
+alone. `--limit N` is an optional per-run write cap, not correctness — Reddit also
 caps any listing at ~1000 items.
 
 ## Install
@@ -157,7 +157,7 @@ variables for them.
 
 | Flag | Commands | Setting |
 | --- | --- | --- |
-| `--limit <N>` | `sync` | Cap on new bookmarks written this run (0 / unset = no cap). |
+| `--limit <auto\|all\|N>` | `sync` | `auto` (default): no cap, and HackerNews stops reading favorites pages at the first one with nothing new. `all`: no cap, read every page. `N`: write at most N new bookmarks, reading every page. `0` is rejected. |
 | `--max-age-days <N>` | `sync`, `cleanup` | Only backdate posts newer than N days; older use "now". |
 | `--toread[=BOOL]` | `sync` | Mark new bookmarks to-read. |
 | `--public[=BOOL]` | `sync` | Create bookmarks public (default private). |
@@ -357,7 +357,7 @@ silently doing nothing.
 | `public` | bool | `false` | Write bookmarks public. |
 | `toread` | bool | `false` | Mark new bookmarks unread. |
 | `rate_limit_secs` | int | `3` | Seconds between `posts/add` writes. |
-| `limit` | int | `0` | Cap on new bookmarks per run; `0` means no cap. |
+| `limit` | `"auto"`, `"all"` or int | `"auto"` | As `--limit`: `"auto"` is no cap with HackerNews stopping once caught up, `"all"` no cap reading every page, a positive N a cap. `0` is rejected. |
 | `use_post_date` | bool | `false` | Date bookmarks by the source post date instead of now. |
 | `post_date_max_age_days` | int | `30` | Only backdate posts newer than this. |
 | `cleanup_stale_to_now` | bool | `false` | On `cleanup`, re-date too-old posts to now instead of keeping their date. |

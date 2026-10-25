@@ -1,7 +1,9 @@
 //! Shared HTTP helpers used by every client: the retrying send, and quoting a response
 //! body in an error.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -50,18 +52,134 @@ const CONNECT_BACKOFF: [Duration; 5] = [
     Duration::from_secs(80),
 ];
 
-/// One client's allowance for riding out connect failures on [`CONNECT_BACKOFF`].
-///
-/// It is spent the first time a request waits out the whole schedule and still cannot
-/// connect: the outage has then outlasted what the schedule covers, and paying ~2.5
-/// minutes again for every later item would stretch a `cleanup` over hundreds of
-/// bookmarks into hours. From then on that client's connect errors take the linear
-/// policy like any other transport error. It is never refilled, so a client gets one
-/// long wait per run.
+/// One client's connect allowance, per host: the long [`CONNECT_BACKOFF`] wait is spent
+/// once, and a host with no response for longer than that schedule, unbroken, is given up.
+/// Neither is undone within a run.
 #[derive(Default)]
 pub struct ConnectBudget {
-    spent: Cell<bool>,
+    hosts: RefCell<HashMap<String, HostState>>,
 }
+
+impl ConnectBudget {
+    fn host<'a>(&'a self, host: &'a str) -> HostBudget<'a> {
+        HostBudget { budget: self, host }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct HostState {
+    backoff_spent: bool,
+    /// The unbroken run of unanswered attempts, if any.
+    failing_since: Option<Outage>,
+    /// When the outage that gave the host up began.
+    given_up: Option<OffsetDateTime>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// DNS, TCP or TLS failed.
+    NoConnection,
+    /// No response headers within [`READ_TIMEOUT`], or an unanswered HTTP/2 ping.
+    NoAnswer,
+    Reached,
+}
+
+impl Reach {
+    fn of(err: &reqwest::Error) -> Reach {
+        if err.is_connect() {
+            Reach::NoConnection
+        } else if err.is_timeout() {
+            Reach::NoAnswer
+        } else {
+            Reach::Reached
+        }
+    }
+}
+
+/// Monotonic to measure, so a wall-clock step can't move a give-up; wall-clock to report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Outage {
+    began: tokio::time::Instant,
+    began_at: OffsetDateTime,
+}
+
+impl Outage {
+    fn now() -> Self {
+        let now = OffsetDateTime::now_utc();
+        Outage {
+            began: tokio::time::Instant::now(),
+            began_at: now.replace_nanosecond(0).unwrap_or(now),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HostBudget<'a> {
+    budget: &'a ConnectBudget,
+    host: &'a str,
+}
+
+impl HostBudget<'_> {
+    fn state(&self) -> HostState {
+        self.budget
+            .hosts
+            .borrow()
+            .get(self.host)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn update(&self, change: impl FnOnce(&mut HostState)) {
+        change(
+            self.budget
+                .hosts
+                .borrow_mut()
+                .entry(self.host.to_string())
+                .or_default(),
+        );
+    }
+
+    /// `started` is when the attempt began, so an outage dates from its first unanswered
+    /// attempt.
+    fn record_attempt(&self, started: Outage, unanswered: bool) {
+        self.update(|state| {
+            if unanswered {
+                state.failing_since.get_or_insert(started);
+            } else {
+                state.failing_since = None;
+            }
+        });
+    }
+
+    fn outage_lasting(&self, span: Duration) -> Option<Outage> {
+        self.state()
+            .failing_since
+            .filter(|outage| outage.began.elapsed() >= span)
+    }
+
+    fn unreachable(&self) -> Option<Unreachable> {
+        self.state().given_up.map(|since| Unreachable {
+            host: self.host.to_string(),
+            since,
+        })
+    }
+}
+
+/// A request not sent because its host was given up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Unreachable {
+    host: String,
+    since: OffsetDateTime,
+}
+
+impl fmt::Display for Unreachable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let since = crate::timefmt::to_rfc3339(self.since).unwrap_or_default();
+        write!(f, "giving up: {} unreachable since {since}", self.host)
+    }
+}
+
+impl std::error::Error for Unreachable {}
 
 /// What a request's retry loop does with a response, as a classifier passed to
 /// [`send_retrying_with`] decides it.
@@ -75,22 +193,26 @@ pub enum Verdict {
     RetryOnceAfter(Duration),
 }
 
-/// How tower's [`Retry`] retries one request: connect failures on `connect_delays` while
-/// `budget` is unspent, other failures and [`Verdict::Backoff`] responses linearly up to
-/// `max_attempts`, and a [`Verdict::RetryOnceAfter`] once.
+/// How tower's [`Retry`] retries one request to `host`: connect failures on
+/// `connect_delays` while the host's long wait is unspent, other failures and
+/// [`Verdict::Backoff`] responses linearly up to `max_attempts`, and a
+/// [`Verdict::RetryOnceAfter`] once. Ending its linear attempts without a response, after
+/// `give_up_after` of unbroken outage, gives the host up.
 ///
-/// `Retry` clones the policy once per request, so its counters start fresh; `attempts` is
-/// shared with that clone.
+/// `Retry` clones the policy once per request, so its counters start fresh; `attempts` and
+/// `attempt_started` are shared with that clone.
 struct RetryPolicy<'a, Res, E> {
-    budget: &'a ConnectBudget,
+    host: HostBudget<'a>,
     max_attempts: u32,
     base_delay: Duration,
     connect_delays: std::slice::Iter<'a, Duration>,
+    give_up_after: Duration,
     classify: Rc<dyn Fn(&Res) -> Verdict + 'a>,
-    is_connect_error: fn(&E) -> bool,
+    reach: fn(&E) -> Reach,
     other_attempts: u32,
     waited_once: bool,
     attempts: Rc<Cell<u32>>,
+    attempt_started: Rc<Cell<Outage>>,
 }
 
 impl<Res, E> Clone for RetryPolicy<'_, Res, E> {
@@ -99,43 +221,51 @@ impl<Res, E> Clone for RetryPolicy<'_, Res, E> {
             connect_delays: self.connect_delays.clone(),
             classify: Rc::clone(&self.classify),
             attempts: Rc::clone(&self.attempts),
+            attempt_started: Rc::clone(&self.attempt_started),
             ..*self
         }
     }
 }
 
 impl<'a, Res, E> RetryPolicy<'a, Res, E> {
+    /// Call just before sending: the first attempt's start is stamped now.
     fn new(
-        budget: &'a ConnectBudget,
+        host: HostBudget<'a>,
         max_attempts: u32,
         base_delay: Duration,
         connect_backoff: &'a [Duration],
         classify: impl Fn(&Res) -> Verdict + 'a,
-        is_connect_error: fn(&E) -> bool,
+        reach: fn(&E) -> Reach,
     ) -> Self {
         RetryPolicy {
-            budget,
+            host,
             max_attempts,
             base_delay,
             connect_delays: connect_backoff.iter(),
+            give_up_after: connect_backoff.iter().sum(),
             classify: Rc::new(classify),
-            is_connect_error,
+            reach,
             other_attempts: 0,
             waited_once: false,
             attempts: Rc::default(),
+            attempt_started: Rc::new(Cell::new(Outage::now())),
         }
     }
 
     /// How long to wait before trying again after `outcome`, or `None` to return it.
     fn delay_after(&mut self, outcome: &Result<Res, E>) -> Option<Duration> {
-        if let Err(err) = outcome {
-            if !self.budget.spent.get() && (self.is_connect_error)(err) {
-                let delay = self.connect_delays.next().copied();
-                if delay.is_none() {
-                    self.budget.spent.set(true);
-                }
-                return delay;
+        let reached = match outcome {
+            Ok(_) => Reach::Reached,
+            Err(err) => (self.reach)(err),
+        };
+        self.host
+            .record_attempt(self.attempt_started.get(), reached != Reach::Reached);
+        if reached == Reach::NoConnection && !self.host.state().backoff_spent {
+            let delay = self.connect_delays.next().copied();
+            if delay.is_none() {
+                self.host.update(|state| state.backoff_spent = true);
             }
+            return delay;
         }
         let verdict = match outcome {
             Ok(value) => (self.classify)(value),
@@ -150,8 +280,14 @@ impl<'a, Res, E> RetryPolicy<'a, Res, E> {
             }
             Verdict::Backoff => {
                 self.other_attempts += 1;
-                (self.other_attempts < self.max_attempts)
-                    .then(|| self.base_delay * self.other_attempts)
+                if self.other_attempts < self.max_attempts {
+                    return Some(self.base_delay * self.other_attempts);
+                }
+                if let Some(outage) = self.host.outage_lasting(self.give_up_after) {
+                    self.host
+                        .update(|state| state.given_up = Some(outage.began_at));
+                }
+                None
             }
         }
     }
@@ -175,12 +311,32 @@ impl<Req: Resend, Res, E> Policy<Req, Res, E> for RetryPolicy<'_, Res, E> {
     fn retry(&mut self, _: &mut Req, outcome: &mut Result<Res, E>) -> Option<Self::Future> {
         self.attempts.set(self.attempts.get() + 1);
         let delay = self.delay_after(outcome)?;
-        Some(Box::pin(sleep(delay)))
+        let attempt_started = Rc::clone(&self.attempt_started);
+        Some(Box::pin(async move {
+            sleep(delay).await;
+            attempt_started.set(Outage::now());
+        }))
     }
 
     fn clone_request(&mut self, request: &Req) -> Option<Req> {
         request.resend()
     }
+}
+
+/// `Err(Unreachable)`, without an attempt, if the policy's host is given up.
+async fn retry<S, Req>(
+    policy: RetryPolicy<'_, S::Response, S::Error>,
+    service: S,
+    request: Req,
+) -> Result<Result<S::Response, S::Error>, Unreachable>
+where
+    S: tower::Service<Req> + Clone,
+    Req: Resend,
+{
+    if let Some(unreachable) = policy.host.unreachable() {
+        return Err(unreachable);
+    }
+    Ok(Retry::new(policy, service).oneshot(request).await)
 }
 
 #[cfg(test)]
@@ -291,8 +447,8 @@ pub fn client_builder() -> reqwest::ClientBuilder {
 /// connection (per `reqwest::Error::is_connect`: any connector failure, so DNS, TCP
 /// connect, or the TLS handshake, including one that runs past [`CONNECT_TIMEOUT`]) is
 /// retried on the long exponential [`CONNECT_BACKOFF`] (5s, 10s, 20s, 40s, 80s), so a
-/// short resolver or network outage doesn't fail the run — once per client, while its
-/// `budget` is unspent (see [`ConnectBudget`]). Other transport errors (a connection
+/// short resolver or network outage doesn't fail the run, once per host per client (see
+/// [`ConnectBudget`], which also gives up hosts). Other transport errors (a connection
 /// dropped mid-request, or no response headers within [`READ_TIMEOUT`]), HTTP 429, and
 /// 5xx are retried with linear backoff, `base_delay * n` for up to `max_attempts`
 /// attempts. Responses that are not transient — 2xx and other 4xx (e.g. 401/403/400) —
@@ -369,18 +525,19 @@ where
     let request = request
         .map_err(reqwest::Error::without_url)
         .with_context(|| format!("building {label}"))?;
+    let host = authority(request.url());
     let policy = RetryPolicy::new(
-        budget,
+        budget.host(&host),
         max_attempts,
         base_delay,
         connect_backoff,
         classify,
-        reqwest::Error::is_connect,
+        Reach::of,
     );
     let attempts = Rc::clone(&policy.attempts);
-    Retry::new(policy, client)
-        .oneshot(request)
+    retry(policy, client, request)
         .await
+        .with_context(|| format!("{label} not sent"))?
         .map_err(reqwest::Error::without_url)
         .with_context(|| format!("{label} failed after {} attempts", attempts.get()))
         .inspect(|resp| log::debug!("{}", protocol_debug_line(resp)))
@@ -395,6 +552,15 @@ fn protocol_debug_line(resp: &reqwest::Response) -> String {
         resp.url().host_str().unwrap_or("an unnamed host"),
         resp.version()
     )
+}
+
+/// The host and any non-default port of `url`: what a [`ConnectBudget`] tracks.
+fn authority(url: &reqwest::Url) -> String {
+    let host = url.host_str().unwrap_or_default();
+    match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    }
 }
 
 /// The longest [`error_excerpt`] returns, in bytes, including [`ELLIPSIS`].
@@ -438,17 +604,27 @@ fn error_excerpt(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
 
     const NO_DELAY: Duration = Duration::from_millis(0);
     const NO_CONNECT_BACKOFF: [Duration; 3] = [NO_DELAY; 3];
 
-    /// A failed attempt: `Connect` could not establish a connection, `Transport` failed
-    /// after one was made (e.g. a dropped connection).
+    /// A failed attempt: `Connect` never connected, `Timeout` got no response headers,
+    /// `Transport` failed after connecting (e.g. a dropped connection).
     #[derive(Debug, PartialEq)]
     enum Failure {
         Connect,
+        Timeout,
         Transport,
+    }
+
+    impl Failure {
+        fn reach(&self) -> Reach {
+            match self {
+                Failure::Connect => Reach::NoConnection,
+                Failure::Timeout => Reach::NoAnswer,
+                Failure::Transport => Reach::Reached,
+            }
+        }
     }
 
     fn backoff_on_429_and_5xx(status: &u16) -> Verdict {
@@ -466,29 +642,6 @@ mod tests {
             500..600 => Verdict::Backoff,
             _ => Verdict::Done,
         }
-    }
-
-    fn is_connect(failure: &Failure) -> bool {
-        *failure == Failure::Connect
-    }
-
-    impl Resend for () {
-        fn resend(&self) -> Option<Self> {
-            Some(())
-        }
-    }
-
-    /// Drives `policy` over a mock service whose every call is `op()`.
-    async fn retry<Fut>(
-        policy: RetryPolicy<'_, u16, Failure>,
-        op: impl Fn() -> Fut + Clone,
-    ) -> Result<u16, Failure>
-    where
-        Fut: Future<Output = Result<u16, Failure>>,
-    {
-        Retry::new(policy, tower::service_fn(move |()| op()))
-            .oneshot(())
-            .await
     }
 
     /// Retry over a canned sequence of outcomes (status code, or `Err`), counting
@@ -514,23 +667,73 @@ mod tests {
         max: u32,
         classify: fn(&u16) -> Verdict,
     ) -> (Result<u16, Failure>, usize) {
+        let (result, calls) =
+            attempt_classified(budget, HOST, &NO_CONNECT_BACKOFF, outcomes, max, classify).await;
+        (result.expect("the host was given up"), calls)
+    }
+
+    const HOST: &str = "host.test";
+
+    /// [`run_on`] against `host`, which may be given up: then `Err(Unreachable)`.
+    async fn attempt_on(
+        budget: &ConnectBudget,
+        host: &str,
+        outcomes: Vec<Result<u16, Failure>>,
+        max: u32,
+    ) -> (Result<Result<u16, Failure>, Unreachable>, usize) {
+        attempt_classified(
+            budget,
+            host,
+            &NO_CONNECT_BACKOFF,
+            outcomes,
+            max,
+            backoff_on_429_and_5xx,
+        )
+        .await
+    }
+
+    async fn attempt_classified(
+        budget: &ConnectBudget,
+        host: &str,
+        connect_backoff: &[Duration],
+        outcomes: Vec<Result<u16, Failure>>,
+        max: u32,
+        classify: fn(&u16) -> Verdict,
+    ) -> (Result<Result<u16, Failure>, Unreachable>, usize) {
         let calls = RefCell::new(0usize);
         let seq = RefCell::new(outcomes.into_iter());
         let policy = RetryPolicy::new(
-            budget,
+            budget.host(host),
             max,
             NO_DELAY,
-            &NO_CONNECT_BACKOFF,
+            connect_backoff,
             classify,
-            is_connect,
+            Failure::reach,
         );
-        let result = retry(policy, || {
+        let result = retry_over(policy, || {
             *calls.borrow_mut() += 1;
             let next = seq.borrow_mut().next().expect("ran out of canned outcomes");
             async move { next }
         })
         .await;
         (result, calls.into_inner())
+    }
+
+    impl Resend for () {
+        fn resend(&self) -> Option<Self> {
+            Some(())
+        }
+    }
+
+    /// Drives `policy` over a mock service whose every call is `op()`.
+    async fn retry_over<Fut>(
+        policy: RetryPolicy<'_, u16, Failure>,
+        op: impl Fn() -> Fut + Clone,
+    ) -> Result<Result<u16, Failure>, Unreachable>
+    where
+        Fut: Future<Output = Result<u16, Failure>>,
+    {
+        retry(policy, tower::service_fn(move |()| op()), ()).await
     }
 
     #[tokio::test]
@@ -571,7 +774,7 @@ mod tests {
         let statuses = RefCell::new(vec![429u16, 200].into_iter());
         let budget = ConnectBudget::default();
         let policy = RetryPolicy::new(
-            &budget,
+            budget.host(HOST),
             5,
             Duration::from_secs(2),
             &NO_CONNECT_BACKOFF,
@@ -579,16 +782,16 @@ mod tests {
                 429 => Verdict::RetryOnceAfter(Duration::from_secs(90)),
                 _ => Verdict::Done,
             },
-            is_connect,
+            Failure::reach,
         );
-        let result = retry(policy, || {
+        let result = retry_over(policy, || {
             attempt_offsets.borrow_mut().push(start.elapsed().as_secs());
             let status = statuses.borrow_mut().next().unwrap();
             async move { Ok(status) }
         })
         .await;
 
-        assert_eq!(result, Ok(200));
+        assert_eq!(result, Ok(Ok(200)));
         assert_eq!(attempt_offsets.into_inner(), [0, 90]);
     }
 
@@ -779,47 +982,304 @@ mod tests {
         let attempt_offsets = RefCell::new(Vec::new());
         let budget = ConnectBudget::default();
         let policy = RetryPolicy::new(
-            &budget,
+            budget.host(HOST),
             5,
             Duration::from_secs(3),
             &CONNECT_BACKOFF,
             |_: &u16| Verdict::Done,
-            is_connect,
+            Failure::reach,
         );
-        let result = retry(policy, || {
+        let result = retry_over(policy, || {
             attempt_offsets.borrow_mut().push(start.elapsed().as_secs());
             async { Err(Failure::Connect) }
         })
         .await;
 
-        assert_eq!(result, Err(Failure::Connect));
+        assert_eq!(result, Ok(Err(Failure::Connect)));
         assert_eq!(attempt_offsets.into_inner(), [0, 5, 15, 35, 75, 155]);
+    }
+
+    fn connect_failures(count: usize) -> Vec<Result<u16, Failure>> {
+        (0..count).map(|_| Err(Failure::Connect)).collect()
+    }
+
+    async fn spend_backoff(budget: &ConnectBudget, host: &str) {
+        let (result, calls) = attempt_on(budget, host, connect_failures(4), 2).await;
+        assert_eq!(result, Ok(Err(Failure::Connect)));
+        assert_eq!(
+            calls, 4,
+            "the first outage waits out the whole connect backoff"
+        );
     }
 
     #[tokio::test]
     async fn a_spent_connect_budget_falls_back_to_linear_retries() {
         let budget = ConnectBudget::default();
-        let (result, calls) =
-            run_on(&budget, (0..4).map(|_| Err(Failure::Connect)).collect(), 2).await;
-        assert_eq!(result, Err(Failure::Connect));
-        assert_eq!(
-            calls, 4,
-            "the first outage waits out the whole connect backoff"
-        );
-
-        let (result, calls) =
-            run_on(&budget, (0..4).map(|_| Err(Failure::Connect)).collect(), 2).await;
-        assert_eq!(result, Err(Failure::Connect));
-        assert_eq!(
-            calls, 2,
-            "later requests on the client get only max_attempts"
-        );
+        spend_backoff(&budget, HOST).await;
 
         let (result, calls) = run_on(&budget, vec![Err(Failure::Connect), Ok(200)], 2).await;
         assert_eq!(result, Ok(200));
         assert_eq!(
             calls, 2,
             "a spent budget still retries a connect error linearly"
+        );
+
+        let (result, calls) = run_on(&budget, connect_failures(2), 2).await;
+        assert_eq!(result, Err(Failure::Connect));
+        assert_eq!(
+            calls, 2,
+            "later requests on the client get only max_attempts"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_host_that_fails_again_after_its_backoff_is_given_up() {
+        let budget = ConnectBudget::default();
+        let before = Outage::now().began_at;
+        spend_backoff(&budget, HOST).await;
+
+        let (result, calls) = attempt_on(&budget, HOST, connect_failures(2), 2).await;
+        assert_eq!(result, Ok(Err(Failure::Connect)));
+        assert_eq!(calls, 2);
+
+        let (result, calls) = attempt_on(&budget, HOST, vec![Ok(200)], 2).await;
+        assert_eq!(calls, 0, "a given-up host gets no attempt");
+        let unreachable = result.unwrap_err();
+        assert_eq!(unreachable.host, HOST);
+        assert!(
+            (before..=Outage::now().began_at).contains(&unreachable.since),
+            "since is when the outage began: {unreachable:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_host_is_given_up_only_when_its_last_attempt_fails_to_connect() {
+        let budget = ConnectBudget::default();
+        spend_backoff(&budget, HOST).await;
+
+        let outcomes = vec![Err(Failure::Connect), Err(Failure::Transport)];
+        let (result, _) = attempt_on(&budget, HOST, outcomes, 2).await;
+        assert_eq!(result, Ok(Err(Failure::Transport)));
+        let (result, _) = attempt_on(&budget, HOST, vec![Err(Failure::Connect), Ok(503)], 2).await;
+        assert_eq!(result, Ok(Ok(503)));
+
+        let (result, calls) = attempt_on(&budget, HOST, vec![Ok(200)], 2).await;
+        assert_eq!((result, calls), (Ok(Ok(200)), 1));
+    }
+
+    #[tokio::test]
+    async fn the_outage_start_resets_once_the_host_answers() {
+        let budget = ConnectBudget::default();
+        spend_backoff(&budget, HOST).await;
+        let outage_start = budget.host(HOST).state().failing_since;
+        assert!(outage_start.is_some());
+
+        let (result, _) = attempt_on(&budget, HOST, vec![Ok(200)], 2).await;
+        assert_eq!(result, Ok(Ok(200)));
+        assert_eq!(budget.host(HOST).state().failing_since, None);
+    }
+
+    #[tokio::test]
+    async fn each_host_has_its_own_backoff_and_is_given_up_alone() {
+        let budget = ConnectBudget::default();
+        let (site, search) = ("news.example", "search.example");
+        spend_backoff(&budget, site).await;
+        let (result, _) = attempt_on(&budget, site, connect_failures(2), 2).await;
+        assert_eq!(result, Ok(Err(Failure::Connect)));
+        let (result, calls) = attempt_on(&budget, site, vec![Ok(200)], 2).await;
+        assert!(result.is_err() && calls == 0, "the site is given up");
+
+        let (result, calls) =
+            attempt_on(&budget, search, vec![Err(Failure::Connect), Ok(200)], 2).await;
+        assert_eq!(result, Ok(Ok(200)));
+        assert_eq!(calls, 2);
+        spend_backoff(&budget, search).await;
+    }
+
+    const LONG_BACKOFF: [Duration; 2] = [Duration::from_secs(60); 2];
+
+    async fn attempt_long(
+        budget: &ConnectBudget,
+        outcomes: Vec<Result<u16, Failure>>,
+    ) -> (Result<Result<u16, Failure>, Unreachable>, usize) {
+        attempt_classified(
+            budget,
+            HOST,
+            &LONG_BACKOFF,
+            outcomes,
+            2,
+            backoff_on_429_and_5xx,
+        )
+        .await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_outage_that_runs_on_past_the_backoff_is_given_up_by_the_next_request() {
+        let budget = ConnectBudget::default();
+        let (result, calls) = attempt_long(&budget, connect_failures(3)).await;
+        assert_eq!((result, calls), (Ok(Err(Failure::Connect)), 3));
+        let outage_began_at = at("2000-01-01T00:00:00Z");
+        budget.host(HOST).update(|state| {
+            state.failing_since.as_mut().unwrap().began_at = outage_began_at;
+        });
+
+        let (result, _) = attempt_long(&budget, connect_failures(2)).await;
+        assert_eq!(result, Ok(Err(Failure::Connect)));
+
+        let (result, calls) = attempt_long(&budget, vec![Ok(200)]).await;
+        assert_eq!(calls, 0);
+        assert_eq!(
+            result,
+            Err(Unreachable {
+                host: HOST.into(),
+                since: outage_began_at,
+            })
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fresh_outage_is_given_up_only_once_it_outlasts_the_backoff() {
+        let budget = ConnectBudget::default();
+        let (result, _) = attempt_long(&budget, connect_failures(3)).await;
+        assert_eq!(result, Ok(Err(Failure::Connect)));
+
+        let (result, _) = attempt_long(&budget, vec![Ok(503), Err(Failure::Connect)]).await;
+        assert_eq!(result, Ok(Err(Failure::Connect)));
+        let (result, _) = attempt_long(&budget, connect_failures(2)).await;
+        assert_eq!(
+            result,
+            Ok(Err(Failure::Connect)),
+            "an outage that began after the 503 is too young to give up on"
+        );
+
+        tokio::time::advance(LONG_BACKOFF.iter().sum()).await;
+        let (result, _) = attempt_long(&budget, connect_failures(2)).await;
+        assert_eq!(result, Ok(Err(Failure::Connect)));
+        let (result, calls) = attempt_long(&budget, vec![Ok(200)]).await;
+        assert!(result.is_err() && calls == 0, "the host is given up");
+    }
+
+    fn timeouts(count: usize) -> Vec<Result<u16, Failure>> {
+        (0..count).map(|_| Err(Failure::Timeout)).collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_host_is_given_up_once_its_timeouts_outlast_the_backoff() {
+        let budget = ConnectBudget::default();
+        let (result, calls) = attempt_long(&budget, timeouts(2)).await;
+        assert_eq!((result, calls), (Ok(Err(Failure::Timeout)), 2));
+        assert!(
+            !budget.host(HOST).state().backoff_spent,
+            "a timeout never takes the long connect wait"
+        );
+
+        tokio::time::advance(LONG_BACKOFF.iter().sum()).await;
+        let (result, _) = attempt_long(&budget, vec![Ok(503), Err(Failure::Timeout)]).await;
+        assert_eq!(
+            result,
+            Ok(Err(Failure::Timeout)),
+            "a 5xx is a response, so the outage starts over"
+        );
+        assert!(budget.host(HOST).unreachable().is_none());
+
+        tokio::time::advance(LONG_BACKOFF.iter().sum()).await;
+        let (result, _) = attempt_long(&budget, timeouts(2)).await;
+        assert_eq!(result, Ok(Err(Failure::Timeout)));
+        let (result, calls) = attempt_long(&budget, vec![Ok(200)]).await;
+        assert!(result.is_err() && calls == 0, "the host is given up");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn one_request_whose_timeouts_outlast_the_backoff_gives_its_host_up() {
+        let budget = ConnectBudget::default();
+        let attempts = Cell::new(0);
+        let policy = RetryPolicy::new(
+            budget.host(HOST),
+            2,
+            NO_DELAY,
+            &LONG_BACKOFF,
+            backoff_on_429_and_5xx,
+            Failure::reach,
+        );
+        let result = retry_over(policy, || {
+            attempts.set(attempts.get() + 1);
+            async {
+                tokio::time::sleep(LONG_BACKOFF[0]).await;
+                Err(Failure::Timeout)
+            }
+        })
+        .await;
+        assert_eq!((result, attempts.get()), (Ok(Err(Failure::Timeout)), 2));
+
+        let (result, calls) = attempt_long(&budget, vec![Ok(200)]).await;
+        assert!(
+            result.is_err() && calls == 0,
+            "two minute-long timeouts span the two-minute schedule from the first one's start"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_outage_starts_with_the_attempt_that_first_got_no_response() {
+        let budget = ConnectBudget::default();
+        let outcomes = RefCell::new(vec![Ok(503), Err(Failure::Timeout)].into_iter());
+        let policy = RetryPolicy::new(
+            budget.host(HOST),
+            2,
+            NO_DELAY,
+            &LONG_BACKOFF,
+            backoff_on_429_and_5xx,
+            Failure::reach,
+        );
+        let result = retry_over(policy, || {
+            let next = outcomes.borrow_mut().next().unwrap();
+            async {
+                tokio::time::sleep(LONG_BACKOFF[0]).await;
+                next
+            }
+        })
+        .await;
+        assert_eq!(result, Ok(Err(Failure::Timeout)));
+
+        let (result, calls) = attempt_long(&budget, vec![Ok(200)]).await;
+        assert_eq!(
+            (result, calls),
+            (Ok(Ok(200)), 1),
+            "one minute-long timeout after a 503 is too short an outage to give up on"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connect_failures_and_timeouts_make_one_outage() {
+        for second_request in [
+            vec![Err(Failure::Timeout), Err(Failure::Connect)],
+            vec![Err(Failure::Connect), Err(Failure::Timeout)],
+        ] {
+            let budget = ConnectBudget::default();
+            let (result, _) = attempt_long(&budget, connect_failures(3)).await;
+            assert_eq!(result, Ok(Err(Failure::Connect)));
+
+            attempt_long(&budget, second_request)
+                .await
+                .0
+                .unwrap()
+                .unwrap_err();
+            let (result, calls) = attempt_long(&budget, vec![Ok(200)]).await;
+            assert!(
+                result.is_err() && calls == 0,
+                "the outage that spent the backoff ran on through the timeout"
+            );
+        }
+    }
+
+    #[test]
+    fn unreachable_names_the_host_and_when_it_went_down() {
+        let unreachable = Unreachable {
+            host: "hn.algolia.com".into(),
+            since: at("2026-10-25T05:30:00Z"),
+        };
+        assert_eq!(
+            unreachable.to_string(),
+            "giving up: hn.algolia.com unreachable since 2026-10-25T05:30:00Z"
         );
     }
 
@@ -1267,6 +1727,30 @@ mod net_tests {
     }
 
     #[tokio::test]
+    async fn a_reset_stream_or_killed_h2_connection_does_not_count_against_its_host() {
+        for reply in [H2Reply::Reset(h2::Reason::INTERNAL_ERROR), H2Reply::Abort] {
+            let (addr, _) = h2c_server(vec![reply; 3]).await;
+            let budget = ConnectBudget::default();
+
+            let (sent, waits) = recording_waits(send_with_connect_backoff(
+                "h2c",
+                &budget,
+                3,
+                H2_LINEAR_DELAY,
+                &H2_CONNECT_BACKOFF,
+                backoff_if_transient,
+                || h2_client().get(format!("http://{addr}/")),
+            ))
+            .await;
+
+            assert!(sent.is_err());
+            assert_eq!(waits, [H2_LINEAR_DELAY, H2_LINEAR_DELAY * 2]);
+            let state = budget.host(&addr.to_string()).state();
+            assert_eq!((state.failing_since, state.given_up), (None, None));
+        }
+    }
+
+    #[tokio::test]
     async fn reqwest_itself_retries_a_refused_h2_stream() {
         let (addr, _) = h2c_server(vec![
             H2Reply::Reset(h2::Reason::REFUSED_STREAM),
@@ -1336,6 +1820,164 @@ mod net_tests {
         assert_eq!(sent.unwrap().status(), 200);
         assert!(waits.is_empty(), "{waits:?}");
         assert_eq!(connections.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_h2_ping_counts_as_no_answer_until_a_new_connection_answers() {
+        let (addr, _) = h2c_server(vec![H2Reply::Ok, H2Reply::Hang, H2Reply::Ok]).await;
+        let url = format!("http://{addr}/");
+        let http = h2_pinging_client();
+        let budget = ConnectBudget::default();
+        let send = || {
+            recording_waits(send_with_connect_backoff(
+                "h2c",
+                &budget,
+                1,
+                H2_LINEAR_DELAY,
+                &H2_CONNECT_BACKOFF,
+                backoff_if_transient,
+                || http.get(&url),
+            ))
+        };
+
+        assert_eq!(send().await.0.unwrap().status(), 200);
+        let err = send().await.0.unwrap_err();
+
+        assert!(
+            err.downcast_ref::<reqwest::Error>()
+                .is_some_and(|err| err.is_timeout() && !err.is_connect()),
+            "a ping timeout is a timeout, not a connect failure: {err:#}"
+        );
+        let host = addr.to_string();
+        assert!(budget.host(&host).state().failing_since.is_some());
+
+        assert_eq!(send().await.0.unwrap().status(), 200);
+        let state = budget.host(&host).state();
+        assert_eq!((state.failing_since, state.given_up), (None, None));
+    }
+
+    #[tokio::test]
+    async fn a_given_up_host_is_not_contacted_again() {
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let http = short_read_timeout_client();
+        let url = format!("http://127.0.0.1:{port}/v1/posts/all");
+        let budget = ConnectBudget::default();
+        let send = || {
+            send_with_connect_backoff(
+                "posts/all",
+                &budget,
+                2,
+                Duration::ZERO,
+                &[Duration::ZERO; 3],
+                backoff_if_transient,
+                || http.get(&url).query(&[("auth_token", "user:SECRET123")]),
+            )
+        };
+
+        let err = send().await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("failed after 4 attempts"),
+            "{err:#}"
+        );
+        let err = send().await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("failed after 2 attempts"),
+            "{err:#}"
+        );
+
+        let revived = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        revived.set_nonblocking(true).unwrap();
+        let err = send().await.unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.starts_with(&format!(
+                "posts/all not sent: giving up: 127.0.0.1:{port} unreachable since "
+            )),
+            "{message}"
+        );
+        assert!(!format!("{err:?}").contains("SECRET123"), "{err:?}");
+        assert_eq!(
+            revived.accept().map_err(|err| err.kind()).unwrap_err(),
+            std::io::ErrorKind::WouldBlock,
+            "the third request must not connect, though the port now listens"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_silent_host_is_given_up_and_not_contacted_again() {
+        let silent_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        silent_listener.set_nonblocking(true).unwrap();
+        let port = silent_listener.local_addr().unwrap().port();
+        let connections_made = || std::iter::from_fn(|| silent_listener.accept().ok()).count();
+        let http = short_read_timeout_client();
+        let budget = ConnectBudget::default();
+        let send = || {
+            send_with_connect_backoff(
+                "silent",
+                &budget,
+                2,
+                Duration::ZERO,
+                &[Duration::ZERO; 3],
+                backoff_if_transient,
+                || http.get(format!("http://127.0.0.1:{port}/")),
+            )
+        };
+
+        let err = send().await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("failed after 2 attempts"),
+            "{err:#}"
+        );
+        assert_eq!(connections_made(), 2);
+
+        let err = send().await.unwrap_err();
+        assert!(
+            format!("{err:#}").starts_with(&format!(
+                "silent not sent: giving up: 127.0.0.1:{port} unreachable since "
+            )),
+            "{err:#}"
+        );
+        assert_eq!(connections_made(), 0, "a given-up host gets no attempt");
+    }
+
+    #[tokio::test]
+    async fn a_body_that_stalls_does_not_count_against_its_host() {
+        use std::io::Write;
+
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let port = serve_one(move |mut socket| {
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
+                .unwrap();
+            let _ = held.recv();
+        });
+        let http = short_read_timeout_client();
+        let budget = ConnectBudget::default();
+
+        let resp = send_with_connect_backoff(
+            "stalling",
+            &budget,
+            2,
+            Duration::ZERO,
+            &[Duration::ZERO; 3],
+            backoff_if_transient,
+            || http.get(format!("http://127.0.0.1:{port}/")),
+        )
+        .await
+        .unwrap();
+        assert!(resp.text().await.unwrap_err().is_timeout());
+
+        let host = format!("127.0.0.1:{port}");
+        let state = budget.host(&host).state();
+        assert_eq!(
+            (state.failing_since, state.given_up),
+            (None, None),
+            "the host answered, so it is not failing"
+        );
+        drop(release);
     }
 
     const SHORT_READ_TIMEOUT: Duration = Duration::from_millis(300);

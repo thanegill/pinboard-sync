@@ -363,15 +363,37 @@ other clients keep backing off on 429. A request that could not establish a conn
 own exponential `CONNECT_BACKOFF` (5s … 80s, ~2.5 minutes in all), on top of and
 separate from the caller's linear `max_attempts` budget, so a resolver restart during a
 NixOS switch doesn't fail a timer-started run; tests inject a zero schedule through
-`send_with_connect_backoff`. That long wait is **once per client**: each client owns a
-`ConnectBudget`, spent when one request waits out the whole schedule and still can't
-connect, after which that client's connect errors take the linear policy. Without it an
-outage that starts mid-run costs 155s per remaining item — hours for a `cleanup` over
-hundreds of bookmarks, since `plan_failed` doesn't halt a pass. `send_retrying` strips
-the request URL from every client's transport error before wrapping it, because
-Pinboard's `auth_token` rides in the query string and `reqwest::Error` prints the URL in
-`Display` and `Debug`. Never put a request URL with a query into a message: Pinboard
-errors name the endpoint (no query) instead. An error quotes a response body only through
+`send_with_connect_backoff`. That long wait is **once per host per client**: each client
+owns a `ConnectBudget`, keyed by the request URL's host and port (HackerNews reaches both
+its site and Algolia), whose entry is spent when one request waits out the whole
+schedule and still can't connect. After that the host's connect errors take the linear
+policy. A request whose last *linear* attempt still got no response, whether it could not
+connect or connected but saw no headers within `READ_TIMEOUT` (`http::Reach`), **gives
+the host up** if no attempt to the host has had a response for at least the whole
+schedule (`failing_since`, an `Outage` that starts with the first unanswered attempt, is
+timed on the monotonic clock, and is reset by any response, 5xx and 429 included, or by
+any other kind of failure; idle time between requests counts). Connect failures and
+header timeouts share that one run, so alternating them can't reset it. An unanswered
+HTTP/2 ping is `is_timeout` too, so it counts the same; an h2 reset or killed connection
+does not. An outage that runs on past the long wait is given up by the next request, a
+server that accepts connections but never answers by the first request whose read
+timeouts outlast the schedule, and a fresh outage after the host has answered again must
+last the schedule's length, so a brief resolver restart can't end the run. A body that
+stalls after `send` returned does not count: the host answered. `RetryPolicy` stamps each attempt's start
+(`attempt_started`, set when a retry's wait ends), and `retry` checks the give-up before
+handing the request to tower, so a given-up host sees no attempt. Every later request to
+a given-up host fails at once as "`<label>` not sent: giving up: `<host>` unreachable
+since `<outage start>`". Without that, an outage that starts mid-run costs 2 to 3
+minutes per remaining item (4 or 5 linear attempts × the 30s connect timeout), or 4 to
+5.5 for a silent server, hours for a `cleanup` over hundreds of bookmarks. The give-up is
+a plain `SourceError::Other`, deliberately not a `Halt`: in `cleanup` each remaining
+lookup lands in `plan_failed` at no cost and the majority rule decides the run, exactly
+as it would for the same failures arriving slowly; it never fires the auth-failure hook.
+Nothing un-gives-up a host within a run. `send_retrying` strips the request URL from
+every client's transport error before wrapping it, because Pinboard's `auth_token` rides
+in the query string and `reqwest::Error` prints the URL in `Display` and `Debug`. Never
+put a request URL with a query into a message: Pinboard errors name the endpoint (no
+query) instead. An error quotes a response body only through
 `http::error_with_body`, which puts a one-line excerpt of at most 300 bytes in the error
 and logs the whole body at debug level (`-v`, or `RUST_LOG=pinboard_sync=debug`), in any
 build, escaped as one string literal so a hostile body can't forge log lines. Tests read

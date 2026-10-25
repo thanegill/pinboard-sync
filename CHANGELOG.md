@@ -44,6 +44,8 @@ All notable changes to this project are documented here. The format is based on
 - The missing Reddit cookie and GitHub token errors list every setting each can come from.
 - A server that goes silent mid-request now times out after 60 s instead of hanging.
 - A dead HTTP/2 connection is closed within about 50 s, so the retry reconnects.
+- A host that stops responding for longer than a full connect backoff is given up for
+  the rest of the run, so later requests to it fail immediately.
 
 ## [0.5.2] - 2026-10-24
 

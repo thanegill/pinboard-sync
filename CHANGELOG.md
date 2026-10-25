@@ -9,8 +9,12 @@ All notable changes to this project are documented here. The format is based on
 ### Changed
 
 - **Breaking:** `limit` / `--limit` take `auto` (default), `all` or a positive number,
-  and `0` is rejected. Under `auto`, HackerNews stops paging once caught up; `all` reads
+  and `0` is rejected. Under `auto`, `sync` stops paging once caught up; `all` reads
   every page. Replace `limit = 0` with `"auto"`, or delete it.
+- Reddit and GitHub `sync` stop paging once caught up under `limit = "auto"`, like
+  HackerNews, with the same limits: an item deleted from Pinboard isn't re-added, and a
+  first sync whose newest items are already on Pinboard doesn't backfill. Run
+  `sync <source> --limit all` once to fill either gap.
 - GitHub stars are fetched 100 per page instead of 30, so a full read takes about 11
   requests for 1,100 stars instead of about 37.
 

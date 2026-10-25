@@ -179,29 +179,40 @@ boundary.
 
 **Every source is a `Source`; the sync loop is generic over it.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `Vec<BookmarkDraft>` (a
-`Bookmark` plus the `dedup_key`), and the `UrlKey::dedup_key()` supertrait method
-maps an existing Pinboard URL to that source's dedup key. `run_sync_jobs` (`main.rs`)
-fetches drafts, and `sync::prepare_new_drafts` builds the set of existing keys by mapping
-`pinboard.all()` through `source.dedup_key` and keeps the drafts whose `dedup_key` isn't
-present. `sync` fetches through `SyncJob::fetch`, which picks the traversal from the
-job's `config::SyncLimit` (`limit` / `--limit`, parsed by one `FromStr` + `Deserialize`
-pair): `auto`, the default, calls `Source::fetch_incremental(existing)`, which defaults to
-the full fetch and which a source may override to stop paging once it reaches items
-already on Pinboard (HackerNews does); `all` and a cap `N` call the full `fetch()`. A
-capped run writes only the newest drafts, so an incremental read would never reach the
-rest again. There is no `0`: it used to mean "no cap", and since that now splits into
-`auto` and `all` it is rejected rather than guessed. A bad value's error names the field,
-never the value. `backup` and `doctor` keep the full traversal. To add
-a source, implement `Source` and wire it into `main.rs` + `config.rs`. The clients
-also sit behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a
-`&Bookmark`) so the loops are unit-tested with
-in-memory fakes ([`src/test_support.rs`](src/test_support.rs)); real clients are
-covered by `net_tests` against a wiremock server via test-only `with_base_url(s)`
-constructors.
+`Bookmark` plus the `dedup_key`), and the `UrlKey::dedup_key()` supertrait method maps
+an existing Pinboard URL to that source's dedup key. `run_sync_jobs` (`main.rs`) fetches
+drafts, and `sync::prepare_new_drafts` builds the set of existing keys by mapping
+`pinboard.all()` through `source.dedup_key` (`UrlKey::synced_keys`) and keeps the drafts
+whose `dedup_key` isn't present. `sync` fetches through `SyncJob::fetch`, which picks
+the traversal from the job's `config::SyncLimit` (`limit` / `--limit`, parsed by one
+`FromStr` + `Deserialize` pair): `auto`, the default, calls
+`Source::fetch_incremental(existing)`, which defaults to the full fetch and which a
+source may override to stop paging once it reaches items already on Pinboard (all three
+do, through one rule, `source::page_is_caught_up`); `all` and a cap `N` call the full
+`fetch()`. A capped run writes only the newest drafts, so an incremental read would
+never reach the rest again. There is no `0`: it used to mean "no cap", and since that
+now splits into `auto` and `all` it is rejected rather than guessed. A bad value's error
+names the field, never the value. `backup`, `doctor` and `cleanup github`'s
+`use_post_date` star dates call `fetch()`, so they keep the full traversal. To add a
+source, implement `Source` and wire it into `main.rs` + `config.rs`. The clients also
+sit behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a `&Bookmark`)
+so the loops are unit-tested with in-memory fakes
+([`src/test_support.rs`](src/test_support.rs)); real clients are covered by `net_tests`
+against a wiremock server via test-only `with_base_url(s)` constructors.
 
 **Sources:** Reddit ([`reddit.rs`](src/reddit.rs) — cookie-authenticated
 `saved.json`/`api/info.json`, plus the `PostInfo` port for cleanup), GitHub
-([`github.rs`](src/github.rs) — `/user/starred` with Link-header pagination),
+([`github.rs`](src/github.rs) — `/user/starred` with Link-header pagination, 100 per
+page, `sort=created&direction=desc` pinned rather than left to GitHub's defaults because
+the incremental read depends on newest-starred-first), HackerNews (below). Reddit's saved
+listing is newest-saved first with no sort parameter. Both stop their incremental read at
+the first page whose drafts all have their `dedup_key` among `synced_keys`
+(`page_is_caught_up`: an entry that makes no draft adds nothing, an empty page proves
+nothing). Each page is shaped once and its drafts kept, so a dropped entry warns once
+(Reddit's `walk_saved` hands pages to a callback for this). They share HackerNews' two
+known gaps below and a third that applies to all three: the first sync of an account
+whose newest items are already on Pinboard by another route stops there and never
+backfills. `--limit all` recovers all three.
 HackerNews ([`hackernews.rs`](src/hackernews.rs) — scrapes `/favorites` for item IDs
 then batch-reads item details from the Algolia HN search API — `objectID:… OR …`,
 chunked, so hundreds of favorites cost a couple of queries, not one per item). The

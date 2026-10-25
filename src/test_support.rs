@@ -25,6 +25,19 @@ pub fn scratch_dir(label: &str) -> TempDir {
         .unwrap()
 }
 
+/// An existing Pinboard bookmark at `url`, with every other field empty.
+pub fn stored_at(url: &str) -> Bookmark {
+    Bookmark {
+        url: Url::parse(url).unwrap(),
+        title: String::new(),
+        note: String::new(),
+        tags: Vec::new(),
+        timestamp: None,
+        public: false,
+        read_later: false,
+    }
+}
+
 /// Build a `RedditListingEntry` from `kind` (`t3`/`t1`) and a `data` JSON object.
 pub fn listing_entry(kind: &str, data: Value) -> RedditListingEntry {
     serde_json::from_value(serde_json::json!({ "kind": kind, "data": data })).unwrap()

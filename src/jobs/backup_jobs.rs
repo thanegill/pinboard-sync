@@ -6,7 +6,10 @@
 use anyhow::{anyhow, bail, Context, Result};
 use log::warn;
 
-use super::{build_job, job_label, pinboard_client, SourceAccount, SourceClient, SyncOverrides};
+use super::{
+    build_job, job_label, pinboard_client, warn_shared_env_secrets, SourceAccount, SourceClient,
+    SyncOverrides,
+};
 use crate::backup::{self, BackupSource};
 use crate::cli::{BackupCmd, BackupTarget, OutFlag};
 use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccount};
@@ -178,6 +181,7 @@ fn source_backup_plan<A: SourceAccount>(
 /// A backup job for every configured account of one source, with each account that fails
 /// to build recorded in `plan.skipped` instead, so the healthy ones are still backed up.
 fn every_backup_job<A: SourceAccount>(ovr: &SyncOverrides, config: &Config, plan: &mut BackupPlan) {
+    warn_shared_env_secrets::<A>(ovr, config);
     for account in A::configured(config) {
         match source_backup_job(Some(account), ovr, config) {
             Ok(job) => plan.jobs.push(job),
@@ -226,7 +230,7 @@ fn pinboard_backup_job(flag: Option<String>, config: &Config) -> Result<Option<B
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::lock_on_auth_failure_env;
+    use crate::test_support::{lock_on_auth_failure_env, warnings};
 
     fn backup_all() -> BackupCmd {
         BackupCmd {
@@ -258,5 +262,26 @@ mod tests {
 
         let plan = plan.expect("plans");
         assert_eq!(plan.jobs[0].hook.as_deref(), Some("env-hook"));
+    }
+
+    #[tokio::test]
+    async fn backup_all_warns_about_an_env_secret_shared_by_several_accounts() {
+        let _env = crate::secrets::FakeSecretEnv::set(&[("GITHUB_TOKEN", "SHAREDVALUE")]);
+        let config = Config {
+            github: vec![GitHubAccount::default(), GitHubAccount::default()],
+            ..Default::default()
+        };
+
+        let (_, logs) =
+            crate::test_support::capturing_logs(async { backup_jobs(&backup_all(), &config) })
+                .await;
+
+        assert_eq!(
+            warnings(&logs).first().copied(),
+            Some(
+                "WARN $GITHUB_TOKEN is set in the environment, so all 2 configured github \
+                 accounts use it, whatever their own config sets"
+            )
+        );
     }
 }

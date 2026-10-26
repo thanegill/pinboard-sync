@@ -22,8 +22,8 @@ use crate::pinboard::{PinboardClient, RATE_LIMIT_SECS};
 use crate::reddit::model::RedditConfig;
 use crate::reddit::RedditClient;
 use crate::secrets::{
-    missing_github_token, resolve_github_token, resolve_pinboard_token, resolve_reddit_cookie,
-    resolve_secret,
+    self, missing_github_token, resolve_github_token, resolve_pinboard_token,
+    resolve_reddit_cookie, resolve_secret, EnvSecret,
 };
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 use crate::sync::JobSettings;
@@ -51,6 +51,7 @@ fn build_every_job<A: SourceAccount>(
     jobs: &mut Vec<SyncJob>,
     run: &mut AllRun,
 ) {
+    warn_shared_env_secrets::<A>(ovr, config);
     for account in A::configured(config) {
         match build_job(Some(account), ovr, config) {
             Ok(job) => jobs.push(job),
@@ -59,6 +60,22 @@ fn build_every_job<A: SourceAccount>(
             )),
         }
     }
+}
+
+/// Warn when an environment secret would stand in for the own value of every configured
+/// account of `A`, through [`secrets::warn_if_env_shared`].
+pub fn warn_shared_env_secrets<A: SourceAccount>(ovr: &SyncOverrides, config: &Config) {
+    secrets::warn_if_env_shared(A::SOURCE, &A::env_secrets(ovr), A::configured(config).len());
+}
+
+/// The secrets among `flagged` whose CLI flag holds no value the ladder would take, so
+/// that the environment rung is the highest one that can apply.
+fn unflagged(flagged: &[(EnvSecret, &Option<String>)]) -> Vec<EnvSecret> {
+    flagged
+        .iter()
+        .filter(|(secret, flag)| !flag.as_deref().is_some_and(|value| secret.accepts(value)))
+        .map(|(secret, _)| *secret)
+        .collect()
 }
 
 /// Build one job per account: every account when `all`, else the named (or first,
@@ -302,6 +319,10 @@ pub trait SourceAccount: config::Account + Sized {
     /// The account's own `on_auth_failure` override.
     fn on_auth_failure(&self) -> Option<&str>;
 
+    /// The secrets [`Self::client`] resolves whose CLI flag in `ovr` holds no usable value,
+    /// so that the environment outranks each account's own value.
+    fn env_secrets(ovr: &SyncOverrides) -> Vec<EnvSecret>;
+
     /// The client for `account`, or for the implicit CLI/env account when `None`, with
     /// its credentials resolved through the secret ladder.
     fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient>;
@@ -333,6 +354,13 @@ impl SourceAccount for RedditAccount {
 
     fn on_auth_failure(&self) -> Option<&str> {
         self.on_auth_failure.as_deref()
+    }
+
+    fn env_secrets(ovr: &SyncOverrides) -> Vec<EnvSecret> {
+        unflagged(&[
+            (EnvSecret::REDDIT_USERNAME, &ovr.reddit_username),
+            (EnvSecret::REDDIT_COOKIE, &ovr.reddit_cookie),
+        ])
     }
 
     fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient> {
@@ -368,6 +396,10 @@ impl SourceAccount for GitHubAccount {
         self.on_auth_failure.as_deref()
     }
 
+    fn env_secrets(ovr: &SyncOverrides) -> Vec<EnvSecret> {
+        unflagged(&[(EnvSecret::GITHUB_TOKEN, &ovr.github_token)])
+    }
+
     fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient> {
         let token = resolve_github_token(ovr.github_token.clone(), account)
             .with_context(missing_github_token)?;
@@ -392,6 +424,10 @@ impl SourceAccount for HackerNewsAccount {
 
     fn on_auth_failure(&self) -> Option<&str> {
         None
+    }
+
+    fn env_secrets(ovr: &SyncOverrides) -> Vec<EnvSecret> {
+        unflagged(&[(EnvSecret::HN_USERNAME, &ovr.hackernews_username)])
     }
 
     fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient> {
@@ -484,6 +520,7 @@ impl AllRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::warnings;
     use std::num::NonZeroUsize;
 
     #[test]
@@ -678,6 +715,138 @@ mod tests {
         let labels: Vec<&str> = jobs.iter().map(|job| job.label.as_str()).collect();
         assert_eq!(labels, ["github[main]"]);
         assert_eq!(prebuilt_failures, 1);
+    }
+
+    fn reddit_account(name: &str) -> RedditAccount {
+        RedditAccount {
+            name: Some(name.into()),
+            username: Some(name.into()),
+            cookie: Some(format!("reddit_session={name}")),
+            ..Default::default()
+        }
+    }
+
+    /// `$REDDIT_COOKIE_FILE` outranks each account's own cookie, so with two accounts both
+    /// silently use it: worth one warning for the source, naming the setting, not its value.
+    #[tokio::test]
+    async fn an_env_secret_shared_by_several_accounts_is_warned_about_once() {
+        let scratch = crate::test_support::scratch_dir("shared-env-secret");
+        let cookie_file = scratch.path().join("cookie");
+        std::fs::write(&cookie_file, "reddit_session=SHAREDVALUE\n").unwrap();
+        let _env = crate::secrets::FakeSecretEnv::set(&[(
+            "REDDIT_COOKIE_FILE",
+            cookie_file.to_str().unwrap(),
+        )]);
+        let config = Config {
+            reddit: vec![reddit_account("alice"), reddit_account("bob")],
+            ..Default::default()
+        };
+
+        let ((jobs, _), logs) = crate::test_support::capturing_logs(async {
+            build_all_jobs(&config, &SyncOverrides::default())
+        })
+        .await;
+
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(
+            warnings(&logs),
+            [
+                "WARN $REDDIT_COOKIE_FILE is set in the environment, so all 2 configured \
+                 reddit accounts use it, whatever their own config sets"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_env_secret_is_not_warned_about_for_one_account_or_under_its_flag() {
+        let _env = crate::secrets::FakeSecretEnv::set(&[("REDDIT_COOKIE", "reddit_session=x")]);
+        let one = Config {
+            reddit: vec![reddit_account("alice")],
+            ..Default::default()
+        };
+        let two = Config {
+            reddit: vec![reddit_account("alice"), reddit_account("bob")],
+            ..Default::default()
+        };
+        let flagged = SyncOverrides {
+            reddit_cookie: Some("reddit_session=flag".into()),
+            ..Default::default()
+        };
+
+        let (_, logs) = crate::test_support::capturing_logs(async {
+            build_all_jobs(&one, &SyncOverrides::default());
+            build_all_jobs(&two, &flagged);
+        })
+        .await;
+
+        assert_eq!(warnings(&logs), Vec::<&str>::new());
+    }
+
+    /// The ladder skips an env value it would not take (an empty `_FILE`, a cookie naming no
+    /// session), so each account keeps its own and there is nothing to warn about.
+    #[tokio::test]
+    async fn an_env_secret_the_ladder_skips_is_not_warned_about() {
+        let scratch = crate::test_support::scratch_dir("skipped-env-secret");
+        let empty_file = scratch.path().join("empty");
+        std::fs::write(&empty_file, "\n").unwrap();
+        let _env = crate::secrets::FakeSecretEnv::set(&[
+            ("REDDIT_COOKIE", "reddit_session="),
+            ("REDDIT_USERNAME_FILE", empty_file.to_str().unwrap()),
+        ]);
+        let config = Config {
+            reddit: vec![reddit_account("alice"), reddit_account("bob")],
+            ..Default::default()
+        };
+
+        let (_, logs) = crate::test_support::capturing_logs(async {
+            build_all_jobs(&config, &SyncOverrides::default())
+        })
+        .await;
+
+        assert_eq!(warnings(&logs), Vec::<&str>::new());
+    }
+
+    /// The warning names the rung the ladder takes: `$REDDIT_COOKIE` names no session, so
+    /// the cookie comes from `$REDDIT_COOKIE_FILE`. A blank `--github-token` falls through
+    /// to `$GITHUB_TOKEN`, so that is warned about too.
+    #[tokio::test]
+    async fn an_env_secret_warning_names_the_rung_the_ladder_takes() {
+        let scratch = crate::test_support::scratch_dir("env-secret-rung");
+        let cookie_file = scratch.path().join("cookie");
+        std::fs::write(&cookie_file, "reddit_session=SHAREDVALUE\n").unwrap();
+        let _env = crate::secrets::FakeSecretEnv::set(&[
+            ("REDDIT_COOKIE", "reddit_session="),
+            ("REDDIT_COOKIE_FILE", cookie_file.to_str().unwrap()),
+            ("GITHUB_TOKEN", "SHAREDVALUE"),
+        ]);
+        let github_account = |name: &str| GitHubAccount {
+            name: Some(name.into()),
+            ..Default::default()
+        };
+        let config = Config {
+            reddit: vec![reddit_account("alice"), reddit_account("bob")],
+            github: vec![github_account("a"), github_account("b")],
+            ..Default::default()
+        };
+        let blank_token_flag = SyncOverrides {
+            github_token: Some(" ".into()),
+            ..Default::default()
+        };
+
+        let (_, logs) = crate::test_support::capturing_logs(async {
+            build_all_jobs(&config, &blank_token_flag)
+        })
+        .await;
+
+        assert_eq!(
+            warnings(&logs),
+            [
+                "WARN $REDDIT_COOKIE_FILE is set in the environment, so all 2 configured \
+                 reddit accounts use it, whatever their own config sets",
+                "WARN $GITHUB_TOKEN is set in the environment, so all 2 configured github \
+                 accounts use it, whatever their own config sets",
+            ]
+        );
     }
 }
 

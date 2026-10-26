@@ -327,7 +327,12 @@ with its `SecretRung`, so `resolve_reddit_cookie` and `resolve_github_token` ret
 warning and re-auth message and every GitHub token error names that setting, never the
 value. A message listing every setting a secret can come from builds that list from the
 same rung labels (`secrets::reddit_cookie_settings`/`github_token_settings`), never by
-hand.
+hand. The env rungs sit above every account's own value, so when one would apply to
+several configured accounts of a source, each multi-account builder warns once for that
+source (`jobs::warn_shared_env_secrets`, from each source's `SourceAccount::env_secrets`).
+Whether an env rung applies is read off the ladder itself (`secrets::EnvSecret`), with the
+same acceptance check the resolver uses, so an empty `_FILE` or a cookie naming no session
+is not warned about.
 
 **`sync <source> [account]` / `cleanup <source> [account]` select one account**
 (by name, else the first, else an implicit CLI/env account). `--all` (per-source or

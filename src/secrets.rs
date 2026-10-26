@@ -2,6 +2,8 @@
 //! `$VAR_FILE` → config inline → config `*_file` — and the names messages give each rung,
 //! so an error can point at the setting a credential came from without quoting it.
 
+use log::warn;
+
 use crate::config::{GitHubAccount, PinboardConfig, RedditAccount};
 use crate::reddit;
 
@@ -177,6 +179,70 @@ fn secret_ladder(
         (SecretRung::ConfigInline, cfg_inline),
         (SecretRung::ConfigFile, cfg_file.and_then(read_file_secret)),
     ]
+}
+
+/// A secret the ladder reads from `$VAR` and `$VAR_FILE`, with the check a candidate must
+/// pass for the ladder to take it.
+#[derive(Clone, Copy)]
+pub struct EnvSecret {
+    var: &'static str,
+    accepts: fn(&str) -> bool,
+}
+
+impl EnvSecret {
+    pub const REDDIT_USERNAME: EnvSecret = EnvSecret {
+        var: "REDDIT_USERNAME",
+        accepts: is_nonblank,
+    };
+    pub const REDDIT_COOKIE: EnvSecret = EnvSecret {
+        var: "REDDIT_COOKIE",
+        accepts: reddit::cookie::is_configured_cookie,
+    };
+    pub const GITHUB_TOKEN: EnvSecret = EnvSecret {
+        var: "GITHUB_TOKEN",
+        accepts: is_nonblank,
+    };
+    pub const HN_USERNAME: EnvSecret = EnvSecret {
+        var: "HN_USERNAME",
+        accepts: is_nonblank,
+    };
+
+    /// Whether the ladder would take `value` for this secret rather than skip it.
+    pub fn accepts(self, value: &str) -> bool {
+        (self.accepts)(value)
+    }
+
+    /// `$VAR` or `$VAR_FILE`, whichever the ladder would take this secret from, if either.
+    fn env_setting(self) -> Option<String> {
+        let (rung, _) = secret_ladder(None, self.var, None, None)
+            .into_iter()
+            .find(|(_, value)| value.as_deref().is_some_and(self.accepts))?;
+        Some(match rung {
+            SecretRung::EnvFile => format!("${}_FILE", self.var),
+            _ => format!("${}", self.var),
+        })
+    }
+}
+
+/// Warn when an environment rung of `secrets` applies to more than one configured account
+/// of `source`. The ladder puts `$VAR` and `$VAR_FILE` above every account's own value, so
+/// each of those accounts silently uses the one global value. Names the settings, never
+/// their values.
+pub fn warn_if_env_shared(source: &str, secrets: &[EnvSecret], accounts: usize) {
+    if accounts < 2 {
+        return;
+    }
+    let shared: Vec<String> = secrets.iter().filter_map(|s| s.env_setting()).collect();
+    let (verb, pronoun) = match shared.len() {
+        0 => return,
+        1 => ("is", "it"),
+        _ => ("are", "them"),
+    };
+    warn!(
+        "{} {verb} set in the environment, so all {accounts} configured {source} accounts \
+         use {pronoun}, whatever their own config sets",
+        shared.join(", ")
+    );
 }
 
 #[cfg(not(test))]

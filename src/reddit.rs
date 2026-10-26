@@ -221,9 +221,8 @@ impl RedditClient {
                 .await?;
             let body = reddit_body(resp, "saved listing", self.cookie.as_ref()).await?;
             sink.push("", RawKind::Json, &body);
-            let listing: RedditListing = serde_json::from_str(&body)
-                .context("parsing saved listing response")
-                .map_err(SourceError::Other)?;
+            let listing: RedditListing =
+                serde_json::from_str(&body).context("parsing saved listing response")?;
             let got = listing.data.children.len();
             if on_page(listing.data.children) {
                 debug!("reddit saved for '{username}': page {page} has nothing new; stopping");
@@ -673,9 +672,7 @@ async fn decode_reddit_json<T: DeserializeOwned>(
     cookie: Option<&SessionCookie>,
 ) -> Result<T, SourceError> {
     let body = reddit_body(resp, what, cookie).await?;
-    serde_json::from_str(&body)
-        .with_context(|| format!("parsing {what} response"))
-        .map_err(Into::into)
+    Ok(serde_json::from_str(&body).with_context(|| format!("parsing {what} response"))?)
 }
 
 #[cfg(test)]

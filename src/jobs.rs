@@ -1,27 +1,30 @@
 //! `sync` jobs: one per account, each a configured source client plus its auth-failure
 //! hook and settings resolved through the flag → account → `[defaults.<source>]` →
 //! `[pinboard]` ladder. [`SourceAccount`] is what lets `sync`, `backup` and `doctor` treat
-//! the three sources through one generic path.
+//! the three sources through one generic path. The Pinboard client is built here too
+//! ([`open_pinboard`]), as is [`AllRun`], which tallies an `--all` run's failures.
 
 use anyhow::{bail, Context, Result};
+use log::{debug, info};
 use url::Url;
 
 use crate::backup::{self, BackupSource};
-use crate::bookmark::Bookmark;
+use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::cli::SyncFlags;
 use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit};
 use crate::github::{GitHubClient, GitHubConfig};
 use crate::hackernews::{HackerNewsClient, HackerNewsConfig};
 use crate::hook::resolve_hook;
+use crate::pinboard::{PinboardClient, RATE_LIMIT_SECS};
 use crate::reddit::model::RedditConfig;
 use crate::reddit::RedditClient;
 use crate::secrets::{
-    missing_github_token, resolve_github_token, resolve_reddit_cookie, resolve_secret,
+    missing_github_token, resolve_github_token, resolve_pinboard_token, resolve_reddit_cookie,
+    resolve_secret,
 };
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 use crate::sync::JobSettings;
 use crate::timefmt::DateOpts;
-use crate::AllRun;
 
 /// Build one job per configured account across every source for `sync --all`,
 /// isolating build failures: an account whose required secret won't resolve is
@@ -419,6 +422,56 @@ pub fn build_job<A: SourceAccount>(
         hook: A::hook(account, ovr.on_auth_failure.clone(), config),
         settings: resolve_job_settings(account, ovr, A::defaults(config), config),
     })
+}
+
+/// Resolve the Pinboard token and build the client (no fetch).
+fn build_pinboard(token_flag: Option<String>, config: &Config) -> Result<PinboardClient> {
+    let token = resolve_pinboard_token(token_flag, &config.pinboard)
+        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or [pinboard] in the config)")?;
+    pinboard_client(token, config)
+}
+
+/// The client for an already-resolved token, at the configured write pacing.
+pub fn pinboard_client(token: String, config: &Config) -> Result<PinboardClient> {
+    let rate_limit = config.pinboard.rate_limit_secs.unwrap_or(RATE_LIMIT_SECS);
+    PinboardClient::new(token, rate_limit)
+}
+
+/// Build the client and fetch `posts/all` once. Returns the client and the bookmark
+/// set to share across every account in a run (so `posts/all` — the most rate-limited
+/// endpoint — is hit once, not once per account).
+pub async fn open_pinboard(
+    token_flag: Option<String>,
+    config: &Config,
+) -> Result<(PinboardClient, Vec<Bookmark>)> {
+    let pinboard = build_pinboard(token_flag, config)?;
+    debug!("fetching existing bookmarks from Pinboard (posts/all)");
+    let bookmarks = pinboard.all().await.context("listing Pinboard bookmarks")?;
+    info!("pinboard: {} existing bookmark(s)", bookmarks.len());
+    Ok((pinboard, bookmarks))
+}
+
+/// Accumulates failures across an `--all` run: each account is attempted, errors
+/// are reported and counted, and the run errors at the end if any account failed.
+#[derive(Default)]
+pub struct AllRun {
+    pub failed: usize,
+}
+
+impl AllRun {
+    pub fn record(&mut self, result: Result<()>) {
+        if let Err(e) = result {
+            eprintln!("error: {e:#}");
+            self.failed += 1;
+        }
+    }
+
+    pub fn finish(self) -> Result<()> {
+        if self.failed > 0 {
+            bail!("{} account(s) failed", self.failed);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

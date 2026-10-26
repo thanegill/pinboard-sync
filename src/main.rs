@@ -42,10 +42,11 @@ use hackernews::cleanup::HackerNewsCleanupOpts;
 use hackernews::{HackerNewsClient, HackerNewsConfig};
 use hook::{cleanup_hook, handle_source_err, on_auth_failure_from_env};
 use jobs::{
-    build_all_jobs, build_job, build_jobs, resolve_dates, DateOverrides, SourceAccount,
-    SourceClient, SyncJob, SyncOverrides,
+    build_all_jobs, build_job, build_jobs, open_pinboard, pinboard_client, resolve_dates, AllRun,
+    DateOverrides, SourceAccount, SourceClient, SyncJob, SyncOverrides,
 };
-use pinboard::{PinboardClient, RATE_LIMIT_SECS};
+use pinboard::PinboardClient;
+use reddit::cleanup::RedditCleanupFlags;
 use reddit::model::RedditConfig;
 use reddit::RedditClient;
 use secrets::{
@@ -288,33 +289,6 @@ async fn run_sync_jobs(
         bail!("{} bookmark(s) failed to write", outcome.failed);
     }
     Ok(())
-}
-
-/// Resolve the Pinboard token and build the client (no fetch).
-fn build_pinboard(token_flag: Option<String>, config: &Config) -> Result<PinboardClient> {
-    let token = resolve_pinboard_token(token_flag, &config.pinboard)
-        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or [pinboard] in the config)")?;
-    pinboard_client(token, config)
-}
-
-/// The client for an already-resolved token, at the configured write pacing.
-fn pinboard_client(token: String, config: &Config) -> Result<PinboardClient> {
-    let rate_limit = config.pinboard.rate_limit_secs.unwrap_or(RATE_LIMIT_SECS);
-    PinboardClient::new(token, rate_limit)
-}
-
-/// Build the client and fetch `posts/all` once. Returns the client and the bookmark
-/// set to share across every account in a run (so `posts/all` — the most rate-limited
-/// endpoint — is hit once, not once per account).
-async fn open_pinboard(
-    token_flag: Option<String>,
-    config: &Config,
-) -> Result<(PinboardClient, Vec<Bookmark>)> {
-    let pinboard = build_pinboard(token_flag, config)?;
-    debug!("fetching existing bookmarks from Pinboard (posts/all)");
-    let bookmarks = pinboard.all().await.context("listing Pinboard bookmarks")?;
-    info!("pinboard: {} existing bookmark(s)", bookmarks.len());
-    Ok((pinboard, bookmarks))
 }
 
 // --- backup ------------------------------------------------------------------
@@ -706,14 +680,6 @@ async fn run_cleanup_reddit(
     .await
 }
 
-/// The `cleanup reddit` choices that are not account settings: the cookie flag, and which
-/// `/api/info`-backed fixes to make.
-struct RedditCleanupFlags {
-    cookie: Option<String>,
-    mark_nsfw: bool,
-    fix_titles: bool,
-}
-
 async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     account: Option<&RedditAccount>,
     flags: RedditCleanupFlags,
@@ -804,31 +770,6 @@ async fn cleanup_one_hackernews<S: BookmarkStore + AccountState>(
     .await
     // No hook: HackerNews is public, so nothing here can be a re-auth to act on.
     .map_err(SourceError::into_anyhow)
-}
-
-// --- shared dispatch helpers -------------------------------------------------
-
-/// Accumulates failures across an `--all` run: each account is attempted, errors
-/// are reported and counted, and the run errors at the end if any account failed.
-#[derive(Default)]
-struct AllRun {
-    failed: usize,
-}
-
-impl AllRun {
-    fn record(&mut self, result: Result<()>) {
-        if let Err(e) = result {
-            eprintln!("error: {e:#}");
-            self.failed += 1;
-        }
-    }
-
-    fn finish(self) -> Result<()> {
-        if self.failed > 0 {
-            bail!("{} account(s) failed", self.failed);
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]

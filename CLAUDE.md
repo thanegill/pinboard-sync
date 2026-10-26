@@ -35,7 +35,8 @@ gate green.
 The flow is one pass: a source yields drafts → skip those already on Pinboard →
 write the rest. `main.rs` loads the config and dispatches each subcommand (`run_sync`,
 `run_cleanup`, `run_backup`); the clap types are in [`src/cli.rs`](src/cli.rs), secret
-resolution in [`src/secrets.rs`](src/secrets.rs), job building and the settings ladder in
+resolution in [`src/secrets.rs`](src/secrets.rs), job building, the settings ladder, the
+Pinboard client setup (`open_pinboard`) and the `--all` failure tally (`AllRun`) in
 [`src/jobs.rs`](src/jobs.rs), the auth-failure hook in [`src/hook.rs`](src/hook.rs), and
 `doctor` in [`src/doctor.rs`](src/doctor.rs). The sync write loop is in
 [`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one

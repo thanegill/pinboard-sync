@@ -29,6 +29,14 @@ pub struct RedditCleanupOpts {
     pub dates: DateOpts,
 }
 
+/// The `cleanup reddit` choices that are not account settings: the cookie flag, and which
+/// `/api/info`-backed fixes to make.
+pub struct RedditCleanupFlags {
+    pub cookie: Option<String>,
+    pub mark_nsfw: bool,
+    pub fix_titles: bool,
+}
+
 /// Authoritative per-post data from `/api/info`.
 struct RedditPostMeta {
     over_18: bool,

@@ -49,6 +49,34 @@ fn post_url_and_tags() {
 }
 
 #[test]
+fn draft_titles_are_raw_text_with_whitespace_collapsed() {
+    // `raw_json=1` already gives the literal title, so a `&amp;` in it is the poster's
+    // own text, not an escape to undo.
+    for (kind, fields) in [
+        (
+            "t3",
+            serde_json::json!({ "title": "What &amp; means\n in <b>HTML</b>" }),
+        ),
+        (
+            "t1",
+            serde_json::json!({ "link_title": "What &amp; means\n in <b>HTML</b>" }),
+        ),
+    ] {
+        let mut fields = fields;
+        fields["name"] = "t3_abc".into();
+        fields["subreddit"] = "rust".into();
+        fields["permalink"] = "/r/rust/comments/abc/x/".into();
+        let draft = item(kind, fields)
+            .into_draft(&RedditConfig::default())
+            .unwrap();
+        assert_eq!(
+            draft.bookmark.title, "What &amp; means in <b>HTML</b>",
+            "{kind}"
+        );
+    }
+}
+
+#[test]
 fn every_non_empty_base_tag_is_added() {
     let it = item(
         "t3",

@@ -118,6 +118,35 @@ async fn marks_nsfw_with_configured_tag_not_literal_nsfw() {
 }
 
 #[tokio::test]
+async fn a_fixed_title_is_the_raw_api_title() {
+    let pinboard = FakePinboard {
+        all: vec![bookmark(
+            "https://old.reddit.com/r/rust/comments/abc/x/",
+            "Reddit - Dive into anything",
+            "reddit subreddit:rust",
+        )],
+        ..Default::default()
+    };
+    let reddit = FakeReddit {
+        info: vec![listing_entry(
+            "t3",
+            json!({ "name": "t3_abc", "subreddit": "rust",
+                    "permalink": "/r/rust/comments/abc/x/",
+                    "title": "What &amp; means  in HTML" }),
+        )],
+        ..Default::default()
+    };
+
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+        .await
+        .unwrap();
+
+    let updated = pinboard.updated.borrow();
+    assert_eq!(updated.len(), 1);
+    assert_eq!(updated[0].description, "What &amp; means in HTML");
+}
+
+#[tokio::test]
 async fn configured_nsfw_tag_is_idempotent() {
     // A post already carrying the configured "adult" marker (what sync wrote) and
     // otherwise normalized must not be rewritten to add a duplicate/literal marker.

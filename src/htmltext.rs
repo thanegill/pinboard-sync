@@ -8,7 +8,8 @@
 /// titles) are plain text, not markup, so literal angle brackets (`Vec<String>`,
 /// `vector<T>`) are preserved verbatim rather than dropped as HTML tags. Literal `<`/`>`
 /// are escaped before parsing so scraper decodes entities without treating a `<...>`
-/// span as an element to strip. Only for source text, decoded once: `cleanup` never runs
+/// span as an element to strip. Not for Reddit titles, which `raw_json=1` already returns
+/// unescaped. Only for source text, decoded once: `cleanup` never runs
 /// a stored Pinboard title through this, since that title is already plain text and a
 /// second decode would rewrite a literal `&amp;` on every run (it only collapses the
 /// whitespace).

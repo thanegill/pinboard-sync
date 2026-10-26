@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer};
 use url::Url;
 
 use crate::bookmark::Bookmark;
-use crate::htmltext::{blockquote, html_to_plain};
+use crate::htmltext::{blockquote, collapse_whitespace};
 use crate::source::BookmarkDraft;
 use crate::tags::{push_prefixed, push_tag, push_tags};
 use crate::urls::host_matches;
@@ -380,7 +380,7 @@ impl RedditSavedItem {
         Some(BookmarkDraft {
             bookmark: Bookmark {
                 url,
-                title: html_to_plain(&self.title),
+                title: collapse_whitespace(&self.title, " "),
                 note: self.note,
                 tags,
                 timestamp,

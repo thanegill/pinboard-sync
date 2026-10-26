@@ -49,7 +49,7 @@ fn post_url_and_tags() {
 }
 
 #[test]
-fn empty_base_tags_add_no_tag_and_cleanup_keeps_the_first_non_empty_one() {
+fn every_non_empty_base_tag_is_added() {
     let it = item(
         "t3",
         serde_json::json!({
@@ -57,13 +57,13 @@ fn empty_base_tags_add_no_tag_and_cleanup_keeps_the_first_non_empty_one() {
             "permalink": "/r/rust/comments/abc/x/", "title": "T"
         }),
     );
-    for (tags, want, base_tag) in [
-        (vec![], vec!["subreddit:rust"], ""),
-        (vec![""], vec!["subreddit:rust"], ""),
+    for (tags, want) in [
+        (vec![], vec!["subreddit:rust"]),
+        (vec![""], vec!["subreddit:rust"]),
+        (vec!["", "reddit"], vec!["reddit", "subreddit:rust"]),
         (
-            vec!["", "reddit"],
-            vec!["reddit", "subreddit:rust"],
-            "reddit",
+            vec!["reddit", "saved"],
+            vec!["reddit", "saved", "subreddit:rust"],
         ),
     ] {
         let cfg = RedditConfig {
@@ -71,7 +71,6 @@ fn empty_base_tags_add_no_tag_and_cleanup_keeps_the_first_non_empty_one() {
             ..RedditConfig::default()
         };
         assert_eq!(it.tags(&cfg), want, "tags = {tags:?}");
-        assert_eq!(cfg.base_tag(), base_tag, "tags = {tags:?}");
     }
 }
 

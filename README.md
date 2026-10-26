@@ -239,8 +239,8 @@ grows. Rare, but if you see a note accumulating `… [truncated]` markers, short
 
 - **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your
   configured `reddit_domain` (default `old.reddit.com`), unwrapping `over18`
-  interstitial redirects to the real post. It normalizes tags (ensures the base
-  `reddit` tag and a correctly-cased `subreddit:<sub>` tag, dropping bare/legacy
+  interstitial redirects to the real post. It normalizes tags (ensures every entry
+  of `tags` and a correctly-cased `subreddit:<sub>` tag, dropping bare/legacy
   duplicates), and — using Reddit's `/api/info` — marks `over_18` posts `nsfw` and
   replaces generic placeholder titles with the real ones. The NSFW and title passes
   are the only ones that contact Reddit, so they need the `reddit_session` cookie;

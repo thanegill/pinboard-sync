@@ -17,6 +17,8 @@ All notable changes to this project are documented here. The format is based on
   so it settles instead of rewriting every bookmark each run.
 - `cleanup reddit` no longer adds a bare subreddit tag when `tag_subreddit_prefix = ""`;
   ones it already added stay until removed by hand.
+- `cleanup reddit` adds and keeps every entry of `tags`, as `sync` writes them, not just
+  the first; an extra tag named like the subreddit is no longer stripped.
 
 ## [0.6.0] - 2026-10-25
 

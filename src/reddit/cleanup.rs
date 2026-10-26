@@ -12,7 +12,7 @@ use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::html_to_plain;
 use crate::reddit::model::{cased_subreddit, reddit_key, RedditConfig};
 use crate::reddit::PostInfo;
-use crate::source::{host_matches, push_prefixed, push_tag, SourceError, UrlExt};
+use crate::source::{host_matches, push_prefixed, push_tags, SourceError, UrlExt};
 use crate::timefmt::DateOpts;
 use url::Url;
 
@@ -78,7 +78,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
         let mut tags = normalize_tags(
             &new_url,
             &bookmark.tags,
-            opts.config.base_tag(),
+            &opts.config.tags,
             &opts.config.subreddit_prefix,
             &opts.config.nsfw,
         );
@@ -283,20 +283,20 @@ fn is_comment_url(url: &Url) -> bool {
     rest.split('/').filter(|s| !s.is_empty()).count() >= 3
 }
 
-/// Normalize a bookmark's tags: ensure the base tag, derive `subreddit:<sub>` from
+/// Normalize a bookmark's tags: ensure the base tags, derive `subreddit:<sub>` from
 /// the URL (casing per [`cased_subreddit`]), and strip bare/legacy/duplicate
 /// subreddit forms. An empty base tag or prefix adds no tag, as in sync. Returns a
 /// sorted, de-duplicated list.
 pub fn normalize_tags(
     url: &Url,
     existing: &[String],
-    base_tag: &str,
+    base_tags: &[String],
     prefix: &str,
     nsfw_tag: &str,
 ) -> Vec<String> {
     let mut set: BTreeSet<String> = existing.iter().cloned().collect();
     let mut ensured = Vec::new();
-    push_tag(&mut ensured, base_tag);
+    push_tags(&mut ensured, base_tags);
     set.remove(prefix); // bare "subreddit:"
     set.remove(prefix.strip_suffix(':').unwrap_or(prefix)); // bare "subreddit"
 
@@ -310,10 +310,10 @@ pub fn normalize_tags(
             raw.to_uppercase(),
         ];
         for form in &forms {
-            // Drop the bare subreddit tag in any case (but keep the NSFW marker,
-            // and never drop the base tag when the subreddit is named like it, e.g.
-            // r/reddit), and the legacy prefixed forms.
-            if form != nsfw_tag && form != base_tag {
+            // Drop the bare subreddit tag in any case (but keep the NSFW marker, which
+            // nothing re-adds; a base tag named like the subreddit, e.g. r/reddit, comes
+            // back from `ensured`), and the legacy prefixed forms.
+            if form != nsfw_tag {
                 set.remove(form);
             }
             set.remove(&format!("{prefix}{form}"));
@@ -462,7 +462,7 @@ mod tests {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/rust/comments/x/"),
             &existing,
-            "reddit",
+            &["reddit".to_string()],
             "subreddit:",
             "nsfw",
         );
@@ -477,7 +477,7 @@ mod tests {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/NEWS/comments/x/"),
             &["subreddit:NEWS".to_string(), "NEWS".to_string()],
-            "reddit",
+            &["reddit".to_string()],
             "subreddit:",
             "nsfw",
         );
@@ -492,7 +492,7 @@ mod tests {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/reddit/comments/x/"),
             &[],
-            "reddit",
+            &["reddit".to_string()],
             "subreddit:",
             "nsfw",
         );
@@ -503,11 +503,27 @@ mod tests {
     }
 
     #[test]
+    fn normalize_tags_ensures_and_keeps_every_base_tag() {
+        let tags = normalize_tags(
+            &url("https://old.reddit.com/r/rust/comments/x/"),
+            &["rust".to_string()],
+            &[
+                "reddit".to_string(),
+                "rust".to_string(),
+                "saved".to_string(),
+            ],
+            "subreddit:",
+            "nsfw",
+        );
+        assert_eq!(tags, vec!["reddit", "rust", "saved", "subreddit:rust"]);
+    }
+
+    #[test]
     fn normalize_tags_adds_no_empty_tag_when_the_base_tag_is_disabled() {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/rust/comments/x/"),
             &[],
-            "",
+            &[String::new()],
             "subreddit:",
             "nsfw",
         );
@@ -519,7 +535,7 @@ mod tests {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/rust/comments/x/"),
             &[],
-            "reddit",
+            &["reddit".to_string()],
             "",
             "nsfw",
         );
@@ -528,7 +544,7 @@ mod tests {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/rust/comments/x/"),
             &["rust".to_string()],
-            "reddit",
+            &["reddit".to_string()],
             "",
             "nsfw",
         );
@@ -537,7 +553,7 @@ mod tests {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/nsfw/comments/x/"),
             &["nsfw".to_string()],
-            "reddit",
+            &["reddit".to_string()],
             "",
             "nsfw",
         );

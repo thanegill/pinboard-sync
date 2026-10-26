@@ -7,7 +7,11 @@
   };
 
   outputs =
-    { self, nixpkgs, flake-utils }:
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
@@ -23,7 +27,10 @@
           # openssl-sys, which needs pkg-config + openssl at build time. On darwin
           # native-tls uses the Security framework (provided by the stdenv).
           # installShellFiles provides `installShellCompletion` for postInstall.
-          nativeBuildInputs = [ pkgs.pkg-config pkgs.installShellFiles ];
+          nativeBuildInputs = [
+            pkgs.pkg-config
+            pkgs.installShellFiles
+          ];
           buildInputs = [ pkgs.openssl ];
           # The `net_tests` integration tests spin up a mock HTTP server, which
           # can't bind a socket in the build sandbox. They run under `cargo test`

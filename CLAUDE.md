@@ -204,7 +204,7 @@ mean "no cap", and since that now splits into `auto` and `all` it is rejected ra
 than guessed. A bad value's error names the field, never the value. `backup`, `doctor`
 and `cleanup github`'s `use_post_date` star dates call `fetch()`, so they keep the full
 traversal. To add a source, implement `Source`, add its account array to `config.rs`,
-and implement `main.rs`'s `SourceAccount` for the account type: its `SOURCE` name (the
+and implement [`src/jobs.rs`](src/jobs.rs)'s `SourceAccount` for the account type: its `SOURCE` name (the
 job labels, backup file stems and `doctor` lines), where its accounts and
 `[defaults.<source>]` live, how its client is built, and its auth-failure hook. `sync`,
 `backup` and `doctor` reach every source through that one trait (`build_job::<A>` and

@@ -5,8 +5,8 @@
 use std::path::Path;
 
 use crate::config::Config;
+use crate::jobs::SourceAccount;
 use crate::source::SourceError;
-use crate::SourceAccount;
 
 /// The `--all` path has no per-source `--on-auth-failure` flag to carry the hook,
 /// and the top-level flag deliberately doesn't bind `PINBOARD_SYNC_ON_AUTH_FAILURE`
@@ -97,8 +97,8 @@ pub fn cleanup_hook<A: SourceAccount>(account: Option<&A>, config: &Config) -> O
 mod tests {
     use super::*;
     use crate::config::{HackerNewsAccount, RedditAccount};
+    use crate::jobs::{build_job, SyncOverrides};
     use crate::test_support::{lock_on_auth_failure_env, scratch_dir};
-    use crate::{build_job, SyncOverrides};
     use anyhow::anyhow;
 
     /// A reddit account with its own hook, in a config whose `[defaults.reddit]` has

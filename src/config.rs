@@ -644,7 +644,7 @@ impl_named!(RedditAccount => username, GitHubAccount, HackerNewsAccount => usern
 /// The per-account settings shared across every source. Each returns the
 /// account-level override, or `None` to fall through to the per-source default and
 /// then the `[pinboard]` global — letting the job/cleanup builders resolve them
-/// generically (see `resolve_setting`/`resolve_dates` in `main`). The method names
+/// generically (see `resolve_setting`/`resolve_dates` in `jobs`). The method names
 /// normalize the two longer field names (`post_date_max_age_days`,
 /// `cleanup_stale_to_now`).
 pub trait Account: Named {

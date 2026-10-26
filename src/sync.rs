@@ -129,7 +129,7 @@ pub async fn write_drafts<P: BookmarkStore>(
             println!("[dry-run] {}", bm.url);
             println!("          title: {}", bm.title);
             if !bm.note.is_empty() {
-                println!("          notes: {}", crate::preview(&bm.note));
+                println!("          notes: {}", crate::htmltext::preview(&bm.note));
             }
             println!("          tags:  [{}]", bm.tags.join(" "));
             if !dt.is_empty() {

@@ -2051,19 +2051,6 @@ fn resolve_pinboard_token(flag: Option<String>, pb: &config::PinboardConfig) -> 
     )
 }
 
-/// A single-line, length-bounded preview of (possibly multi-line) text, for
-/// dry-run output only. The full text is still sent to Pinboard's `extended`.
-pub(crate) fn preview(text: &str) -> String {
-    const MAX: usize = 160;
-    let one_line = htmltext::collapse_whitespace(text, " ");
-    if one_line.chars().count() > MAX {
-        let head: String = one_line.chars().take(MAX).collect();
-        format!("{head}…")
-    } else {
-        one_line
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2233,19 +2220,6 @@ mod tests {
         let hn_config =
             resolve_hackernews_cleanup_config(None, Some("find-hn".into())).expect("valid tag");
         assert_eq!(hn_config.link_tag, "find-hn");
-    }
-
-    #[test]
-    fn preview_collapses_whitespace() {
-        assert_eq!(preview("line1\nline2   line3"), "line1 line2 line3");
-    }
-
-    #[test]
-    fn preview_truncates_long_text_with_ellipsis() {
-        let long = "word ".repeat(100);
-        let p = preview(&long);
-        assert!(p.ends_with('…'));
-        assert_eq!(p.chars().count(), 161);
     }
 
     #[test]

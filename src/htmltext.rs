@@ -32,6 +32,19 @@ pub fn collapse_whitespace(text: &str, separator: &str) -> String {
     collapsed
 }
 
+/// A single-line, length-bounded preview of (possibly multi-line) text, for
+/// dry-run output only. The full text is still sent to Pinboard's `extended`.
+pub fn preview(text: &str) -> String {
+    const MAX: usize = 160;
+    let one_line = collapse_whitespace(text, " ");
+    if one_line.chars().count() > MAX {
+        let head: String = one_line.chars().take(MAX).collect();
+        format!("{head}…")
+    } else {
+        one_line
+    }
+}
+
 /// Convert a HackerNews note body (raw HTML from Algolia `story_text`/`comment_text`)
 /// to Markdown. Only ever run over HN HTML — never over Reddit/GitHub bodies, which are
 /// already Markdown/plain and would be corrupted by escaping. Returns the input verbatim
@@ -89,6 +102,19 @@ mod tests {
         assert_eq!(collapse_whitespace("  a \t b\n\nc  ", "-"), "a-b-c");
         assert_eq!(collapse_whitespace("one", " "), "one");
         assert_eq!(collapse_whitespace(" \n ", " "), "");
+    }
+
+    #[test]
+    fn preview_collapses_whitespace() {
+        assert_eq!(preview("line1\nline2   line3"), "line1 line2 line3");
+    }
+
+    #[test]
+    fn preview_truncates_long_text_with_ellipsis() {
+        let long = "word ".repeat(100);
+        let p = preview(&long);
+        assert!(p.ends_with('…'));
+        assert_eq!(p.chars().count(), 161);
     }
 
     #[test]

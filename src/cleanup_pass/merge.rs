@@ -4,6 +4,7 @@
 use url::Url;
 
 use crate::bookmark::Bookmark;
+use crate::source::extend_unique;
 
 /// The index within `members` of the group's *incumbent*: the member whose stored URL is
 /// already the group's target. It is the record that stays at that URL, so it plays the
@@ -19,22 +20,18 @@ pub(super) fn incumbent_of(members: &[(&Bookmark, &Bookmark)], target: &Url) -> 
 
 /// Field-merge the PLANNED bookmarks of a collision group (all sharing `url`, given in
 /// stable order) into one bookmark. Tags are an order-preserving union (first occurrence
-/// wins, case-sensitive); the note is the first member's verbatim, extended with whichever
-/// blank-line-separated blocks of the later members it doesn't already hold; title is the
-/// first non-empty; timestamp the earliest present. Privacy never widens:
-/// the merge is `public` only if every merged member is public (a single private member
-/// keeps it private), and `read_later` if any member is, so a merge can never republish a
-/// private bookmark as public.
+/// wins, case-sensitive, empty tags dropped as by `extend_unique`); the note is the first
+/// member's verbatim, extended with whichever blank-line-separated blocks of the later
+/// members it doesn't already hold; title is the first non-empty; timestamp the earliest
+/// present. Privacy never widens: the merge is `public` only if every merged member is
+/// public (a single private member keeps it private), and `read_later` if any member is,
+/// so a merge can never republish a private bookmark as public.
 pub(super) fn merge_bookmarks(group: &[&Bookmark]) -> Bookmark {
     let url = group[0].url.clone();
 
     let mut tags: Vec<String> = Vec::new();
     for b in group {
-        for tag in &b.tags {
-            if !tags.contains(tag) {
-                tags.push(tag.clone());
-            }
-        }
+        extend_unique(&mut tags, &b.tags);
     }
 
     // The first member's note is the base, carried byte for byte: it is the record that

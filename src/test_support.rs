@@ -1,4 +1,4 @@
-//! In-memory fakes implementing the client ports ([`SavedSource`] /
+//! In-memory fakes implementing the client ports ([`Source`], [`PostInfo`] and
 //! [`BookmarkStore`]) so the `sync` and `cleanup` loops can be tested without
 //! any network, plus per-test scratch directories and log capture. Compiled only under
 //! `#[cfg(test)]`.

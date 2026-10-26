@@ -14,15 +14,14 @@ use serde::Deserialize;
 
 use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PassOutcome, Plan};
+use crate::cleanup_pass::{run_pass, CleanupPass, PassOutcome, Plan};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
-use crate::http::{
-    client_builder, retry_after_up_to, send_retrying, send_retrying_with, ConnectBudget,
-};
+use crate::http::{client_builder, retry_after_up_to, RetryingClient};
 use crate::source::{
     extend_unique, page_is_caught_up, push_prefixed, push_tag, push_tags, url_key, BookmarkDraft,
     Source, SourceError, UrlKey,
 };
+use crate::timefmt::DateOpts;
 use url::Url;
 
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.
@@ -51,7 +50,7 @@ const MAX_FAVORITES_PAGES: usize = 100;
 /// (defaulting to `["hackernews"]`); the rest default to their built-in values, and
 /// an empty string disables that tag.
 #[derive(Debug, Clone)]
-pub struct HackernewsConfig {
+pub struct HackerNewsConfig {
     pub tags: Vec<String>,
     pub comment: String,
     pub author_prefix: String,
@@ -62,7 +61,7 @@ pub struct HackernewsConfig {
     pub link_tag: String,
 }
 
-impl Default for HackernewsConfig {
+impl Default for HackerNewsConfig {
     fn default() -> Self {
         Self {
             tags: vec!["hackernews".into()],
@@ -179,7 +178,7 @@ impl HackerNewsItem {
     /// Shape the item into a Pinboard draft. Comments keep the HN permalink; stories
     /// bookmark the linked article (HN discussion in the notes), falling back to the
     /// HN permalink for text posts (Ask HN, etc.).
-    fn into_draft(self, cfg: &HackernewsConfig) -> Option<BookmarkDraft> {
+    fn into_draft(self, cfg: &HackerNewsConfig) -> Option<BookmarkDraft> {
         let item_id = HackerNewsItemId::from(self.id);
         // The HN discussion permalink (always valid — the id sits in the query string).
         let hn_url = Url::from(&item_id);
@@ -271,18 +270,17 @@ impl HackerNewsItem {
 
 /// Reads a user's public HackerNews favorites.
 pub struct HackerNewsClient {
-    http: reqwest::Client,
+    http: RetryingClient,
     username: String,
-    config: HackernewsConfig,
+    config: HackerNewsConfig,
     /// HN site base (overridden in tests).
     base: String,
     /// Algolia API base (overridden in tests).
     algolia: String,
-    connect_budget: ConnectBudget,
 }
 
 impl HackerNewsClient {
-    pub fn new(username: String, config: HackernewsConfig) -> anyhow::Result<Self> {
+    pub fn new(username: String, config: HackerNewsConfig) -> anyhow::Result<Self> {
         Self::build(
             username,
             config,
@@ -293,7 +291,7 @@ impl HackerNewsClient {
 
     fn build(
         username: String,
-        config: HackernewsConfig,
+        config: HackerNewsConfig,
         base: String,
         algolia: String,
     ) -> anyhow::Result<Self> {
@@ -302,12 +300,11 @@ impl HackerNewsClient {
             .build()
             .context("building HTTP client")?;
         Ok(Self {
-            http,
+            http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
             username,
             config,
             base,
             algolia,
-            connect_budget: ConnectBudget::default(),
         })
     }
 
@@ -362,15 +359,12 @@ impl HackerNewsClient {
             if page > 1 {
                 crate::http::sleep(FAVORITES_PAGE_PAUSE).await;
             }
-            let resp = send_retrying_with(
-                &label,
-                &self.connect_budget,
-                MAX_RETRIES,
-                RETRY_DELAY,
-                retry_after_up_to(FAVORITES_MAX_RETRY_AFTER),
-                || self.http.get(&url),
-            )
-            .await?;
+            let resp = self
+                .http
+                .send_with(&label, retry_after_up_to(FAVORITES_MAX_RETRY_AFTER), || {
+                    self.http.get(&url)
+                })
+                .await?;
             let status = resp.status();
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 let retry_after = resp
@@ -465,19 +459,15 @@ impl HackerNewsClient {
                 .collect::<Vec<_>>()
                 .join(" OR ");
             let hits_per_page = chunk.len().to_string();
-            let resp = send_retrying(
-                "hn algolia",
-                &self.connect_budget,
-                MAX_RETRIES,
-                RETRY_DELAY,
-                || {
+            let resp = self
+                .http
+                .send("hn algolia", || {
                     self.http.get(&endpoint).query(&[
                         ("filters", filters.as_str()),
                         ("hitsPerPage", hits_per_page.as_str()),
                     ])
-                },
-            )
-            .await?;
+                })
+                .await?;
             let resp = algolia_success(resp, "hn algolia").await?;
             let body = resp.text().await.context("reading hn algolia response")?;
             sink.push("", RawKind::Json, &body);
@@ -495,20 +485,16 @@ impl HackerNewsClient {
     /// the id only when a hit's URL matches `url` (so loose matches are ignored).
     async fn search_by_url(&self, url: &Url) -> Result<Option<HackerNewsItemId>, SourceError> {
         let endpoint = format!("{}/api/v1/search", self.algolia);
-        let resp = send_retrying(
-            "hn algolia url",
-            &self.connect_budget,
-            MAX_RETRIES,
-            RETRY_DELAY,
-            || {
+        let resp = self
+            .http
+            .send("hn algolia url", || {
                 self.http.get(&endpoint).query(&[
                     ("restrictSearchableAttributes", "url"),
                     ("query", url.as_str()),
                     ("hitsPerPage", "5"),
                 ])
-            },
-        )
-        .await?;
+            })
+            .await?;
         let resp = algolia_success(resp, "hn algolia url search").await?;
         let search: AlgoliaSearchResponse =
             resp.json().await.context("parsing hn algolia response")?;
@@ -610,7 +596,7 @@ pub struct HackerNewsCleanupOpts {
 impl HackerNewsClient {
     /// Client for `cleanup hackernews`: only the Algolia API is used (no favorites
     /// scraping), so no username is needed.
-    pub fn for_cleanup(config: HackernewsConfig) -> anyhow::Result<Self> {
+    pub fn for_cleanup(config: HackerNewsConfig) -> anyhow::Result<Self> {
         Self::build(
             String::new(),
             config,
@@ -770,7 +756,7 @@ fn ensure_hn_link_note(note: &str, hn_link: &str) -> String {
 /// when absent so a hand-annotated story doesn't lose its discussion link.
 struct HackerNewsCleanupPass<'a> {
     items: HashMap<HackerNewsItemId, HackerNewsItem>,
-    config: &'a HackernewsConfig,
+    config: &'a HackerNewsConfig,
 }
 
 impl CleanupPass for HackerNewsCleanupPass<'_> {
@@ -992,7 +978,7 @@ fn special_type(title: &str) -> Option<String> {
 impl HackerNewsClient {
     pub(crate) fn with_base_urls(
         username: String,
-        config: HackernewsConfig,
+        config: HackerNewsConfig,
         base: String,
         algolia: String,
     ) -> Self {
@@ -1033,7 +1019,7 @@ mod tests {
             (HackerNewsItemId::from(item.id), item)
         })
         .collect();
-        let client = HackerNewsClient::new("u".into(), HackernewsConfig::default()).unwrap();
+        let client = HackerNewsClient::new("u".into(), HackerNewsConfig::default()).unwrap();
         let synced_keys: HashSet<String> = [
             "https://news.ycombinator.com/item?id=1",
             "https://example.com/two",
@@ -1098,7 +1084,7 @@ mod tests {
             "id": 42, "type": "story", "by": "alice",
             "title": "Cool thing", "url": "https://example.com/x"
         }))
-        .into_draft(&HackernewsConfig::default())
+        .into_draft(&HackerNewsConfig::default())
         .unwrap();
         assert_eq!(d.bookmark.url.as_str(), "https://example.com/x");
         assert_eq!(d.bookmark.title, "Cool thing");
@@ -1124,11 +1110,11 @@ mod tests {
             "id": 42, "type": "story", "by": "alice",
             "title": "Meta post", "url": article
         }))
-        .into_draft(&HackernewsConfig::default())
+        .into_draft(&HackerNewsConfig::default())
         .unwrap();
         assert_eq!(d.bookmark.url.as_str(), article);
         assert_eq!(d.dedup_key, "hn:999");
-        let client = HackerNewsClient::new("u".into(), HackernewsConfig::default()).unwrap();
+        let client = HackerNewsClient::new("u".into(), HackerNewsConfig::default()).unwrap();
         assert_eq!(client.dedup_key(&d.bookmark.url).as_deref(), Some("hn:999"));
     }
 
@@ -1138,7 +1124,7 @@ mod tests {
             "id": 7, "type": "story", "by": "bob",
             "title": "Ask HN: How?", "text": "<p>details</p>"
         }))
-        .into_draft(&HackernewsConfig::default())
+        .into_draft(&HackerNewsConfig::default())
         .unwrap();
         assert_eq!(
             d.bookmark.url.as_str(),
@@ -1157,7 +1143,7 @@ mod tests {
         let d = item(json!({
             "id": 8, "type": "story", "by": "bob", "title": "Ask HN: empty?"
         }))
-        .into_draft(&HackernewsConfig::default())
+        .into_draft(&HackerNewsConfig::default())
         .unwrap();
         assert_eq!(
             d.bookmark.url.as_str(),
@@ -1175,7 +1161,7 @@ mod tests {
             "title": "Rust&#x27;s &amp; more", "url": "https://example.com/a",
             "text": "<p>see <a href=\"https://x.com\">x</a> &gt; y</p>"
         }))
-        .into_draft(&HackernewsConfig::default())
+        .into_draft(&HackerNewsConfig::default())
         .unwrap();
         // Title: entities decoded, tags stripped, single line.
         assert_eq!(d.bookmark.title, "Rust's & more");
@@ -1191,7 +1177,7 @@ mod tests {
         let d = item(json!({
             "id": 9, "type": "comment", "by": "carol", "text": "my reply"
         }))
-        .into_draft(&HackernewsConfig::default())
+        .into_draft(&HackerNewsConfig::default())
         .unwrap();
         assert_eq!(
             d.bookmark.url.as_str(),
@@ -1217,7 +1203,7 @@ mod tests {
         // parses, so only article stories can hit this.)
         assert!(
             item(json!({ "id": 5, "type": "story", "by": "ann", "url": "not a url" }))
-                .into_draft(&HackernewsConfig::default())
+                .into_draft(&HackerNewsConfig::default())
                 .is_none()
         );
     }
@@ -1251,7 +1237,7 @@ mod tests {
     fn resolve_follows_same_host_but_refuses_foreign_host() {
         let client = HackerNewsClient::with_base_urls(
             "u".to_string(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             "https://news.ycombinator.com".to_string(),
             "https://hn.algolia.com".to_string(),
         );
@@ -1316,7 +1302,7 @@ mod tests {
 
     #[test]
     fn dedup_key_distinguishes_hn_items_from_articles() {
-        let c = HackerNewsClient::new("u".into(), HackernewsConfig::default()).unwrap();
+        let c = HackerNewsClient::new("u".into(), HackerNewsConfig::default()).unwrap();
         assert_eq!(
             c.dedup_key(&url("https://news.ycombinator.com/item?id=42"))
                 .as_deref(),
@@ -1352,7 +1338,7 @@ mod tests {
             read_later: false,
         };
         let items = story_pass_items();
-        let config = HackernewsConfig::default();
+        let config = HackerNewsConfig::default();
         let pass = HackerNewsCleanupPass {
             items,
             config: &config,
@@ -1384,7 +1370,7 @@ mod tests {
             read_later: false,
         };
         let items = story_pass_items();
-        let config = HackernewsConfig::default();
+        let config = HackerNewsConfig::default();
         let pass = HackerNewsCleanupPass {
             items,
             config: &config,
@@ -1424,7 +1410,7 @@ mod tests {
                 "title": "Unrelated article", "url": "https://elsewhere.example/a"
             })),
         );
-        let config = HackernewsConfig::default();
+        let config = HackerNewsConfig::default();
         let pass = HackerNewsCleanupPass {
             items,
             config: &config,
@@ -1446,7 +1432,7 @@ mod tests {
             read_later: false,
         };
         let items = story_pass_items();
-        let config = HackernewsConfig::default();
+        let config = HackerNewsConfig::default();
         let pass = HackerNewsCleanupPass {
             items,
             config: &config,
@@ -1515,7 +1501,7 @@ mod net_tests {
 
         let client = HackerNewsClient::with_base_urls(
             "psophis".into(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             hn.uri(),
             algolia.uri(),
         );
@@ -1589,7 +1575,7 @@ mod net_tests {
 
         let client = HackerNewsClient::with_base_urls(
             String::new(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             "unused".into(),
             algolia.uri(),
         );
@@ -1667,7 +1653,7 @@ mod net_tests {
 
         let client = HackerNewsClient::with_base_urls(
             String::new(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             "unused".into(),
             algolia.uri(),
         );
@@ -1736,7 +1722,7 @@ mod net_tests {
 
         let client = HackerNewsClient::with_base_urls(
             String::new(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             "unused".into(),
             algolia.uri(),
         );
@@ -1803,7 +1789,7 @@ mod net_tests {
 
         let client = HackerNewsClient::with_base_urls(
             String::new(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             "unused".into(),
             algolia.uri(),
         );
@@ -1860,7 +1846,7 @@ mod net_tests {
 
         let client = HackerNewsClient::with_base_urls(
             "psophis".into(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             hn.uri(),
             "http://unused.invalid".into(),
         );
@@ -1893,7 +1879,7 @@ mod net_tests {
 
         let client = HackerNewsClient::with_base_urls(
             "psophis".into(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             hn.uri(),
             "http://unused.invalid".into(),
         );
@@ -1907,7 +1893,7 @@ mod net_tests {
     fn favorites_client(hn: &MockServer) -> HackerNewsClient {
         HackerNewsClient::with_base_urls(
             "psophis".into(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             hn.uri(),
             "http://unused.invalid".into(),
         )
@@ -1990,7 +1976,7 @@ mod net_tests {
         two_page_favorites(&hn, &algolia, [1, 0, 1, 1]).await;
         let client = HackerNewsClient::with_base_urls(
             "psophis".into(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             hn.uri(),
             algolia.uri(),
         );
@@ -2039,7 +2025,7 @@ mod net_tests {
         two_page_favorites(&hn, &algolia, [1, 1, 1, 1]).await;
         let client = HackerNewsClient::with_base_urls(
             "psophis".into(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             hn.uri(),
             algolia.uri(),
         );
@@ -2059,7 +2045,7 @@ mod net_tests {
         two_page_favorites(&hn, &algolia, [1, 1, 1, 1]).await;
         let client = HackerNewsClient::with_base_urls(
             "psophis".into(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             hn.uri(),
             algolia.uri(),
         );
@@ -2192,7 +2178,7 @@ mod net_tests {
 
         let client = HackerNewsClient::with_base_urls(
             "u".into(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             hn.uri(),
             "http://unused.invalid".into(),
         );
@@ -2222,7 +2208,7 @@ mod net_tests {
             .await;
         let client = HackerNewsClient::with_base_urls(
             "u".into(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             "http://unused.invalid".into(),
             algolia.uri(),
         );
@@ -2275,7 +2261,7 @@ mod net_tests {
 
         let client = HackerNewsClient::with_base_urls(
             "psophis".into(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             hn.uri(),
             algolia.uri(),
         );
@@ -2351,7 +2337,7 @@ mod net_tests {
             .await;
         let client = HackerNewsClient::with_base_urls(
             "psophis".into(),
-            HackernewsConfig::default(),
+            HackerNewsConfig::default(),
             "http://unused.invalid".into(),
             algolia.uri(),
         );

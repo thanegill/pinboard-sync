@@ -11,9 +11,7 @@ use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage};
 use crate::bookmark::{Bookmark, BookmarkStore};
-use crate::http::{
-    client_builder, error_with_body, redact, send_retrying, ConnectBudget, REDACTED,
-};
+use crate::http::{client_builder, error_with_body, redact, RetryingClient, REDACTED};
 use crate::source::SourceError;
 
 const DEFAULT_BASE: &str = "https://api.pinboard.in/v1";
@@ -83,7 +81,7 @@ pub struct PinboardBookmark {
 // Pinboard client behind that port.
 
 pub struct PinboardClient {
-    http: reqwest::Client,
+    http: RetryingClient,
     /// `username:TOKEN`.
     auth_token: String,
     /// Seconds to pause between successive `posts/add` writes.
@@ -94,7 +92,6 @@ pub struct PinboardClient {
     wrote: Cell<bool>,
     /// API base, e.g. `https://api.pinboard.in/v1`.
     base: String,
-    connect_budget: ConnectBudget,
 }
 
 impl PinboardClient {
@@ -108,12 +105,11 @@ impl PinboardClient {
             .build()
             .context("building HTTP client")?;
         Ok(Self {
-            http,
+            http: RetryingClient::new(http, MAX_RETRIES, Duration::from_secs(RATE_LIMIT_SECS)),
             auth_token,
             rate_limit_secs,
             wrote: Cell::new(false),
             base,
-            connect_budget: ConnectBudget::default(),
         })
     }
 
@@ -292,14 +288,10 @@ impl PinboardClient {
             let mut params = fixed.clone();
             params.push(("extended", extended.as_str()));
 
-            let resp = send_retrying(
-                &endpoint,
-                &self.connect_budget,
-                MAX_RETRIES,
-                Duration::from_secs(RATE_LIMIT_SECS),
-                || self.http.get(&endpoint).query(&params),
-            )
-            .await?;
+            let resp = self
+                .http
+                .send(&endpoint, || self.http.get(&endpoint).query(&params))
+                .await?;
 
             if resp.status() == reqwest::StatusCode::URI_TOO_LONG && budget > MIN_URL_BYTES {
                 budget /= 2;
@@ -404,14 +396,10 @@ impl PinboardClient {
         url: &str,
         params: &[(&str, &str)],
     ) -> Result<reqwest::Response> {
-        let resp = send_retrying(
-            url,
-            &self.connect_budget,
-            MAX_RETRIES,
-            Duration::from_secs(RATE_LIMIT_SECS),
-            || self.http.get(url).query(params),
-        )
-        .await?;
+        let resp = self
+            .http
+            .send(url, || self.http.get(url).query(params))
+            .await?;
         if !resp.status().is_success() {
             return Err(self.status_error(url, resp).await);
         }

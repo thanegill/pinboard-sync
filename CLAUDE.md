@@ -197,8 +197,12 @@ holding it still reads as not caught up, so it is retried). There is no `0`: it 
 mean "no cap", and since that now splits into `auto` and `all` it is rejected rather
 than guessed. A bad value's error names the field, never the value. `backup`, `doctor`
 and `cleanup github`'s `use_post_date` star dates call `fetch()`, so they keep the full
-traversal. To add a source, implement `Source` and wire it into `main.rs` +
-`config.rs`. The clients also sit behind the `BookmarkStore` port (Pinboard;
+traversal. To add a source, implement `Source`, add its account array to `config.rs`,
+and implement `main.rs`'s `SourceAccount` for the account type: its `SOURCE` name (the
+job labels, backup file stems and `doctor` lines), where its accounts and
+`[defaults.<source>]` live, how its client is built, and its auth-failure hook. `sync`,
+`backup` and `doctor` reach every source through that one trait (`build_job::<A>` and
+friends); only the `SourceClient` enum and the call lists name them. The clients also sit behind the `BookmarkStore` port (Pinboard;
 `add`/`update` both take a `&Bookmark`) so the loops are unit-tested with in-memory
 fakes ([`src/test_support.rs`](src/test_support.rs)); real clients are covered by `net_tests`
 against a wiremock server via test-only `with_base_url(s)` constructors.
@@ -268,7 +272,7 @@ the destination is a target like any source. `ExportBookmark` is deliberately *n
 a domain rename must not silently change an operator's files.
 
 **All tags are config-driven; there are no tag CLI flags.** Each source has a tag
-config struct (`RedditConfig`, `GitHubConfig`, `HackernewsConfig`) of overridable
+config struct (`RedditConfig`, `GitHubConfig`, `HackerNewsConfig`) of overridable
 fields with built-in defaults; the `tags` list (default e.g. `["reddit"]`) is the
 base tag plus any extras, and `push_tag`/`push_prefixed` in `source.rs` render them
 (empty string disables a tag). `model.rs`'s tag tests are the spec — keep them in
@@ -305,8 +309,9 @@ canonicalizes repo-root URLs and looks each repo up via the API to rewrite
 renamed/moved repos and refresh the title + language tag.
 
 **`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
-`SyncJob { client: SourceClient, hook, common }`, `common` holding the resolved `limit`
-and write settings; `SourceClient` is an enum over the
+`SyncJob { client: SourceClient, hook, settings }`, `settings` a `sync::JobSettings` holding the
+resolved `limit`, write flags and `DateOpts` — the same value `sync::prepare_new_drafts` reads;
+`SourceClient` is an enum over the
 three clients implementing `Source`, so `build_jobs` + `run_sync_jobs` handle one
 account and `--all` uniformly. Per-account settings
 (`toread`/`public`/`limit`/`use_post_date`/…) resolve CLI flag → account →
@@ -337,9 +342,10 @@ resolves the command through `PINBOARD_SYNC_ON_AUTH_FAILURE` → account →
 load-bearing**: [`nix/module.nix`](nix/module.nix) exports `onAuthFailure` only into the
 unit environment — it never reaches the generated TOML — and runs the `cleanup --all`
 timer with it, so resolving from config alone would leave the hook dead for the
-deployment it exists to serve. Every client sends through
-`http::send_retrying`
-([`src/http.rs`](src/http.rs)), which backs off on network errors / 429 / 5xx but
+deployment it exists to serve. Every client sends through its `http::RetryingClient`
+([`src/http.rs`](src/http.rs)) — the `reqwest::Client` plus its `max_attempts`, base
+delay and `ConnectBudget`, fixed where the client is built — whose `send`/`send_with` are
+`http::send_retrying`/`send_retrying_with` with those settings. That backs off on network errors / 429 / 5xx but
 returns other statuses as-is. It builds the request once and hands it to tower's
 `retry::Retry` over the request's `reqwest::Client`; every decision lives in
 `http::RetryPolicy`, whose waits go through `http::sleep`, and its unit tests drive the
@@ -364,8 +370,8 @@ other clients keep backing off on 429. A request that could not establish a conn
 own exponential `CONNECT_BACKOFF` (5s … 80s, ~2.5 minutes in all), on top of and
 separate from the caller's linear `max_attempts` budget, so a resolver restart during a
 NixOS switch doesn't fail a timer-started run; tests inject a zero schedule through
-`send_with_connect_backoff`. That long wait is **once per host per client**: each client
-owns a `ConnectBudget`, keyed by the request URL's host and port (HackerNews reaches both
+`send_with_connect_backoff`. That long wait is **once per host per client**: each client's
+`RetryingClient` owns a `ConnectBudget`, keyed by the request URL's host and port (HackerNews reaches both
 its site and Algolia), whose entry is spent when one request waits out the whole
 schedule and still can't connect. After that the host's connect errors take the linear
 policy. A request whose last *linear* attempt still got no response, whether it could not
@@ -503,4 +509,6 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
 - The User-Agent / client identifier derives from `CARGO_PKG_NAME`/`CARGO_PKG_VERSION`.
 - **Service-specific, API-shaped structs carry a service prefix** (`GitHubRepo`,
   `HackerNewsItem`, `RedditSavedItem`, `AlgoliaSearchResponse`) — not bare `Repo`/`Item`.
-  GitHub is spelled `GitHub` in type names (e.g. `GitHubConfig`, `GitHubClient`).
+  GitHub is spelled `GitHub` and HackerNews `HackerNews` in type names (e.g. `GitHubConfig`,
+  `HackerNewsConfig`). The CLI enum variants (`SyncSource::Github`, `::Hackernews`) are the
+  exception: clap derives the subcommand names from them.

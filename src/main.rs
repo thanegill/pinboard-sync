@@ -29,10 +29,9 @@ use log::{debug, error, info, warn};
 
 use backup::BackupSource;
 use bookmark::{AccountState, AccountView, Bookmark, BookmarkStore, CleanupStore};
-use cleanup_pass::DateOpts;
-use config::{Config, GitHubAccount, HackernewsAccount, RedditAccount, SyncLimit};
+use config::{Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit};
 use github::{GitHubClient, GitHubConfig};
-use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackernewsConfig};
+use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackerNewsConfig};
 use model::RedditConfig;
 use pinboard::{PinboardClient, RATE_LIMIT_SECS};
 use reddit::RedditClient;
@@ -40,6 +39,8 @@ use source::{
     github_token_settings, github_token_source, reddit_cookie_settings, reddit_cookie_source,
     BookmarkDraft, ConfiguredSecret, SecretRung, Source, SourceError, UrlKey,
 };
+use sync::JobSettings;
+use timefmt::DateOpts;
 use url::Url;
 
 #[derive(Parser)]
@@ -113,7 +114,7 @@ enum BackupTarget {
     /// Back up starred GitHub repositories.
     Github(GitHubBackupArgs),
     /// Back up favorited HackerNews stories and comments.
-    Hackernews(HackernewsBackupArgs),
+    Hackernews(HackerNewsBackupArgs),
     /// Back up the Pinboard account itself (raw `posts/all`, verbatim).
     Pinboard(PinboardBackupArgs),
 }
@@ -167,7 +168,7 @@ struct GitHubBackupArgs {
 }
 
 #[derive(Args, Clone)]
-struct HackernewsBackupArgs {
+struct HackerNewsBackupArgs {
     /// Account name to select from the config (default: the first hackernews account).
     account: Option<String>,
     /// Back up every hackernews account in the config.
@@ -225,7 +226,7 @@ enum SyncSource {
     /// Sync starred GitHub repositories.
     Github(GitHubSyncArgs),
     /// Sync favorited HackerNews stories and comments.
-    Hackernews(HackernewsSyncArgs),
+    Hackernews(HackerNewsSyncArgs),
 }
 
 #[derive(Args, Clone)]
@@ -242,26 +243,8 @@ struct RedditSyncArgs {
     /// or *_FILE).
     #[arg(long)]
     reddit_cookie: Option<String>,
-    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
-    #[arg(long)]
-    pinboard_token: Option<String>,
-    /// `auto` (the default: no cap; stop paging once caught up),
-    /// `all` (no cap; read every page), or N (write at most N; read every page).
-    /// Overrides config.
-    #[arg(long)]
-    limit: Option<SyncLimit>,
-    /// Only backdate posts newer than N days; older use "now" (overrides config).
-    #[arg(long)]
-    max_age_days: Option<u64>,
-    /// Mark new bookmarks to-read: `--toread` or `--toread=false` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    toread: Option<bool>,
-    /// Create bookmarks public: `--public` or `--public=false` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    public: Option<bool>,
-    /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    use_post_date: Option<bool>,
+    #[command(flatten)]
+    flags: SyncFlags,
     /// Shell command run when the Reddit cookie needs refreshing (a 401/403, or a
     /// redirect to the login page).
     #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
@@ -281,26 +264,8 @@ struct GitHubSyncArgs {
     /// GitHub personal access token (env GITHUB_TOKEN, or *_FILE).
     #[arg(long)]
     github_token: Option<String>,
-    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
-    #[arg(long)]
-    pinboard_token: Option<String>,
-    /// `auto` (the default: no cap; stop paging once caught up),
-    /// `all` (no cap; read every page), or N (write at most N; read every page).
-    /// Overrides config.
-    #[arg(long)]
-    limit: Option<SyncLimit>,
-    /// Only backdate posts newer than N days; older use "now" (overrides config).
-    #[arg(long)]
-    max_age_days: Option<u64>,
-    /// Mark new bookmarks to-read: `--toread` or `--toread=false` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    toread: Option<bool>,
-    /// Create bookmarks public: `--public` or `--public=false` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    public: Option<bool>,
-    /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    use_post_date: Option<bool>,
+    #[command(flatten)]
+    flags: SyncFlags,
     /// Shell command run when the GitHub token needs refreshing (a 401).
     #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
     on_auth_failure: Option<String>,
@@ -310,7 +275,7 @@ struct GitHubSyncArgs {
 }
 
 #[derive(Args, Clone)]
-struct HackernewsSyncArgs {
+struct HackerNewsSyncArgs {
     /// Account name to select from the config (default: the first hackernews account).
     account: Option<String>,
     /// Run every hackernews account in the config.
@@ -319,6 +284,17 @@ struct HackernewsSyncArgs {
     /// HackerNews username whose favorites to sync (env HN_USERNAME, or *_FILE).
     #[arg(long)]
     username: Option<String>,
+    #[command(flatten)]
+    flags: SyncFlags,
+    /// Fetch and print what would be posted, without writing to Pinboard.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+/// The Pinboard and write/dating flags every `sync <source>` takes, flattened into each so
+/// the declarations live in one place.
+#[derive(Args, Clone, Default)]
+struct SyncFlags {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
@@ -339,9 +315,6 @@ struct HackernewsSyncArgs {
     /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     use_post_date: Option<bool>,
-    /// Fetch and print what would be posted, without writing to Pinboard.
-    #[arg(long)]
-    dry_run: bool,
 }
 
 #[derive(Args)]
@@ -365,7 +338,7 @@ enum CleanupSource {
     /// Canonicalize existing GitHub repo bookmark URLs.
     Github(GitHubCleanupArgs),
     /// Normalize existing HackerNews bookmarks (rewrite item URLs to articles).
-    Hackernews(HackernewsCleanupArgs),
+    Hackernews(HackerNewsCleanupArgs),
 }
 
 /// The date-setting flags shared by every cleanup command (and `cleanup --all`),
@@ -412,7 +385,7 @@ struct GitHubCleanupArgs {
 }
 
 #[derive(Args, Clone)]
-struct HackernewsCleanupArgs {
+struct HackerNewsCleanupArgs {
     /// Account name whose tag config to use (default: the first hackernews account).
     account: Option<String>,
     /// Pinboard API token (env PINBOARD_TOKEN, or *_FILE).
@@ -609,38 +582,26 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
         }
         (false, Some(SyncSource::Reddit(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let ovr = args
-                .into_overrides()
-                .with_top_level_hook(cmd.on_auth_failure.clone());
-            let jobs = build_jobs(&config.reddit, account.as_deref(), all, |a| {
-                build_reddit_job(a, &ovr, config)
-            })?;
+            let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+            let jobs = build_jobs::<RedditAccount>(account.as_deref(), all, &ovr, config)?;
             (jobs, ovr, 0)
         }
         (false, Some(SyncSource::Github(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let ovr = args
-                .into_overrides()
-                .with_top_level_hook(cmd.on_auth_failure.clone());
-            let jobs = build_jobs(&config.github, account.as_deref(), all, |a| {
-                build_github_job(a, &ovr, config)
-            })?;
+            let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+            let jobs = build_jobs::<GitHubAccount>(account.as_deref(), all, &ovr, config)?;
             (jobs, ovr, 0)
         }
         (false, Some(SyncSource::Hackernews(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let ovr = args
-                .into_overrides()
-                .with_top_level_hook(cmd.on_auth_failure.clone());
-            let jobs = build_jobs(&config.hackernews, account.as_deref(), all, |a| {
-                build_hackernews_job(a, &ovr, config)
-            })?;
+            let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+            let jobs = build_jobs::<HackerNewsAccount>(account.as_deref(), all, &ovr, config)?;
             (jobs, ovr, 0)
         }
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
     };
 
-    let (pinboard, bookmarks) = open_pinboard(ovr.pinboard_token.clone(), config).await?;
+    let (pinboard, bookmarks) = open_pinboard(ovr.flags.pinboard_token.clone(), config).await?;
     // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
     // after it (per-source); honor either placement. (`--verbose` is global.)
     run_sync_jobs(
@@ -661,43 +622,48 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
 fn build_all_jobs(config: &Config, ovr: &SyncOverrides) -> (Vec<SyncJob>, usize) {
     let mut jobs = Vec::new();
     let mut run = AllRun::default();
-    for acct in &config.reddit {
-        match build_reddit_job(Some(acct), ovr, config) {
-            Ok(job) => jobs.push(job),
-            Err(e) => run.record(Err(e)),
-        }
-    }
-    for acct in &config.github {
-        match build_github_job(Some(acct), ovr, config) {
-            Ok(job) => jobs.push(job),
-            Err(e) => run.record(Err(e)),
-        }
-    }
-    for acct in &config.hackernews {
-        match build_hackernews_job(Some(acct), ovr, config) {
-            Ok(job) => jobs.push(job),
-            Err(e) => run.record(Err(e)),
-        }
-    }
+    build_every_job::<RedditAccount>(config, ovr, &mut jobs, &mut run);
+    build_every_job::<GitHubAccount>(config, ovr, &mut jobs, &mut run);
+    build_every_job::<HackerNewsAccount>(config, ovr, &mut jobs, &mut run);
     (jobs, run.failed)
+}
+
+/// [`build_all_jobs`] for one source: a job for each of its configured accounts, with each
+/// account that fails to build recorded in `run` instead.
+fn build_every_job<A: SourceAccount>(
+    config: &Config,
+    ovr: &SyncOverrides,
+    jobs: &mut Vec<SyncJob>,
+    run: &mut AllRun,
+) {
+    for account in A::configured(config) {
+        match build_job(Some(account), ovr, config) {
+            Ok(job) => jobs.push(job),
+            Err(e) => run.record(Err(e)),
+        }
+    }
 }
 
 /// Build one job per account: every account when `all`, else the named (or first,
 /// or implicit CLI/env) account.
-fn build_jobs<T: config::Named>(
-    accounts: &[T],
+fn build_jobs<A: SourceAccount>(
     name: Option<&str>,
     all: bool,
-    build: impl Fn(Option<&T>) -> Result<SyncJob>,
+    ovr: &SyncOverrides,
+    config: &Config,
 ) -> Result<Vec<SyncJob>> {
+    let accounts = A::configured(config);
     if all {
         if accounts.is_empty() {
             bail!("--all requires a --config with at least one configured account");
         }
-        accounts.iter().map(|a| build(Some(a))).collect()
+        accounts
+            .iter()
+            .map(|a| build_job(Some(a), ovr, config))
+            .collect()
     } else {
         let account = config::select_account(accounts, name)?;
-        Ok(vec![build(account)?])
+        Ok(vec![build_job(account, ovr, config)?])
     }
 }
 
@@ -707,13 +673,8 @@ struct SyncOverrides {
     reddit_cookie: Option<String>,
     github_token: Option<String>,
     hackernews_username: Option<String>,
-    pinboard_token: Option<String>,
     on_auth_failure: Option<String>,
-    limit: Option<SyncLimit>,
-    toread: Option<bool>,
-    public: Option<bool>,
-    use_post_date: Option<bool>,
-    max_age_days: Option<u64>,
+    flags: SyncFlags,
     dry_run: bool,
 }
 
@@ -729,11 +690,11 @@ impl SyncOverrides {
 
 /// The date-setting overrides a sync invocation supplies. `stale_to_now` is cleanup-only,
 /// so it is always `None` here.
-impl From<&SyncOverrides> for DateOverrides {
-    fn from(ovr: &SyncOverrides) -> Self {
+impl From<&SyncFlags> for DateOverrides {
+    fn from(flags: &SyncFlags) -> Self {
         DateOverrides {
-            use_post_date: ovr.use_post_date,
-            max_age_days: ovr.max_age_days,
+            use_post_date: flags.use_post_date,
+            max_age_days: flags.max_age_days,
             stale_to_now: None,
         }
     }
@@ -743,85 +704,70 @@ impl From<&SyncOverrides> for DateOverrides {
 // only the credentials and the auth hook: every other override affects a *write* to
 // Pinboard, which backup never performs.
 
-impl RedditBackupArgs {
-    fn into_overrides(self) -> SyncOverrides {
+impl From<RedditBackupArgs> for SyncOverrides {
+    fn from(args: RedditBackupArgs) -> Self {
         SyncOverrides {
-            reddit_username: self.reddit_username,
-            reddit_cookie: self.reddit_cookie,
-            on_auth_failure: self.on_auth_failure,
+            reddit_username: args.reddit_username,
+            reddit_cookie: args.reddit_cookie,
+            on_auth_failure: args.on_auth_failure,
             ..SyncOverrides::default()
         }
     }
 }
 
-impl GitHubBackupArgs {
-    fn into_overrides(self) -> SyncOverrides {
+impl From<GitHubBackupArgs> for SyncOverrides {
+    fn from(args: GitHubBackupArgs) -> Self {
         SyncOverrides {
-            github_token: self.github_token,
-            on_auth_failure: self.on_auth_failure,
+            github_token: args.github_token,
+            on_auth_failure: args.on_auth_failure,
             ..SyncOverrides::default()
         }
     }
 }
 
-impl HackernewsBackupArgs {
-    fn into_overrides(self) -> SyncOverrides {
+impl From<HackerNewsBackupArgs> for SyncOverrides {
+    fn from(args: HackerNewsBackupArgs) -> Self {
         SyncOverrides {
-            hackernews_username: self.username,
+            hackernews_username: args.username,
             ..SyncOverrides::default()
         }
     }
 }
 
-impl RedditSyncArgs {
-    /// The secret/operational overrides this single-source invocation supplies.
-    fn into_overrides(self) -> SyncOverrides {
+/// The secret/operational overrides a single-source `sync reddit` supplies.
+impl From<RedditSyncArgs> for SyncOverrides {
+    fn from(args: RedditSyncArgs) -> Self {
         SyncOverrides {
-            reddit_username: self.reddit_username,
-            reddit_cookie: self.reddit_cookie,
-            pinboard_token: self.pinboard_token,
-            on_auth_failure: self.on_auth_failure,
-            limit: self.limit,
-            toread: self.toread,
-            public: self.public,
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
-            dry_run: self.dry_run,
+            reddit_username: args.reddit_username,
+            reddit_cookie: args.reddit_cookie,
+            on_auth_failure: args.on_auth_failure,
+            flags: args.flags,
+            dry_run: args.dry_run,
             ..SyncOverrides::default()
         }
     }
 }
 
-impl GitHubSyncArgs {
-    /// The secret/operational overrides this single-source invocation supplies.
-    fn into_overrides(self) -> SyncOverrides {
+/// The secret/operational overrides a single-source `sync github` supplies.
+impl From<GitHubSyncArgs> for SyncOverrides {
+    fn from(args: GitHubSyncArgs) -> Self {
         SyncOverrides {
-            github_token: self.github_token,
-            pinboard_token: self.pinboard_token,
-            on_auth_failure: self.on_auth_failure,
-            limit: self.limit,
-            toread: self.toread,
-            public: self.public,
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
-            dry_run: self.dry_run,
+            github_token: args.github_token,
+            on_auth_failure: args.on_auth_failure,
+            flags: args.flags,
+            dry_run: args.dry_run,
             ..SyncOverrides::default()
         }
     }
 }
 
-impl HackernewsSyncArgs {
-    /// The secret/operational overrides this single-source invocation supplies.
-    fn into_overrides(self) -> SyncOverrides {
+/// The secret/operational overrides a single-source `sync hackernews` supplies.
+impl From<HackerNewsSyncArgs> for SyncOverrides {
+    fn from(args: HackerNewsSyncArgs) -> Self {
         SyncOverrides {
-            hackernews_username: self.username,
-            pinboard_token: self.pinboard_token,
-            limit: self.limit,
-            toread: self.toread,
-            public: self.public,
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
-            dry_run: self.dry_run,
+            hackernews_username: args.username,
+            flags: args.flags,
+            dry_run: args.dry_run,
             ..SyncOverrides::default()
         }
     }
@@ -834,36 +780,26 @@ struct SyncJob {
     /// Human label for logs, e.g. `reddit[alice]`.
     label: String,
     hook: Option<String>,
-    common: JobCommon,
+    settings: JobSettings,
 }
 
 impl SyncJob {
     /// The source's drafts: read incrementally against `existing` under
     /// [`SyncLimit::Auto`], else in full.
     async fn fetch(&self, existing: &[Bookmark]) -> Result<Vec<BookmarkDraft>, SourceError> {
-        match self.common.limit {
+        match self.settings.limit {
             SyncLimit::Auto => self.client.fetch_incremental(existing).await,
             SyncLimit::All | SyncLimit::Max(_) => self.client.fetch().await,
-        }
-    }
-
-    fn settings(&self) -> sync::JobSettings {
-        let common = &self.common;
-        sync::JobSettings {
-            toread: common.toread,
-            shared: common.shared,
-            use_post_date: common.dates.use_post_date,
-            max_age_days: common.dates.max_age_days,
-            limit: common.limit.write_cap(),
         }
     }
 }
 
 /// A log/display label for a job: `source[account]`, or `source[default]` when no
 /// named account (an implicit CLI/env invocation).
-fn job_label<T: config::Named>(source: &str, account: Option<&T>) -> String {
+fn job_label<A: SourceAccount>(account: Option<&A>) -> String {
     format!(
-        "{source}[{}]",
+        "{}[{}]",
+        A::SOURCE,
         account.and_then(|a| a.account_name()).unwrap_or("default")
     )
 }
@@ -937,16 +873,16 @@ fn resolve_dates(
 /// can fetch them concurrently and the dispatch can treat them uniformly.
 enum SourceClient {
     Reddit(RedditClient),
-    Github(GitHubClient),
-    Hackernews(HackerNewsClient),
+    GitHub(GitHubClient),
+    HackerNews(HackerNewsClient),
 }
 
 impl Source for SourceClient {
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
         match self {
             SourceClient::Reddit(c) => c.fetch().await,
-            SourceClient::Github(c) => c.fetch().await,
-            SourceClient::Hackernews(c) => c.fetch().await,
+            SourceClient::GitHub(c) => c.fetch().await,
+            SourceClient::HackerNews(c) => c.fetch().await,
         }
     }
 
@@ -956,8 +892,8 @@ impl Source for SourceClient {
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
         match self {
             SourceClient::Reddit(c) => c.fetch_incremental(existing).await,
-            SourceClient::Github(c) => c.fetch_incremental(existing).await,
-            SourceClient::Hackernews(c) => c.fetch_incremental(existing).await,
+            SourceClient::GitHub(c) => c.fetch_incremental(existing).await,
+            SourceClient::HackerNews(c) => c.fetch_incremental(existing).await,
         }
     }
 }
@@ -966,8 +902,8 @@ impl BackupSource for SourceClient {
     async fn dump(&self) -> Result<backup::BackupDump, SourceError> {
         match self {
             SourceClient::Reddit(c) => c.dump().await,
-            SourceClient::Github(c) => c.dump().await,
-            SourceClient::Hackernews(c) => c.dump().await,
+            SourceClient::GitHub(c) => c.dump().await,
+            SourceClient::HackerNews(c) => c.dump().await,
         }
     }
 }
@@ -976,8 +912,8 @@ impl UrlKey for SourceClient {
     fn dedup_key(&self, url: &Url) -> Option<String> {
         match self {
             SourceClient::Reddit(c) => c.dedup_key(url),
-            SourceClient::Github(c) => c.dedup_key(url),
-            SourceClient::Hackernews(c) => c.dedup_key(url),
+            SourceClient::GitHub(c) => c.dedup_key(url),
+            SourceClient::HackerNews(c) => c.dedup_key(url),
         }
     }
 }
@@ -986,121 +922,178 @@ impl UrlKey for SourceClient {
 /// `limit`/`toread`/`shared` trio through [`resolve_setting`] plus the dates through
 /// [`resolve_dates`], each on the flag → account → per-source default → `[pinboard]`
 /// global ladder. Leaves client/secret/hook construction to each source builder.
-struct JobCommon {
-    limit: SyncLimit,
-    /// To-read flag for this account's new bookmarks.
-    toread: bool,
-    /// Public/shared flag for this account's new bookmarks.
-    shared: bool,
-    dates: DateOpts,
-}
-
-fn resolve_job_common(
+fn resolve_job_settings(
     account: Option<&impl config::Account>,
     ovr: &SyncOverrides,
     src: &config::SourceDefaults,
     config: &Config,
-) -> JobCommon {
-    JobCommon {
+) -> JobSettings {
+    JobSettings {
         limit: resolve_setting(
-            ovr.limit,
+            ovr.flags.limit,
             account.and_then(|a| a.limit()),
             src.limit,
             config.pinboard.limit.unwrap_or_default(),
         ),
         toread: resolve_setting(
-            ovr.toread,
+            ovr.flags.toread,
             account.and_then(|a| a.toread()),
             src.toread,
             config.pinboard.toread,
         ),
         shared: resolve_setting(
-            ovr.public,
+            ovr.flags.public,
             account.and_then(|a| a.public()),
             src.public,
             config.pinboard.public,
         ),
-        dates: resolve_dates(&DateOverrides::from(ovr), account, src, config),
+        dates: resolve_dates(&DateOverrides::from(&ovr.flags), account, src, config),
     }
 }
 
-fn build_reddit_job(
-    account: Option<&RedditAccount>,
-    ovr: &SyncOverrides,
-    config: &Config,
-) -> Result<SyncJob> {
-    let username = resolve_secret(
-        ovr.reddit_username.clone(),
-        "REDDIT_USERNAME",
-        account.and_then(|a| a.username.clone()),
-        None,
-    )
-    .context("missing Reddit username (set --reddit-username, REDDIT_USERNAME, or `username` in the config)")?;
-    let cookie = resolve_reddit_cookie(ovr.reddit_cookie.clone(), account);
-    let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
-    let src = &config.defaults.reddit;
-    let hook = resolve_hook(
-        ovr.on_auth_failure.clone(),
-        account.and_then(|a| a.on_auth_failure.as_deref()),
-        src.on_auth_failure.as_deref(),
-        config,
-    );
-    let common = resolve_job_common(account, ovr, src, config);
-    Ok(SyncJob {
-        client: SourceClient::Reddit(RedditClient::for_user(username, cookie, reddit_config)?),
-        label: job_label("reddit", account),
-        hook,
-        common,
-    })
+/// What `sync`, `backup` and `doctor` need from one source's account type, so each
+/// handles the three sources through one generic path: where its accounts and per-source
+/// defaults live in the config, how its client is built from an account plus the CLI
+/// overrides, and which auth-failure hook its jobs carry.
+trait SourceAccount: config::Account + Sized {
+    /// The source's name in job labels, backup file stems and `doctor` lines.
+    const SOURCE: &'static str;
+
+    /// The source's configured accounts (`[[reddit]]` and so on).
+    fn configured(config: &Config) -> &[Self];
+
+    /// The source's `[defaults.<source>]` tier.
+    fn defaults(config: &Config) -> &config::SourceDefaults;
+
+    /// The account's own `on_auth_failure` override.
+    fn on_auth_failure(&self) -> Option<&str>;
+
+    /// The client for `account`, or for the implicit CLI/env account when `None`, with
+    /// its credentials resolved through the secret ladder.
+    fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient>;
+
+    /// The auth-failure hook for `account`: `top` (the flag or env value the command
+    /// resolved), else the account's, else the per-source default, else `[hooks]`. Both
+    /// `sync` jobs and `cleanup` resolve it here, so a source that never re-authenticates
+    /// can rule a hook out for every command at once.
+    fn hook(account: Option<&Self>, top: Option<String>, config: &Config) -> Option<String> {
+        resolve_hook(
+            top,
+            account.and_then(Self::on_auth_failure),
+            Self::defaults(config).on_auth_failure.as_deref(),
+            config,
+        )
+    }
 }
 
-fn build_github_job(
-    account: Option<&GitHubAccount>,
-    ovr: &SyncOverrides,
-    config: &Config,
-) -> Result<SyncJob> {
-    let token = resolve_github_token(ovr.github_token.clone(), account)
-        .with_context(missing_github_token)?;
-    let github_config = account.map(GitHubConfig::from).unwrap_or_default();
-    let src = &config.defaults.github;
-    let hook = resolve_hook(
-        ovr.on_auth_failure.clone(),
-        account.and_then(|a| a.on_auth_failure.as_deref()),
-        src.on_auth_failure.as_deref(),
-        config,
-    );
-    let common = resolve_job_common(account, ovr, src, config);
-    Ok(SyncJob {
-        client: SourceClient::Github(GitHubClient::new(token, github_config)?),
-        label: job_label("github", account),
-        hook,
-        common,
-    })
+impl SourceAccount for RedditAccount {
+    const SOURCE: &'static str = "reddit";
+
+    fn configured(config: &Config) -> &[Self] {
+        &config.reddit
+    }
+
+    fn defaults(config: &Config) -> &config::SourceDefaults {
+        &config.defaults.reddit
+    }
+
+    fn on_auth_failure(&self) -> Option<&str> {
+        self.on_auth_failure.as_deref()
+    }
+
+    fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient> {
+        let username = resolve_secret(
+            ovr.reddit_username.clone(),
+            "REDDIT_USERNAME",
+            account.and_then(|a| a.username.clone()),
+            None,
+        )
+        .context("missing Reddit username (set --reddit-username, REDDIT_USERNAME, or `username` in the config)")?;
+        let cookie = resolve_reddit_cookie(ovr.reddit_cookie.clone(), account);
+        let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
+        Ok(SourceClient::Reddit(RedditClient::for_user(
+            username,
+            cookie,
+            reddit_config,
+        )?))
+    }
 }
 
-fn build_hackernews_job(
-    account: Option<&HackernewsAccount>,
+impl SourceAccount for GitHubAccount {
+    const SOURCE: &'static str = "github";
+
+    fn configured(config: &Config) -> &[Self] {
+        &config.github
+    }
+
+    fn defaults(config: &Config) -> &config::SourceDefaults {
+        &config.defaults.github
+    }
+
+    fn on_auth_failure(&self) -> Option<&str> {
+        self.on_auth_failure.as_deref()
+    }
+
+    fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient> {
+        let token = resolve_github_token(ovr.github_token.clone(), account)
+            .with_context(missing_github_token)?;
+        let github_config = account.map(GitHubConfig::from).unwrap_or_default();
+        Ok(SourceClient::GitHub(GitHubClient::new(
+            token,
+            github_config,
+        )?))
+    }
+}
+
+impl SourceAccount for HackerNewsAccount {
+    const SOURCE: &'static str = "hackernews";
+
+    fn configured(config: &Config) -> &[Self] {
+        &config.hackernews
+    }
+
+    fn defaults(config: &Config) -> &config::SourceDefaults {
+        &config.defaults.hackernews
+    }
+
+    fn on_auth_failure(&self) -> Option<&str> {
+        None
+    }
+
+    fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient> {
+        let username = resolve_secret(
+            ovr.hackernews_username.clone(),
+            "HN_USERNAME",
+            account.and_then(|a| a.username.clone()),
+            None,
+        )
+        .context(
+            "missing HackerNews username (set --username, HN_USERNAME, or `username` in the config)",
+        )?;
+        let hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
+        Ok(SourceClient::HackerNews(HackerNewsClient::new(
+            username, hn_config,
+        )?))
+    }
+
+    /// None: HackerNews favorites are public, so nothing can need re-authenticating.
+    fn hook(_: Option<&Self>, _: Option<String>, _: &Config) -> Option<String> {
+        None
+    }
+}
+
+/// The `sync` job for `account` (or the implicit CLI/env account): its client, label and
+/// hook, and its settings resolved through [`resolve_job_settings`].
+fn build_job<A: SourceAccount>(
+    account: Option<&A>,
     ovr: &SyncOverrides,
     config: &Config,
 ) -> Result<SyncJob> {
-    let username = resolve_secret(
-        ovr.hackernews_username.clone(),
-        "HN_USERNAME",
-        account.and_then(|a| a.username.clone()),
-        None,
-    )
-    .context(
-        "missing HackerNews username (set --username, HN_USERNAME, or `username` in the config)",
-    )?;
-    let hn_config = account.map(HackernewsConfig::from).unwrap_or_default();
-    let src = &config.defaults.hackernews;
-    let common = resolve_job_common(account, ovr, src, config);
     Ok(SyncJob {
-        // HackerNews favorites are public, so there is no auth-failure hook.
-        client: SourceClient::Hackernews(HackerNewsClient::new(username, hn_config)?),
-        label: job_label("hackernews", account),
-        hook: None,
-        common,
+        client: A::client(account, ovr)?,
+        label: job_label(account),
+        hook: A::hook(account, ovr.on_auth_failure.clone(), config),
+        settings: resolve_job_settings(account, ovr, A::defaults(config), config),
     })
 }
 
@@ -1122,7 +1115,7 @@ async fn run_sync_jobs(
     let fetched = futures::future::join_all(jobs.iter().map(|job| async move {
         let drafts = job.fetch(bookmarks).await?;
         let fetched = drafts.len();
-        let new = sync::prepare_new_drafts(&job.client, drafts, bookmarks, &job.settings(), now);
+        let new = sync::prepare_new_drafts(&job.client, drafts, bookmarks, &job.settings, now);
         info!(
             "{}: fetched {fetched}, {} new after dedup",
             job.label,
@@ -1306,21 +1299,9 @@ fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
         (true, None) => {
             let mut jobs = Vec::new();
             let mut skipped = Vec::new();
-            for a in &config.reddit {
-                jobs.push(source_backup_job("reddit", Some(a), |x| {
-                    build_reddit_job(x, &ovr, config)
-                })?);
-            }
-            for a in &config.github {
-                jobs.push(source_backup_job("github", Some(a), |x| {
-                    build_github_job(x, &ovr, config)
-                })?);
-            }
-            for a in &config.hackernews {
-                jobs.push(source_backup_job("hackernews", Some(a), |x| {
-                    build_hackernews_job(x, &ovr, config)
-                })?);
-            }
+            jobs.extend(every_backup_job::<RedditAccount>(&ovr, config)?);
+            jobs.extend(every_backup_job::<GitHubAccount>(&ovr, config)?);
+            jobs.extend(every_backup_job::<HackerNewsAccount>(&ovr, config)?);
             match pinboard_backup_job(None, config)? {
                 Some(job) => jobs.push(job),
                 // Silence here would be the worst outcome: a nightly `--all` that quietly
@@ -1350,45 +1331,33 @@ fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
             })
         }
         (false, Some(BackupTarget::Reddit(args))) => Ok(BackupPlan {
-            jobs: source_backup_jobs(
-                "reddit",
-                &config.reddit,
+            jobs: source_backup_jobs::<RedditAccount>(
                 args.account.as_deref(),
                 args.all,
-                {
-                    let ovr = args.clone().into_overrides();
-                    move |a| build_reddit_job(a, &ovr, config)
-                },
+                &SyncOverrides::from(args.clone()),
+                config,
             )?,
             skipped: Vec::new(),
             out: args.out.out.clone(),
             dry_run: args.dry_run,
         }),
         (false, Some(BackupTarget::Github(args))) => Ok(BackupPlan {
-            jobs: source_backup_jobs(
-                "github",
-                &config.github,
+            jobs: source_backup_jobs::<GitHubAccount>(
                 args.account.as_deref(),
                 args.all,
-                {
-                    let ovr = args.clone().into_overrides();
-                    move |a| build_github_job(a, &ovr, config)
-                },
+                &SyncOverrides::from(args.clone()),
+                config,
             )?,
             skipped: Vec::new(),
             out: args.out.out.clone(),
             dry_run: args.dry_run,
         }),
         (false, Some(BackupTarget::Hackernews(args))) => Ok(BackupPlan {
-            jobs: source_backup_jobs(
-                "hackernews",
-                &config.hackernews,
+            jobs: source_backup_jobs::<HackerNewsAccount>(
                 args.account.as_deref(),
                 args.all,
-                {
-                    let ovr = args.clone().into_overrides();
-                    move |a| build_hackernews_job(a, &ovr, config)
-                },
+                &SyncOverrides::from(args.clone()),
+                config,
             )?,
             skipped: Vec::new(),
             out: args.out.out.clone(),
@@ -1411,39 +1380,51 @@ fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
 }
 
 /// The backup jobs for one source, selecting by name / first / every account. Reuses
-/// `build_jobs` so account selection and the whole secret ladder behave as in `sync`.
-fn source_backup_jobs<T: config::Account>(
-    source: &'static str,
-    accounts: &[T],
+/// `build_job` so account selection and the whole secret ladder behave as in `sync`.
+fn source_backup_jobs<A: SourceAccount>(
     name: Option<&str>,
     all: bool,
-    build: impl Fn(Option<&T>) -> Result<SyncJob>,
+    ovr: &SyncOverrides,
+    config: &Config,
 ) -> Result<Vec<BackupJob>> {
     if all {
-        if accounts.is_empty() {
-            bail!("--all requires a --config with at least one configured {source} account");
+        if A::configured(config).is_empty() {
+            bail!(
+                "--all requires a --config with at least one configured {} account",
+                A::SOURCE
+            );
         }
-        accounts
-            .iter()
-            .map(|a| source_backup_job(source, Some(a), &build))
-            .collect()
+        every_backup_job::<A>(ovr, config)
     } else {
-        let account = config::select_account(accounts, name)?;
-        Ok(vec![source_backup_job(source, account, &build)?])
+        let account = config::select_account(A::configured(config), name)?;
+        Ok(vec![source_backup_job(account, ovr, config)?])
     }
+}
+
+/// A backup job for every configured account of one source, stopping at the first that
+/// fails to build.
+fn every_backup_job<A: SourceAccount>(
+    ovr: &SyncOverrides,
+    config: &Config,
+) -> Result<Vec<BackupJob>> {
+    A::configured(config)
+        .iter()
+        .map(|a| source_backup_job(Some(a), ovr, config))
+        .collect()
 }
 
 /// Wrap one account's `SyncJob` as a backup job, keeping its client and auth hook and
 /// discarding the write-only settings (`limit`, `toread`, dates) backup has no use for.
-fn source_backup_job<T: config::Named>(
-    source: &'static str,
-    account: Option<&T>,
-    build: impl Fn(Option<&T>) -> Result<SyncJob>,
+fn source_backup_job<A: SourceAccount>(
+    account: Option<&A>,
+    ovr: &SyncOverrides,
+    config: &Config,
 ) -> Result<BackupJob> {
-    let job = build(account)?;
+    let job = build_job(account, ovr, config)?;
     Ok(BackupJob {
         stem: format!(
-            "{source}-{}",
+            "{}-{}",
+            A::SOURCE,
             backup::slug(account.and_then(config::Named::account_name))
         ),
         label: job.label.clone(),
@@ -1510,18 +1491,9 @@ async fn run_doctor(config: &Config) -> Result<()> {
     }
 
     let ovr = SyncOverrides::default();
-    failed += check_accounts("reddit", &config.reddit, |a| {
-        build_reddit_job(Some(a), &ovr, config)
-    })
-    .await;
-    failed += check_accounts("github", &config.github, |a| {
-        build_github_job(Some(a), &ovr, config)
-    })
-    .await;
-    failed += check_accounts("hackernews", &config.hackernews, |a| {
-        build_hackernews_job(Some(a), &ovr, config)
-    })
-    .await;
+    failed += check_accounts::<RedditAccount>(&ovr, config).await;
+    failed += check_accounts::<GitHubAccount>(&ovr, config).await;
+    failed += check_accounts::<HackerNewsAccount>(&ovr, config).await;
 
     if failed > 0 {
         bail!("{failed} check(s) failed");
@@ -1532,11 +1504,9 @@ async fn run_doctor(config: &Config) -> Result<()> {
 
 /// Probe each configured account by fetching its source; returns the count that
 /// failed. Reuses the normal job builders, so it exercises the real auth path.
-async fn check_accounts<T: config::Named>(
-    source: &str,
-    accounts: &[T],
-    build: impl Fn(&T) -> Result<SyncJob>,
-) -> usize {
+async fn check_accounts<A: SourceAccount>(ovr: &SyncOverrides, config: &Config) -> usize {
+    let source = A::SOURCE;
+    let accounts = A::configured(config);
     if accounts.is_empty() {
         println!("- {source} — no accounts configured");
         return 0;
@@ -1544,7 +1514,7 @@ async fn check_accounts<T: config::Named>(
     let mut failed = 0;
     for account in accounts {
         let name = account.account_name().unwrap_or("(unnamed)");
-        let result = match build(account) {
+        let result = match build_job(Some(account), ovr, config) {
             Ok(job) => job.client.fetch().await.map_err(SourceError::into_anyhow),
             Err(e) => Err(e),
         };
@@ -1582,16 +1552,12 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                 run.record(cleanup_github_for(&store, Some(acct), None, dates, config).await);
             }
             if let Some(acct) = config.reddit.first() {
-                let args = RedditCleanupArgs {
-                    account: None,
-                    reddit_cookie: None,
-                    pinboard_token: None,
-                    no_nsfw: false,
-                    no_titles: false,
-                    dates: DateFlags::default(),
-                    dry_run: cmd.dry_run,
+                let flags = RedditCleanupFlags {
+                    cookie: None,
+                    mark_nsfw: true,
+                    fix_titles: true,
                 };
-                run.record(cleanup_one_reddit(Some(acct), &args, &over, &store, config).await);
+                run.record(cleanup_one_reddit(Some(acct), flags, &over, &store, config).await);
             }
             if let Some(acct) = config.hackernews.first() {
                 run.record(
@@ -1654,11 +1620,7 @@ async fn cleanup_github_for<S: BookmarkStore + AccountState>(
 ) -> Result<()> {
     let github_config = account.map(GitHubConfig::from).unwrap_or_default();
     let token = resolve_github_token(token_flag, account).with_context(missing_github_token)?;
-    let hook = cleanup_hook(
-        account.and_then(|a| a.on_auth_failure.as_deref()),
-        config.defaults.github.on_auth_failure.as_deref(),
-        config,
-    );
+    let hook = cleanup_hook(account, config);
     let client = GitHubClient::new(token, github_config.clone())?;
     github::cleanup(store, &client, &github_config, dates)
         .await
@@ -1666,20 +1628,20 @@ async fn cleanup_github_for<S: BookmarkStore + AccountState>(
 }
 
 async fn run_cleanup_reddit(
-    mut args: RedditCleanupArgs,
+    args: RedditCleanupArgs,
     top_dry_run: bool,
     top: &DateOverrides,
     config: &Config,
 ) -> Result<()> {
-    args.dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
+    let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     // One pass over the Pinboard account's reddit bookmarks, using the selected (or
     // first, or implicit CLI/env) account's cookie + domain/tags.
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let account = config::select_account(&config.reddit, args.account.as_deref())?;
-    let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), args.dry_run);
+    let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
     cleanup_one_reddit(
         account,
-        &args,
+        RedditCleanupFlags::from(&args),
         &DateOverrides::from(&args.dates).with_top_level(top),
         &store,
         config,
@@ -1687,46 +1649,56 @@ async fn run_cleanup_reddit(
     .await
 }
 
+/// The `cleanup reddit` choices that are not account settings: the cookie flag, and which
+/// `/api/info`-backed fixes to make.
+struct RedditCleanupFlags {
+    cookie: Option<String>,
+    mark_nsfw: bool,
+    fix_titles: bool,
+}
+
+impl From<&RedditCleanupArgs> for RedditCleanupFlags {
+    fn from(args: &RedditCleanupArgs) -> Self {
+        RedditCleanupFlags {
+            cookie: args.reddit_cookie.clone(),
+            mark_nsfw: !args.no_nsfw,
+            fix_titles: !args.no_titles,
+        }
+    }
+}
+
 async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     account: Option<&RedditAccount>,
-    args: &RedditCleanupArgs,
+    flags: RedditCleanupFlags,
     over: &DateOverrides,
     store: &S,
     config: &Config,
 ) -> Result<()> {
-    let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
     let opts = cleanup::RedditCleanupOpts {
-        mark_nsfw: !args.no_nsfw,
-        fix_titles: !args.no_titles,
-        base_tag: reddit_config.tags.first().cloned().unwrap_or_default(),
-        subreddit_tag_prefix: reddit_config.subreddit_prefix.clone(),
-        nsfw_tag: reddit_config.nsfw.clone(),
-        domain: reddit_config.domain.clone(),
+        mark_nsfw: flags.mark_nsfw,
+        fix_titles: flags.fix_titles,
+        config: account.map(RedditConfig::from).unwrap_or_default(),
         dates: resolve_dates(over, account, &config.defaults.reddit, config),
     };
 
     // Reddit (for /api/info) is needed when marking NSFW, fixing titles, or dating by
     // the source post (the post's created_utc comes from /api/info too).
     let reddit = if opts.mark_nsfw || opts.fix_titles || opts.dates.use_post_date {
-        let cookie = resolve_reddit_cookie(args.reddit_cookie.clone(), account)
-            .with_context(missing_reddit_cookie)?;
+        let cookie =
+            resolve_reddit_cookie(flags.cookie, account).with_context(missing_reddit_cookie)?;
         Some(RedditClient::for_info(Some(cookie))?)
     } else {
         None
     };
 
-    let hook = cleanup_hook(
-        account.and_then(|a| a.on_auth_failure.as_deref()),
-        config.defaults.reddit.on_auth_failure.as_deref(),
-        config,
-    );
+    let hook = cleanup_hook(account, config);
     cleanup::run(store, reddit.as_ref(), &opts)
         .await
         .map_err(|e| handle_source_err(e, hook.as_deref()))
 }
 
 async fn run_cleanup_hackernews(
-    args: HackernewsCleanupArgs,
+    args: HackerNewsCleanupArgs,
     top_dry_run: bool,
     top: &DateOverrides,
     config: &Config,
@@ -1753,10 +1725,10 @@ async fn run_cleanup_hackernews(
 /// config `tag_link`. The override is validated for whitespace like the config value so a
 /// space-bearing marker (which Pinboard would split, matching nothing) fails loudly.
 fn resolve_hackernews_cleanup_config(
-    account: Option<&HackernewsAccount>,
+    account: Option<&HackerNewsAccount>,
     link_tag: Option<String>,
-) -> Result<HackernewsConfig> {
-    let mut hn_config = account.map(HackernewsConfig::from).unwrap_or_default();
+) -> Result<HackerNewsConfig> {
+    let mut hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
     if let Some(tag) = link_tag {
         config::reject_whitespace("--link-tag", &tag)?;
         hn_config.link_tag = tag;
@@ -1765,7 +1737,7 @@ fn resolve_hackernews_cleanup_config(
 }
 
 async fn cleanup_one_hackernews<S: BookmarkStore + AccountState>(
-    account: Option<&HackernewsAccount>,
+    account: Option<&HackerNewsAccount>,
     link_discussions: bool,
     link_tag: Option<String>,
     over: &DateOverrides,
@@ -2029,17 +2001,8 @@ fn resolve_hook(
 /// `onAuthFailure` *only* into the unit environment — it never reaches the generated
 /// TOML — and runs the `cleanup --all` timer with it. Resolving from config alone would
 /// leave the hook dead for the exact deployment it is meant to serve.
-fn cleanup_hook(
-    account_override: Option<&str>,
-    source_override: Option<&str>,
-    config: &Config,
-) -> Option<String> {
-    resolve_hook(
-        on_auth_failure_from_env(),
-        account_override,
-        source_override,
-        config,
-    )
+fn cleanup_hook<A: SourceAccount>(account: Option<&A>, config: &Config) -> Option<String> {
+    A::hook(account, on_auth_failure_from_env(), config)
 }
 
 fn resolve_pinboard_token(flag: Option<String>, pb: &config::PinboardConfig) -> Option<String> {
@@ -2049,19 +2012,6 @@ fn resolve_pinboard_token(flag: Option<String>, pb: &config::PinboardConfig) -> 
         pb.token.clone(),
         pb.token_file.as_deref(),
     )
-}
-
-/// A single-line, length-bounded preview of (possibly multi-line) text, for
-/// dry-run output only. The full text is still sent to Pinboard's `extended`.
-pub(crate) fn preview(text: &str) -> String {
-    const MAX: usize = 160;
-    let one_line = htmltext::collapse_whitespace(text, " ");
-    if one_line.chars().count() > MAX {
-        let head: String = one_line.chars().take(MAX).collect();
-        format!("{head}…")
-    } else {
-        one_line
-    }
 }
 
 #[cfg(test)]
@@ -2236,19 +2186,6 @@ mod tests {
     }
 
     #[test]
-    fn preview_collapses_whitespace() {
-        assert_eq!(preview("line1\nline2   line3"), "line1 line2 line3");
-    }
-
-    #[test]
-    fn preview_truncates_long_text_with_ellipsis() {
-        let long = "word ".repeat(100);
-        let p = preview(&long);
-        assert!(p.ends_with('…'));
-        assert_eq!(p.chars().count(), 161);
-    }
-
-    #[test]
     fn resolve_setting_picks_the_highest_present_tier() {
         // flag → account → source → global, first `Some` wins.
         assert_eq!(resolve_setting(Some(1), Some(2), Some(3), 5), 1); // flag tops all
@@ -2328,31 +2265,34 @@ mod tests {
     /// `SyncJob` field (e.g. `public` into the `toread` slot) fails the assertions.
     fn wiring_overrides() -> SyncOverrides {
         SyncOverrides {
-            limit: Some(SyncLimit::Max(NonZeroUsize::new(7).unwrap())),
-            toread: Some(true),        // global default is false
-            public: Some(false),       // distinct from toread, so a swap is caught
-            use_post_date: Some(true), // global default is false
-            max_age_days: Some(99),    // global default is 30
+            flags: SyncFlags {
+                limit: Some(SyncLimit::Max(NonZeroUsize::new(7).unwrap())),
+                toread: Some(true),        // global default is false
+                public: Some(false),       // distinct from toread, so a swap is caught
+                use_post_date: Some(true), // global default is false
+                max_age_days: Some(99),    // global default is 30
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
 
     fn assert_wired(job: &SyncJob) {
-        let common = &job.common;
+        let settings = &job.settings;
         assert_eq!(
-            common.limit,
+            settings.limit,
             SyncLimit::Max(NonZeroUsize::new(7).unwrap()),
             "limit"
         );
-        assert!(common.toread, "toread");
-        assert!(!common.shared, "shared (from --public=false)");
-        assert!(common.dates.use_post_date, "use_post_date");
-        assert_eq!(common.dates.max_age_days, 99, "max_age_days");
+        assert!(settings.toread, "toread");
+        assert!(!settings.shared, "shared (from --public=false)");
+        assert!(settings.dates.use_post_date, "use_post_date");
+        assert_eq!(settings.dates.max_age_days, 99, "max_age_days");
     }
 
     /// The write settings of a job a test only fetches through: everything off but `limit`.
-    pub(super) fn fetch_only(limit: SyncLimit) -> JobCommon {
-        JobCommon {
+    pub(super) fn fetch_only(limit: SyncLimit) -> JobSettings {
+        JobSettings {
             limit,
             toread: false,
             shared: false,
@@ -2365,33 +2305,33 @@ mod tests {
     }
 
     #[test]
-    fn build_reddit_job_wires_overrides_to_job_fields() {
+    fn build_job_wires_reddit_overrides_to_job_fields() {
         let ovr = SyncOverrides {
             reddit_username: Some("alice".into()),
             reddit_cookie: Some("reddit_session=x".into()),
             ..wiring_overrides()
         };
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_wired(&job);
     }
 
     #[test]
-    fn build_github_job_wires_overrides_to_job_fields() {
+    fn build_job_wires_github_overrides_to_job_fields() {
         let ovr = SyncOverrides {
             github_token: Some("ghp_test".into()),
             ..wiring_overrides()
         };
-        let job = build_github_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<GitHubAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_wired(&job);
     }
 
     #[test]
-    fn build_hackernews_job_wires_overrides_to_job_fields() {
+    fn build_job_wires_hackernews_overrides_to_job_fields() {
         let ovr = SyncOverrides {
             hackernews_username: Some("alice".into()),
             ..wiring_overrides()
         };
-        let job = build_hackernews_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<HackerNewsAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_wired(&job);
     }
 
@@ -2428,7 +2368,7 @@ mod tests {
                 Ok(Command::Sync(SyncCmd {
                     source: Some(SyncSource::Hackernews(args)),
                     ..
-                })) => Ok(args.limit),
+                })) => Ok(args.flags.limit),
                 Ok(_) => panic!("expected `sync hackernews`"),
                 Err(err) => Err(err.to_string()),
             }
@@ -2458,7 +2398,7 @@ mod tests {
     #[test]
     fn top_level_all_threads_on_auth_failure_into_the_hook() {
         let _env = lock_on_auth_failure_env();
-        // The `sync --all` path builds `SyncOverrides` itself (no `into_overrides`),
+        // The `sync --all` path builds `SyncOverrides` itself (not from the source args),
         // so the hook must be carried explicitly from the top-level flag.
         let cmd = parse_sync(&["--all", "--on-auth-failure", "refresh-cookie"]);
         assert_eq!(cmd.on_auth_failure.as_deref(), Some("refresh-cookie"));
@@ -2470,8 +2410,41 @@ mod tests {
             reddit_cookie: Some("reddit_session=x".into()),
             ..SyncOverrides::default()
         };
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("refresh-cookie"));
+    }
+
+    /// A reddit account with its own hook, in a config whose `[defaults.reddit]` has
+    /// another: the two config tiers `cleanup_hook` reads below the env var.
+    fn account_and_source_hooks() -> (RedditAccount, Config) {
+        let account = RedditAccount {
+            on_auth_failure: Some("account-hook".into()),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.defaults.reddit.on_auth_failure = Some("source-hook".into());
+        (account, config)
+    }
+
+    /// HackerNews is public, so no command may hand it a hook, whatever the env var or
+    /// `[hooks]` say.
+    #[test]
+    fn hackernews_resolves_no_hook_from_any_tier() {
+        let _env = lock_on_auth_failure_env();
+        std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
+        let mut config = Config::default();
+        config.hooks.on_auth_failure = Some("global-hook".into());
+        let cleanup = cleanup_hook::<HackerNewsAccount>(None, &config);
+        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
+        let ovr = SyncOverrides {
+            hackernews_username: Some("bob".into()),
+            on_auth_failure: Some("flag-hook".into()),
+            ..SyncOverrides::default()
+        };
+        let job = build_job::<HackerNewsAccount>(None, &ovr, &config).expect("builds");
+
+        assert_eq!(cleanup, None);
+        assert_eq!(job.hook, None);
     }
 
     #[test]
@@ -2482,7 +2455,7 @@ mod tests {
         // same environment. Miss this rung and the hook silently never fires for the
         // deployment the whole feature exists for.
         std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
-        let hook = cleanup_hook(None, None, &Config::default());
+        let hook = cleanup_hook::<RedditAccount>(None, &Config::default());
         std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
 
         assert_eq!(hook.as_deref(), Some("env-hook"));
@@ -2494,11 +2467,8 @@ mod tests {
         // Same precedence as `sync`, whose per-source flag is env-backed: the env var is
         // the top rung, above an account or `[defaults.<source>]` entry.
         std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
-        let hook = cleanup_hook(
-            Some("account-hook"),
-            Some("source-hook"),
-            &Config::default(),
-        );
+        let (account, config) = account_and_source_hooks();
+        let hook = cleanup_hook(Some(&account), &config);
         std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
 
         assert_eq!(hook.as_deref(), Some("env-hook"));
@@ -2508,11 +2478,8 @@ mod tests {
     fn cleanup_uses_the_account_hook_when_no_env_is_set() {
         let _env = lock_on_auth_failure_env();
         std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
-        let hook = cleanup_hook(
-            Some("account-hook"),
-            Some("source-hook"),
-            &Config::default(),
-        );
+        let (account, config) = account_and_source_hooks();
+        let hook = cleanup_hook(Some(&account), &config);
 
         assert_eq!(hook.as_deref(), Some("account-hook"));
     }
@@ -2542,7 +2509,7 @@ mod tests {
         };
         std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
 
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("env-hook"));
     }
 
@@ -2550,7 +2517,7 @@ mod tests {
     fn top_level_on_auth_failure_reaches_single_source_hook() {
         let _env = lock_on_auth_failure_env();
         // `--on-auth-failure` placed before the source subcommand must reach the
-        // job just like the `--all` path; `into_overrides` alone only sees the
+        // job just like the `--all` path; the overrides from the source args alone only see the
         // per-source flag.
         let cmd = parse_sync(&[
             "--on-auth-failure",
@@ -2567,10 +2534,8 @@ mod tests {
         };
         assert_eq!(args.on_auth_failure, None);
 
-        let ovr = args
-            .into_overrides()
-            .with_top_level_hook(cmd.on_auth_failure.clone());
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("top-hook"));
     }
 
@@ -2592,10 +2557,8 @@ mod tests {
             _ => panic!("expected `sync reddit` args"),
         };
 
-        let ovr = args
-            .into_overrides()
-            .with_top_level_hook(cmd.on_auth_failure.clone());
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("source-hook"));
     }
 
@@ -2626,10 +2589,8 @@ mod tests {
         };
         assert_eq!(args.on_auth_failure.as_deref(), Some("explicit-hook"));
 
-        let ovr = args
-            .into_overrides()
-            .with_top_level_hook(cmd.on_auth_failure.clone());
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("explicit-hook"));
     }
 
@@ -2655,10 +2616,8 @@ mod tests {
             _ => panic!("expected `sync reddit` args"),
         };
 
-        let ovr = args
-            .into_overrides()
-            .with_top_level_hook(cmd.on_auth_failure.clone());
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("env-hook"));
     }
 
@@ -2764,15 +2723,20 @@ mod tests {
     #[test]
     fn value_taking_boolean_flags_parse_bare_and_explicit() {
         // Absent → None (falls through to the config tiers).
-        assert_eq!(parse_reddit_sync(&[]).public, None);
+        assert_eq!(parse_reddit_sync(&[]).flags.public, None);
         // Bare `--public` → Some(true) via default_missing_value.
-        assert_eq!(parse_reddit_sync(&["--public"]).public, Some(true));
+        assert_eq!(parse_reddit_sync(&["--public"]).flags.public, Some(true));
         // `--public=false` → Some(false): the explicit force-off a bare flag can't express.
-        assert_eq!(parse_reddit_sync(&["--public=false"]).public, Some(false));
-        // Same shape for the other booleans.
-        assert_eq!(parse_reddit_sync(&["--toread"]).toread, Some(true));
         assert_eq!(
-            parse_reddit_sync(&["--use-post-date=false"]).use_post_date,
+            parse_reddit_sync(&["--public=false"]).flags.public,
+            Some(false)
+        );
+        // Same shape for the other booleans.
+        assert_eq!(parse_reddit_sync(&["--toread"]).flags.toread, Some(true));
+        assert_eq!(
+            parse_reddit_sync(&["--use-post-date=false"])
+                .flags
+                .use_post_date,
             Some(false)
         );
     }
@@ -2782,11 +2746,11 @@ mod tests {
         // `require_equals` keeps clap from consuming the account as the flag value.
         let args = parse_reddit_sync(&["--public", "alice"]);
         assert_eq!(args.account.as_deref(), Some("alice"));
-        assert_eq!(args.public, Some(true));
+        assert_eq!(args.flags.public, Some(true));
         // The `=` form still forces the flag off while leaving the positional alone.
         let args = parse_reddit_sync(&["--public=false", "alice"]);
         assert_eq!(args.account.as_deref(), Some("alice"));
-        assert_eq!(args.public, Some(false));
+        assert_eq!(args.flags.public, Some(false));
     }
 
     /// Parse `backup <extra>` and return the parsed command.
@@ -2943,6 +2907,46 @@ mod tests {
             PathBuf::from("/from-flag")
         );
     }
+
+    /// Each source's name reaches its jobs' labels and backup file stems, which are part of
+    /// the snapshot an operator keeps: a renamed source would orphan its earlier files.
+    #[test]
+    fn backup_all_names_each_source_in_its_labels_and_stems() {
+        let config = Config {
+            reddit: vec![RedditAccount {
+                name: Some("main".into()),
+                username: Some("alice".into()),
+                cookie: Some("reddit_session=x".into()),
+                ..Default::default()
+            }],
+            github: vec![GitHubAccount {
+                name: Some("main".into()),
+                token: Some("token".into()),
+                ..Default::default()
+            }],
+            hackernews: vec![HackerNewsAccount {
+                name: Some("main".into()),
+                username: Some("bob".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let plan = backup_jobs(&parse_backup(&["--all"]), &config).expect("plans");
+        let named: Vec<(&str, &str)> = plan
+            .jobs
+            .iter()
+            .map(|job| (job.label.as_str(), job.stem.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("reddit[main]", "reddit-main"),
+                ("github[main]", "github-main"),
+                ("hackernews[main]", "hackernews-main"),
+            ]
+        );
+        assert_eq!(plan.skipped, ["pinboard"], "no Pinboard token in this test");
+    }
 }
 
 /// Tests that need a socket; the flake skips `net_tests` in the Nix build sandbox.
@@ -2992,15 +2996,15 @@ mod net_tests {
             .mount(&algolia)
             .await;
         let job = SyncJob {
-            client: SourceClient::Hackernews(HackerNewsClient::with_base_urls(
+            client: SourceClient::HackerNews(HackerNewsClient::with_base_urls(
                 "u".into(),
-                HackernewsConfig::default(),
+                HackerNewsConfig::default(),
                 hn.uri(),
                 algolia.uri(),
             )),
             label: "hackernews[u]".into(),
             hook: None,
-            common: fetch_only(limit),
+            settings: fetch_only(limit),
         };
         let existing = [Bookmark {
             url: Url::parse("https://news.ycombinator.com/item?id=1").unwrap(),
@@ -3054,7 +3058,7 @@ mod net_tests {
                 client: client(&server),
                 label: "test".into(),
                 hook: None,
-                common: fetch_only(limit),
+                settings: fetch_only(limit),
             };
 
             crate::http::recording_waits(job.fetch(existing))
@@ -3126,7 +3130,7 @@ mod net_tests {
         assert_second_page_reads(
             mount,
             |server| {
-                SourceClient::Github(GitHubClient::with_base_url(
+                SourceClient::GitHub(GitHubClient::with_base_url(
                     "tok".into(),
                     github::GitHubConfig::default(),
                     server.uri(),

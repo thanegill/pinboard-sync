@@ -1,9 +1,9 @@
 //! The service-agnostic bookmark domain type. [`Bookmark`] is what the `cleanup`
 //! driver reads (from Pinboard) and plans an end-state in, independent of any service's
 //! wire format: tags split out, the creation time as a real [`OffsetDateTime`], and the
-//! flags as plain `bool`s. The Pinboard wire shape it's converted `From` lives next to
-//! the client in [`crate::pinboard::PinboardBookmark`]; the formatting back to Pinboard
-//! fields happens at the write boundary in `pinboard::post_add`.
+//! flags as plain `bool`s. The Pinboard wire shape it's converted from (`TryFrom`) lives
+//! next to the client in [`crate::pinboard::PinboardBookmark`]; the formatting back to
+//! Pinboard fields happens at the write boundary in `pinboard::post_add`.
 
 use std::collections::HashMap;
 

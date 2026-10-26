@@ -8,23 +8,20 @@ use std::collections::{BTreeSet, HashMap};
 use anyhow::Result;
 
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Plan};
+use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::html_to_plain;
-use crate::model::{cased_subreddit, reddit_key};
+use crate::model::{cased_subreddit, reddit_key, RedditConfig};
 use crate::reddit::PostInfo;
 use crate::source::{host_matches, SourceError, UrlExt};
+use crate::timefmt::DateOpts;
 use url::Url;
 
 pub struct RedditCleanupOpts {
     pub mark_nsfw: bool,
     pub fix_titles: bool,
-    pub base_tag: String,
-    pub subreddit_tag_prefix: String,
-    /// NSFW marker tag (the configurable `reddit.tag_nsfw`, default `nsfw`; empty
-    /// disables the marker). Matches what `sync` tags NSFW posts with.
-    pub nsfw_tag: String,
-    /// Reddit host that URLs are rewritten to (default `old.reddit.com`).
-    pub domain: String,
+    /// The account's tag vocabulary and domain, the same ones `sync` writes with: URLs are
+    /// rewritten to `domain`, and `nsfw` is the NSFW marker tag (empty disables it).
+    pub config: RedditConfig,
     /// Whether and how to re-date bookmarks by the source post date.
     pub dates: DateOpts,
 }
@@ -75,24 +72,24 @@ impl CleanupPass for RedditCleanupPass<'_> {
         let opts = self.opts;
         // The stored URL is already a parsed `Url` (and a reddit one — the pass is filtered
         // to those); normalize it, falling back to the original when nothing changed.
-        let new_url =
-            normalize_url(&bookmark.url, &opts.domain).unwrap_or_else(|| bookmark.url.clone());
+        let new_url = normalize_url(&bookmark.url, &opts.config.domain)
+            .unwrap_or_else(|| bookmark.url.clone());
 
         let mut tags = normalize_tags(
             &new_url,
             &bookmark.tags,
-            &opts.base_tag,
-            &opts.subreddit_tag_prefix,
-            &opts.nsfw_tag,
+            opts.config.base_tag(),
+            &opts.config.subreddit_prefix,
+            &opts.config.nsfw,
         );
         let post = post_fullname(&new_url).and_then(|f| self.info.get(&f));
 
         if opts.mark_nsfw
-            && !opts.nsfw_tag.is_empty()
+            && !opts.config.nsfw.is_empty()
             && post.is_some_and(|p| p.over_18)
-            && !tags.iter().any(|t| t == &opts.nsfw_tag)
+            && !tags.iter().any(|t| t == &opts.config.nsfw)
         {
-            tags.push(opts.nsfw_tag.clone());
+            tags.push(opts.config.nsfw.clone());
             tags.sort();
         }
 
@@ -168,8 +165,8 @@ async fn fetch_post_info<R: PostInfo>(
     let fullnames: Vec<String> = bookmarks
         .iter()
         .filter_map(|bookmark| {
-            let url =
-                normalize_url(&bookmark.url, &opts.domain).unwrap_or_else(|| bookmark.url.clone());
+            let url = normalize_url(&bookmark.url, &opts.config.domain)
+                .unwrap_or_else(|| bookmark.url.clone());
             post_fullname(&url)
         })
         .collect::<BTreeSet<_>>()
@@ -195,7 +192,7 @@ async fn fetch_post_info<R: PostInfo>(
                 entry.fields.url.as_deref().unwrap_or_default(),
                 entry.fields.is_self,
                 None,
-                &opts.domain,
+                &opts.config.domain,
             );
             map.insert(
                 name,
@@ -524,10 +521,7 @@ mod loop_tests {
         RedditCleanupOpts {
             mark_nsfw: true,
             fix_titles: true,
-            base_tag: "reddit".into(),
-            subreddit_tag_prefix: "subreddit:".into(),
-            nsfw_tag: "nsfw".into(),
-            domain: "old.reddit.com".into(),
+            config: RedditConfig::default(),
             dates: DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
@@ -638,7 +632,10 @@ mod loop_tests {
         };
         let opts = RedditCleanupOpts {
             fix_titles: false,
-            nsfw_tag: "adult".into(),
+            config: RedditConfig {
+                nsfw: "adult".into(),
+                ..RedditConfig::default()
+            },
             ..opts()
         };
 
@@ -679,7 +676,10 @@ mod loop_tests {
         };
         let opts = RedditCleanupOpts {
             fix_titles: false,
-            nsfw_tag: "adult".into(),
+            config: RedditConfig {
+                nsfw: "adult".into(),
+                ..RedditConfig::default()
+            },
             ..opts()
         };
 

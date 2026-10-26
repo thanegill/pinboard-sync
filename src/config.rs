@@ -14,7 +14,7 @@ use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 
 use crate::github::GitHubConfig;
-use crate::hackernews::HackernewsConfig;
+use crate::hackernews::HackerNewsConfig;
 use crate::model::RedditConfig;
 
 /// The parsed config file.
@@ -36,7 +36,7 @@ pub struct Config {
     #[serde(default)]
     pub github: Vec<GitHubAccount>,
     #[serde(default)]
-    pub hackernews: Vec<HackernewsAccount>,
+    pub hackernews: Vec<HackerNewsAccount>,
 }
 
 /// Per-source default overrides, keyed by source (`[defaults.reddit]` etc.). Each
@@ -458,7 +458,7 @@ impl From<&GitHubAccount> for GitHubConfig {
 /// One HackerNews account: a public username plus the (non-secret) tag config.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct HackernewsAccount {
+pub struct HackerNewsAccount {
     pub name: Option<String>,
     pub username: Option<String>,
     pub limit: Option<SyncLimit>,
@@ -480,12 +480,12 @@ pub struct HackernewsAccount {
     pub tags: Option<Vec<String>>,
 }
 
-/// The account's non-secret [`HackernewsConfig`] (tag vocabulary), each field falling
+/// The account's non-secret [`HackerNewsConfig`] (tag vocabulary), each field falling
 /// back to its built-in default.
-impl From<&HackernewsAccount> for HackernewsConfig {
-    fn from(account: &HackernewsAccount) -> Self {
-        let d = HackernewsConfig::default();
-        HackernewsConfig {
+impl From<&HackerNewsAccount> for HackerNewsConfig {
+    fn from(account: &HackerNewsAccount) -> Self {
+        let d = HackerNewsConfig::default();
+        HackerNewsConfig {
             tags: account.tags.clone().unwrap_or(d.tags),
             comment: account.tag_comment.clone().unwrap_or(d.comment),
             author_prefix: account.tag_author_prefix.clone().unwrap_or(d.author_prefix),
@@ -638,7 +638,7 @@ macro_rules! impl_named {
         })+
     };
 }
-impl_named!(RedditAccount => username, GitHubAccount, HackernewsAccount => username);
+impl_named!(RedditAccount => username, GitHubAccount, HackerNewsAccount => username);
 
 /// The per-account settings shared across every source. Each returns the
 /// account-level override, or `None` to fall through to the per-source default and
@@ -669,7 +669,7 @@ macro_rules! impl_account {
         })+
     };
 }
-impl_account!(RedditAccount, GitHubAccount, HackernewsAccount);
+impl_account!(RedditAccount, GitHubAccount, HackerNewsAccount);
 
 /// Pick the account named `name`, or the first account when `name` is `None`.
 /// Returns `Ok(None)` only when there are no configured accounts and no name was
@@ -1090,7 +1090,7 @@ mod tests {
             tag_lang_prefix,
             tags,
         });
-        let hackernews = documented_fields!(HackernewsAccount {
+        let hackernews = documented_fields!(HackerNewsAccount {
             name,
             username,
             limit,

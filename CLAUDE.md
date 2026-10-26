@@ -268,7 +268,7 @@ the destination is a target like any source. `ExportBookmark` is deliberately *n
 a domain rename must not silently change an operator's files.
 
 **All tags are config-driven; there are no tag CLI flags.** Each source has a tag
-config struct (`RedditConfig`, `GitHubConfig`, `HackernewsConfig`) of overridable
+config struct (`RedditConfig`, `GitHubConfig`, `HackerNewsConfig`) of overridable
 fields with built-in defaults; the `tags` list (default e.g. `["reddit"]`) is the
 base tag plus any extras, and `push_tag`/`push_prefixed` in `source.rs` render them
 (empty string disables a tag). `model.rs`'s tag tests are the spec — keep them in
@@ -503,4 +503,6 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
 - The User-Agent / client identifier derives from `CARGO_PKG_NAME`/`CARGO_PKG_VERSION`.
 - **Service-specific, API-shaped structs carry a service prefix** (`GitHubRepo`,
   `HackerNewsItem`, `RedditSavedItem`, `AlgoliaSearchResponse`) — not bare `Repo`/`Item`.
-  GitHub is spelled `GitHub` in type names (e.g. `GitHubConfig`, `GitHubClient`).
+  GitHub is spelled `GitHub` and HackerNews `HackerNews` in type names (e.g. `GitHubConfig`,
+  `HackerNewsConfig`). The CLI enum variants (`SyncSource::Github`, `::Hackernews`) are the
+  exception: clap derives the subcommand names from them.

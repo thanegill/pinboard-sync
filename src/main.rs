@@ -30,9 +30,9 @@ use log::{debug, error, info, warn};
 use backup::BackupSource;
 use bookmark::{AccountState, AccountView, Bookmark, BookmarkStore, CleanupStore};
 use cleanup_pass::DateOpts;
-use config::{Config, GitHubAccount, HackernewsAccount, RedditAccount, SyncLimit};
+use config::{Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit};
 use github::{GitHubClient, GitHubConfig};
-use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackernewsConfig};
+use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackerNewsConfig};
 use model::RedditConfig;
 use pinboard::{PinboardClient, RATE_LIMIT_SECS};
 use reddit::RedditClient;
@@ -113,7 +113,7 @@ enum BackupTarget {
     /// Back up starred GitHub repositories.
     Github(GitHubBackupArgs),
     /// Back up favorited HackerNews stories and comments.
-    Hackernews(HackernewsBackupArgs),
+    Hackernews(HackerNewsBackupArgs),
     /// Back up the Pinboard account itself (raw `posts/all`, verbatim).
     Pinboard(PinboardBackupArgs),
 }
@@ -167,7 +167,7 @@ struct GitHubBackupArgs {
 }
 
 #[derive(Args, Clone)]
-struct HackernewsBackupArgs {
+struct HackerNewsBackupArgs {
     /// Account name to select from the config (default: the first hackernews account).
     account: Option<String>,
     /// Back up every hackernews account in the config.
@@ -225,7 +225,7 @@ enum SyncSource {
     /// Sync starred GitHub repositories.
     Github(GitHubSyncArgs),
     /// Sync favorited HackerNews stories and comments.
-    Hackernews(HackernewsSyncArgs),
+    Hackernews(HackerNewsSyncArgs),
 }
 
 #[derive(Args, Clone)]
@@ -310,7 +310,7 @@ struct GitHubSyncArgs {
 }
 
 #[derive(Args, Clone)]
-struct HackernewsSyncArgs {
+struct HackerNewsSyncArgs {
     /// Account name to select from the config (default: the first hackernews account).
     account: Option<String>,
     /// Run every hackernews account in the config.
@@ -365,7 +365,7 @@ enum CleanupSource {
     /// Canonicalize existing GitHub repo bookmark URLs.
     Github(GitHubCleanupArgs),
     /// Normalize existing HackerNews bookmarks (rewrite item URLs to articles).
-    Hackernews(HackernewsCleanupArgs),
+    Hackernews(HackerNewsCleanupArgs),
 }
 
 /// The date-setting flags shared by every cleanup command (and `cleanup --all`),
@@ -412,7 +412,7 @@ struct GitHubCleanupArgs {
 }
 
 #[derive(Args, Clone)]
-struct HackernewsCleanupArgs {
+struct HackerNewsCleanupArgs {
     /// Account name whose tag config to use (default: the first hackernews account).
     account: Option<String>,
     /// Pinboard API token (env PINBOARD_TOKEN, or *_FILE).
@@ -764,7 +764,7 @@ impl GitHubBackupArgs {
     }
 }
 
-impl HackernewsBackupArgs {
+impl HackerNewsBackupArgs {
     fn into_overrides(self) -> SyncOverrides {
         SyncOverrides {
             hackernews_username: self.username,
@@ -810,7 +810,7 @@ impl GitHubSyncArgs {
     }
 }
 
-impl HackernewsSyncArgs {
+impl HackerNewsSyncArgs {
     /// The secret/operational overrides this single-source invocation supplies.
     fn into_overrides(self) -> SyncOverrides {
         SyncOverrides {
@@ -937,16 +937,16 @@ fn resolve_dates(
 /// can fetch them concurrently and the dispatch can treat them uniformly.
 enum SourceClient {
     Reddit(RedditClient),
-    Github(GitHubClient),
-    Hackernews(HackerNewsClient),
+    GitHub(GitHubClient),
+    HackerNews(HackerNewsClient),
 }
 
 impl Source for SourceClient {
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
         match self {
             SourceClient::Reddit(c) => c.fetch().await,
-            SourceClient::Github(c) => c.fetch().await,
-            SourceClient::Hackernews(c) => c.fetch().await,
+            SourceClient::GitHub(c) => c.fetch().await,
+            SourceClient::HackerNews(c) => c.fetch().await,
         }
     }
 
@@ -956,8 +956,8 @@ impl Source for SourceClient {
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
         match self {
             SourceClient::Reddit(c) => c.fetch_incremental(existing).await,
-            SourceClient::Github(c) => c.fetch_incremental(existing).await,
-            SourceClient::Hackernews(c) => c.fetch_incremental(existing).await,
+            SourceClient::GitHub(c) => c.fetch_incremental(existing).await,
+            SourceClient::HackerNews(c) => c.fetch_incremental(existing).await,
         }
     }
 }
@@ -966,8 +966,8 @@ impl BackupSource for SourceClient {
     async fn dump(&self) -> Result<backup::BackupDump, SourceError> {
         match self {
             SourceClient::Reddit(c) => c.dump().await,
-            SourceClient::Github(c) => c.dump().await,
-            SourceClient::Hackernews(c) => c.dump().await,
+            SourceClient::GitHub(c) => c.dump().await,
+            SourceClient::HackerNews(c) => c.dump().await,
         }
     }
 }
@@ -976,8 +976,8 @@ impl UrlKey for SourceClient {
     fn dedup_key(&self, url: &Url) -> Option<String> {
         match self {
             SourceClient::Reddit(c) => c.dedup_key(url),
-            SourceClient::Github(c) => c.dedup_key(url),
-            SourceClient::Hackernews(c) => c.dedup_key(url),
+            SourceClient::GitHub(c) => c.dedup_key(url),
+            SourceClient::HackerNews(c) => c.dedup_key(url),
         }
     }
 }
@@ -1071,7 +1071,7 @@ fn build_github_job(
     );
     let common = resolve_job_common(account, ovr, src, config);
     Ok(SyncJob {
-        client: SourceClient::Github(GitHubClient::new(token, github_config)?),
+        client: SourceClient::GitHub(GitHubClient::new(token, github_config)?),
         label: job_label("github", account),
         hook,
         common,
@@ -1079,7 +1079,7 @@ fn build_github_job(
 }
 
 fn build_hackernews_job(
-    account: Option<&HackernewsAccount>,
+    account: Option<&HackerNewsAccount>,
     ovr: &SyncOverrides,
     config: &Config,
 ) -> Result<SyncJob> {
@@ -1092,12 +1092,12 @@ fn build_hackernews_job(
     .context(
         "missing HackerNews username (set --username, HN_USERNAME, or `username` in the config)",
     )?;
-    let hn_config = account.map(HackernewsConfig::from).unwrap_or_default();
+    let hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
     let src = &config.defaults.hackernews;
     let common = resolve_job_common(account, ovr, src, config);
     Ok(SyncJob {
         // HackerNews favorites are public, so there is no auth-failure hook.
-        client: SourceClient::Hackernews(HackerNewsClient::new(username, hn_config)?),
+        client: SourceClient::HackerNews(HackerNewsClient::new(username, hn_config)?),
         label: job_label("hackernews", account),
         hook: None,
         common,
@@ -1726,7 +1726,7 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
 }
 
 async fn run_cleanup_hackernews(
-    args: HackernewsCleanupArgs,
+    args: HackerNewsCleanupArgs,
     top_dry_run: bool,
     top: &DateOverrides,
     config: &Config,
@@ -1753,10 +1753,10 @@ async fn run_cleanup_hackernews(
 /// config `tag_link`. The override is validated for whitespace like the config value so a
 /// space-bearing marker (which Pinboard would split, matching nothing) fails loudly.
 fn resolve_hackernews_cleanup_config(
-    account: Option<&HackernewsAccount>,
+    account: Option<&HackerNewsAccount>,
     link_tag: Option<String>,
-) -> Result<HackernewsConfig> {
-    let mut hn_config = account.map(HackernewsConfig::from).unwrap_or_default();
+) -> Result<HackerNewsConfig> {
+    let mut hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
     if let Some(tag) = link_tag {
         config::reject_whitespace("--link-tag", &tag)?;
         hn_config.link_tag = tag;
@@ -1765,7 +1765,7 @@ fn resolve_hackernews_cleanup_config(
 }
 
 async fn cleanup_one_hackernews<S: BookmarkStore + AccountState>(
-    account: Option<&HackernewsAccount>,
+    account: Option<&HackerNewsAccount>,
     link_discussions: bool,
     link_tag: Option<String>,
     over: &DateOverrides,
@@ -2992,9 +2992,9 @@ mod net_tests {
             .mount(&algolia)
             .await;
         let job = SyncJob {
-            client: SourceClient::Hackernews(HackerNewsClient::with_base_urls(
+            client: SourceClient::HackerNews(HackerNewsClient::with_base_urls(
                 "u".into(),
-                HackernewsConfig::default(),
+                HackerNewsConfig::default(),
                 hn.uri(),
                 algolia.uri(),
             )),
@@ -3126,7 +3126,7 @@ mod net_tests {
         assert_second_page_reads(
             mount,
             |server| {
-                SourceClient::Github(GitHubClient::with_base_url(
+                SourceClient::GitHub(GitHubClient::with_base_url(
                     "tok".into(),
                     github::GitHubConfig::default(),
                     server.uri(),

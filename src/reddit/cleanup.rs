@@ -35,7 +35,7 @@ struct RedditPostMeta {
     /// The notes rebuilt from authoritative data — the quoted body wrapped in a
     /// `<blockquote>` (empty when there's nothing to quote). Used to retrofit existing
     /// bookmarks to the shape `sync` now writes.
-    extended: String,
+    note: String,
     /// The raw `selftext`, i.e. the rebuilt notes before the `<blockquote>` wrapping —
     /// the shape an older sync wrote. Lets the retrofit recognize its own past output.
     selftext: String,
@@ -111,8 +111,8 @@ impl CleanupPass for RedditCleanupPass<'_> {
         let note = if is_comment_url(&new_url) {
             bookmark.note.clone()
         } else if let Some(post) = post {
-            if note_is_tool_generated(&bookmark.note, &post.extended, &post.selftext, &new_url) {
-                post.extended.clone()
+            if note_is_tool_generated(&bookmark.note, &post.note, &post.selftext, &new_url) {
+                post.note.clone()
             } else {
                 bookmark.note.clone()
             }
@@ -185,7 +185,7 @@ async fn fetch_post_info<R: PostInfo>(
             // post-shaped notes — selftext quoted, empty for an empty self-post, else the
             // external URL.
             let selftext = entry.fields.selftext.clone().unwrap_or_default();
-            let extended = crate::reddit::model::reddit_extended(
+            let note = crate::reddit::model::reddit_note(
                 false,
                 "",
                 &selftext,
@@ -200,7 +200,7 @@ async fn fetch_post_info<R: PostInfo>(
                     over_18: entry.fields.over_18,
                     title: entry.fields.title.filter(|s| !s.is_empty()),
                     created_utc: entry.fields.created_utc,
-                    extended,
+                    note,
                     selftext,
                 },
             );
@@ -344,9 +344,9 @@ fn is_self_link_notes(notes: &str, url: &Url) -> bool {
 }
 
 /// The generic placeholder titles Reddit bookmarks often get from a browser.
-pub fn is_placeholder_title(description: &str) -> bool {
+pub fn is_placeholder_title(title: &str) -> bool {
     matches!(
-        description.trim(),
+        title.trim(),
         "Reddit - Dive into anything" | "www.reddit.com" | "reddit.com: over 18?"
     )
 }

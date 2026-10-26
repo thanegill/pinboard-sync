@@ -84,15 +84,15 @@ impl GitHubStarredRepo {
 /// (Pinboard renders HTML in the notes), with the project homepage appended outside the
 /// quote. Falls back to the repo URL when there's no description. Shared by sync and
 /// cleanup so both produce the same shape.
-fn github_extended(description: Option<&str>, homepage: Option<&str>, html_url: &str) -> String {
-    let mut extended = match description.filter(|s| !s.is_empty()) {
+fn github_note(description: Option<&str>, homepage: Option<&str>, html_url: &str) -> String {
+    let mut note = match description.filter(|s| !s.is_empty()) {
         Some(desc) => blockquote(desc),
         None => html_url.to_string(),
     };
     if let Some(home) = homepage.filter(|s| !s.is_empty()) {
-        extended = format!("{extended}\n\nProject homepage: {home}");
+        note = format!("{note}\n\nProject homepage: {home}");
     }
-    extended
+    note
 }
 
 impl GitHubRepo {
@@ -120,7 +120,7 @@ impl GitHubRepo {
             .ok()?;
         let dedup_key = url_key(&url).unwrap_or_else(|| url.to_string());
 
-        let note = github_extended(
+        let note = github_note(
             self.description.as_deref(),
             self.homepage.as_deref(),
             &self.html_url,
@@ -580,18 +580,18 @@ mod tests {
     }
 
     #[test]
-    fn github_extended_wraps_description_and_keeps_homepage_outside() {
+    fn github_note_wraps_description_and_keeps_homepage_outside() {
         assert_eq!(
-            github_extended(Some("A thing"), Some("https://h"), "https://github.com/o/r"),
+            github_note(Some("A thing"), Some("https://h"), "https://github.com/o/r"),
             "<blockquote>A thing</blockquote>\n\nProject homepage: https://h"
         );
         // No description: fall back to the URL, no blockquote.
         assert_eq!(
-            github_extended(None, None, "https://github.com/o/r"),
+            github_note(None, None, "https://github.com/o/r"),
             "https://github.com/o/r"
         );
         assert_eq!(
-            github_extended(Some(""), None, "https://github.com/o/r"),
+            github_note(Some(""), None, "https://github.com/o/r"),
             "https://github.com/o/r"
         );
     }

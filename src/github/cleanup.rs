@@ -8,7 +8,7 @@ use anyhow::Context;
 use time::OffsetDateTime;
 use url::Url;
 
-use super::{github_extended, GitHubClient, GitHubConfig, GitHubRepo};
+use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::html_to_plain;
@@ -87,7 +87,7 @@ impl CleanupPass for GitHubCleanupPass<'_> {
             title = html_to_plain(&info.full_name);
             // Rebuild the notes from fresh data so old bookmarks retrofit to the
             // <blockquote> shape (sync skips already-present bookmarks).
-            note = github_extended(
+            note = github_note(
                 info.description.as_deref(),
                 info.homepage.as_deref(),
                 &info.html_url,

@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- `cleanup reddit` now adds the author, flair, media and comment tags `sync` writes,
+  each only when the bookmark has no tag of that kind yet.
+
 ### Fixed
 
 - A Reddit cookie with a stray `;` (`abc;`, `a=1;;`) is sent without it, so a bare value
@@ -13,6 +18,14 @@ All notable changes to this project are documented here. The format is based on
 - Error excerpts and `-v` body logs redact the GitHub token and Reddit cookie too.
 - An error for an empty response body no longer ends in a dangling `: `.
 - Reddit no longer pauses after its last saved page when the page cap stops it.
+- `cleanup reddit` no longer adds an empty tag when `tags` is empty or starts with `""`,
+  so it settles instead of rewriting every bookmark each run.
+- `cleanup reddit` no longer adds a bare subreddit tag when `tag_subreddit_prefix = ""`;
+  ones it already added stay until removed by hand.
+- `cleanup reddit` adds and keeps every entry of `tags`, as `sync` writes them, not just
+  the first; an extra tag named like the subreddit is no longer stripped.
+- Reddit items whose author shows as `[deleted]` no longer get an
+  `author:reddit:[deleted]` tag.
 
 ## [0.6.0] - 2026-10-25
 

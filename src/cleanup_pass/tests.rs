@@ -530,6 +530,19 @@ fn merge_bookmarks_tag_union_is_case_sensitive() {
 }
 
 #[test]
+fn merge_bookmarks_drops_an_empty_planned_tag() {
+    let mut first = bookmark("https://t/");
+    first.tags = vec![String::new(), "a".into()];
+    let mut second = bookmark("https://t/");
+    second.tags = vec!["b".into(), String::new()];
+
+    assert_eq!(
+        merge_bookmarks(&[&first, &second]).tags,
+        vec!["a".to_string(), "b".to_string()]
+    );
+}
+
+#[test]
 fn merge_bookmarks_does_not_lead_an_empty_note_with_a_blank_line() {
     // A survivor with no note contributes nothing to lead with, so the first real block
     // must start the note rather than being pushed down by a separator.

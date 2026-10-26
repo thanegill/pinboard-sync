@@ -49,6 +49,48 @@ fn post_url_and_tags() {
 }
 
 #[test]
+fn every_non_empty_base_tag_is_added() {
+    let it = item(
+        "t3",
+        serde_json::json!({
+            "name": "t3_abc", "subreddit": "rust",
+            "permalink": "/r/rust/comments/abc/x/", "title": "T"
+        }),
+    );
+    for (tags, want) in [
+        (vec![], vec!["subreddit:rust"]),
+        (vec![""], vec!["subreddit:rust"]),
+        (vec!["", "reddit"], vec!["reddit", "subreddit:rust"]),
+        (
+            vec!["reddit", "saved"],
+            vec!["reddit", "saved", "subreddit:rust"],
+        ),
+    ] {
+        let cfg = RedditConfig {
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..RedditConfig::default()
+        };
+        assert_eq!(it.tags(&cfg), want, "tags = {tags:?}");
+    }
+}
+
+#[test]
+fn empty_subreddit_prefix_disables_the_subreddit_tag() {
+    let it = item(
+        "t3",
+        serde_json::json!({
+            "name": "t3_abc", "subreddit": "rust",
+            "permalink": "/r/rust/comments/abc/x/", "title": "T"
+        }),
+    );
+    let cfg = RedditConfig {
+        subreddit_prefix: String::new(),
+        ..RedditConfig::default()
+    };
+    assert_eq!(it.tags(&cfg), vec!["reddit"]);
+}
+
+#[test]
 fn into_draft_skips_item_with_unparseable_url() {
     // A `domain` that can't form a valid URL (a space in the host) — the item is
     // dropped rather than producing a draft with no URL.
@@ -80,6 +122,29 @@ fn post_tags_include_author_flair_and_type() {
     assert!(tags.contains(&"author:reddit:alice".to_string()));
     assert!(tags.contains(&"reddit-flair:help-wanted".to_string()));
     assert!(tags.contains(&"type:image".to_string()));
+}
+
+#[test]
+fn tags_come_in_a_fixed_order() {
+    let it = item(
+        "t3",
+        serde_json::json!({
+            "name": "t3_abc", "subreddit": "rust", "permalink": "/r/rust/comments/abc/x/",
+            "title": "T", "author": "alice", "link_flair_text": "Help Wanted",
+            "post_hint": "image", "over_18": true
+        }),
+    );
+    assert_eq!(
+        it.tags(&RedditConfig::default()),
+        vec![
+            "reddit",
+            "subreddit:rust",
+            "nsfw",
+            "author:reddit:alice",
+            "reddit-flair:help-wanted",
+            "type:image"
+        ]
+    );
 }
 
 #[test]
@@ -249,6 +314,27 @@ fn over_18_adds_nsfw_tag() {
     assert!(it
         .tags(&RedditConfig::default())
         .contains(&"nsfw".to_string()));
+}
+
+#[test]
+fn a_deleted_author_gets_no_author_tag() {
+    for kind in ["t3", "t1"] {
+        let it = item(
+            kind,
+            serde_json::json!({
+                "name": format!("{kind}_abc"), "subreddit": "rust",
+                "permalink": "/r/rust/comments/abc/x/def/", "title": "T",
+                "author": "[deleted]"
+            }),
+        );
+        assert_eq!(it.author, None, "{kind}");
+        assert!(
+            !it.tags(&RedditConfig::default())
+                .iter()
+                .any(|t| t.starts_with("author:")),
+            "{kind}"
+        );
+    }
 }
 
 fn key(url: &str) -> Option<String> {

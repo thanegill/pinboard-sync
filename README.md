@@ -239,12 +239,18 @@ grows. Rare, but if you see a note accumulating `… [truncated]` markers, short
 
 - **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your
   configured `reddit_domain` (default `old.reddit.com`), unwrapping `over18`
-  interstitial redirects to the real post. It normalizes tags (ensures the base
-  `reddit` tag and a correctly-cased `subreddit:<sub>` tag, dropping bare/legacy
-  duplicates), and — using Reddit's `/api/info` — marks `over_18` posts `nsfw` and
-  replaces generic placeholder titles with the real ones. The NSFW and title passes
-  are the only ones that contact Reddit, so they need the `reddit_session` cookie;
-  `--no-nsfw` / `--no-titles` skip them (and the cookie requirement).
+  interstitial redirects to the real post. It normalizes tags (ensures every entry
+  of `tags` and a correctly-cased `subreddit:<sub>` tag, dropping bare/legacy
+  duplicates), adds `reddit-comment` to comment bookmarks, and — using Reddit's
+  `/api/info` — marks `over_18` posts `nsfw`, replaces generic placeholder titles with
+  the real ones, and adds the author, flair and media-type tags `sync` writes. Each of
+  those three is added only when the bookmark has no tag with its prefix yet, so a
+  stored author or flair is never replaced. A comment is looked up by its own id and
+  tagged only from that entry, never from its post's. The `/api/info` call is made for
+  NSFW marking, title fixing or `use_post_date`, and needs the `reddit_session` cookie;
+  the backfill rides on it. With all three off (`--no-nsfw --no-titles`, no
+  `use_post_date`) cleanup does not contact Reddit, needs no cookie, and adds only
+  `reddit-comment`.
 
 - **GitHub** (`cleanup github`) — canonicalizes repo bookmark URLs to
   `https://github.com/<owner>/<repo>` (forcing https, lowercasing the host, dropping a

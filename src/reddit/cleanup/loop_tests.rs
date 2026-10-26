@@ -619,3 +619,288 @@ async fn logs_and_skips_a_failing_update_then_continues() {
         "https://old.reddit.com/r/rust/comments/b/y/"
     );
 }
+
+#[tokio::test]
+async fn plans_the_tags_sync_writes_for_each_tag_config() {
+    let with_tags = |tags: &[&str]| RedditConfig {
+        tags: tags.iter().map(|t| t.to_string()).collect(),
+        ..RedditConfig::default()
+    };
+    let configs = [
+        RedditConfig::default(),
+        with_tags(&[]),
+        with_tags(&[""]),
+        with_tags(&["", "reddit"]),
+        with_tags(&["reddit", "saved"]),
+        with_tags(&["reddit", "rust"]),
+        with_tags(&["subreddit"]),
+        RedditConfig {
+            subreddit_prefix: String::new(),
+            ..RedditConfig::default()
+        },
+        RedditConfig {
+            comment: String::new(),
+            author_prefix: String::new(),
+            flair_prefix: String::new(),
+            media_types: vec![],
+            ..RedditConfig::default()
+        },
+    ];
+    let post = listing_entry(
+        "t3",
+        json!({ "name": "t3_a", "subreddit": "rust", "permalink": "/r/rust/comments/a/x/",
+                "title": "T", "author": "alice", "link_flair_text": "Help Wanted",
+                "post_hint": "image" }),
+    );
+    let comment = listing_entry(
+        "t1",
+        json!({ "name": "t1_c", "subreddit": "rust", "permalink": "/r/rust/comments/a/x/c/",
+                "link_title": "T", "body": "hi", "author": "bob",
+                "link_flair_text": "Help Wanted" }),
+    );
+    for config in configs {
+        let opts = RedditCleanupOpts {
+            config: config.clone(),
+            ..opts()
+        };
+        // A comment's lookup returns its parent post too, as the real batch does.
+        for saved in [post.clone(), comment.clone()] {
+            let synced = saved
+                .clone()
+                .into_saved_item(&config.domain)
+                .unwrap()
+                .into_draft(&config)
+                .unwrap()
+                .bookmark;
+            let reddit = FakeReddit {
+                info: vec![post.clone(), saved],
+                ..Default::default()
+            };
+            let pass = RedditCleanupPass {
+                info: fetch_post_info(Some(&reddit), &opts, std::slice::from_ref(&synced))
+                    .await
+                    .unwrap(),
+                opts: &opts,
+            };
+            let mut want = synced.tags.clone();
+            want.sort();
+
+            for stored_tags in [vec![], synced.tags.clone()] {
+                let stored = Bookmark {
+                    tags: stored_tags.clone(),
+                    ..synced.clone()
+                };
+                let Plan::Bookmark(planned) = pass.plan(&stored).await.unwrap() else {
+                    panic!("expected a planned bookmark for {config:?}");
+                };
+                assert_eq!(
+                    planned.tags, want,
+                    "{config:?}, {}, stored {stored_tags:?}",
+                    synced.url
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn backfills_a_detail_tag_only_when_its_family_is_absent() {
+    let pinboard = FakePinboard {
+        all: vec![
+            bookmark(
+                "https://old.reddit.com/r/rust/comments/a/x/",
+                "T",
+                "reddit subreddit:rust reddit-flair:old",
+            ),
+            bookmark(
+                "https://old.reddit.com/r/rust/comments/a/x/c/",
+                "T",
+                "reddit subreddit:rust",
+            ),
+        ],
+        ..Default::default()
+    };
+    let reddit = FakeReddit {
+        info: vec![
+            listing_entry(
+                "t3",
+                json!({ "name": "t3_a", "subreddit": "rust",
+                        "permalink": "/r/rust/comments/a/x/", "title": "T",
+                        "author": "alice", "link_flair_text": "News" }),
+            ),
+            listing_entry(
+                "t1",
+                json!({ "name": "t1_c", "subreddit": "rust",
+                        "permalink": "/r/rust/comments/a/x/c/", "author": "bob" }),
+            ),
+        ],
+        ..Default::default()
+    };
+
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+        .await
+        .unwrap();
+
+    let updated = pinboard.updated.borrow();
+    assert_eq!(updated.len(), 2);
+    // The stored flair stays; only the missing author family is filled in.
+    assert_eq!(
+        updated[0].tags,
+        vec![
+            "author:reddit:alice",
+            "reddit",
+            "reddit-flair:old",
+            "subreddit:rust"
+        ]
+    );
+    // The comment gets its own author, never the parent post's flair.
+    assert_eq!(
+        updated[1].tags,
+        vec![
+            "author:reddit:bob",
+            "reddit",
+            "reddit-comment",
+            "subreddit:rust"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn backfills_only_the_comment_tag_without_a_lookup() {
+    let seed = vec![
+        bookmark(
+            "https://old.reddit.com/r/rust/comments/a/x/",
+            "T",
+            "reddit subreddit:rust",
+        ),
+        bookmark(
+            "https://old.reddit.com/r/rust/comments/a/x/c/",
+            "T",
+            "reddit subreddit:rust",
+        ),
+    ];
+    let opts = RedditCleanupOpts {
+        mark_nsfw: false,
+        fix_titles: false,
+        ..opts()
+    };
+
+    let (first_writes, stored) = run_and_store(seed, None, &opts).await;
+    assert_eq!(first_writes, 1);
+    assert_eq!(
+        stored[1].tags,
+        vec!["reddit", "reddit-comment", "subreddit:rust"]
+    );
+    let (second_writes, _) = run_and_store(stored, None, &opts).await;
+    assert_eq!(second_writes, 0);
+}
+
+#[tokio::test]
+async fn a_comment_missing_from_the_lookup_adds_nothing_and_does_not_fail() {
+    let pinboard = FakePinboard {
+        all: vec![bookmark(
+            "https://old.reddit.com/r/rust/comments/a/x/c/",
+            "T",
+            "reddit subreddit:rust reddit-comment",
+        )],
+        ..Default::default()
+    };
+    let reddit = FakeReddit {
+        info: vec![listing_entry(
+            "t3",
+            json!({ "name": "t3_a", "subreddit": "rust",
+                    "permalink": "/r/rust/comments/a/x/", "title": "T",
+                    "author": "alice", "link_flair_text": "News" }),
+        )],
+        ..Default::default()
+    };
+
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+        .await
+        .unwrap();
+
+    assert!(pinboard.updated.borrow().is_empty());
+}
+
+/// One cleanup run over `seed`, returning how many bookmarks it wrote and the account as
+/// Pinboard then stores it. Tags round-trip as Pinboard keeps them (space-joined on
+/// write, whitespace-split on read), which is what drops an empty tag.
+async fn run_and_store(
+    seed: Vec<Bookmark>,
+    reddit: Option<&FakeReddit>,
+    opts: &RedditCleanupOpts,
+) -> (usize, Vec<Bookmark>) {
+    let pinboard = FakePinboard {
+        all: seed.clone(),
+        ..Default::default()
+    };
+    run(&pinboard.cleanup_store(false), reddit, opts)
+        .await
+        .unwrap();
+    let mut stored = crate::test_support::replay(&seed, &pinboard.ops.borrow());
+    for bookmark in &mut stored {
+        bookmark.tags = bookmark
+            .tags
+            .join(" ")
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+    }
+    (pinboard.updated.into_inner().len(), stored)
+}
+
+#[tokio::test]
+async fn settles_after_one_run_when_base_tags_are_disabled() {
+    for tags in [vec![], vec![String::new()]] {
+        let opts = RedditCleanupOpts {
+            config: RedditConfig {
+                tags: tags.clone(),
+                ..RedditConfig::default()
+            },
+            ..opts()
+        };
+        let seed = vec![
+            bookmark("https://www.reddit.com/r/rust/comments/a/x/", "T", ""),
+            bookmark(
+                "https://old.reddit.com/r/rust/comments/b/y/",
+                "T",
+                "subreddit:rust",
+            ),
+        ];
+
+        let (first_writes, stored) = run_and_store(seed, None, &opts).await;
+        assert_eq!(first_writes, 1, "tags = {tags:?}");
+        let (second_writes, _) = run_and_store(stored, None, &opts).await;
+        assert_eq!(second_writes, 0, "tags = {tags:?}");
+    }
+}
+
+#[tokio::test]
+async fn settles_after_one_run_when_backfilling_from_a_lookup() {
+    let seed = vec![
+        bookmark("https://old.reddit.com/r/rust/comments/a/x/", "T", ""),
+        bookmark("https://old.reddit.com/r/rust/comments/a/x/c/", "T", ""),
+    ];
+    let reddit = FakeReddit {
+        info: vec![
+            listing_entry(
+                "t3",
+                json!({ "name": "t3_a", "subreddit": "rust",
+                        "permalink": "/r/rust/comments/a/x/", "title": "T",
+                        "author": "alice", "link_flair_text": "News",
+                        "post_hint": "image" }),
+            ),
+            listing_entry(
+                "t1",
+                json!({ "name": "t1_c", "subreddit": "rust",
+                        "permalink": "/r/rust/comments/a/x/c/", "author": "bob" }),
+            ),
+        ],
+        ..Default::default()
+    };
+
+    let (first_writes, stored) = run_and_store(seed, Some(&reddit), &opts()).await;
+    assert_eq!(first_writes, 2);
+    let (second_writes, _) = run_and_store(stored, Some(&reddit), &opts()).await;
+    assert_eq!(second_writes, 0);
+}

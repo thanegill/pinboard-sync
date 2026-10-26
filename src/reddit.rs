@@ -19,14 +19,10 @@ use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::Bookmark;
-use crate::http::{client_builder, RetryingClient};
+use crate::http::{client_builder, RetryingClient, USER_AGENT};
 use crate::reddit::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
 use crate::secrets::{reddit_cookie_settings, ConfiguredSecret};
 use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey};
-
-/// Descriptive User-Agent built from the crate name + version. Reddit rejects
-/// generic or missing User-Agents.
-const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
 /// Host serving both the saved listing and `/api/info.json`; old.reddit.com
 /// matches the bookmark URLs.

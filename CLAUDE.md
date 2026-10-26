@@ -521,7 +521,7 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   module (or `config.example.toml`, used via `include_str!`) fails the sandbox build
   with `file not found`, even though dev-shell `cargo` passes — that discrepancy is
   the tell. `git add` new files before building with Nix.
-- The User-Agent / client identifier derives from `CARGO_PKG_NAME`/`CARGO_PKG_VERSION`.
+- The User-Agent / client identifier (`http::USER_AGENT`) derives from `CARGO_PKG_NAME`/`CARGO_PKG_VERSION`.
 - **Service-specific, API-shaped structs carry a service prefix** (`GitHubRepo`,
   `HackerNewsItem`, `RedditSavedItem`, `AlgoliaSearchResponse`) — not bare `Repo`/`Item`.
   GitHub is spelled `GitHub` and HackerNews `HackerNews` in type names (e.g. `GitHubConfig`,

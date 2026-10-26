@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_plain};
-use crate::http::{client_builder, RetryingClient};
+use crate::http::{client_builder, RetryingClient, USER_AGENT};
 use crate::secrets::ConfiguredSecret;
 use crate::source::{
     deserialize_lenient, page_is_caught_up, push_prefixed, push_tags, url_key, BookmarkDraft,
@@ -21,7 +21,6 @@ use crate::source::{
 };
 use url::Url;
 
-const UA: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 const API_BASE: &str = "https://api.github.com";
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -244,7 +243,7 @@ impl GitHubClient {
         );
 
         let http = client_builder()
-            .user_agent(UA)
+            .user_agent(USER_AGENT)
             .default_headers(headers)
             .build()
             .context("building HTTP client")?;

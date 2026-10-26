@@ -15,6 +15,10 @@ use time::OffsetDateTime;
 use tower::retry::{Policy, Retry};
 use tower::ServiceExt;
 
+/// The User-Agent the Pinboard, GitHub and Reddit clients send: the crate name and
+/// version. GitHub requires one, and Reddit rejects generic or missing ones.
+pub const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+
 /// How long one attempt may take to connect, from DNS through the TLS handshake.
 /// hyper-util, under reqwest, splits the TCP part evenly across each address family's
 /// resolved addresses. A connect that runs out of it is a connect error, so it is retried

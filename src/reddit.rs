@@ -18,10 +18,8 @@ use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::http::{client_builder, RetryingClient};
 use crate::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
-use crate::source::{
-    page_is_caught_up, reddit_cookie_settings, BookmarkDraft, ConfiguredSecret, Source,
-    SourceError, UrlKey,
-};
+use crate::secrets::{reddit_cookie_settings, ConfiguredSecret};
+use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey};
 
 /// Descriptive User-Agent built from the crate name + version. Reddit rejects
 /// generic or missing User-Agents.

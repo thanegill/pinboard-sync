@@ -259,7 +259,7 @@ of surrounding quotes is stripped, and a value of nothing but whitespace, quotes
 `;`/`=` separators counts as empty. Pairs that are empty by that rule are dropped from
 every cookie before it is shaped, so a stray `;` leaves `abc;` a bare value and `a=1;;`
 just `a=1`. A value that sets no session — blank, or only empty `reddit_session=`
-pairs — is no cookie, and `main`'s `resolve_reddit_cookie` skips it through
+pairs — is no cookie, and `secrets`'s `resolve_reddit_cookie` skips it through
 `reddit::is_configured_cookie` so the secret ladder falls through it exactly as it does
 a blank value.
 
@@ -292,7 +292,7 @@ host-agnostic so dedup matches across subdomains.
 **Config + secret resolution.** [`src/config.rs`](src/config.rs) parses the
 `--config` TOML: one `[pinboard]` destination, `[hooks]`, and per-source account
 arrays (`[[reddit]]`/`[[github]]`/`[[hackernews]]`), each mapping to its tag config.
-Secrets resolve through one ladder in `main.rs` (`resolve_secret`): CLI flag → `$VAR`
+Secrets resolve through one ladder in [`src/secrets.rs`](src/secrets.rs) (`resolve_secret`): CLI flag → `$VAR`
 → `$VAR_FILE` (a path whose trimmed contents are the value) → config inline → config
 `*_file`. The `--config` path is the exception: it resolves flag → `$PINBOARD_SYNC_CONFIG`
 only (a direct file path, no `_FILE` form — it is already a file). **The `_FILE` form is
@@ -300,10 +300,10 @@ load-bearing** — it's how the
 NixOS service feeds sops-nix secret *paths* without putting values in the unit
 environment. Don't add a secret that only reads `$VAR`. `secret_ladder` tags each value
 with its `SecretRung`, so `resolve_reddit_cookie` and `resolve_github_token` return a
-`source::ConfiguredSecret` naming the setting it came from, and every Reddit cookie
+`secrets::ConfiguredSecret` naming the setting it came from, and every Reddit cookie
 warning and re-auth message and every GitHub token error names that setting, never the
 value. A message listing every setting a secret can come from builds that list from the
-same rung labels (`source::reddit_cookie_settings`/`github_token_settings`), never by
+same rung labels (`secrets::reddit_cookie_settings`/`github_token_settings`), never by
 hand.
 
 **`sync <source> [account]` / `cleanup <source> [account]` select one account**
@@ -500,7 +500,7 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   sleeping. A client's new pause goes through `http::sleep` for that reason.
 - **Tests never read a secret from the real environment.** Under `cfg(test)`,
   `secret_ladder`'s `$VAR`/`$VAR_FILE` rungs read a per-thread fake environment, set with
-  the `tests::FakeSecretEnv` guard, so a test that builds a job can't pick up the
+  the `secrets::FakeSecretEnv` guard, so a test that builds a job can't pick up the
   developer's real cookie or token. `std::env::set_var` on a secret does nothing in a
   test; use `FakeSecretEnv` or a synthetic ladder (`first_cookie_on`).
 - **A test that touches the filesystem takes its directory from

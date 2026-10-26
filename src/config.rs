@@ -1,7 +1,7 @@
 //! The `--config <path>` TOML: one Pinboard destination, an optional auth-failure
 //! hook, and per-source arrays of accounts. Each account holds non-secret settings
 //! (tags, domain, limit) plus secret values inline or as a `*_file` path. Secrets
-//! resolve through the ladder in `main`; this module is the typed schema + the
+//! resolve through the ladder in `secrets`; this module is the typed schema + the
 //! account → typed-config mapping. Every field is optional, so an absent or empty
 //! config yields all defaults.
 

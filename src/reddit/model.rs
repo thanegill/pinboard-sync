@@ -6,7 +6,9 @@ use url::Url;
 
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_plain};
-use crate::source::{host_matches, push_prefixed, push_tag, push_tags, BookmarkDraft};
+use crate::source::BookmarkDraft;
+use crate::tags::{push_prefixed, push_tag, push_tags};
+use crate::urls::host_matches;
 
 /// A Reddit "Listing" envelope (`{ "kind": "Listing", "data": { ... } }`).
 #[derive(Debug, Deserialize)]

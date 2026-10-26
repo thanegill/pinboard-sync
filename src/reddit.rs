@@ -7,6 +7,7 @@
 //! selects whose saves to read.
 
 pub mod cleanup;
+pub mod cookie;
 pub mod model;
 
 use std::collections::HashSet;
@@ -20,8 +21,9 @@ use url::Url;
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::http::{client_builder, RetryingClient, USER_AGENT};
+use crate::reddit::cookie::{refused_cookie_advice, SessionCookie};
 use crate::reddit::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
-use crate::secrets::{reddit_cookie_settings, ConfiguredSecret};
+use crate::secrets::ConfiguredSecret;
 use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey};
 
 /// Host serving both the saved listing and `/api/info.json`; old.reddit.com
@@ -43,40 +45,6 @@ const REQUEST_PAUSE: Duration = Duration::from_millis(1000);
 /// Reddit `/api/info` lookups by fullname (used by `cleanup` for over_18/title).
 pub trait PostInfo {
     async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError>;
-}
-
-/// The `Cookie` header sent for a configured cookie, as [`session_cookie`] shapes it.
-struct SessionCookie {
-    header: String,
-    source: &'static str,
-}
-
-impl SessionCookie {
-    /// What to [redact](crate::http::redact) from a response body that is logged or
-    /// quoted: the whole header and its `reddit_session` value, without the whitespace and
-    /// quotes a server would drop before echoing it.
-    fn secrets(&self) -> Vec<&str> {
-        let session = self
-            .header
-            .split(';')
-            .find_map(session_value)
-            .map(|session| session.trim().trim_matches('"'))
-            .filter(|session| !session.is_empty());
-        [Some(self.header.as_str()), session]
-            .into_iter()
-            .flatten()
-            .collect()
-    }
-}
-
-impl TryFrom<ConfiguredSecret> for SessionCookie {
-    type Error = NoSession;
-    fn try_from(cookie: ConfiguredSecret) -> Result<Self, Self::Error> {
-        Ok(Self {
-            header: session_cookie(&cookie.value, cookie.source).ok_or(NoSession)?,
-            source: cookie.source,
-        })
-    }
 }
 
 /// Reads Reddit's saved listing and `/api/info.json`, authenticated by a session
@@ -371,156 +339,6 @@ impl UrlKey for RedditClient {
     fn dedup_key(&self, url: &Url) -> Option<String> {
         reddit_key(url)
     }
-}
-
-/// The `Cookie` header for a configured cookie. A value that already names a
-/// `reddit_session` cookie, alone or in a whole copied `Cookie` header, is sent with only
-/// its first non-empty `reddit_session` (see [`with_one_session`]); a bare session value,
-/// including one ending in base64 `=` padding, becomes `reddit_session=<value>`, since
-/// Reddit only recognises the session by that name. Other cookies without a
-/// `reddit_session` are sent with a warning: naming them would only produce a garbled
-/// header. Every form goes out [without blank pairs](without_blank_pairs), so a stray `;`
-/// doesn't turn a bare value into other cookies. See [`NoSession`] for what counts as no
-/// cookie. `source` names the setting in that warning.
-fn session_cookie(raw: &str, source: &str) -> Option<String> {
-    let value = without_blank_pairs(raw);
-    match CookieForm::try_from(value.as_str()).ok()? {
-        CookieForm::Named => Some(with_one_session(&value)),
-        CookieForm::Bare => Some(format!("reddit_session={value}")),
-        CookieForm::OtherCookies => {
-            warn!("{}", unnamed_cookie_warning(source));
-            Some(value)
-        }
-    }
-}
-
-fn unnamed_cookie_warning(source: &str) -> String {
-    format!(
-        "the Reddit cookie from {source} doesn't name a reddit_session cookie (expected the \
-         bare value or reddit_session=<value>, with no `Cookie:` prefix); sending it as is, \
-         and Reddit will likely refuse it"
-    )
-}
-
-/// What to do about a session Reddit refused, naming the setting the cookie came from, or
-/// the settings to use when none was configured.
-pub(crate) fn refused_cookie_advice(cookie_source: Option<&str>) -> String {
-    match cookie_source {
-        Some(source) => format!(
-            "The cookie from {source} has likely expired or isn't a reddit_session value; \
-             re-copy reddit_session from a logged-in browser."
-        ),
-        None => format!(
-            "No Reddit cookie is configured; set {} to reddit_session from a logged-in \
-             browser.",
-            reddit_cookie_settings()
-        ),
-    }
-}
-
-/// Whether `raw` configures a Reddit session at all (see [`NoSession`]), so secret
-/// resolution can skip one that doesn't as it skips a blank value.
-pub fn is_configured_cookie(raw: &str) -> bool {
-    CookieForm::try_from(without_blank_pairs(raw).as_str()).is_ok()
-}
-
-/// `raw` [`unquoted`], without its [blank](is_blank) cookie pairs, so with no `;` at either
-/// end or next to another.
-fn without_blank_pairs(raw: &str) -> String {
-    unquoted(raw)
-        .split(';')
-        .filter(|pair| !is_blank(pair))
-        .collect::<Vec<_>>()
-        .join(";")
-        .trim()
-        .to_string()
-}
-
-/// `raw` trimmed of whitespace and `;`, without one pair of surrounding double quotes, as
-/// an env file or shell assignment can leave them. A lone quote at either end is kept: it
-/// isn't a pair.
-fn unquoted(raw: &str) -> &str {
-    let is_edge = |c: char| c == ';' || c.is_whitespace();
-    let trimmed = raw.trim_matches(is_edge);
-    trimmed
-        .strip_prefix('"')
-        .and_then(|inner| inner.strip_suffix('"'))
-        .map_or(trimmed, |inner| inner.trim_matches(is_edge))
-}
-
-/// How a configured cookie value is shaped; see [`session_cookie`].
-#[derive(Debug, PartialEq, Eq)]
-enum CookieForm {
-    /// Names a non-[blank](is_blank) `reddit_session` cookie, as its first pair or after a
-    /// `;`.
-    Named,
-    /// A session value alone: no `;`, and no `=` but trailing base64 padding.
-    Bare,
-    /// `name=value` pairs, none of them `reddit_session`.
-    OtherCookies,
-}
-
-/// The cookie value configures no session: [blank](is_blank), or naming `reddit_session`
-/// only with blank values.
-#[derive(Debug, PartialEq, Eq)]
-struct NoSession;
-
-/// The shape of a cookie value, or [`NoSession`]. Expects [`without_blank_pairs`]'s
-/// output: a quoted `name=value` reads as other cookies, and so does a bare value with a
-/// stray `;`.
-impl TryFrom<&str> for CookieForm {
-    type Error = NoSession;
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        if is_blank(value) {
-            return Err(NoSession);
-        }
-        let mut sessions = value.split(';').filter_map(session_value).peekable();
-        if sessions.peek().is_some() {
-            return sessions
-                .any(|session| !is_blank(session))
-                .then_some(CookieForm::Named)
-                .ok_or(NoSession);
-        }
-        Ok(
-            if value.contains(';') || value.trim_end_matches('=').contains('=') {
-                CookieForm::OtherCookies
-            } else {
-                CookieForm::Bare
-            },
-        )
-    }
-}
-
-/// Whether a cookie or session value holds nothing but whitespace, double quotes and the
-/// `;`/`=` separators, so it has no `name=value` pair a session could be.
-fn is_blank(value: &str) -> bool {
-    value
-        .trim_matches(|c: char| matches!(c, '"' | ';' | '=') || c.is_whitespace())
-        .is_empty()
-}
-
-/// The value of a `reddit_session=<value>` cookie pair, or `None` for any other pair.
-fn session_value(pair: &str) -> Option<&str> {
-    pair.trim_start().strip_prefix("reddit_session=")
-}
-
-/// `value`'s cookie pairs, in order, without any `reddit_session` but the first non-empty
-/// one. Sent several, Reddit would pick one by its own rule, so an empty pair could mask
-/// the real session. Expects [`without_blank_pairs`]'s output.
-fn with_one_session(value: &str) -> String {
-    let mut session_kept = false;
-    let pairs: Vec<&str> = value
-        .split(';')
-        .filter(|pair| match session_value(pair) {
-            None => true,
-            Some(session) if session_kept || is_blank(session) => false,
-            Some(_) => {
-                session_kept = true;
-                true
-            }
-        })
-        .collect();
-    pairs.join(";").trim().to_string()
 }
 
 /// The error for a redirect. A redirect to `/login` means Reddit wants a session it

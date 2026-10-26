@@ -12,12 +12,12 @@ use log::warn;
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::pinboard::PinboardBookmark;
-use crate::source::tags_differ;
+use crate::tags::tags_differ;
 
 /// A bookmark in service-agnostic domain form. The field names are the domain's
 /// (`title`/`note`/`public`/`read_later`), not Pinboard's wire names
-/// (`description`/`extended`/`shared`/`toread` — those stay on [`PinboardBookmark`]). The
+/// (`description`/`extended`/`shared`/`toread` — those stay on
+/// [`PinboardBookmark`](crate::pinboard::PinboardBookmark)). The
 /// URL is a parsed [`Url`], so consumers don't re-parse it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bookmark {
@@ -34,38 +34,6 @@ pub struct Bookmark {
     pub public: bool,
     /// Whether the bookmark is queued to read (Pinboard's `toread=yes`).
     pub read_later: bool,
-}
-
-impl TryFrom<PinboardBookmark> for Bookmark {
-    /// Fails only when the wire `href` doesn't parse as a URL; `all()` skips (and warns
-    /// on) such entries. A non-empty `time` that won't parse is *not* fatal: it becomes
-    /// `timestamp: None` (logged) so the bookmark stays in the set sync dedups against —
-    /// dropping it would make sync re-add the URL and reset its date/title/tags/notes.
-    type Error = url::ParseError;
-    fn try_from(b: PinboardBookmark) -> Result<Self, Self::Error> {
-        let url = Url::parse(&b.url)?;
-        let timestamp = if b.time.is_empty() {
-            None
-        } else {
-            let parsed = crate::timefmt::parse_rfc3339(&b.time);
-            if parsed.is_none() {
-                warn!(
-                    "bookmark {url}: unparseable creation time {:?}, dropping date",
-                    b.time
-                );
-            }
-            parsed
-        };
-        Ok(Bookmark {
-            url,
-            title: b.description,
-            note: b.extended,
-            tags: b.tags.split_whitespace().map(String::from).collect(),
-            timestamp,
-            public: b.shared == "yes",
-            read_later: b.toread == "yes",
-        })
-    }
 }
 
 impl Bookmark {
@@ -743,61 +711,5 @@ mod tests {
             ..bookmark()
         };
         assert!(stored.diff(&planned).is_empty());
-    }
-
-    fn wire(time: &str) -> PinboardBookmark {
-        PinboardBookmark {
-            url: "https://example.com/".into(),
-            description: "T".into(),
-            extended: String::new(),
-            tags: String::new(),
-            time: time.into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-    }
-
-    #[test]
-    fn unparseable_time_keeps_the_bookmark_with_no_timestamp() {
-        // A non-empty `time` that won't parse must NOT drop the record: it stays visible
-        // (as `timestamp: None`) so sync's dedup set still contains its URL.
-        let bookmark = Bookmark::try_from(wire("not a date")).unwrap();
-        assert_eq!(bookmark.url.as_str(), "https://example.com/");
-        assert_eq!(bookmark.timestamp, None);
-    }
-
-    #[test]
-    fn parseable_time_becomes_a_timestamp() {
-        let bookmark = Bookmark::try_from(wire("2020-01-01T00:00:00Z")).unwrap();
-        assert_eq!(bookmark.timestamp, crate::timefmt::from_unix(1_577_836_800));
-    }
-
-    #[test]
-    fn unparseable_url_is_the_only_fatal_conversion() {
-        let mut bad = wire("");
-        bad.url = "not a url".into();
-        assert!(Bookmark::try_from(bad).is_err());
-    }
-
-    #[test]
-    fn only_a_yes_flag_reads_as_true() {
-        // A `shared=yes` read as private would make cleanup write every shared bookmark
-        // back as private.
-        let flagged = Bookmark::try_from(PinboardBookmark {
-            shared: "yes".into(),
-            toread: "yes".into(),
-            ..wire("")
-        })
-        .unwrap();
-        assert!(flagged.public && flagged.read_later);
-        for other in ["no", ""] {
-            let unflagged = Bookmark::try_from(PinboardBookmark {
-                shared: other.into(),
-                toread: other.into(),
-                ..wire("")
-            })
-            .unwrap();
-            assert!(!unflagged.public && !unflagged.read_later, "{other:?}");
-        }
     }
 }

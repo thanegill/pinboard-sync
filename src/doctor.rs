@@ -7,8 +7,7 @@ use anyhow::{bail, Result};
 
 use crate::backup;
 use crate::config::{Config, GitHubAccount, HackerNewsAccount, RedditAccount};
-use crate::jobs::{build_job, SourceAccount, SyncOverrides};
-use crate::open_pinboard;
+use crate::jobs::{build_job, open_pinboard, SourceAccount, SyncOverrides};
 use crate::source::{Source, SourceError};
 
 /// Validate the Pinboard token and every configured account's credentials by

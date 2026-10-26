@@ -1,5 +1,5 @@
 //! Per-domain URL canonicalization rules for domains that are NOT sync sources
-//! (i.e. anything other than reddit/github/hackernews). [`crate::source::url_key`]
+//! (i.e. anything other than reddit/github/hackernews). [`crate::urls::url_key`]
 //! delegates here for hosts carrying a case- or query-significant identifier that its
 //! generic normalization would otherwise clobber: domains whose identity lives in the
 //! query string (dropping the query would collapse distinct resources), or in a
@@ -20,11 +20,11 @@ use url::Url;
 /// `path` are as normalized by `url_key` (path lowercased, trailing slash trimmed);
 /// `url` is the original, so case can be recovered from it.
 pub fn dedup_key_suffix(host: &str, path: &str, url: &Url) -> Option<String> {
-    if crate::source::host_matches(host, "youtube.com") && path == "/watch" {
+    if crate::urls::host_matches(host, "youtube.com") && path == "/watch" {
         let id = youtube_video_id(url)?;
         return Some(format!("?v={id}"));
     }
-    if crate::source::host_matches(host, "youtu.be") {
+    if crate::urls::host_matches(host, "youtu.be") {
         let id = url.path().trim_matches('/');
         if !id.is_empty() {
             return Some(format!("#{id}"));
@@ -102,13 +102,13 @@ mod tests {
         // The 11-char base64url video id lives in the path, which url_key lowercases;
         // ids differing only in case are distinct videos and must yield distinct keys.
         assert_ne!(
-            crate::source::url_key(&url("https://youtu.be/AbCdEfGhIjK")),
-            crate::source::url_key(&url("https://youtu.be/abcdefghijk"))
+            crate::urls::url_key(&url("https://youtu.be/AbCdEfGhIjK")),
+            crate::urls::url_key(&url("https://youtu.be/abcdefghijk"))
         );
         // A normal host whose path is a case-insensitive identifier still collapses.
         assert_eq!(
-            crate::source::url_key(&url("https://github.com/Owner/Repo")),
-            crate::source::url_key(&url("https://github.com/owner/repo"))
+            crate::urls::url_key(&url("https://github.com/Owner/Repo")),
+            crate::urls::url_key(&url("https://github.com/owner/repo"))
         );
     }
 }

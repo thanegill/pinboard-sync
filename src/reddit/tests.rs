@@ -1,4 +1,5 @@
 use super::*;
+use crate::reddit::cookie::unnamed_cookie_warning;
 use serde::Deserialize;
 
 #[derive(Debug, PartialEq, Deserialize)]
@@ -20,20 +21,6 @@ fn test_cookie() -> SessionCookie {
         header: "a=1; reddit_session=test-session; token_v2=x".into(),
         source: TEST_COOKIE_SOURCE,
     }
-}
-
-#[test]
-fn a_cookie_secret_is_the_session_as_a_server_would_echo_it() {
-    let quoted = SessionCookie {
-        header: "reddit_session=\"abc\" ; a=1".into(),
-        source: TEST_COOKIE_SOURCE,
-    };
-    assert_eq!(quoted.secrets(), [quoted.header.as_str(), "abc"]);
-    let unnamed = SessionCookie {
-        header: "a=1".into(),
-        source: TEST_COOKIE_SOURCE,
-    };
-    assert_eq!(unnamed.secrets(), ["a=1"]);
 }
 
 #[tokio::test]
@@ -379,164 +366,6 @@ async fn says_no_cookie_is_configured_when_none_was() {
             "{message}"
         );
     }
-}
-
-#[test]
-fn names_a_bare_session_value_and_keeps_named_cookies() {
-    let cases = [
-        ("  abc.def-ghi\n", "reddit_session=abc.def-ghi"),
-        ("YWJjZA=", "reddit_session=YWJjZA="),
-        ("YWJj==", "reddit_session=YWJj=="),
-        ("reddit_session=abc\n", "reddit_session=abc"),
-        ("reddit_session=YWJj==", "reddit_session=YWJj=="),
-        (
-            " reddit_session=abc; token_v2=x ",
-            "reddit_session=abc; token_v2=x",
-        ),
-        (" a=1;reddit_session=abc ", "a=1;reddit_session=abc"),
-        ("a=1;  reddit_session=abc", "a=1;  reddit_session=abc"),
-        ("a=1; b=2", "a=1; b=2"),
-        ("\"abc\"", "reddit_session=abc"),
-        (" \"reddit_session=abc\"\n", "reddit_session=abc"),
-    ];
-    for (raw, sent) in cases {
-        assert_eq!(
-            session_cookie(raw, TEST_COOKIE_SOURCE).as_deref(),
-            Some(sent),
-            "{raw:?}"
-        );
-    }
-    for unset in [
-        " \n",
-        "\"\"",
-        "reddit_session=",
-        " reddit_session= \n",
-        "\"reddit_session=\"",
-        "a=1; reddit_session=",
-        "reddit_session= ; a=1",
-    ] {
-        assert_eq!(session_cookie(unset, TEST_COOKIE_SOURCE), None, "{unset:?}");
-        assert!(!is_configured_cookie(unset), "{unset:?}");
-    }
-    assert!(is_configured_cookie("abc"));
-}
-
-#[test]
-fn strips_only_a_matched_quote_pair_and_treats_bare_quotes_as_unset() {
-    let cases = [
-        ("\"abc", "reddit_session=\"abc"),
-        ("abc\"", "reddit_session=abc\""),
-        ("\"\"abc\"\"", "reddit_session=\"abc\""),
-        (
-            "reddit_session=\"; reddit_session=abc",
-            "reddit_session=abc",
-        ),
-    ];
-    for (raw, sent) in cases {
-        assert_eq!(
-            session_cookie(raw, TEST_COOKIE_SOURCE).as_deref(),
-            Some(sent),
-            "{raw:?}"
-        );
-    }
-    for unset in [
-        "\"",
-        " \" \n",
-        "\"\"\"",
-        "\"\"\"\"",
-        "\" \"",
-        "reddit_session=\"",
-        "reddit_session=\"\"",
-        "a=1; reddit_session=\" \"",
-    ] {
-        assert_eq!(session_cookie(unset, TEST_COOKIE_SOURCE), None, "{unset:?}");
-        assert!(!is_configured_cookie(unset), "{unset:?}");
-    }
-}
-
-#[test]
-fn a_cookie_of_only_separators_is_no_cookie() {
-    for unset in [
-        ";",
-        "=",
-        "=;",
-        " ; = ;\n",
-        "\"=\"",
-        "reddit_session==",
-        "reddit_session=;=",
-        "a=1; reddit_session= =",
-    ] {
-        assert_eq!(session_cookie(unset, TEST_COOKIE_SOURCE), None, "{unset:?}");
-        assert!(!is_configured_cookie(unset), "{unset:?}");
-    }
-    let cases = [
-        ("reddit_session==; reddit_session=abc", "reddit_session=abc"),
-        ("reddit_session=abc; =; ;", "reddit_session=abc"),
-        ("abc=", "reddit_session=abc="),
-        ("abc;", "reddit_session=abc"),
-        (" ;abc; \n", "reddit_session=abc"),
-        ("YWJj==;", "reddit_session=YWJj=="),
-        ("\"abc;\"", "reddit_session=abc"),
-        ("\"abc\";", "reddit_session=abc"),
-        (";;reddit_session=x;", "reddit_session=x"),
-        ("a=1;;", "a=1"),
-        ("a=1; ;b=2;", "a=1;b=2"),
-    ];
-    for (raw, sent) in cases {
-        assert_eq!(
-            session_cookie(raw, TEST_COOKIE_SOURCE).as_deref(),
-            Some(sent),
-            "{raw:?}"
-        );
-    }
-}
-
-#[test]
-fn sends_only_the_first_non_empty_session_whatever_the_order() {
-    let cases = [
-        ("reddit_session=; reddit_session=abc", "reddit_session=abc"),
-        ("reddit_session=abc; reddit_session=", "reddit_session=abc"),
-        (
-            "reddit_session=abc;reddit_session=def",
-            "reddit_session=abc",
-        ),
-        (
-            "a=1; reddit_session= ; reddit_session=abc; b=2; reddit_session=def",
-            "a=1; reddit_session=abc; b=2",
-        ),
-        ("reddit_session=abc;", "reddit_session=abc"),
-        ("a=1;; reddit_session=abc", "a=1; reddit_session=abc"),
-    ];
-    for (raw, sent) in cases {
-        assert!(is_configured_cookie(raw), "{raw:?}");
-        assert_eq!(
-            session_cookie(raw, TEST_COOKIE_SOURCE).as_deref(),
-            Some(sent),
-            "{raw:?}"
-        );
-    }
-    assert!(!is_configured_cookie("reddit_session=; reddit_session= "));
-}
-
-#[test]
-fn names_a_session_cookie_only_by_its_name() {
-    let cases = [
-        ("abc.def-ghi", CookieForm::Bare),
-        ("YWJjZA=", CookieForm::Bare),
-        ("YWJj==", CookieForm::Bare),
-        ("reddit_session=abc", CookieForm::Named),
-        ("reddit_session=abc; token_v2=x", CookieForm::Named),
-        ("a=1; reddit_session=abc", CookieForm::Named),
-        ("a=1;reddit_session=abc", CookieForm::Named),
-        ("a=reddit_session=1", CookieForm::OtherCookies),
-        ("a=1; b=x reddit_session=2", CookieForm::OtherCookies),
-        ("a=1; b=2", CookieForm::OtherCookies),
-        ("token_v2=x", CookieForm::OtherCookies),
-    ];
-    for (trimmed, form) in cases {
-        assert_eq!(CookieForm::try_from(trimmed), Ok(form), "{trimmed:?}");
-    }
-    assert_eq!(CookieForm::try_from(""), Err(NoSession));
 }
 
 #[test]

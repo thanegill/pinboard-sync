@@ -35,9 +35,11 @@ gate green.
 The flow is one pass: a source yields drafts → skip those already on Pinboard →
 write the rest. `main.rs` loads the config and dispatches each subcommand (`run_sync`,
 `run_cleanup`, `run_backup`); the clap types are in [`src/cli.rs`](src/cli.rs), secret
-resolution in [`src/secrets.rs`](src/secrets.rs), job building and the settings ladder in
-[`src/jobs.rs`](src/jobs.rs), the auth-failure hook in [`src/hook.rs`](src/hook.rs), and
-`doctor` in [`src/doctor.rs`](src/doctor.rs). The sync write loop is in
+resolution in [`src/secrets.rs`](src/secrets.rs), job building, the settings ladder, the
+Pinboard client setup (`open_pinboard`) and the `--all` failure tally (`AllRun`) in
+[`src/jobs.rs`](src/jobs.rs), with `backup`'s targets in
+[`src/jobs/backup_jobs.rs`](src/jobs/backup_jobs.rs), the auth-failure hook in
+[`src/hook.rs`](src/hook.rs), and `doctor` in [`src/doctor.rs`](src/doctor.rs). The sync write loop is in
 [`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one
 driver** ([`src/cleanup_pass.rs`](src/cleanup_pass.rs)): a source implements
 `CleanupPass::plan` (the desired end-state for one bookmark, as a `Plan` — see below —
@@ -259,8 +261,9 @@ by URL (one Algolia query each) and adds the discussion link. Reddit's bookmark/
 shaping lives in
 [`src/reddit/model.rs`](src/reddit/model.rs).
 
-**The Reddit cookie is shaped in one place.** `RedditClient::build` passes the configured
-cookie through `reddit::session_cookie`, so every entry point sends the same header.
+**The Reddit cookie is shaped in one place**,
+[`src/reddit/cookie.rs`](src/reddit/cookie.rs). `RedditClient::build` passes the configured
+cookie through `reddit::cookie::session_cookie`, so every entry point sends the same header.
 `reddit_session` is the only name Reddit knows the session by, so a bare value (which may
 end in base64 `=` padding) is sent as `reddit_session=<value>`. A value counts as already
 named only when `reddit_session=` starts it or follows a `;`, never by substring, and of
@@ -270,7 +273,7 @@ of surrounding quotes is stripped, and a value of nothing but whitespace, quotes
 every cookie before it is shaped, so a stray `;` leaves `abc;` a bare value and `a=1;;`
 just `a=1`. A value that sets no session — blank, or only empty `reddit_session=`
 pairs — is no cookie, and `secrets`'s `resolve_reddit_cookie` skips it through
-`reddit::is_configured_cookie` so the secret ladder falls through it exactly as it does
+`reddit::cookie::is_configured_cookie` so the secret ladder falls through it exactly as it does
 a blank value.
 
 **`backup` has one port and one driver, and captures raw bodies in the same traversal.**
@@ -290,8 +293,9 @@ a domain rename must not silently change an operator's files.
 **All tags are config-driven; there are no tag CLI flags.** Each source has a tag
 config struct (`RedditConfig`, `GitHubConfig`, `HackerNewsConfig`) of overridable
 fields with built-in defaults; the `tags` list (default e.g. `["reddit"]`) is the
-base tag plus any extras, and `push_tag`/`push_prefixed` in `source.rs` render them
-(empty string disables a tag). `reddit::model`'s tag tests ([`src/reddit/model/tests.rs`](src/reddit/model/tests.rs)) are the spec — keep them in
+base tag plus any extras, and `push_tag`/`push_prefixed` in [`src/tags.rs`](src/tags.rs)
+render them (empty string disables a tag). `reddit::model`'s tag tests
+([`src/reddit/model/tests.rs`](src/reddit/model/tests.rs)) are the spec — keep them in
 sync with rule changes. Pinboard tags can't contain spaces (the API splits the tag
 string on them), so `push_prefixed` slugs internal whitespace in the value (e.g. the
 GitHub language `Jupyter Notebook` → `lang:jupyter-notebook`) and `Config::parse`

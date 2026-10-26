@@ -15,8 +15,10 @@ use crate::reddit::model::{
     cased_subreddit, reddit_key, RedditConfig, RedditKind, RedditSavedItem,
 };
 use crate::reddit::PostInfo;
-use crate::source::{extend_unique, host_matches, push_prefixed, push_tags, SourceError, UrlExt};
+use crate::source::SourceError;
+use crate::tags::{extend_unique, push_prefixed, push_tags};
 use crate::timefmt::DateOpts;
+use crate::urls::{host_matches, UrlExt};
 use url::Url;
 
 pub struct RedditCleanupOpts {
@@ -27,6 +29,14 @@ pub struct RedditCleanupOpts {
     pub config: RedditConfig,
     /// Whether and how to re-date bookmarks by the source post date.
     pub dates: DateOpts,
+}
+
+/// The `cleanup reddit` choices that are not account settings: the cookie flag, and which
+/// `/api/info`-backed fixes to make.
+pub struct RedditCleanupFlags {
+    pub cookie: Option<String>,
+    pub mark_nsfw: bool,
+    pub fix_titles: bool,
 }
 
 /// Authoritative per-post data from `/api/info`.

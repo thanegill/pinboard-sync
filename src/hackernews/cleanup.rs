@@ -15,7 +15,8 @@ use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, PassOutcome, Plan};
 use crate::htmltext::html_to_plain;
-use crate::source::{extend_unique, SourceError};
+use crate::source::SourceError;
+use crate::tags::extend_unique;
 use crate::timefmt::DateOpts;
 
 /// Options for `cleanup hackernews`.

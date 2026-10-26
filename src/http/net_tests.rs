@@ -226,8 +226,9 @@ async fn h2c_server(replies: Vec<H2Reply>) -> (std::net::SocketAddr, Arc<AtomicU
 const H2_LINEAR_DELAY: Duration = Duration::from_secs(1);
 const H2_CONNECT_BACKOFF: [Duration; 3] = [Duration::from_secs(60); 3];
 
-/// One `send_retrying` GET to `url` over `http`, with the waits it took. The linear
-/// and connect schedules differ, so the waits show which one an error was given.
+/// One GET to `url` over `http`, retried as `RetryingClient::send` retries, with the waits
+/// it took. The linear and connect schedules differ, so the waits show which one an error
+/// was given.
 async fn h2_get(http: &reqwest::Client, url: &str) -> (Result<reqwest::Response>, Vec<Duration>) {
     recording_waits(send_with_connect_backoff(
         "h2c",

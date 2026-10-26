@@ -354,20 +354,20 @@ unit environment — it never reaches the generated TOML — and runs the `clean
 timer with it, so resolving from config alone would leave the hook dead for the
 deployment it exists to serve. Every client sends through its `http::RetryingClient`
 ([`src/http.rs`](src/http.rs)) — the `reqwest::Client` plus its `max_attempts`, base
-delay and `ConnectBudget`, fixed where the client is built — whose `send`/`send_with` are
-`http::send_retrying`/`send_retrying_with` with those settings. That backs off on network errors / 429 / 5xx but
-returns other statuses as-is. It builds the request once and hands it to tower's
+delay and `ConnectBudget`, fixed where the client is built — and its `send`/`send_with`
+are the one retrying send. That backs off on network errors / 429 / 5xx but returns other
+statuses as-is. It builds the request once and hands it to tower's
 `retry::Retry` over the request's `reqwest::Client`; every decision lives in
 `http::RetryPolicy`, whose waits go through `http::sleep`, and its unit tests drive the
 same policy over a `tower::service_fn` mock of canned outcomes. reqwest's `read_timeout`
 (`READ_TIMEOUT`, 60s) times out both the wait for response headers, counted from the
 send so it must stay above `CONNECT_TIMEOUT` (a const assert holds it there), and any gap
 between body chunks. A header timeout is a plain transport error and takes the linear
-retries. A body stall happens after `send_retrying` has returned, so it is not retried
+retries. A body stall happens after `send` has returned, so it is not retried
 and fails the caller's read. There is deliberately no overall `timeout`, which would cap
 a slow but steady `posts/all`. Which responses retry, and how, is a classifier returning
-an `http::Verdict` (`Done`, `Backoff`, `RetryOnceAfter(wait)`): `send_retrying` uses
-`backoff_if_transient`, and `send_retrying_with` takes any other. The one other today is
+an `http::Verdict` (`Done`, `Backoff`, `RetryOnceAfter(wait)`): `send` uses
+`backoff_if_transient`, and `send_with` takes any other. The one other today is
 the HackerNews favorites pages' `retry_after_up_to(FAVORITES_MAX_RETRY_AFTER)`, which
 shares the 5xx rule: four quick retries of a 429 there only prolong HN's block, so a 429
 is retried at most once, and only after a
@@ -406,7 +406,7 @@ minutes per remaining item (4 or 5 linear attempts × the 30s connect timeout), 
 a plain `SourceError::Other`, deliberately not a `Halt`: in `cleanup` each remaining
 lookup lands in `plan_failed` at no cost and the majority rule decides the run, exactly
 as it would for the same failures arriving slowly; it never fires the auth-failure hook.
-Nothing un-gives-up a host within a run. `send_retrying` strips the request URL from
+Nothing un-gives-up a host within a run. `send` strips the request URL from
 every client's transport error before wrapping it, because Pinboard's `auth_token` rides
 in the query string and `reqwest::Error` prints the URL in `Display` and `Debug`. Never
 put a request URL with a query into a message: Pinboard errors name the endpoint (no
@@ -431,7 +431,7 @@ same statuses a real permission denial uses — so `github::rate_limit_message` 
 the headers instead: `x-ratelimit-remaining: 0` (with `x-ratelimit-reset` for the
 instant) or a `retry-after`. It must not become `ReauthRequired` (no credential change
 clears a quota, and firing the hook would send the operator after the wrong problem) nor
-a permanent skip like the `451` arm. Retrying is not the answer either: `send_retrying`'s
+a permanent skip like the `451` arm. Retrying is not the answer either: `send`'s
 2s-linear backoff over 4 attempts totals ~12s, while a primary limit resets up to an hour
 out and GitHub asks for a minute on secondary limits, so it would only fail more slowly.
 The 403 form isn't retried; the **429** form still is, by the default

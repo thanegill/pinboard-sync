@@ -281,7 +281,8 @@ impl PinboardClient {
 
         // Trim the notes to the budget; if Pinboard still rejects the URL as too long
         // (its limit is undocumented), halve the budget and retry rather than dropping
-        // the bookmark. Transient errors (network/429/5xx) are handled by send_retrying.
+        // the bookmark. Transient errors (network/429/5xx) are handled by
+        // `RetryingClient::send`.
         let mut budget = MAX_URL_BYTES;
         loop {
             let extended = self.fit_extended(&endpoint, &fixed, &b.note, budget);

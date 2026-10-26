@@ -479,8 +479,8 @@ mod tests {
     use serde_json::json;
 
     /// Header-level cases for [`rate_limit_message`], kept off the network: a 429 through
-    /// `send_retrying` would spend the full retry budget (~12s) before the body is ever
-    /// read, which is too slow to pay on every `cargo test`.
+    /// `RetryingClient::send` would spend the full retry budget (~12s) before the body is
+    /// ever read, which is too slow to pay on every `cargo test`.
     fn headers(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
         let mut map = reqwest::header::HeaderMap::new();
         for (name, value) in pairs {

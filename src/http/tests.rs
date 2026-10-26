@@ -689,8 +689,8 @@ async fn a_connect_outage_that_clears_leaves_the_budget_unspent() {
     assert_eq!(calls, 4);
 }
 
-/// Asserts that no rendering of a `send_retrying` error leaks `secret`, and that the
-/// error is a `reqwest::Error` matching `kind`, so the check can't pass on an
+/// Asserts that no rendering of a `RetryingClient::send` error leaks `secret`, and that
+/// the error is a `reqwest::Error` matching `kind`, so the check can't pass on an
 /// unrelated failure that never carried the URL.
 pub(super) fn assert_error_hides(
     err: &anyhow::Error,

@@ -182,7 +182,7 @@ impl fmt::Display for Unreachable {
 impl std::error::Error for Unreachable {}
 
 /// What a request's retry loop does with a response, as a classifier passed to
-/// [`send_retrying_with`] decides it.
+/// [`RetryingClient::send_with`] decides it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     /// Return it to the caller.
@@ -385,8 +385,8 @@ fn retry_after(headers: &reqwest::header::HeaderMap, now: OffsetDateTime) -> Opt
     Some((at - now).try_into().unwrap_or(Duration::ZERO))
 }
 
-/// The default classifier, which [`send_retrying`] uses: a 429 or 5xx is transient and
-/// backs off; anything else goes back to the caller.
+/// The default classifier, which [`RetryingClient::send`] uses: a 429 or 5xx is transient
+/// and backs off; anything else goes back to the caller.
 pub fn backoff_if_transient(resp: &reqwest::Response) -> Verdict {
     status_verdict(resp.status())
 }
@@ -443,72 +443,6 @@ pub fn client_builder() -> reqwest::ClientBuilder {
         .http2_keep_alive_while_idle(true)
 }
 
-/// Send a request, retrying *transient* failures. A request that could not establish a
-/// connection (per `reqwest::Error::is_connect`: any connector failure, so DNS, TCP
-/// connect, or the TLS handshake, including one that runs past [`CONNECT_TIMEOUT`]) is
-/// retried on the long exponential [`CONNECT_BACKOFF`] (5s, 10s, 20s, 40s, 80s), so a
-/// short resolver or network outage doesn't fail the run, once per host per client (see
-/// [`ConnectBudget`], which also gives up hosts). Other transport errors (a connection
-/// dropped mid-request, or no response headers within [`READ_TIMEOUT`]), HTTP 429, and
-/// 5xx are retried with linear backoff, `base_delay * n` for up to `max_attempts`
-/// attempts. Responses that are not transient — 2xx and other 4xx (e.g. 401/403/400) —
-/// are returned as-is for the caller to interpret, since retrying them would not help.
-///
-/// Only sending is retried: a body that stalls after this returns fails the caller's read.
-///
-/// `build` is called once and the request cloned for each attempt; one that cannot be built
-/// fails at once as "building `label`".
-///
-/// A transport error is returned without its request URL, for every client: a URL can
-/// carry a credential in its query (Pinboard's `auth_token`), and `reqwest::Error` would
-/// otherwise print it in both `Display` and `Debug`. `label` names the endpoint instead.
-pub async fn send_retrying<F>(
-    label: &str,
-    budget: &ConnectBudget,
-    max_attempts: u32,
-    base_delay: Duration,
-    build: F,
-) -> Result<reqwest::Response>
-where
-    F: FnOnce() -> reqwest::RequestBuilder,
-{
-    send_retrying_with(
-        label,
-        budget,
-        max_attempts,
-        base_delay,
-        backoff_if_transient,
-        build,
-    )
-    .await
-}
-
-/// [`send_retrying`], with `classify` deciding how each response is retried instead of
-/// [`backoff_if_transient`]. A response it calls [`Verdict::Done`] comes back as-is, for
-/// the caller to report.
-pub async fn send_retrying_with<F>(
-    label: &str,
-    budget: &ConnectBudget,
-    max_attempts: u32,
-    base_delay: Duration,
-    classify: impl Fn(&reqwest::Response) -> Verdict,
-    build: F,
-) -> Result<reqwest::Response>
-where
-    F: FnOnce() -> reqwest::RequestBuilder,
-{
-    send_with_connect_backoff(
-        label,
-        budget,
-        max_attempts,
-        base_delay,
-        &CONNECT_BACKOFF,
-        classify,
-        build,
-    )
-    .await
-}
-
 /// A client's `reqwest::Client` together with how its requests are retried: the linear
 /// backoff's attempts and base delay, and its [`ConnectBudget`]. Every request a service
 /// client sends goes through [`RetryingClient::send`], so the retry settings are chosen
@@ -535,34 +469,49 @@ impl RetryingClient {
         self.client.get(url)
     }
 
-    /// [`send_retrying`] with this client's retry settings.
+    /// Send a request, retrying *transient* failures. A request that could not establish a
+    /// connection (per `reqwest::Error::is_connect`: any connector failure, so DNS, TCP
+    /// connect, or the TLS handshake, including one that runs past [`CONNECT_TIMEOUT`]) is
+    /// retried on the long exponential [`CONNECT_BACKOFF`] (5s, 10s, 20s, 40s, 80s), so a
+    /// short resolver or network outage doesn't fail the run, once per host per client (see
+    /// [`ConnectBudget`], which also gives up hosts). Other transport errors (a connection
+    /// dropped mid-request, or no response headers within [`READ_TIMEOUT`]), HTTP 429, and
+    /// 5xx are retried with linear backoff, `base_delay * n` for up to `max_attempts`
+    /// attempts. Responses that are not transient — 2xx and other 4xx (e.g. 401/403/400) —
+    /// are returned as-is for the caller to interpret, since retrying them would not help.
+    ///
+    /// Only sending is retried: a body that stalls after this returns fails the caller's
+    /// read.
+    ///
+    /// `build` is called once and the request cloned for each attempt; one that cannot be
+    /// built fails at once as "building `label`".
+    ///
+    /// A transport error is returned without its request URL, for every client: a URL can
+    /// carry a credential in its query (Pinboard's `auth_token`), and `reqwest::Error` would
+    /// otherwise print it in both `Display` and `Debug`. `label` names the endpoint instead.
     pub async fn send(
         &self,
         label: &str,
         build: impl FnOnce() -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
-        send_retrying(
-            label,
-            &self.budget,
-            self.max_attempts,
-            self.base_delay,
-            build,
-        )
-        .await
+        self.send_with(label, backoff_if_transient, build).await
     }
 
-    /// [`send_retrying_with`] with this client's retry settings.
+    /// [`RetryingClient::send`], with `classify` deciding how each response is retried
+    /// instead of [`backoff_if_transient`]. A response it calls [`Verdict::Done`] comes back
+    /// as-is, for the caller to report.
     pub async fn send_with(
         &self,
         label: &str,
         classify: impl Fn(&reqwest::Response) -> Verdict,
         build: impl FnOnce() -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
-        send_retrying_with(
+        send_with_connect_backoff(
             label,
             &self.budget,
             self.max_attempts,
             self.base_delay,
+            &CONNECT_BACKOFF,
             classify,
             build,
         )

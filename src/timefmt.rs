@@ -43,16 +43,17 @@ pub fn now_unix() -> i64 {
 }
 
 /// Whether a post created at `timestamp` (epoch) is at most `max_age_days` old relative
-/// to `now` (epoch) — the `use_post_date` backdate cap. Shared by `sync` (which clears
-/// out-of-cap dates) and `cleanup` ([`DateOpts::cleanup_date`]).
-pub fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
+/// to `now` (epoch) — the `use_post_date` backdate cap. Shared by
+/// [`DateOpts::sync_date`] and [`DateOpts::cleanup_date`].
+fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
     now as i128 - timestamp as i128 <= max_age_days as i128 * 86_400
 }
 
 /// The `use_post_date` policy: whether to date bookmarks by the source date, the backdate
 /// age cap, and whether `cleanup` pushes stale (older-than-cap) items to "now". Resolved
-/// once per account in `jobs::resolve_dates`; `sync` reads the first two, and a `cleanup`
-/// pass applies all three uniformly via [`DateOpts::cleanup_date`].
+/// once per account in `jobs::resolve_dates`; `sync` applies the first two via
+/// [`DateOpts::sync_date`], and a `cleanup` pass applies all three uniformly via
+/// [`DateOpts::cleanup_date`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DateOpts {
     pub use_post_date: bool,
@@ -62,6 +63,17 @@ pub struct DateOpts {
 }
 
 impl DateOpts {
+    /// The creation time a new `sync` bookmark is written with. `candidate` is the source
+    /// post time (if known) and `now` the run's time (epoch). Returns the source time when
+    /// dating is on and the post is within the cap; otherwise `None`, so Pinboard dates the
+    /// bookmark "now".
+    pub fn sync_date(self, candidate: Option<OffsetDateTime>, now: i64) -> Option<OffsetDateTime> {
+        if !self.use_post_date {
+            return None;
+        }
+        candidate.filter(|ts| within_age_cap(now, ts.unix_timestamp(), self.max_age_days))
+    }
+
     /// The creation time a `cleanup` re-write should set. `candidate` is the source post
     /// time (if known) and `existing` the bookmark's current time. Returns the source time
     /// when dating is on and the post is within the cap; otherwise `now` when the post is

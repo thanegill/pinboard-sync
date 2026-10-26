@@ -67,13 +67,7 @@ pub fn prepare_new_drafts<S: Source>(
     for d in &mut new {
         d.bookmark.read_later = settings.toread;
         d.bookmark.public = settings.shared;
-        d.bookmark.timestamp = if settings.dates.use_post_date {
-            d.bookmark.timestamp.filter(|t| {
-                crate::timefmt::within_age_cap(now, t.unix_timestamp(), settings.dates.max_age_days)
-            })
-        } else {
-            None
-        };
+        d.bookmark.timestamp = settings.dates.sync_date(d.bookmark.timestamp, now);
     }
     if let Some(limit) = settings.limit.write_cap() {
         new.truncate(limit.get());

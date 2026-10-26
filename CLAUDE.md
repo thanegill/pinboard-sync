@@ -165,7 +165,7 @@ successes a genuinely unreachable GitHub would look fine. Conversely HackerNews'
 a source runs several passes, each reaches its **own** verdict rather than pooling
 tallies, so a pass that can't fail can't vouch for one that can.
 
-The per-source planners live in [`src/cleanup.rs`](src/cleanup.rs) (reddit),
+The per-source planners live in [`src/reddit/cleanup.rs`](src/reddit/cleanup.rs),
 [`src/github.rs`](src/github.rs), and [`src/hackernews.rs`](src/hackernews.rs).
 
 **`Bookmark` is service-agnostic; `PinboardBookmark` is the wire shape.** The domain

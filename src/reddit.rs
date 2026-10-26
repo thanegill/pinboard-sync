@@ -6,6 +6,7 @@
 //! The cookie authenticates the private saved listing; the username (non-secret)
 //! selects whose saves to read.
 
+pub mod cleanup;
 pub mod model;
 
 use std::collections::HashSet;

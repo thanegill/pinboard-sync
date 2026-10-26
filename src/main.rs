@@ -2,7 +2,6 @@
 
 mod backup;
 mod bookmark;
-mod cleanup;
 mod cleanup_pass;
 mod cli;
 mod config;
@@ -722,7 +721,7 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     store: &S,
     config: &Config,
 ) -> Result<()> {
-    let opts = cleanup::RedditCleanupOpts {
+    let opts = reddit::cleanup::RedditCleanupOpts {
         mark_nsfw: flags.mark_nsfw,
         fix_titles: flags.fix_titles,
         config: account.map(RedditConfig::from).unwrap_or_default(),
@@ -740,7 +739,7 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     };
 
     let hook = cleanup_hook(account, config);
-    cleanup::run(store, reddit.as_ref(), &opts)
+    reddit::cleanup::run(store, reddit.as_ref(), &opts)
         .await
         .map_err(|e| handle_source_err(e, hook.as_deref()))
 }

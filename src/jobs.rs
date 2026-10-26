@@ -8,6 +8,7 @@ use url::Url;
 
 use crate::backup::{self, BackupSource};
 use crate::bookmark::Bookmark;
+use crate::cli::SyncFlags;
 use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit};
 use crate::github::{GitHubClient, GitHubConfig};
 use crate::hackernews::{HackerNewsClient, HackerNewsConfig};
@@ -20,7 +21,7 @@ use crate::secrets::{
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 use crate::sync::JobSettings;
 use crate::timefmt::DateOpts;
-use crate::{AllRun, SyncFlags};
+use crate::AllRun;
 
 /// Build one job per configured account across every source for `sync --all`,
 /// isolating build failures: an account whose required secret won't resolve is

@@ -27,8 +27,12 @@ gate green.
 ## Architecture
 
 The flow is one pass: a source yields drafts → skip those already on Pinboard →
-write the rest. `main.rs` is CLI parsing + config/secret resolution + dispatch; the
-sync write loop is in [`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one
+write the rest. `main.rs` loads the config and dispatches each subcommand (`run_sync`,
+`run_cleanup`, `run_backup`); the clap types are in [`src/cli.rs`](src/cli.rs), secret
+resolution in [`src/secrets.rs`](src/secrets.rs), job building and the settings ladder in
+[`src/jobs.rs`](src/jobs.rs), the auth-failure hook in [`src/hook.rs`](src/hook.rs), and
+`doctor` in [`src/doctor.rs`](src/doctor.rs). The sync write loop is in
+[`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one
 driver** ([`src/cleanup_pass.rs`](src/cleanup_pass.rs)): a source implements
 `CleanupPass::plan` (the desired end-state for one bookmark, as a `Plan` — see below —
 with `Err` for a per-item failure), and `run_pass` owns the loop common to all of them:

@@ -3,99 +3,97 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    {
+    inputs@{
       self,
       nixpkgs,
-      flake-utils,
+      flake-parts,
     }:
-    let
+    flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [
         "aarch64-darwin"
         "aarch64-linux"
         "x86_64-linux"
       ];
-    in
-    flake-utils.lib.eachSystem systems (
-      system:
-      let
-        pkgs = nixpkgs.legacyPackages.${system};
-      in
-      {
-        packages.default = pkgs.callPackage ./nix/package.nix { };
 
-        devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
-            cargo
-            rustc
-            rustfmt
-            clippy
-            rust-analyzer
-            cargo-llvm-cov
-          ];
-          # native-tls (reqwest) needs OpenSSL on Linux; pkg-config locates it.
-          # No-op on darwin, which links the Security framework instead.
-          nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.openssl ];
-          # cargo-llvm-cov needs llvm-tools matching rustc's LLVM. `rustc.llvmPackages.llvm`
-          # is exactly that LLVM and tracks the toolchain, so there's no version to keep in sync.
-          LLVM_COV = pkgs.lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-cov";
-          LLVM_PROFDATA = pkgs.lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-profdata";
-        };
+      perSystem =
+        { pkgs, self', ... }:
+        {
+          packages.default = pkgs.callPackage ./nix/package.nix { };
 
-        checks = {
-          package = self.packages.${system}.default;
+          devShells.default = pkgs.mkShell {
+            packages = with pkgs; [
+              cargo
+              rustc
+              rustfmt
+              clippy
+              rust-analyzer
+              cargo-llvm-cov
+            ];
+            # native-tls (reqwest) needs OpenSSL on Linux; pkg-config locates it.
+            # No-op on darwin, which links the Security framework instead.
+            nativeBuildInputs = [ pkgs.pkg-config ];
+            buildInputs = [ pkgs.openssl ];
+            # cargo-llvm-cov needs llvm-tools matching rustc's LLVM. `rustc.llvmPackages.llvm`
+            # is exactly that LLVM and tracks the toolchain, so there's no version to keep in sync.
+            LLVM_COV = pkgs.lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-cov";
+            LLVM_PROFDATA = pkgs.lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-profdata";
+          };
 
-          nixos-module =
-            let
-              nixos = nixpkgs.lib.nixosSystem {
-                modules = [
-                  self.nixosModules.default
-                  {
-                    nixpkgs.hostPlatform = "x86_64-linux";
-                    boot.isContainer = true;
-                    system.stateVersion = nixpkgs.lib.trivial.release;
-                    services.pinboard-sync = {
-                      enable = true;
-                      cleanup.enable = true;
-                      backup.enable = true;
-                      backup.directory = "/var/lib/pinboard-sync/100%";
-                      onAuthFailure = "printf %s-alert";
-                      environmentFile = "/run/secrets/pinboard%-env";
-                      pinboardTokenFile = "/run/secrets/pinboard%-token";
-                      settings.hackernews = [
-                        {
-                          enable = true;
-                          username = "example";
-                        }
-                        {
-                          enable = false;
-                          username = "disabled";
-                        }
-                      ];
-                    };
-                  }
-                ];
-              };
-              # The host's `pkgs`, not the system's: the module's own config file is an
-              # x86_64-linux derivation, which a darwin check would have to build remotely.
-              # Keep the settings above literal for the same reason: a store-path string
-              # would carry its x86_64-linux context into this file.
-              renderedConfig =
-                (pkgs.formats.toml { }).generate "pinboard-sync.toml"
-                  nixos.config.services.pinboard-sync.renderedSettings;
-              unitFile =
-                name:
-                pkgs.writeText name (builtins.unsafeDiscardStringContext nixos.config.systemd.units.${name}.text);
-            in
-            # Discarding the context keeps the x86_64-linux system out of this check's
-            # inputs, which would otherwise have to be built here.
-            pkgs.runCommand "pinboard-sync-nixos-module"
-              { nativeBuildInputs = [ self.packages.${system}.default ]; }
-              ''
+          checks = {
+            package = self'.packages.default;
+
+            nixos-module =
+              let
+                nixos = nixpkgs.lib.nixosSystem {
+                  modules = [
+                    self.nixosModules.default
+                    {
+                      nixpkgs.hostPlatform = "x86_64-linux";
+                      boot.isContainer = true;
+                      system.stateVersion = nixpkgs.lib.trivial.release;
+                      services.pinboard-sync = {
+                        enable = true;
+                        cleanup.enable = true;
+                        backup.enable = true;
+                        backup.directory = "/var/lib/pinboard-sync/100%";
+                        onAuthFailure = "printf %s-alert";
+                        environmentFile = "/run/secrets/pinboard%-env";
+                        pinboardTokenFile = "/run/secrets/pinboard%-token";
+                        settings.hackernews = [
+                          {
+                            enable = true;
+                            username = "example";
+                          }
+                          {
+                            enable = false;
+                            username = "disabled";
+                          }
+                        ];
+                      };
+                    }
+                  ];
+                };
+                # The host's `pkgs`, not the system's: the module's own config file is an
+                # x86_64-linux derivation, which a darwin check would have to build remotely.
+                # Keep the settings above literal for the same reason: a store-path string
+                # would carry its x86_64-linux context into this file.
+                renderedConfig =
+                  (pkgs.formats.toml { }).generate "pinboard-sync.toml"
+                    nixos.config.services.pinboard-sync.renderedSettings;
+                unitFile =
+                  name:
+                  pkgs.writeText name (builtins.unsafeDiscardStringContext nixos.config.systemd.units.${name}.text);
+              in
+              # Discarding the context keeps the x86_64-linux system out of this check's
+              # inputs, which would otherwise have to be built here.
+              pkgs.runCommand "pinboard-sync-nixos-module" { nativeBuildInputs = [ self'.packages.default ]; } ''
                 summary=$(pinboard-sync config check ${renderedConfig})
                 echo "$summary"
                 [[ $summary == *" 1 hackernews account(s)"* ]]
@@ -108,11 +106,12 @@
                   ${unitFile "pinboard-sync.service"}
                 echo ${builtins.unsafeDiscardStringContext nixos.config.system.build.toplevel.drvPath} > $out
               '';
+          };
         };
-      }
-    )
-    // {
-      nixosModules.pinboard-sync = import ./nix/module.nix self;
-      nixosModules.default = self.nixosModules.pinboard-sync;
+
+      flake = {
+        nixosModules.pinboard-sync = import ./nix/module.nix self;
+        nixosModules.default = self.nixosModules.pinboard-sync;
+      };
     };
 }

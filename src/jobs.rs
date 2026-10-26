@@ -54,31 +54,35 @@ fn build_every_job<A: SourceAccount>(
     for account in A::configured(config) {
         match build_job(Some(account), ovr, config) {
             Ok(job) => jobs.push(job),
-            Err(e) => run.record(Err(e)),
+            Err(e) => run.record(Err(
+                e.context(format!("{} could not be built", job_label(Some(account))))
+            )),
         }
     }
 }
 
 /// Build one job per account: every account when `all`, else the named (or first,
-/// or implicit CLI/env) account.
+/// or implicit CLI/env) account. Under `all`, as in [`build_all_jobs`], an account that
+/// fails to build is reported and counted rather than aborting the rest; the count is
+/// returned alongside the jobs.
 pub fn build_jobs<A: SourceAccount>(
     name: Option<&str>,
     all: bool,
     ovr: &SyncOverrides,
     config: &Config,
-) -> Result<Vec<SyncJob>> {
+) -> Result<(Vec<SyncJob>, usize)> {
     let accounts = A::configured(config);
     if all {
         if accounts.is_empty() {
             bail!("--all requires a --config with at least one configured account");
         }
-        accounts
-            .iter()
-            .map(|a| build_job(Some(a), ovr, config))
-            .collect()
+        let mut jobs = Vec::new();
+        let mut run = AllRun::default();
+        build_every_job::<A>(config, ovr, &mut jobs, &mut run);
+        Ok((jobs, run.failed))
     } else {
         let account = config::select_account(accounts, name)?;
-        Ok(vec![build_job(account, ovr, config)?])
+        Ok((vec![build_job(account, ovr, config)?], 0))
     }
 }
 
@@ -650,6 +654,30 @@ mod tests {
             prebuilt_failures >= 1,
             "the tokenless github account is counted, not aborted"
         );
+    }
+
+    #[test]
+    fn build_jobs_for_every_account_of_a_source_isolates_a_failing_account() {
+        let config = Config {
+            github: vec![
+                GitHubAccount {
+                    name: Some("tokenless".into()),
+                    ..Default::default()
+                },
+                GitHubAccount {
+                    name: Some("main".into()),
+                    token: Some("token".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (jobs, prebuilt_failures) =
+            build_jobs::<GitHubAccount>(None, true, &SyncOverrides::default(), &config)
+                .expect("a failing account does not abort the source");
+        let labels: Vec<&str> = jobs.iter().map(|job| job.label.as_str()).collect();
+        assert_eq!(labels, ["github[main]"]);
+        assert_eq!(prebuilt_failures, 1);
     }
 }
 

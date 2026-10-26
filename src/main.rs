@@ -222,20 +222,23 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
         (false, Some(SyncSource::Reddit(args))) => {
             let (account, all) = (args.account.clone(), args.all);
             let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-            let jobs = build_jobs::<RedditAccount>(account.as_deref(), all, &ovr, config)?;
-            (jobs, ovr, 0)
+            let (jobs, prebuilt_failures) =
+                build_jobs::<RedditAccount>(account.as_deref(), all, &ovr, config)?;
+            (jobs, ovr, prebuilt_failures)
         }
         (false, Some(SyncSource::Github(args))) => {
             let (account, all) = (args.account.clone(), args.all);
             let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-            let jobs = build_jobs::<GitHubAccount>(account.as_deref(), all, &ovr, config)?;
-            (jobs, ovr, 0)
+            let (jobs, prebuilt_failures) =
+                build_jobs::<GitHubAccount>(account.as_deref(), all, &ovr, config)?;
+            (jobs, ovr, prebuilt_failures)
         }
         (false, Some(SyncSource::Hackernews(args))) => {
             let (account, all) = (args.account.clone(), args.all);
             let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-            let jobs = build_jobs::<HackerNewsAccount>(account.as_deref(), all, &ovr, config)?;
-            (jobs, ovr, 0)
+            let (jobs, prebuilt_failures) =
+                build_jobs::<HackerNewsAccount>(account.as_deref(), all, &ovr, config)?;
+            (jobs, ovr, prebuilt_failures)
         }
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
     };

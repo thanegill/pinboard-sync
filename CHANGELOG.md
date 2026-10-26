@@ -60,6 +60,8 @@ All notable changes to this project are documented here. The format is based on
 - `backup --all` fires the `PINBOARD_SYNC_ON_AUTH_FAILURE` hook, as `sync --all` does.
 - `backup --all` and `backup <source> --all` back up the rest when one account can't be
   built, and record it as failed.
+- `sync <source> --all` syncs the other accounts when one can't be built, as `sync --all`
+  does.
 
 ## [0.6.0] - 2026-10-25
 

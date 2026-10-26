@@ -201,9 +201,12 @@ boundary.
 an existing Pinboard URL to that source's dedup key. `run_sync_jobs` (`main.rs`) fetches
 drafts, and `sync::prepare_new_drafts` builds the set of existing keys by mapping
 `pinboard.all()` through `source.dedup_key` (`UrlKey::synced_keys`) and keeps the drafts
-whose `dedup_key` isn't present. `sync` fetches through `SyncJob::fetch`, which picks
-the traversal from the job's `config::SyncLimit` (`limit` / `--limit`, parsed by one
-`FromStr` + `Deserialize` pair): `auto`, the default, calls
+whose `dedup_key` isn't present. **A key must survive cleanup's canonicalization**, or
+sync re-adds what cleanup moved: HN keys a Reddit or GitHub article with `reddit_key` /
+`urls::github_key` (`hn_url_key`), so a change to either, or to what `cleanup reddit` /
+`cleanup github` rewrite a URL to, has to keep HN converging. `sync` fetches through
+`SyncJob::fetch`, which picks the traversal from the job's `config::SyncLimit` (`limit`
+/ `--limit`, parsed by one `FromStr` + `Deserialize` pair): `auto`, the default, calls
 `Source::fetch_incremental(existing)`, which defaults to the full fetch and which a
 source may override to stop paging once it reaches items already on Pinboard (all three
 do, through one rule, `source::page_is_caught_up`); `all` and a cap `N` call the full

@@ -71,8 +71,9 @@ pub struct BookmarkDraft {
 /// `dedup_key` of fresh drafts), or `None` if the source doesn't manage that URL. Each
 /// source defines its own shape on top of the generic host+path
 /// [`url_key`](crate::urls::url_key): GitHub gates it to github.com hosts, Reddit uses the
-/// host-agnostic permalink path, and HackerNews uses `hn:<id>` (else the host+path key for
-/// article bookmarks).
+/// host-agnostic permalink path, and HackerNews uses `hn:<id>`, else for an article
+/// bookmark the owning source's key on a Reddit or GitHub URL and the host+path key
+/// otherwise.
 pub trait UrlKey {
     fn dedup_key(&self, url: &Url) -> Option<String>;
 

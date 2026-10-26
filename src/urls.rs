@@ -43,6 +43,25 @@ pub fn url_key(url: &Url) -> Option<String> {
     Some(key)
 }
 
+/// The GitHub dedup key: [`url_key`], gated to github.com hosts, with the `www.` alias
+/// folded onto the bare host and a repo root's `.git` suffix dropped. Those are the forms
+/// `cleanup github` canonicalizes to `github.com/owner/repo`, so a bookmark keys the same
+/// before and after it does. Other subdomains (`gist.`) keep their own host.
+pub fn github_key(url: &Url) -> Option<String> {
+    let key = url_key(url).filter(|_| url.host_is("github.com"))?;
+    let key = match key.strip_prefix("www.") {
+        Some(bare) => bare.to_string(),
+        None => key,
+    };
+    let is_repo_root = key
+        .strip_prefix("github.com/")
+        .is_some_and(|path| path.split('/').count() == 2);
+    Some(match key.strip_suffix(".git") {
+        Some(root) if is_repo_root => root.to_string(),
+        _ => key,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,5 +102,32 @@ mod tests {
             url_key(&url("https://github.com/owner/repo?tab=stars")),
             url_key(&url("https://github.com/owner/repo?tab=issues"))
         );
+    }
+
+    #[test]
+    fn github_key_folds_the_forms_cleanup_canonicalizes() {
+        let key = |s: &str| github_key(&url(s));
+        for alias in [
+            "https://github.com/Owner/Repo",
+            "https://www.github.com/Owner/Repo",
+            "https://github.com/Owner/Repo.git",
+            "https://www.github.com/owner/repo.git/",
+        ] {
+            assert_eq!(
+                key(alias).as_deref(),
+                Some("github.com/owner/repo"),
+                "{alias}"
+            );
+        }
+        assert_eq!(
+            key("https://github.com/o/r.git/tree/main").as_deref(),
+            Some("github.com/o/r.git/tree/main"),
+            "only a repo root drops `.git`"
+        );
+        assert_eq!(
+            key("https://gist.github.com/user/abcd.git").as_deref(),
+            Some("gist.github.com/user/abcd.git")
+        );
+        assert_eq!(key("https://example.com/o/r"), None);
     }
 }

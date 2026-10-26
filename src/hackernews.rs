@@ -18,9 +18,10 @@ use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::{client_builder, retry_after_up_to, RetryingClient};
+use crate::reddit::model::reddit_key;
 use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey};
 use crate::tags::{push_prefixed, push_tag, push_tags};
-use crate::urls::url_key;
+use crate::urls::{github_key, url_key};
 use url::Url;
 
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.
@@ -213,13 +214,7 @@ impl HackerNewsItem {
         let (url, dedup_key) = match article.as_deref() {
             Some(u) => match Url::parse(u) {
                 Ok(parsed) => {
-                    // An article URL that is itself an HN item permalink (e.g. a meta
-                    // post) must key on `hn:<id>` to match how the stored bookmark reads
-                    // back through `HackerNewsClient::dedup_key`; a generic host+path key
-                    // would drop the id query and re-add the bookmark every sync.
-                    let key = HackerNewsItemId::try_from(&parsed)
-                        .map(|id| id.dedup_key())
-                        .unwrap_or_else(|_| url_key(&parsed).unwrap_or_else(|| parsed.to_string()));
+                    let key = hn_url_key(&parsed).unwrap_or_else(|| parsed.to_string());
                     (parsed, key)
                 }
                 Err(e) => {
@@ -574,14 +569,24 @@ impl BackupSource for HackerNewsClient {
 }
 
 impl UrlKey for HackerNewsClient {
-    /// A favorited HN *item* keys on its id (`hn:<id>`); an article bookmark falls back
-    /// to the generic host+path key.
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        HackerNewsItemId::try_from(url)
-            .ok()
-            .map(|id| id.dedup_key())
-            .or_else(|| url_key(url))
+        hn_url_key(url)
     }
+}
+
+/// The key a draft and a stored bookmark at `url` share. An HN item permalink keys on its
+/// id (`hn:<id>`), even as a story's article URL (a meta post), since a host+path key
+/// drops the id query. An article on Reddit or GitHub keys as that source does, so it
+/// still matches once `cleanup reddit` or `cleanup github` has moved it to its canonical
+/// URL; Reddit's key covers only reddit.com hosts, since HN cannot know a Reddit
+/// account's mirror `reddit_domain`. Any other article falls back to the host+path key.
+fn hn_url_key(url: &Url) -> Option<String> {
+    HackerNewsItemId::try_from(url)
+        .ok()
+        .map(|id| id.dedup_key())
+        .or_else(|| reddit_key(url, "reddit.com"))
+        .or_else(|| github_key(url))
+        .or_else(|| url_key(url))
 }
 
 /// `resp` when it succeeded, else an error naming the `what` request with its status and
@@ -743,6 +748,32 @@ impl HackerNewsClient {
         algolia: String,
     ) -> Self {
         Self::build(username, config, base, algolia).unwrap()
+    }
+
+    /// The draft `sync` makes for a favorited story with this article `url`.
+    fn story_draft(&self, url: &str) -> BookmarkDraft {
+        let story = serde_json::json!({ "id": 42, "type": "story", "by": "a", "title": "T",
+                                        "url": url });
+        serde_json::from_value::<HackerNewsItem>(story)
+            .unwrap()
+            .into_draft(&self.config)
+            .unwrap()
+    }
+
+    /// The account after one `sync` of `drafts` onto `account`.
+    async fn sync_once(&self, drafts: &[BookmarkDraft], account: &[Bookmark]) -> Vec<Bookmark> {
+        let settings = crate::sync::JobSettings {
+            limit: crate::config::SyncLimit::All,
+            toread: false,
+            shared: false,
+            dates: crate::test_support::NO_DATING,
+        };
+        let new = crate::sync::prepare_new_drafts(self, drafts.to_vec(), account, &settings, 0);
+        let pinboard = crate::test_support::FakePinboard::default();
+        let tally = crate::sync::write_drafts(&pinboard, &new, false).await;
+        assert_eq!(tally.failed, 0);
+        let ops = pinboard.ops.take();
+        crate::test_support::replay(account, &ops)
     }
 }
 
@@ -1040,6 +1071,39 @@ mod tests {
             c.dedup_key(&url("https://example.com/x")).as_deref(),
             Some("example.com/x")
         );
+    }
+
+    #[tokio::test]
+    async fn a_story_linking_reddit_is_not_re_added_after_cleanup_reddit_moves_it() {
+        use crate::reddit::cleanup::{run, RedditCleanupOpts};
+        use crate::reddit::model::RedditConfig;
+        use crate::test_support::{replay, FakePinboard, FakeReddit, NO_DATING};
+
+        let client = HackerNewsClient::new("u".into(), HackerNewsConfig::default()).unwrap();
+        let drafts = [client.story_draft("https://www.reddit.com/r/rust/comments/abc/title/")];
+        let synced = client.sync_once(&drafts, &[]).await;
+        assert_eq!(synced.len(), 1);
+
+        let pinboard = FakePinboard {
+            all: synced.clone(),
+            ..Default::default()
+        };
+        let opts = RedditCleanupOpts {
+            mark_nsfw: false,
+            fix_titles: false,
+            config: RedditConfig::default(),
+            dates: NO_DATING,
+        };
+        run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts)
+            .await
+            .unwrap();
+        let cleaned = replay(&synced, &pinboard.ops.borrow());
+        assert_eq!(
+            cleaned[0].url.as_str(),
+            "https://old.reddit.com/r/rust/comments/abc/title/"
+        );
+
+        assert_eq!(client.sync_once(&drafts, &cleaned).await, cleaned);
     }
 }
 

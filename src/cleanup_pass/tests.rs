@@ -1,12 +1,7 @@
 use super::*;
 use crate::bookmark::{AccountState, AccountView, CleanupStore};
-use crate::test_support::{FakePinboard, Op};
+use crate::test_support::{url as u, FakePinboard, Op, NO_DATING};
 use anyhow::anyhow;
-use url::Url;
-
-fn u(s: &str) -> Url {
-    Url::parse(s).unwrap()
-}
 
 /// Wrap the fake in the production store so every test exercises the same view
 /// bookkeeping the real run does, rather than a stand-in that can drift from it.
@@ -48,13 +43,6 @@ fn bookmark(url: &str) -> Bookmark {
 fn unchanged_plan(bookmark: &Bookmark) -> Bookmark {
     bookmark.clone()
 }
-
-/// Dating off: the driver preserves each bookmark's existing date.
-const NO_DATING: DateOpts = DateOpts {
-    use_post_date: false,
-    max_age_days: 0,
-    stale_to_now: false,
-};
 
 #[tokio::test]
 async fn err_plan_counts_failed_and_continues() {

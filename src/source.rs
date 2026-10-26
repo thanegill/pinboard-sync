@@ -233,6 +233,7 @@ pub fn url_key(url: &Url) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::url;
 
     #[test]
     fn a_page_is_caught_up_only_when_it_has_no_new_draft() {
@@ -288,10 +289,6 @@ mod tests {
         // tags can never contain one, so it would diff against storage forever.
         extend_unique(&mut acc, &tags(&["", "reddit", "rust"]));
         assert_eq!(acc, tags(&["reddit", "rust"]));
-    }
-
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
     }
 
     #[test]

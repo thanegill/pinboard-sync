@@ -151,10 +151,7 @@ fn refresh_tags(existing: Vec<String>, repo: &GitHubRepo, cfg: &GitHubConfig) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
-    }
+    use crate::test_support::url;
 
     #[test]
     fn repo_root_only_matches_bare_github_repo_roots() {

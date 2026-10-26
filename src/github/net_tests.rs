@@ -1,5 +1,4 @@
 use super::*;
-use crate::bookmark::{AccountView, CleanupStore};
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -517,10 +516,9 @@ async fn cleanup_with_post_dates_reads_every_star_page() {
         all: vec![stored_at("https://github.com/s/n")],
         ..Default::default()
     };
-    let bookmarks = pinboard.all.clone();
 
     cleanup::run(
-        &CleanupStore::new(&pinboard, AccountView::new(bookmarks), false),
+        &pinboard.cleanup_store(false),
         &star_client(&server),
         DateOpts {
             use_post_date: true,

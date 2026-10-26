@@ -354,10 +354,7 @@ pub fn is_placeholder_title(title: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
-    }
+    use crate::test_support::url;
 
     fn norm(u: &str, domain: &str) -> Option<String> {
         normalize_url(&url(u), domain).map(String::from)

@@ -1,5 +1,5 @@
 use super::*;
-use crate::bookmark::{AccountView, CleanupStore};
+use crate::test_support::{FakePinboard, NO_DATING};
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -7,7 +7,6 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 #[tokio::test]
 async fn cleanup_merges_a_story_into_a_separately_saved_article() {
     use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
 
     // The story's article is *also* saved on its own, with the user's own notes and
     // tags. Pinboard holds one record per URL, so the end state has to be a single
@@ -62,17 +61,12 @@ async fn cleanup_merges_a_story_into_a_separately_saved_article() {
         "unused".into(),
         algolia.uri(),
     );
-    let bookmarks = pinboard.all.clone();
     run(
-        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
+        &pinboard.cleanup_store(false),
         &client,
         &HackerNewsCleanupOpts {
             link_discussions: false,
-            dates: DateOpts {
-                use_post_date: false,
-                max_age_days: 30,
-                stale_to_now: false,
-            },
+            dates: NO_DATING,
         },
     )
     .await
@@ -105,7 +99,6 @@ async fn cleanup_merges_a_story_into_a_separately_saved_article() {
 #[tokio::test]
 async fn cleanup_rewrites_story_url_and_deletes_old() {
     use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
 
     let algolia = MockServer::start().await;
     Mock::given(method("GET"))
@@ -140,17 +133,12 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
         "unused".into(),
         algolia.uri(),
     );
-    let bookmarks = pinboard.all.clone();
     run(
-        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
+        &pinboard.cleanup_store(false),
         &client,
         &HackerNewsCleanupOpts {
             link_discussions: false,
-            dates: DateOpts {
-                use_post_date: false,
-                max_age_days: 30,
-                stale_to_now: false,
-            },
+            dates: NO_DATING,
         },
     )
     .await
@@ -172,7 +160,6 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
 #[tokio::test]
 async fn cleanup_preserves_existing_note_on_text_post() {
     use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
 
     // A text post (no url): the bookmark URL already is the HN permalink.
     let algolia = MockServer::start().await;
@@ -209,17 +196,12 @@ async fn cleanup_preserves_existing_note_on_text_post() {
         "unused".into(),
         algolia.uri(),
     );
-    let bookmarks = pinboard.all.clone();
     run(
-        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
+        &pinboard.cleanup_store(false),
         &client,
         &HackerNewsCleanupOpts {
             link_discussions: false,
-            dates: DateOpts {
-                use_post_date: false,
-                max_age_days: 30,
-                stale_to_now: false,
-            },
+            dates: NO_DATING,
         },
     )
     .await
@@ -238,7 +220,6 @@ async fn cleanup_preserves_existing_note_on_text_post() {
 #[tokio::test]
 async fn link_discussions_adds_hn_link_to_tagged_article() {
     use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
 
     // The URL search returns a matching HN story id; the item batch (unused
     // here) would hit the same path, so the matcher keys on restrictSearch...
@@ -276,17 +257,12 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
         "unused".into(),
         algolia.uri(),
     );
-    let bookmarks = pinboard.all.clone();
     run(
-        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
+        &pinboard.cleanup_store(false),
         &client,
         &HackerNewsCleanupOpts {
             link_discussions: true,
-            dates: DateOpts {
-                use_post_date: false,
-                max_age_days: 30,
-                stale_to_now: false,
-            },
+            dates: NO_DATING,
         },
     )
     .await

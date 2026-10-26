@@ -537,11 +537,7 @@ mod tests {
             limit,
             toread: false,
             shared: false,
-            dates: DateOpts {
-                use_post_date: false,
-                max_age_days: 30,
-                stale_to_now: false,
-            },
+            dates: crate::test_support::NO_DATING,
         }
     }
 

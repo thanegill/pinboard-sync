@@ -475,6 +475,7 @@ impl GitHubClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::url;
     use serde_json::json;
 
     /// Header-level cases for [`rate_limit_message`], kept off the network: a 429 through
@@ -543,10 +544,6 @@ mod tests {
 
     fn repo(value: serde_json::Value) -> GitHubRepo {
         serde_json::from_value(value).unwrap()
-    }
-
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
     }
 
     #[test]

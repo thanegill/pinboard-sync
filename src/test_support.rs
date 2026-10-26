@@ -13,10 +13,11 @@ use serde_json::Value;
 use tempfile::TempDir;
 use url::Url;
 
-use crate::bookmark::{Bookmark, BookmarkStore};
+use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore};
 use crate::reddit::model::{reddit_key, RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
+use crate::timefmt::DateOpts;
 
 tokio::task_local! {
     static CAPTURED_LOGS: RefCell<Vec<String>>;
@@ -104,6 +105,18 @@ pub fn scratch_dir(label: &str) -> TempDir {
         .tempdir()
         .unwrap()
 }
+
+/// `s` parsed as a URL, which a test supplies and knows to be valid.
+pub fn url(s: &str) -> Url {
+    Url::parse(s).unwrap()
+}
+
+/// Dating off: every cleanup pass keeps each bookmark's stored date, and sync writes none.
+pub const NO_DATING: DateOpts = DateOpts {
+    use_post_date: false,
+    max_age_days: 30,
+    stale_to_now: false,
+};
 
 /// An existing Pinboard bookmark at `url`, with every other field empty.
 pub fn stored_at(url: &str) -> Bookmark {
@@ -235,6 +248,13 @@ pub struct FakePinboard {
     pub fail_delete_urls: HashSet<String>,
     /// The successful writes and deletes, interleaved in call order — see [`replay`].
     pub ops: RefCell<Vec<Op>>,
+}
+
+impl FakePinboard {
+    /// The production cleanup store over this fake, its view seeded with `all`.
+    pub fn cleanup_store(&self, dry_run: bool) -> CleanupStore<'_, Self> {
+        CleanupStore::new(self, AccountView::new(self.all.clone()), dry_run)
+    }
 }
 
 impl BookmarkStore for FakePinboard {

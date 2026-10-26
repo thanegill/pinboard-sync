@@ -1,7 +1,6 @@
 use super::*;
-use crate::bookmark::{AccountView, CleanupStore};
 use crate::pinboard::PinboardBookmark;
-use crate::test_support::{listing_entry, FakePinboard, FakeReddit};
+use crate::test_support::{listing_entry, FakePinboard, FakeReddit, NO_DATING};
 use serde_json::json;
 
 fn opts() -> RedditCleanupOpts {
@@ -9,11 +8,7 @@ fn opts() -> RedditCleanupOpts {
         mark_nsfw: true,
         fix_titles: true,
         config: RedditConfig::default(),
-        dates: DateOpts {
-            use_post_date: false,
-            max_age_days: 30,
-            stale_to_now: false,
-        },
+        dates: NO_DATING,
     }
 }
 
@@ -65,13 +60,9 @@ async fn normalizes_url_tags_nsfw_and_title() {
         ..Default::default()
     };
 
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        Some(&reddit),
-        &opts(),
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+        .await
+        .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -126,13 +117,9 @@ async fn marks_nsfw_with_configured_tag_not_literal_nsfw() {
         ..opts()
     };
 
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        Some(&reddit),
-        &opts,
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+        .await
+        .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -170,13 +157,9 @@ async fn configured_nsfw_tag_is_idempotent() {
         ..opts()
     };
 
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        Some(&reddit),
-        &opts,
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+        .await
+        .unwrap();
 
     assert!(pinboard.updated.borrow().is_empty());
 }
@@ -196,13 +179,9 @@ async fn preserves_markup_in_stored_title() {
         ..Default::default()
     };
 
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        None::<&FakeReddit>,
-        &opts(),
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts())
+        .await
+        .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -237,13 +216,9 @@ async fn dates_bookmark_by_created_utc_when_use_post_date() {
         ..opts()
     };
 
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        Some(&reddit),
-        &opts,
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+        .await
+        .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(
@@ -280,7 +255,7 @@ async fn strips_self_link_notes_from_a_self_post() {
     };
 
     run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+        &pinboard.cleanup_store(false),
         Some(&FakeReddit::default()),
         &opts,
     )
@@ -319,7 +294,7 @@ async fn keeps_external_link_notes_on_a_link_post() {
     };
 
     run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
+        &pinboard.cleanup_store(false),
         Some(&FakeReddit::default()),
         &opts,
     )
@@ -364,13 +339,9 @@ async fn retrofits_self_post_notes_with_blockquote() {
         ..Default::default()
     };
 
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        Some(&reddit),
-        &opts(),
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+        .await
+        .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -412,13 +383,9 @@ async fn preserves_hand_written_note_on_a_self_post() {
         ..Default::default()
     };
 
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        Some(&reddit),
-        &opts(),
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+        .await
+        .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -454,13 +421,9 @@ async fn retrofits_empty_note_from_authoritative_selftext() {
         ..Default::default()
     };
 
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        Some(&reddit),
-        &opts(),
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+        .await
+        .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -500,13 +463,9 @@ async fn leaves_comment_notes_untouched() {
         ..Default::default()
     };
 
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        Some(&reddit),
-        &opts(),
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+        .await
+        .unwrap();
 
     // Nothing changed (notes preserved, URL/title/tags already current), so no write.
     assert!(pinboard.updated.borrow().is_empty());
@@ -547,13 +506,9 @@ async fn use_post_date_leaves_comment_timestamp_untouched() {
         ..opts()
     };
 
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        Some(&reddit),
-        &opts,
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+        .await
+        .unwrap();
 
     // Only the date could have changed, and the fix keeps the comment's own date, so
     // nothing is written. Without the guard the thread's created_utc would leak in.
@@ -583,13 +538,9 @@ async fn skips_unchanged_and_non_reddit() {
         ..Default::default()
     };
 
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        Some(&reddit),
-        &opts(),
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+        .await
+        .unwrap();
     assert!(pinboard.updated.borrow().is_empty());
     assert!(pinboard.deleted.borrow().is_empty());
 }
@@ -610,13 +561,9 @@ async fn dry_run_writes_nothing() {
         fix_titles: false,
         ..opts()
     };
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), true),
-        Some(&reddit),
-        &opts,
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(true), Some(&reddit), &opts)
+        .await
+        .unwrap();
     assert!(pinboard.updated.borrow().is_empty());
     assert!(pinboard.deleted.borrow().is_empty());
 }
@@ -639,13 +586,9 @@ async fn an_expired_cookie_surfaces_as_reauth_not_a_flattened_error() {
         ..Default::default()
     };
 
-    let err = run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        Some(&reddit),
-        &opts(),
-    )
-    .await
-    .unwrap_err();
+    let err = run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, SourceError::ReauthRequired(_)),
         "expected reauth, got {err:?}"
@@ -669,13 +612,9 @@ async fn an_api_info_block_stays_a_block() {
         ..Default::default()
     };
 
-    let err = run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        Some(&reddit),
-        &opts(),
-    )
-    .await
-    .unwrap_err();
+    let err = run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+        .await
+        .unwrap_err();
     assert!(
         matches!(&err, SourceError::Blocked(m) if m == "edge block"),
         "expected the block unchanged, got {err:?}"
@@ -703,13 +642,9 @@ async fn logs_and_skips_a_failing_update_then_continues() {
     };
 
     // The run reports failure (non-zero exit)...
-    let err = run(
-        &CleanupStore::new(&pinboard, AccountView::new(pinboard.all.clone()), false),
-        Some(&reddit),
-        &opts,
-    )
-    .await
-    .unwrap_err();
+    let err = run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("1 bookmark(s) failed"));
     // ...but the second bookmark was still updated despite the first failing.
     let updated = pinboard.updated.borrow();

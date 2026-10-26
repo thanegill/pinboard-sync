@@ -37,7 +37,7 @@ impl SourceError {
     /// Flatten into a plain `anyhow::Error`: the re-auth, rate-limit or block message on
     /// its own (without the variant's prefix) or the inner error unwrapped.
     ///
-    /// Only once nothing needs the variant any more: `main`'s `handle_source_err`, after it
+    /// Only once nothing needs the variant any more: `hook::handle_source_err`, after it
     /// has decided on the hook; `doctor`, which reports each credential rather than acting
     /// on it; and HackerNews, which is public and cannot need re-authentication. Everywhere
     /// else the variant is what decides whether the `--on-auth-failure` hook fires, so
@@ -51,77 +51,6 @@ impl SourceError {
             SourceError::Other(e) => e,
         }
     }
-}
-
-/// A configured credential and the setting it came from, such as `$REDDIT_COOKIE_FILE`, so
-/// a message can point at that setting without quoting the credential.
-pub struct ConfiguredSecret {
-    pub value: String,
-    pub source: &'static str,
-}
-
-/// Which rung of `main`'s secret ladder a candidate came from, in the ladder's order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SecretRung {
-    Flag,
-    Env,
-    EnvFile,
-    ConfigInline,
-    ConfigFile,
-}
-
-impl SecretRung {
-    pub const ALL: [SecretRung; 5] = [
-        SecretRung::Flag,
-        SecretRung::Env,
-        SecretRung::EnvFile,
-        SecretRung::ConfigInline,
-        SecretRung::ConfigFile,
-    ];
-}
-
-/// The Reddit cookie setting a rung reads, as messages name it.
-pub fn reddit_cookie_source(rung: SecretRung) -> &'static str {
-    match rung {
-        SecretRung::Flag => "--reddit-cookie",
-        SecretRung::Env => "$REDDIT_COOKIE",
-        SecretRung::EnvFile => "$REDDIT_COOKIE_FILE",
-        SecretRung::ConfigInline => "the config's `cookie`",
-        SecretRung::ConfigFile => "the config's `cookie_file`",
-    }
-}
-
-/// The GitHub token setting a rung reads, as messages name it.
-pub fn github_token_source(rung: SecretRung) -> &'static str {
-    match rung {
-        SecretRung::Flag => "--github-token",
-        SecretRung::Env => "$GITHUB_TOKEN",
-        SecretRung::EnvFile => "$GITHUB_TOKEN_FILE",
-        SecretRung::ConfigInline => "the config's `token`",
-        SecretRung::ConfigFile => "the config's `token_file`",
-    }
-}
-
-/// Every setting a Reddit cookie can come from, as "A, B, C, or the config's `x` or
-/// `x_file`" for a message to follow "set".
-pub fn reddit_cookie_settings() -> String {
-    settings_list(reddit_cookie_source)
-}
-
-/// Every setting a GitHub token can come from, as "A, B, C, or the config's `x` or
-/// `x_file`" for a message to follow "set".
-pub fn github_token_settings() -> String {
-    settings_list(github_token_source)
-}
-
-/// The setting each rung reads, in ladder order. The two config rungs share one entry,
-/// "the config's `x` or `x_file`", rather than naming the config twice.
-fn settings_list(setting: fn(SecretRung) -> &'static str) -> String {
-    let [flag, env, env_file, config_inline, config_file] = SecretRung::ALL.map(setting);
-    let config_file_key = config_file
-        .strip_prefix("the config's ")
-        .unwrap_or(config_file);
-    format!("{flag}, {env}, {env_file}, or {config_inline} or {config_file_key}")
 }
 
 /// A bookmark ready to write to Pinboard, plus the key used to tell whether it is
@@ -307,20 +236,6 @@ pub fn url_key(url: &Url) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn settings_lists_name_every_rung_in_ladder_order() {
-        assert_eq!(
-            reddit_cookie_settings(),
-            "--reddit-cookie, $REDDIT_COOKIE, $REDDIT_COOKIE_FILE, or the config's `cookie` \
-             or `cookie_file`"
-        );
-        assert_eq!(
-            github_token_settings(),
-            "--github-token, $GITHUB_TOKEN, $GITHUB_TOKEN_FILE, or the config's `token` or \
-             `token_file`"
-        );
-    }
 
     #[test]
     fn a_page_is_caught_up_only_when_it_has_no_new_draft() {

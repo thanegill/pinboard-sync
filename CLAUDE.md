@@ -27,8 +27,12 @@ gate green.
 ## Architecture
 
 The flow is one pass: a source yields drafts → skip those already on Pinboard →
-write the rest. `main.rs` is CLI parsing + config/secret resolution + dispatch; the
-sync write loop is in [`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one
+write the rest. `main.rs` loads the config and dispatches each subcommand (`run_sync`,
+`run_cleanup`, `run_backup`); the clap types are in [`src/cli.rs`](src/cli.rs), secret
+resolution in [`src/secrets.rs`](src/secrets.rs), job building and the settings ladder in
+[`src/jobs.rs`](src/jobs.rs), the auth-failure hook in [`src/hook.rs`](src/hook.rs), and
+`doctor` in [`src/doctor.rs`](src/doctor.rs). The sync write loop is in
+[`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one
 driver** ([`src/cleanup_pass.rs`](src/cleanup_pass.rs)): a source implements
 `CleanupPass::plan` (the desired end-state for one bookmark, as a `Plan` — see below —
 with `Err` for a per-item failure), and `run_pass` owns the loop common to all of them:
@@ -161,8 +165,8 @@ successes a genuinely unreachable GitHub would look fine. Conversely HackerNews'
 a source runs several passes, each reaches its **own** verdict rather than pooling
 tallies, so a pass that can't fail can't vouch for one that can.
 
-The per-source planners live in [`src/cleanup.rs`](src/cleanup.rs) (reddit),
-[`src/github.rs`](src/github.rs), and [`src/hackernews.rs`](src/hackernews.rs).
+The per-source planners live in [`src/reddit/cleanup.rs`](src/reddit/cleanup.rs),
+[`src/github/cleanup.rs`](src/github/cleanup.rs), and [`src/hackernews/cleanup.rs`](src/hackernews/cleanup.rs).
 
 **`Bookmark` is service-agnostic; `PinboardBookmark` is the wire shape.** The domain
 [`Bookmark`](src/bookmark.rs) lives in [`src/bookmark.rs`](src/bookmark.rs) along with
@@ -204,7 +208,7 @@ mean "no cap", and since that now splits into `auto` and `all` it is rejected ra
 than guessed. A bad value's error names the field, never the value. `backup`, `doctor`
 and `cleanup github`'s `use_post_date` star dates call `fetch()`, so they keep the full
 traversal. To add a source, implement `Source`, add its account array to `config.rs`,
-and implement `main.rs`'s `SourceAccount` for the account type: its `SOURCE` name (the
+and implement [`src/jobs.rs`](src/jobs.rs)'s `SourceAccount` for the account type: its `SOURCE` name (the
 job labels, backup file stems and `doctor` lines), where its accounts and
 `[defaults.<source>]` live, how its client is built, and its auth-failure hook. `sync`,
 `backup` and `doctor` reach every source through that one trait (`build_job::<A>` and
@@ -247,7 +251,7 @@ keeps the full traversal with its batched lookup.
 bookmarks carrying the `link_tag` marker (default `find-hn`), it looks each up on HN
 by URL (one Algolia query each) and adds the discussion link. Reddit's bookmark/tag
 shaping lives in
-[`src/model.rs`](src/model.rs).
+[`src/reddit/model.rs`](src/reddit/model.rs).
 
 **The Reddit cookie is shaped in one place.** `RedditClient::build` passes the configured
 cookie through `reddit::session_cookie`, so every entry point sends the same header.
@@ -259,7 +263,7 @@ of surrounding quotes is stripped, and a value of nothing but whitespace, quotes
 `;`/`=` separators counts as empty. Pairs that are empty by that rule are dropped from
 every cookie before it is shaped, so a stray `;` leaves `abc;` a bare value and `a=1;;`
 just `a=1`. A value that sets no session — blank, or only empty `reddit_session=`
-pairs — is no cookie, and `main`'s `resolve_reddit_cookie` skips it through
+pairs — is no cookie, and `secrets`'s `resolve_reddit_cookie` skips it through
 `reddit::is_configured_cookie` so the secret ladder falls through it exactly as it does
 a blank value.
 
@@ -281,7 +285,7 @@ a domain rename must not silently change an operator's files.
 config struct (`RedditConfig`, `GitHubConfig`, `HackerNewsConfig`) of overridable
 fields with built-in defaults; the `tags` list (default e.g. `["reddit"]`) is the
 base tag plus any extras, and `push_tag`/`push_prefixed` in `source.rs` render them
-(empty string disables a tag). `model.rs`'s tag tests are the spec — keep them in
+(empty string disables a tag). `reddit::model`'s tag tests ([`src/reddit/model/tests.rs`](src/reddit/model/tests.rs)) are the spec — keep them in
 sync with rule changes. Pinboard tags can't contain spaces (the API splits the tag
 string on them), so `push_prefixed` slugs internal whitespace in the value (e.g. the
 GitHub language `Jupyter Notebook` → `lang:jupyter-notebook`) and `Config::parse`
@@ -292,7 +296,7 @@ host-agnostic so dedup matches across subdomains.
 **Config + secret resolution.** [`src/config.rs`](src/config.rs) parses the
 `--config` TOML: one `[pinboard]` destination, `[hooks]`, and per-source account
 arrays (`[[reddit]]`/`[[github]]`/`[[hackernews]]`), each mapping to its tag config.
-Secrets resolve through one ladder in `main.rs` (`resolve_secret`): CLI flag → `$VAR`
+Secrets resolve through one ladder in [`src/secrets.rs`](src/secrets.rs) (`resolve_secret`): CLI flag → `$VAR`
 → `$VAR_FILE` (a path whose trimmed contents are the value) → config inline → config
 `*_file`. The `--config` path is the exception: it resolves flag → `$PINBOARD_SYNC_CONFIG`
 only (a direct file path, no `_FILE` form — it is already a file). **The `_FILE` form is
@@ -300,10 +304,10 @@ load-bearing** — it's how the
 NixOS service feeds sops-nix secret *paths* without putting values in the unit
 environment. Don't add a secret that only reads `$VAR`. `secret_ladder` tags each value
 with its `SecretRung`, so `resolve_reddit_cookie` and `resolve_github_token` return a
-`source::ConfiguredSecret` naming the setting it came from, and every Reddit cookie
+`secrets::ConfiguredSecret` naming the setting it came from, and every Reddit cookie
 warning and re-auth message and every GitHub token error names that setting, never the
 value. A message listing every setting a secret can come from builds that list from the
-same rung labels (`source::reddit_cookie_settings`/`github_token_settings`), never by
+same rung labels (`secrets::reddit_cookie_settings`/`github_token_settings`), never by
 hand.
 
 **`sync <source> [account]` / `cleanup <source> [account]` select one account**
@@ -340,7 +344,7 @@ and never re-auths. **`cleanup` fires it too, not just `sync`** — which is why
 flattening the variant at that boundary is exactly what used to lose the hook. Every
 re-auth-capable read in `cleanup` is covered, not only the pass — GitHub's `repo()`
 mid-pass (via `Halt`), GitHub's `fetch()` for `use_post_date` star dates, and Reddit's
-`/api/info`, whose expired cookie is by far the most common in practice. `main`'s
+`/api/info`, whose expired cookie is by far the most common in practice. [`src/hook.rs`](src/hook.rs)'s
 `handle_source_err` is the single place the hook is fired, shared with `sync`; `cleanup`
 resolves the command through `PINBOARD_SYNC_ON_AUTH_FAILURE` → account →
 `[defaults.<source>]` → `[hooks]` (no `--on-auth-failure` flag on `cleanup`, unlike
@@ -492,6 +496,11 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   hermetic (no network/sockets). A `net_tests` case that points a real client at a dead
   port sleeps the real ~2.5-minute `CONNECT_BACKOFF` unless it runs inside
   `http::recording_waits`; only `http.rs`'s own tests can inject a zero schedule.
+- **Large test modules live in their own files**, `src/<module>/tests.rs` (or
+  `net_tests.rs`) behind `#[cfg(test)] mod tests;`, so the module path — and with it the
+  `--skip=net_tests` match — is the same as an inline module. They are still child modules
+  (`use super::*` sees private items); `include_str!` paths in them are relative to the
+  test file, not the module. Small test modules stay inline.
 - **No paused clock under a real socket.** `start_paused` auto-advances to the next
   timer whenever the runtime idles, including on wiremock I/O, so any timer live during a
   request (a connect timeout, say) fires early; only a test whose expected outcome *is*
@@ -500,7 +509,7 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   sleeping. A client's new pause goes through `http::sleep` for that reason.
 - **Tests never read a secret from the real environment.** Under `cfg(test)`,
   `secret_ladder`'s `$VAR`/`$VAR_FILE` rungs read a per-thread fake environment, set with
-  the `tests::FakeSecretEnv` guard, so a test that builds a job can't pick up the
+  the `secrets::FakeSecretEnv` guard, so a test that builds a job can't pick up the
   developer's real cookie or token. `std::env::set_var` on a secret does nothing in a
   test; use `FakeSecretEnv` or a synthetic ladder (`first_cookie_on`).
 - **A test that touches the filesystem takes its directory from

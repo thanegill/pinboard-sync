@@ -51,8 +51,8 @@ pub fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
 
 /// The `use_post_date` policy: whether to date bookmarks by the source date, the backdate
 /// age cap, and whether `cleanup` pushes stale (older-than-cap) items to "now". Resolved
-/// once per account in `main`; `sync` reads the first two, and a `cleanup` pass applies
-/// all three uniformly via [`DateOpts::cleanup_date`].
+/// once per account in `jobs::resolve_dates`; `sync` reads the first two, and a `cleanup`
+/// pass applies all three uniformly via [`DateOpts::cleanup_date`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DateOpts {
     pub use_post_date: bool,

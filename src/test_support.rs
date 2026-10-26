@@ -14,7 +14,7 @@ use tempfile::TempDir;
 use url::Url;
 
 use crate::bookmark::{Bookmark, BookmarkStore};
-use crate::model::{reddit_key, RedditConfig, RedditListingEntry};
+use crate::reddit::model::{reddit_key, RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 
@@ -280,4 +280,14 @@ impl BookmarkStore for FakePinboard {
         self.ops.borrow_mut().push(Op::Delete(url.clone()));
         Ok(())
     }
+}
+
+/// Serializes tests that read or write `PINBOARD_SYNC_ON_AUTH_FAILURE`, since
+/// the env var is process-global and clap reads it at parse time.
+static ON_AUTH_FAILURE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn lock_on_auth_failure_env() -> std::sync::MutexGuard<'static, ()> {
+    ON_AUTH_FAILURE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }

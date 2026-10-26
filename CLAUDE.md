@@ -552,7 +552,9 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
 - **`nix build`/`nix flake check` only see git-tracked files.** A new untracked
   module (or `config.example.toml`, used via `include_str!`) fails the sandbox build
   with `file not found`, even though dev-shell `cargo` passes — that discrepancy is
-  the tell. `git add` new files before building with Nix.
+  the tell. `git add` new files before building with Nix. The package source is also
+  narrowed to `Cargo.toml`, `Cargo.lock` and `src/` ([`nix/package.nix`](nix/package.nix)'s
+  fileset), so a file the build reads from anywhere else has to be added there too.
 - The User-Agent / client identifier (`http::USER_AGENT`) derives from `CARGO_PKG_NAME`/`CARGO_PKG_VERSION`.
 - **Service-specific, API-shaped structs carry a service prefix** (`GitHubRepo`,
   `HackerNewsItem`, `RedditSavedItem`, `AlgoliaSearchResponse`) — not bare `Repo`/`Item`.

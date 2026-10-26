@@ -1,4 +1,5 @@
 {
+  lib,
   rustPlatform,
   pkg-config,
   installShellFiles,
@@ -7,7 +8,14 @@
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "pinboard-sync";
   version = "0.6.0";
-  src = ../.;
+  src = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../Cargo.toml
+      ../Cargo.lock
+      ../src
+    ];
+  };
   cargoLock.lockFile = ../Cargo.lock;
   # reqwest uses native-tls (see Cargo.toml): on Linux that's OpenSSL via
   # openssl-sys, which needs pkg-config + openssl at build time. On darwin

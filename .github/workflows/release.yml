@@ -78,8 +78,8 @@ jobs:
           echo "----- release notes -----"
           cat RELEASE_NOTES.md
 
-      # Commit before building: the flake's `src = ./.` only sees git-tracked
-      # files, so the bump has to be committed for `nix build` to pick it up.
+      # Commit before building, so the released binary is built from exactly the
+      # commit pushed to master.
       - name: Commit the version bump and changelog
         env:
           VERSION: ${{ steps.meta.outputs.version }}

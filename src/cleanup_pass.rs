@@ -198,13 +198,13 @@ enum Refusal {
     WriteFailed,
 }
 
-impl Refusal {
-    fn explain(self) -> &'static str {
-        match self {
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
             Refusal::Unreadable => "occupied by a bookmark this pass could not read",
             Refusal::OccupiedByRefused => "occupied by a rewrite that was itself refused",
             Refusal::WriteFailed => "occupied by a bookmark whose own rewrite failed",
-        }
+        })
     }
 }
 
@@ -552,14 +552,14 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // *plan* writes to, this one a URL no plan may land on.
         if let Some(reason) = untouchable.get(key) {
             outcome.refused += 1;
-            warn!("skipping cleanup write to {key}: {}", reason.explain());
+            warn!("skipping cleanup write to {key}: {reason}");
             // Also on stdout: a dry run is a preview, and work the real run would refuse
             // is part of what the operator is previewing.
             if dry_run {
                 emit_preview(
                     &mut outcome.preview,
                     key,
-                    &[("", format!("(refused: {})", reason.explain()))],
+                    &[("", format!("(refused: {reason})"))],
                 );
             }
             continue;

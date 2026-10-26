@@ -2459,3 +2459,37 @@ async fn stale_to_now_settles_after_one_run() {
     assert_eq!(outcome.changed, 0);
     assert!(second.updated.borrow().is_empty());
 }
+
+#[tokio::test]
+async fn stale_to_now_dates_at_whole_seconds() {
+    // Pinboard keeps whole seconds, so a fractional "now" could never equal the date it
+    // stores back.
+    let books = vec![bookmark("https://stale/")];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            timestamp: crate::timefmt::from_unix(1_500_000_000),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let dates = DateOpts {
+        use_post_date: true,
+        max_age_days: 30,
+        stale_to_now: true,
+    };
+    let pinboard = FakePinboard::default();
+    let outcome = run_pass(
+        &store(&pinboard, &books, false),
+        &books,
+        "test",
+        dates,
+        &pass,
+    )
+    .await;
+    assert_eq!(outcome.changed, 1);
+
+    let ops = pinboard.ops.borrow();
+    let [Op::Write(written)] = ops.as_slice() else {
+        panic!("expected one write, got {ops:?}");
+    };
+    assert_eq!(written.timestamp.map(|ts| ts.nanosecond()), Some(0));
+}

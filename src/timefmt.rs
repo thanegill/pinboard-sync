@@ -5,7 +5,7 @@
 //! cleanup pass apply.
 
 use time::format_description::well_known::Rfc3339;
-use time::OffsetDateTime;
+use time::{OffsetDateTime, UtcOffset};
 
 /// Parse an RFC 3339 timestamp (e.g. GitHub's `starred_at`) to unix epoch seconds.
 pub fn rfc3339_to_unix(s: &str) -> Option<i64> {
@@ -21,11 +21,20 @@ pub fn parse_rfc3339(s: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(s, &Rfc3339).ok()
 }
 
-/// Format an [`OffsetDateTime`] as RFC 3339 for Pinboard's `dt`. `None` if formatting
+/// Format an [`OffsetDateTime`] as RFC 3339, keeping its offset and any fractional
+/// seconds; Pinboard's `dt` goes through [`to_pinboard_dt`] instead. `None` if formatting
 /// fails. (Can't be a `From`/`Into` impl: `String` and `OffsetDateTime` are both foreign
 /// to this crate, so the orphan rule forbids it — and it's fallible.)
 pub fn to_rfc3339(dt: OffsetDateTime) -> Option<String> {
     dt.format(&Rfc3339).ok()
+}
+
+/// Format an [`OffsetDateTime`] as Pinboard's `dt`, which its API documents as
+/// `CCYY-MM-DDThh:mm:ssZ`: UTC, at whole seconds. `None` if it can't be represented.
+pub fn to_pinboard_dt(dt: OffsetDateTime) -> Option<String> {
+    dt.checked_to_offset(UtcOffset::UTC)
+        .map(OffsetDateTime::truncate_to_second)
+        .and_then(to_rfc3339)
 }
 
 /// An [`OffsetDateTime`] from unix epoch seconds — used to lift a source's epoch post
@@ -119,6 +128,16 @@ mod tests {
             "2010-12-11T19:48:02Z"
         );
         assert_eq!(rfc3339_to_unix("2010-12-11T19:48:02Z"), Some(secs));
+    }
+
+    #[test]
+    fn pinboard_dt_is_utc_at_whole_seconds() {
+        let instant = from_unix(1_292_096_882).unwrap() + time::Duration::milliseconds(661);
+        let offset = UtcOffset::from_hms(1, 0, 0).unwrap();
+        assert_eq!(
+            to_pinboard_dt(instant.to_offset(offset)).unwrap(),
+            "2010-12-11T19:48:02Z"
+        );
     }
 
     #[test]

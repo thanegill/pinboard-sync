@@ -188,10 +188,11 @@ impl PostInfo for FakeReddit {
     }
 }
 
-/// The recorded `dt` a write would send: the bookmark's timestamp as RFC3339, or empty.
+/// The recorded `dt` a write would send, formatted by
+/// [`crate::timefmt::to_pinboard_dt`], or empty.
 fn bookmark_dt(b: &Bookmark) -> String {
     b.timestamp
-        .and_then(crate::timefmt::to_rfc3339)
+        .and_then(crate::timefmt::to_pinboard_dt)
         .unwrap_or_default()
 }
 

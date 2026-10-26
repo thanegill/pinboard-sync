@@ -43,6 +43,7 @@ All notable changes to this project are documented here. The format is based on
   every `backup --all` on their shared `github-default` files.
 - `cleanup_stale_to_now` re-dates a stale bookmark at most once per cap period, not on
   every run.
+- Dates are sent to Pinboard in UTC at whole seconds, the format its API documents.
 
 ## [0.6.0] - 2026-10-25
 

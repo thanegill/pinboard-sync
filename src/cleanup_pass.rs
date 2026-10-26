@@ -419,7 +419,7 @@ async fn plan_all<'b, C: CleanupPass>(
     pass: &C,
     outcome: &mut PassOutcome,
 ) -> Planned<'b> {
-    let now = OffsetDateTime::now_utc();
+    let now = OffsetDateTime::now_utc().truncate_to_second();
     let mut pairs: Vec<(&Bookmark, Bookmark)> = Vec::new();
     let mut untouchable: HashMap<Url, Refusal> = HashMap::new();
     for (index, bookmark) in bookmarks.iter().enumerate() {
@@ -805,7 +805,7 @@ async fn write_merge<S: BookmarkStore>(
             ("notes", note_value),
             ("tags", format!("[{}]", merged.tags.join(" "))),
         ];
-        if let Some(date) = merged.timestamp.and_then(crate::timefmt::to_rfc3339) {
+        if let Some(date) = merged.timestamp.and_then(crate::timefmt::to_pinboard_dt) {
             detail.push(("date", date));
         }
         detail.push(("public", merged.public.to_string()));

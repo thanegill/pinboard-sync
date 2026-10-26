@@ -3,7 +3,7 @@ use crate::test_support::{
     assert_quotes_capped_excerpt, capturing_logs, long_error_page, stored_at, ERROR_PAGE_TAIL,
 };
 use serde_json::json;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// The reddit post the write tests add.
@@ -141,6 +141,29 @@ async fn add_succeeds_on_done() {
         .await;
 
     client(&server).add(&post()).await.unwrap();
+}
+
+#[tokio::test]
+async fn add_sends_dt_in_utc_at_whole_seconds() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/add"))
+        .and(query_param("dt", "2010-12-11T19:48:02Z"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let instant = crate::timefmt::from_unix(1_292_096_882).unwrap()
+        + time::Duration::nanoseconds(661_420_000);
+    let offset = time::UtcOffset::from_hms(1, 0, 0).unwrap();
+    client(&server)
+        .add(&Bookmark {
+            timestamp: Some(instant.to_offset(offset)),
+            ..post()
+        })
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

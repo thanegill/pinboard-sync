@@ -112,11 +112,11 @@ pub async fn write_drafts<P: BookmarkStore>(
     for draft in drafts {
         let bm = &draft.bookmark;
         if dry_run {
-            // The source post date as RFC3339, when set (the sync loop has already
+            // The source post date as Pinboard's `dt`, when set (the sync loop has already
             // applied the use_post_date flag + age cap); empty = let Pinboard default.
             let dt = bm
                 .timestamp
-                .and_then(crate::timefmt::to_rfc3339)
+                .and_then(crate::timefmt::to_pinboard_dt)
                 .unwrap_or_default();
             println!("[dry-run] {}", bm.url);
             println!("          title: {}", bm.title);

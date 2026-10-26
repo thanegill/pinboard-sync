@@ -243,26 +243,8 @@ struct RedditSyncArgs {
     /// or *_FILE).
     #[arg(long)]
     reddit_cookie: Option<String>,
-    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
-    #[arg(long)]
-    pinboard_token: Option<String>,
-    /// `auto` (the default: no cap; stop paging once caught up),
-    /// `all` (no cap; read every page), or N (write at most N; read every page).
-    /// Overrides config.
-    #[arg(long)]
-    limit: Option<SyncLimit>,
-    /// Only backdate posts newer than N days; older use "now" (overrides config).
-    #[arg(long)]
-    max_age_days: Option<u64>,
-    /// Mark new bookmarks to-read: `--toread` or `--toread=false` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    toread: Option<bool>,
-    /// Create bookmarks public: `--public` or `--public=false` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    public: Option<bool>,
-    /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    use_post_date: Option<bool>,
+    #[command(flatten)]
+    flags: SyncFlags,
     /// Shell command run when the Reddit cookie needs refreshing (a 401/403, or a
     /// redirect to the login page).
     #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
@@ -282,26 +264,8 @@ struct GitHubSyncArgs {
     /// GitHub personal access token (env GITHUB_TOKEN, or *_FILE).
     #[arg(long)]
     github_token: Option<String>,
-    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
-    #[arg(long)]
-    pinboard_token: Option<String>,
-    /// `auto` (the default: no cap; stop paging once caught up),
-    /// `all` (no cap; read every page), or N (write at most N; read every page).
-    /// Overrides config.
-    #[arg(long)]
-    limit: Option<SyncLimit>,
-    /// Only backdate posts newer than N days; older use "now" (overrides config).
-    #[arg(long)]
-    max_age_days: Option<u64>,
-    /// Mark new bookmarks to-read: `--toread` or `--toread=false` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    toread: Option<bool>,
-    /// Create bookmarks public: `--public` or `--public=false` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    public: Option<bool>,
-    /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
-    use_post_date: Option<bool>,
+    #[command(flatten)]
+    flags: SyncFlags,
     /// Shell command run when the GitHub token needs refreshing (a 401).
     #[arg(long, env = "PINBOARD_SYNC_ON_AUTH_FAILURE")]
     on_auth_failure: Option<String>,
@@ -320,6 +284,17 @@ struct HackerNewsSyncArgs {
     /// HackerNews username whose favorites to sync (env HN_USERNAME, or *_FILE).
     #[arg(long)]
     username: Option<String>,
+    #[command(flatten)]
+    flags: SyncFlags,
+    /// Fetch and print what would be posted, without writing to Pinboard.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+/// The Pinboard and write/dating flags every `sync <source>` takes, flattened into each so
+/// the declarations live in one place.
+#[derive(Args, Clone, Default)]
+struct SyncFlags {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
     pinboard_token: Option<String>,
@@ -340,9 +315,6 @@ struct HackerNewsSyncArgs {
     /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     use_post_date: Option<bool>,
-    /// Fetch and print what would be posted, without writing to Pinboard.
-    #[arg(long)]
-    dry_run: bool,
 }
 
 #[derive(Args)]
@@ -610,9 +582,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
         }
         (false, Some(SyncSource::Reddit(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let ovr = args
-                .into_overrides()
-                .with_top_level_hook(cmd.on_auth_failure.clone());
+            let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
             let jobs = build_jobs(&config.reddit, account.as_deref(), all, |a| {
                 build_reddit_job(a, &ovr, config)
             })?;
@@ -620,9 +590,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
         }
         (false, Some(SyncSource::Github(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let ovr = args
-                .into_overrides()
-                .with_top_level_hook(cmd.on_auth_failure.clone());
+            let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
             let jobs = build_jobs(&config.github, account.as_deref(), all, |a| {
                 build_github_job(a, &ovr, config)
             })?;
@@ -630,9 +598,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
         }
         (false, Some(SyncSource::Hackernews(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let ovr = args
-                .into_overrides()
-                .with_top_level_hook(cmd.on_auth_failure.clone());
+            let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
             let jobs = build_jobs(&config.hackernews, account.as_deref(), all, |a| {
                 build_hackernews_job(a, &ovr, config)
             })?;
@@ -641,7 +607,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
     };
 
-    let (pinboard, bookmarks) = open_pinboard(ovr.pinboard_token.clone(), config).await?;
+    let (pinboard, bookmarks) = open_pinboard(ovr.flags.pinboard_token.clone(), config).await?;
     // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
     // after it (per-source); honor either placement. (`--verbose` is global.)
     run_sync_jobs(
@@ -708,13 +674,8 @@ struct SyncOverrides {
     reddit_cookie: Option<String>,
     github_token: Option<String>,
     hackernews_username: Option<String>,
-    pinboard_token: Option<String>,
     on_auth_failure: Option<String>,
-    limit: Option<SyncLimit>,
-    toread: Option<bool>,
-    public: Option<bool>,
-    use_post_date: Option<bool>,
-    max_age_days: Option<u64>,
+    flags: SyncFlags,
     dry_run: bool,
 }
 
@@ -730,11 +691,11 @@ impl SyncOverrides {
 
 /// The date-setting overrides a sync invocation supplies. `stale_to_now` is cleanup-only,
 /// so it is always `None` here.
-impl From<&SyncOverrides> for DateOverrides {
-    fn from(ovr: &SyncOverrides) -> Self {
+impl From<&SyncFlags> for DateOverrides {
+    fn from(flags: &SyncFlags) -> Self {
         DateOverrides {
-            use_post_date: ovr.use_post_date,
-            max_age_days: ovr.max_age_days,
+            use_post_date: flags.use_post_date,
+            max_age_days: flags.max_age_days,
             stale_to_now: None,
         }
     }
@@ -744,85 +705,70 @@ impl From<&SyncOverrides> for DateOverrides {
 // only the credentials and the auth hook: every other override affects a *write* to
 // Pinboard, which backup never performs.
 
-impl RedditBackupArgs {
-    fn into_overrides(self) -> SyncOverrides {
+impl From<RedditBackupArgs> for SyncOverrides {
+    fn from(args: RedditBackupArgs) -> Self {
         SyncOverrides {
-            reddit_username: self.reddit_username,
-            reddit_cookie: self.reddit_cookie,
-            on_auth_failure: self.on_auth_failure,
+            reddit_username: args.reddit_username,
+            reddit_cookie: args.reddit_cookie,
+            on_auth_failure: args.on_auth_failure,
             ..SyncOverrides::default()
         }
     }
 }
 
-impl GitHubBackupArgs {
-    fn into_overrides(self) -> SyncOverrides {
+impl From<GitHubBackupArgs> for SyncOverrides {
+    fn from(args: GitHubBackupArgs) -> Self {
         SyncOverrides {
-            github_token: self.github_token,
-            on_auth_failure: self.on_auth_failure,
+            github_token: args.github_token,
+            on_auth_failure: args.on_auth_failure,
             ..SyncOverrides::default()
         }
     }
 }
 
-impl HackerNewsBackupArgs {
-    fn into_overrides(self) -> SyncOverrides {
+impl From<HackerNewsBackupArgs> for SyncOverrides {
+    fn from(args: HackerNewsBackupArgs) -> Self {
         SyncOverrides {
-            hackernews_username: self.username,
+            hackernews_username: args.username,
             ..SyncOverrides::default()
         }
     }
 }
 
-impl RedditSyncArgs {
-    /// The secret/operational overrides this single-source invocation supplies.
-    fn into_overrides(self) -> SyncOverrides {
+/// The secret/operational overrides a single-source `sync reddit` supplies.
+impl From<RedditSyncArgs> for SyncOverrides {
+    fn from(args: RedditSyncArgs) -> Self {
         SyncOverrides {
-            reddit_username: self.reddit_username,
-            reddit_cookie: self.reddit_cookie,
-            pinboard_token: self.pinboard_token,
-            on_auth_failure: self.on_auth_failure,
-            limit: self.limit,
-            toread: self.toread,
-            public: self.public,
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
-            dry_run: self.dry_run,
+            reddit_username: args.reddit_username,
+            reddit_cookie: args.reddit_cookie,
+            on_auth_failure: args.on_auth_failure,
+            flags: args.flags,
+            dry_run: args.dry_run,
             ..SyncOverrides::default()
         }
     }
 }
 
-impl GitHubSyncArgs {
-    /// The secret/operational overrides this single-source invocation supplies.
-    fn into_overrides(self) -> SyncOverrides {
+/// The secret/operational overrides a single-source `sync github` supplies.
+impl From<GitHubSyncArgs> for SyncOverrides {
+    fn from(args: GitHubSyncArgs) -> Self {
         SyncOverrides {
-            github_token: self.github_token,
-            pinboard_token: self.pinboard_token,
-            on_auth_failure: self.on_auth_failure,
-            limit: self.limit,
-            toread: self.toread,
-            public: self.public,
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
-            dry_run: self.dry_run,
+            github_token: args.github_token,
+            on_auth_failure: args.on_auth_failure,
+            flags: args.flags,
+            dry_run: args.dry_run,
             ..SyncOverrides::default()
         }
     }
 }
 
-impl HackerNewsSyncArgs {
-    /// The secret/operational overrides this single-source invocation supplies.
-    fn into_overrides(self) -> SyncOverrides {
+/// The secret/operational overrides a single-source `sync hackernews` supplies.
+impl From<HackerNewsSyncArgs> for SyncOverrides {
+    fn from(args: HackerNewsSyncArgs) -> Self {
         SyncOverrides {
-            hackernews_username: self.username,
-            pinboard_token: self.pinboard_token,
-            limit: self.limit,
-            toread: self.toread,
-            public: self.public,
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
-            dry_run: self.dry_run,
+            hackernews_username: args.username,
+            flags: args.flags,
+            dry_run: args.dry_run,
             ..SyncOverrides::default()
         }
     }
@@ -984,24 +930,24 @@ fn resolve_job_settings(
 ) -> JobSettings {
     JobSettings {
         limit: resolve_setting(
-            ovr.limit,
+            ovr.flags.limit,
             account.and_then(|a| a.limit()),
             src.limit,
             config.pinboard.limit.unwrap_or_default(),
         ),
         toread: resolve_setting(
-            ovr.toread,
+            ovr.flags.toread,
             account.and_then(|a| a.toread()),
             src.toread,
             config.pinboard.toread,
         ),
         shared: resolve_setting(
-            ovr.public,
+            ovr.flags.public,
             account.and_then(|a| a.public()),
             src.public,
             config.pinboard.public,
         ),
-        dates: resolve_dates(&DateOverrides::from(ovr), account, src, config),
+        dates: resolve_dates(&DateOverrides::from(&ovr.flags), account, src, config),
     }
 }
 
@@ -1337,7 +1283,7 @@ fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
                 args.account.as_deref(),
                 args.all,
                 {
-                    let ovr = args.clone().into_overrides();
+                    let ovr = SyncOverrides::from(args.clone());
                     move |a| build_reddit_job(a, &ovr, config)
                 },
             )?,
@@ -1352,7 +1298,7 @@ fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
                 args.account.as_deref(),
                 args.all,
                 {
-                    let ovr = args.clone().into_overrides();
+                    let ovr = SyncOverrides::from(args.clone());
                     move |a| build_github_job(a, &ovr, config)
                 },
             )?,
@@ -1367,7 +1313,7 @@ fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
                 args.account.as_deref(),
                 args.all,
                 {
-                    let ovr = args.clone().into_overrides();
+                    let ovr = SyncOverrides::from(args.clone());
                     move |a| build_hackernews_job(a, &ovr, config)
                 },
             )?,
@@ -2283,11 +2229,14 @@ mod tests {
     /// `SyncJob` field (e.g. `public` into the `toread` slot) fails the assertions.
     fn wiring_overrides() -> SyncOverrides {
         SyncOverrides {
-            limit: Some(SyncLimit::Max(NonZeroUsize::new(7).unwrap())),
-            toread: Some(true),        // global default is false
-            public: Some(false),       // distinct from toread, so a swap is caught
-            use_post_date: Some(true), // global default is false
-            max_age_days: Some(99),    // global default is 30
+            flags: SyncFlags {
+                limit: Some(SyncLimit::Max(NonZeroUsize::new(7).unwrap())),
+                toread: Some(true),        // global default is false
+                public: Some(false),       // distinct from toread, so a swap is caught
+                use_post_date: Some(true), // global default is false
+                max_age_days: Some(99),    // global default is 30
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -2383,7 +2332,7 @@ mod tests {
                 Ok(Command::Sync(SyncCmd {
                     source: Some(SyncSource::Hackernews(args)),
                     ..
-                })) => Ok(args.limit),
+                })) => Ok(args.flags.limit),
                 Ok(_) => panic!("expected `sync hackernews`"),
                 Err(err) => Err(err.to_string()),
             }
@@ -2413,7 +2362,7 @@ mod tests {
     #[test]
     fn top_level_all_threads_on_auth_failure_into_the_hook() {
         let _env = lock_on_auth_failure_env();
-        // The `sync --all` path builds `SyncOverrides` itself (no `into_overrides`),
+        // The `sync --all` path builds `SyncOverrides` itself (not from the source args),
         // so the hook must be carried explicitly from the top-level flag.
         let cmd = parse_sync(&["--all", "--on-auth-failure", "refresh-cookie"]);
         assert_eq!(cmd.on_auth_failure.as_deref(), Some("refresh-cookie"));
@@ -2505,7 +2454,7 @@ mod tests {
     fn top_level_on_auth_failure_reaches_single_source_hook() {
         let _env = lock_on_auth_failure_env();
         // `--on-auth-failure` placed before the source subcommand must reach the
-        // job just like the `--all` path; `into_overrides` alone only sees the
+        // job just like the `--all` path; the overrides from the source args alone only see the
         // per-source flag.
         let cmd = parse_sync(&[
             "--on-auth-failure",
@@ -2522,9 +2471,7 @@ mod tests {
         };
         assert_eq!(args.on_auth_failure, None);
 
-        let ovr = args
-            .into_overrides()
-            .with_top_level_hook(cmd.on_auth_failure.clone());
+        let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
         let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("top-hook"));
     }
@@ -2547,9 +2494,7 @@ mod tests {
             _ => panic!("expected `sync reddit` args"),
         };
 
-        let ovr = args
-            .into_overrides()
-            .with_top_level_hook(cmd.on_auth_failure.clone());
+        let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
         let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("source-hook"));
     }
@@ -2581,9 +2526,7 @@ mod tests {
         };
         assert_eq!(args.on_auth_failure.as_deref(), Some("explicit-hook"));
 
-        let ovr = args
-            .into_overrides()
-            .with_top_level_hook(cmd.on_auth_failure.clone());
+        let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
         let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("explicit-hook"));
     }
@@ -2610,9 +2553,7 @@ mod tests {
             _ => panic!("expected `sync reddit` args"),
         };
 
-        let ovr = args
-            .into_overrides()
-            .with_top_level_hook(cmd.on_auth_failure.clone());
+        let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
         let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("env-hook"));
     }
@@ -2719,15 +2660,20 @@ mod tests {
     #[test]
     fn value_taking_boolean_flags_parse_bare_and_explicit() {
         // Absent → None (falls through to the config tiers).
-        assert_eq!(parse_reddit_sync(&[]).public, None);
+        assert_eq!(parse_reddit_sync(&[]).flags.public, None);
         // Bare `--public` → Some(true) via default_missing_value.
-        assert_eq!(parse_reddit_sync(&["--public"]).public, Some(true));
+        assert_eq!(parse_reddit_sync(&["--public"]).flags.public, Some(true));
         // `--public=false` → Some(false): the explicit force-off a bare flag can't express.
-        assert_eq!(parse_reddit_sync(&["--public=false"]).public, Some(false));
-        // Same shape for the other booleans.
-        assert_eq!(parse_reddit_sync(&["--toread"]).toread, Some(true));
         assert_eq!(
-            parse_reddit_sync(&["--use-post-date=false"]).use_post_date,
+            parse_reddit_sync(&["--public=false"]).flags.public,
+            Some(false)
+        );
+        // Same shape for the other booleans.
+        assert_eq!(parse_reddit_sync(&["--toread"]).flags.toread, Some(true));
+        assert_eq!(
+            parse_reddit_sync(&["--use-post-date=false"])
+                .flags
+                .use_post_date,
             Some(false)
         );
     }
@@ -2737,11 +2683,11 @@ mod tests {
         // `require_equals` keeps clap from consuming the account as the flag value.
         let args = parse_reddit_sync(&["--public", "alice"]);
         assert_eq!(args.account.as_deref(), Some("alice"));
-        assert_eq!(args.public, Some(true));
+        assert_eq!(args.flags.public, Some(true));
         // The `=` form still forces the flag off while leaving the positional alone.
         let args = parse_reddit_sync(&["--public=false", "alice"]);
         assert_eq!(args.account.as_deref(), Some("alice"));
-        assert_eq!(args.public, Some(false));
+        assert_eq!(args.flags.public, Some(false));
     }
 
     /// Parse `backup <extra>` and return the parsed command.

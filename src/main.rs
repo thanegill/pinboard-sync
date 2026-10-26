@@ -679,7 +679,7 @@ async fn cleanup_github_for<S: BookmarkStore + AccountState>(
     let token = resolve_github_token(token_flag, account).with_context(missing_github_token)?;
     let hook = cleanup_hook(account, config);
     let client = GitHubClient::new(token, github_config.clone())?;
-    github::cleanup(store, &client, &github_config, dates)
+    github::cleanup::run(store, &client, &github_config, dates)
         .await
         .map_err(|e| handle_source_err(e, hook.as_deref()))
 }

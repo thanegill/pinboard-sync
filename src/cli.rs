@@ -1,7 +1,9 @@
 //! The command line: clap's `Cli` and every subcommand's arguments, and the conversions
 //! from them into the overrides the job builders and cleanup passes resolve settings from.
 
-use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
+
+use clap::{Args, Parser, Subcommand, ValueHint};
 use clap_complete::Shell;
 
 use crate::config::SyncLimit;
@@ -36,7 +38,7 @@ pub enum Command {
     Completions { shell: Shell },
     /// Print a man page (roff) to stdout.
     Man,
-    /// Config helpers.
+    /// Config helpers: print an example config, or check one.
     Config {
         #[command(subcommand)]
         action: ConfigAction,
@@ -47,6 +49,13 @@ pub enum Command {
 pub enum ConfigAction {
     /// Print a fully-commented example config (every key with its default).
     Example,
+    /// Validate a config file as a run would, without using secrets or contacting any
+    /// service.
+    Check {
+        /// The TOML config file to validate.
+        #[arg(value_name = "FILE", value_hint = ValueHint::FilePath)]
+        file: PathBuf,
+    },
 }
 
 #[derive(Args)]

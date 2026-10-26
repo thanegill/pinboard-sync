@@ -61,7 +61,7 @@ let
   configSettings =
     cfg.settings
     // lib.mapAttrs (_: pruneAccounts) (lib.filterAttrs (name: _: lib.elem name sources) cfg.settings);
-  configFile = tomlFormat.generate "pinboard-sync.toml" configSettings;
+  configFile = tomlFormat.generate "pinboard-sync.toml" cfg.renderedSettings;
 
   # Credential file paths the rendered config table supplies itself: the `[pinboard]`
   # destination `token_file`, a reddit account `cookie_file`, or a github account
@@ -202,6 +202,18 @@ in
         Each account may carry `enable = false` (default `true`) to keep it in the
         config but leave it out of the sync/cleanup runs; the flag is stripped before
         the config is rendered.
+      '';
+    };
+
+    renderedSettings = lib.mkOption {
+      inherit (tomlFormat) type;
+      default = configSettings;
+      defaultText = lib.literalMD "`settings` with disabled accounts dropped and `enable` stripped";
+      internal = true;
+      readOnly = true;
+      description = ''
+        `settings` exactly as rendered to the `--config` file: disabled accounts dropped
+        and each account's `enable` flag stripped.
       '';
     };
 

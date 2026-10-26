@@ -17,14 +17,18 @@ nix develop --command cargo test
 nix develop --command cargo test <name>      # single test
 nix develop --command cargo clippy --all-targets -- -D warnings
 nix develop --command cargo fmt --check
-nix flake check                              # builds the package (runs tests) + evaluates the NixOS module
+nix flake check                              # builds the package (runs tests) + evaluates the NixOS module and config-checks its TOML
 ```
 
 `nix flake check` runs the flake's `checks` for the host system only: `checks.package`
 is the package build, whose `doCheck` runs the hermetic tests, and `checks.nixos-module`
 instantiates an x86_64-linux system with the module and all three timers enabled, which
 fails on a module assertion or an undefined option without building anything for Linux.
-CI runs it on x86_64-linux.
+It also runs the host's `pinboard-sync config check` on the module's rendered settings,
+re-rendered from the internal `services.pinboard-sync.renderedSettings` option with the
+host's `pkgs.formats.toml`, because the module's own config file is an x86_64-linux
+derivation. So a key the binary would reject fails the check too. CI runs it on
+x86_64-linux.
 
 `cargo clippy -D warnings` and `cargo fmt --check` are the gate — keep both clean.
 Commit often: each working feature or structural piece, with its tests, keeping the
@@ -342,7 +346,9 @@ futures aren't `Send`, so no `tokio::spawn`), then writes the merged, URL-dedupe
 drafts **sequentially** through one rate-limited writer (`sync::write_drafts`).
 Reads parallel, writes serial — `posts/all` is fetched once up front and shared.
 `completions <shell>` and `config example` are utility subcommands the Nix package
-install consumes.
+install consumes. `config check <file>` validates a file with `Config::parse`, the same
+parse and validation `--config` gets, and resolves no secret. The flake's module check
+runs it on the rendered TOML.
 
 **Re-auth vs other errors drive a side effect.** `SourceError::ReauthRequired`
 (Reddit 401/403 that isn't the "blocked by network security" page, a Reddit redirect to

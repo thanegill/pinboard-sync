@@ -10,6 +10,7 @@ All notable changes to this project are documented here. The format is based on
 
 - `cleanup reddit` now adds the author, flair, media and comment tags `sync` writes,
   each only when the bookmark has no tag of that kind yet.
+- `config check <file>` validates a config without contacting any service.
 
 ### Removed
 

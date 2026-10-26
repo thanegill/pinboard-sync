@@ -100,17 +100,38 @@
                       cleanup.enable = true;
                       backup.enable = true;
                       pinboardTokenFile = "/run/secrets/pinboard-token";
-                      settings.hackernews = [ { username = "example"; } ];
+                      settings.hackernews = [
+                        {
+                          enable = true;
+                          username = "example";
+                        }
+                        {
+                          enable = false;
+                          username = "disabled";
+                        }
+                      ];
                     };
                   }
                 ];
               };
+              # The host's `pkgs`, not the system's: the module's own config file is an
+              # x86_64-linux derivation, which a darwin check would have to build remotely.
+              # Keep the settings above literal for the same reason: a store-path string
+              # would carry its x86_64-linux context into this file.
+              renderedConfig =
+                (pkgs.formats.toml { }).generate "pinboard-sync.toml"
+                  nixos.config.services.pinboard-sync.renderedSettings;
             in
-            # Discarding the context keeps this an evaluation-only check: the system's
-            # x86_64-linux store paths would otherwise have to be built here.
-            pkgs.writeText "pinboard-sync-nixos-module" (
-              builtins.unsafeDiscardStringContext nixos.config.system.build.toplevel.drvPath
-            );
+            # Discarding the context keeps the x86_64-linux system out of this check's
+            # inputs, which would otherwise have to be built here.
+            pkgs.runCommand "pinboard-sync-nixos-module"
+              { nativeBuildInputs = [ self.packages.${system}.default ]; }
+              ''
+                summary=$(pinboard-sync config check ${renderedConfig})
+                echo "$summary"
+                [[ $summary == *" 1 hackernews account(s)"* ]]
+                echo ${builtins.unsafeDiscardStringContext nixos.config.system.build.toplevel.drvPath} > $out
+              '';
         };
       }
     )

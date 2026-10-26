@@ -10,7 +10,7 @@ use anyhow::Result;
 
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
-use crate::htmltext::html_to_plain;
+use crate::htmltext::{collapse_whitespace, html_to_plain};
 use crate::reddit::model::{
     cased_subreddit, reddit_key, RedditConfig, RedditKind, RedditSavedItem,
 };
@@ -131,7 +131,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
         }
         tags.sort();
 
-        let mut title = html_to_plain(&bookmark.title);
+        let mut title = collapse_whitespace(&bookmark.title, " ");
         if opts.fix_titles && is_placeholder_title(&title) {
             if let Some(real_title) = post.and_then(|p| p.title.clone()) {
                 title = html_to_plain(&real_title);

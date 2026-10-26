@@ -14,7 +14,7 @@ use super::{
 use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, PassOutcome, Plan};
-use crate::htmltext::html_to_plain;
+use crate::htmltext::collapse_whitespace;
 use crate::source::SourceError;
 use crate::tags::extend_unique;
 use crate::timefmt::DateOpts;
@@ -232,8 +232,7 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
         let hn_link = format!("HN Link: {}", Url::from(&id));
         let note = ensure_hn_link_note(&bookmark.note, &hn_link);
 
-        // Clean the title (arbitrary article bookmarks may carry HTML entities).
-        let title = html_to_plain(&bookmark.title);
+        let title = collapse_whitespace(&bookmark.title, " ");
 
         // Drop the marker tag, add the base HN tags.
         let mut tags: Vec<String> = bookmark

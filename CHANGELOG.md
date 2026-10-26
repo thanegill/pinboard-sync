@@ -52,6 +52,9 @@ All notable changes to this project are documented here. The format is based on
 - Commas, which Pinboard forbids in tags, are slugged like spaces in derived tags
   (`reddit-flair:help-question`) and rejected in configured ones; tags already written
   with a comma stay until removed by hand.
+- `cleanup` no longer decodes HTML entities in stored titles again on every run, so a
+  title like `Tom &amp;amp; Jerry` settles at once. Titles already stored with entities
+  now keep them.
 
 ## [0.6.0] - 2026-10-25
 

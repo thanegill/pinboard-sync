@@ -158,8 +158,8 @@ async fn configured_nsfw_tag_is_idempotent() {
 async fn preserves_markup_in_stored_title() {
     // A non-placeholder stored title carrying angle brackets / tag-like text is kept
     // verbatim through cleanup, not stripped as HTML — the deliberate tradeoff of
-    // treating every title as plain text (html_to_plain escapes `<`/`>` before
-    // parsing). The www host still forces a rewrite so an update is emitted.
+    // treating every title as plain text. The www host still forces a rewrite so an
+    // update is emitted.
     let pinboard = FakePinboard {
         all: vec![bookmark(
             "https://www.reddit.com/r/rust/comments/a/x/",
@@ -176,6 +176,34 @@ async fn preserves_markup_in_stored_title() {
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].description, "Vec<String> vs <b>Box</b> in Rust");
+}
+
+#[tokio::test]
+async fn keeps_entity_text_in_a_stored_title() {
+    // A stored title is already plain text: one that reads `&amp;` (literally, or left
+    // by an older double-encoding) is kept as it is rather than decoded a step further
+    // on every run.
+    let pinboard = FakePinboard {
+        all: vec![
+            bookmark(
+                "https://old.reddit.com/r/rust/comments/a/x/",
+                "Use &amp; to escape",
+                "reddit subreddit:rust",
+            ),
+            bookmark(
+                "https://old.reddit.com/r/rust/comments/b/x/",
+                "Tom &amp;amp; Jerry",
+                "reddit subreddit:rust",
+            ),
+        ],
+        ..Default::default()
+    };
+
+    run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts())
+        .await
+        .unwrap();
+
+    assert!(pinboard.updated.borrow().is_empty());
 }
 
 #[tokio::test]

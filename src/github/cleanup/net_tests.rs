@@ -638,3 +638,47 @@ async fn run_and_store(
     let writes = pinboard.updated.borrow().len();
     (writes, stored)
 }
+
+#[tokio::test]
+async fn cleanup_keeps_entity_text_in_a_stored_title() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/o/gone"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    mount_repo(
+        &server,
+        "o/star",
+        json!({ "full_name": "o/star", "html_url": "https://github.com/o/star",
+                "language": "Rust" }),
+    )
+    .await;
+    let pinboard = FakePinboard {
+        all: vec![
+            Bookmark {
+                title: "Use &amp; to escape".into(),
+                ..stored_at("https://github.com/o/gone")
+            },
+            Bookmark {
+                title: "Use &amp;amp; to escape".into(),
+                tags: vec!["github-star".into()],
+                ..stored_at("https://github.com/o/star")
+            },
+        ],
+        ..Default::default()
+    };
+    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+        .await
+        .unwrap();
+
+    let updated = pinboard.updated.borrow();
+    assert_eq!(
+        updated.len(),
+        1,
+        "only the synced star is written: {updated:?}"
+    );
+    assert_eq!(updated[0].url, "https://github.com/o/star");
+    assert_eq!(updated[0].description, "Use &amp;amp; to escape");
+}

@@ -226,7 +226,8 @@ pub struct RedditAccount {
     pub post_date_max_age_days: Option<u64>,
     /// Override `cleanup_stale_to_now` for this account.
     pub cleanup_stale_to_now: Option<bool>,
-    // Non-secret tag/domain config (`tag_*`), each defaulting in `reddit_config`.
+    // Non-secret tag/domain config (`tag_*`), each defaulting in
+    // `From<&RedditAccount> for RedditConfig`.
     pub reddit_domain: Option<String>,
     pub tag_subreddit_prefix: Option<String>,
     pub tag_comment: Option<String>,

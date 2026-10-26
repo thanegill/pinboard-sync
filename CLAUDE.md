@@ -285,7 +285,7 @@ a domain rename must not silently change an operator's files.
 config struct (`RedditConfig`, `GitHubConfig`, `HackerNewsConfig`) of overridable
 fields with built-in defaults; the `tags` list (default e.g. `["reddit"]`) is the
 base tag plus any extras, and `push_tag`/`push_prefixed` in `source.rs` render them
-(empty string disables a tag). `reddit/model.rs`'s tag tests are the spec — keep them in
+(empty string disables a tag). `reddit::model`'s tag tests ([`src/reddit/model/tests.rs`](src/reddit/model/tests.rs)) are the spec — keep them in
 sync with rule changes. Pinboard tags can't contain spaces (the API splits the tag
 string on them), so `push_prefixed` slugs internal whitespace in the value (e.g. the
 GitHub language `Jupyter Notebook` → `lang:jupyter-notebook`) and `Config::parse`
@@ -496,6 +496,11 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   hermetic (no network/sockets). A `net_tests` case that points a real client at a dead
   port sleeps the real ~2.5-minute `CONNECT_BACKOFF` unless it runs inside
   `http::recording_waits`; only `http.rs`'s own tests can inject a zero schedule.
+- **Large test modules live in their own files**, `src/<module>/tests.rs` (or
+  `net_tests.rs`) behind `#[cfg(test)] mod tests;`, so the module path — and with it the
+  `--skip=net_tests` match — is the same as an inline module. They are still child modules
+  (`use super::*` sees private items); `include_str!` paths in them are relative to the
+  test file, not the module. Small test modules stay inline.
 - **No paused clock under a real socket.** `start_paused` auto-advances to the next
   timer whenever the runtime idles, including on wiremock I/O, so any timer live during a
   request (a connect timeout, say) fires early; only a test whose expected outcome *is*

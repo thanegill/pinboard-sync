@@ -1,0 +1,484 @@
+use super::*;
+use serde_json::json;
+use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+#[tokio::test]
+async fn fetch_saved_sends_cookie_paginates_and_parses_metadata() {
+    let server = MockServer::start().await;
+    // Page 1 (no `after`) returns a cursor and a richly-tagged post.
+    Mock::given(method("GET"))
+        .and(path("/user/psophis/saved.json"))
+        .and(header("cookie", "reddit_session=secret"))
+        .and(query_param_is_missing("after"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": "t3_first", "children": [
+                { "kind": "t3", "data": { "name": "t3_first", "subreddit": "rust",
+                  "permalink": "/r/rust/comments/1/x/", "title": "1", "author": "alice",
+                  "post_hint": "image" } }
+            ] }
+        })))
+        .mount(&server)
+        .await;
+    // Page 2 (after=t3_first) is the last.
+    Mock::given(method("GET"))
+        .and(path("/user/psophis/saved.json"))
+        .and(query_param("after", "t3_first"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": null, "children": [
+                { "kind": "t1", "data": { "name": "t1_second", "subreddit": "news",
+                  "permalink": "/r/news/comments/2/y/b/", "link_title": "T", "body": "hi" } }
+            ] }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = RedditClient::for_test(
+        Some("reddit_session=secret".into()),
+        Some("psophis".into()),
+        server.uri(),
+    );
+    let items: Vec<_> = crate::http::recording_waits(client.fetch_saved())
+        .await
+        .0
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| e.into_saved_item("old.reddit.com"))
+        .collect();
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        items[0].tags(&RedditConfig::default()),
+        vec![
+            "reddit",
+            "subreddit:rust",
+            "author:reddit:alice",
+            "type:image"
+        ]
+    );
+    assert!(items[1].is_comment);
+}
+
+#[tokio::test]
+async fn sends_a_bare_cookie_value_as_reddit_session() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/psophis/saved.json"))
+        .and(header("cookie", "reddit_session=bare-value"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": null, "children": [] }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = RedditClient::for_test(
+        Some("bare-value\n".into()),
+        Some("psophis".into()),
+        server.uri(),
+    );
+    assert!(client.fetch_saved().await.unwrap().is_empty());
+}
+
+/// Reddit's answer to a request without a session it accepts, as `curl` saw it for a
+/// request with no cookie.
+fn login_redirect(server: &MockServer) -> ResponseTemplate {
+    ResponseTemplate::new(302).insert_header(
+        "location",
+        format!(
+            "{}/login/?dest=%2Fuser%2Fpsophis%2Fsaved.json",
+            server.uri()
+        )
+        .as_str(),
+    )
+}
+
+/// A login page that answers 403, as a followed redirect can reach; the client must
+/// never request it.
+async fn mount_login_page(server: &MockServer) {
+    Mock::given(path("/login/"))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(0)
+        .mount(server)
+        .await;
+}
+
+/// Following the redirect would also end in `ReauthRequired` (the login page's 403),
+/// so the message is what tells the two apart.
+fn assert_refused_at_login(err: SourceError) {
+    let SourceError::ReauthRequired(message) = &err else {
+        panic!("a login redirect must ask for a new cookie: {err:?}");
+    };
+    assert!(message.contains("login page"), "{message}");
+    assert!(message.contains(TEST_COOKIE_SOURCE), "{message}");
+    assert!(!message.contains("stale"), "{message}");
+}
+
+#[tokio::test]
+async fn fetch_saved_maps_a_login_redirect_to_reauth_without_following_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/psophis/saved.json"))
+        .respond_with(login_redirect(&server))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_login_page(&server).await;
+
+    let client = RedditClient::for_test(
+        Some("reddit_session=stale".into()),
+        Some("psophis".into()),
+        server.uri(),
+    );
+    let err = client.fetch_saved().await.unwrap_err();
+    assert_refused_at_login(err);
+}
+
+#[tokio::test]
+async fn info_maps_a_login_redirect_to_reauth_without_following_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/info.json"))
+        .respond_with(login_redirect(&server))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_login_page(&server).await;
+
+    let client = RedditClient::for_test(Some("reddit_session=stale".into()), None, server.uri());
+    let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
+    assert_refused_at_login(err);
+}
+
+#[tokio::test]
+async fn fetch_saved_terminates_when_after_cursor_loops() {
+    // A pathological listing that keeps returning the same non-null `after` with a
+    // non-empty page would loop forever without the visited-cursor guard. It must
+    // stop after re-seeing the cursor rather than hanging / growing `out` unbounded.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/psophis/saved.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": "t3_loop", "children": [
+                { "kind": "t3", "data": { "name": "t3_loop", "subreddit": "rust",
+                  "permalink": "/r/rust/comments/1/x/", "title": "1" } }
+            ] }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+    // Page 1 (no cursor) records the cursor; page 2 (after=t3_loop) re-sees it and
+    // breaks, so exactly two pages are fetched.
+    let (entries, waits) = crate::http::recording_waits(client.fetch_saved()).await;
+    assert_eq!(entries.unwrap().len(), 2);
+    assert_eq!(waits, [REQUEST_PAUSE]);
+}
+
+#[tokio::test]
+async fn fetch_errors_when_a_non_empty_listing_yields_no_drafts() {
+    // Every entry deserializes (all fields are optional) but lacks the required
+    // subreddit/permalink, so all are dropped. A non-empty listing that produces
+    // zero drafts must error rather than silently import nothing.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/psophis/saved.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": null, "children": [
+                { "kind": "t3", "data": { "name": "t3_a", "title": "A" } },
+                { "kind": "t1", "data": { "name": "t1_b", "link_title": "B" } }
+            ] }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+    assert!(matches!(client.fetch().await, Err(SourceError::Other(_))));
+}
+
+#[tokio::test]
+async fn fetch_keeps_a_good_entry_and_drops_a_schema_broken_sibling() {
+    // One entry is well-formed, the other is missing subreddit/permalink. The good
+    // one survives (and the bad one is warned + dropped), so fetch succeeds.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/psophis/saved.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": null, "children": [
+                { "kind": "t3", "data": { "name": "t3_a", "subreddit": "rust",
+                  "permalink": "/r/rust/comments/a/x/", "title": "A" } },
+                { "kind": "t3", "data": { "name": "t3_b", "title": "B" } }
+            ] }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+    let drafts = client.fetch().await.unwrap();
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(
+        drafts[0].bookmark.url.as_str(),
+        "https://old.reddit.com/r/rust/comments/a/x/"
+    );
+}
+
+#[tokio::test]
+async fn fetch_empty_listing_is_ok() {
+    // A genuinely empty saved listing (nothing saved) is a success, not an error.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/psophis/saved.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": null, "children": [] }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+    assert!(client.fetch().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn fetch_saved_maps_403_to_reauth() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("blocked"))
+        .mount(&server)
+        .await;
+    let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+    assert!(matches!(
+        client.fetch_saved().await,
+        Err(SourceError::ReauthRequired(_))
+    ));
+}
+
+#[tokio::test]
+async fn info_names_the_cookie_setting_in_a_403_but_never_the_cookie() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("denied"))
+        .mount(&server)
+        .await;
+    let client =
+        RedditClient::for_test(Some("reddit_session=SECRET403".into()), None, server.uri());
+    let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
+    let SourceError::ReauthRequired(message) = &err else {
+        panic!("a 403 must ask for a new cookie: {err:?}");
+    };
+    assert!(message.contains(TEST_COOKIE_SOURCE), "{message}");
+    assert!(!message.contains("SECRET403"), "{message}");
+}
+
+/// The block as Reddit serves it, headers included.
+fn block_page() -> ResponseTemplate {
+    ResponseTemplate::new(403)
+        .insert_header("server", "snooserv")
+        .insert_header("retry-after", "0")
+        .set_body_raw(super::tests::BLOCK_PAGE, "text/html; charset=utf-8")
+}
+
+#[tokio::test]
+async fn fetch_saved_maps_a_block_page_to_blocked() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/psophis/saved.json"))
+        .respond_with(block_page())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = RedditClient::for_test(
+        Some("reddit_session=secret".into()),
+        Some("psophis".into()),
+        server.uri(),
+    );
+    let err = client.fetch_saved().await.unwrap_err();
+    assert!(matches!(err, SourceError::Blocked(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn info_maps_a_block_page_to_blocked() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/info.json"))
+        .respond_with(block_page())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = RedditClient::for_test(Some("reddit_session=secret".into()), None, server.uri());
+    let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
+    assert!(matches!(err, SourceError::Blocked(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn info_sends_a_bare_cookie_value_as_reddit_session() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/info.json"))
+        .and(header("cookie", "reddit_session=bare-value"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": null, "children": [] }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = RedditClient::for_test(Some("bare-value".into()), None, server.uri());
+    assert!(client.info(&["t3_a".to_string()]).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn info_sends_cookie_and_returns_entries() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/info.json"))
+        .and(query_param("id", "t3_a"))
+        .and(header("cookie", "reddit_session=secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": null, "children": [
+                { "kind": "t3", "data": { "name": "t3_a", "subreddit": "rust",
+                  "permalink": "/r/rust/comments/a/x/", "title": "A", "over_18": true } }
+            ] }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = RedditClient::for_test(Some("reddit_session=secret".into()), None, server.uri());
+    let entries = client.info(&["t3_a".to_string()]).await.unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].fields.over_18);
+}
+
+/// Mounts a three-page saved listing, newest first, one post per page (`n`, `o`,
+/// then `p`), expecting each page `hits` times.
+async fn three_saved_pages(server: &MockServer, hits: [u64; 3]) {
+    let pages = [
+        (None, "n", Some("t3_n")),
+        (Some("t3_n"), "o", Some("t3_o")),
+        (Some("t3_o"), "p", None),
+    ];
+    for ((after, id, next), hits) in pages.into_iter().zip(hits) {
+        let saved = Mock::given(method("GET")).and(path("/user/psophis/saved.json"));
+        let saved = match after {
+            None => saved.and(query_param_is_missing("after")),
+            Some(after) => saved.and(query_param("after", after)),
+        };
+        saved
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "kind": "Listing",
+                "data": { "after": next, "children": [
+                    { "kind": "t3", "data": { "name": format!("t3_{id}"), "subreddit": "rust",
+                      "permalink": format!("/r/rust/comments/{id}/x/"), "title": id } }
+                ] }
+            })))
+            .expect(hits)
+            .mount(server)
+            .await;
+    }
+}
+
+fn saved_client(server: &MockServer) -> RedditClient {
+    RedditClient::for_test(None, Some("psophis".into()), server.uri())
+}
+
+/// Pinboard already holds the second page's save, so that page has nothing new.
+fn second_page_synced() -> [Bookmark; 1] {
+    [crate::test_support::stored_at(
+        "https://www.reddit.com/r/rust/comments/o/x/",
+    )]
+}
+
+fn titles(drafts: &[BookmarkDraft]) -> Vec<&str> {
+    drafts.iter().map(|d| d.bookmark.title.as_str()).collect()
+}
+
+#[tokio::test]
+async fn incremental_fetch_stops_at_the_first_page_with_nothing_new() {
+    let server = MockServer::start().await;
+    three_saved_pages(&server, [1, 1, 0]).await;
+
+    let client = saved_client(&server);
+    let (drafts, waits) =
+        crate::http::recording_waits(client.fetch_incremental(&second_page_synced())).await;
+    assert_eq!(titles(&drafts.unwrap()), ["n", "o"]);
+    assert_eq!(waits, [REQUEST_PAUSE], "one pause, between the two pages");
+}
+
+#[tokio::test]
+async fn incremental_fetch_reads_on_while_every_page_has_something_new() {
+    let server = MockServer::start().await;
+    three_saved_pages(&server, [1, 1, 1]).await;
+
+    let client = saved_client(&server);
+    let (drafts, waits) = crate::http::recording_waits(client.fetch_incremental(&[])).await;
+    assert_eq!(titles(&drafts.unwrap()), ["n", "o", "p"]);
+    assert_eq!(
+        waits, [REQUEST_PAUSE; 2],
+        "a pause between pages, none after"
+    );
+}
+
+#[tokio::test]
+async fn the_page_cap_stops_without_a_pause_after_the_last_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/psophis/saved.json"))
+        .respond_with(|request: &wiremock::Request| {
+            let page = request
+                .url
+                .query_pairs()
+                .find(|(key, _)| key == "after")
+                .map_or(0, |(_, after)| after[3..].parse::<u32>().unwrap() + 1);
+            ResponseTemplate::new(200).set_body_json(json!({
+                "kind": "Listing",
+                "data": { "after": format!("t3_{page}"), "children": [
+                    { "kind": "t3", "data": { "name": format!("t3_{page}"),
+                      "subreddit": "rust", "title": "t",
+                      "permalink": format!("/r/rust/comments/{page}/x/") } }
+                ] }
+            }))
+        })
+        .expect(u64::from(MAX_SAVED_PAGES))
+        .mount(&server)
+        .await;
+
+    let (entries, waits) = crate::http::recording_waits(saved_client(&server).fetch_saved()).await;
+    assert_eq!(entries.unwrap().len(), MAX_SAVED_PAGES as usize);
+    assert_eq!(waits, vec![REQUEST_PAUSE; MAX_SAVED_PAGES as usize - 1]);
+}
+
+#[tokio::test]
+async fn dump_reads_every_saved_page() {
+    let server = MockServer::start().await;
+    three_saved_pages(&server, [1, 1, 1]).await;
+
+    let client = saved_client(&server);
+    let dump = crate::http::recording_waits(client.dump()).await.0.unwrap();
+    assert_eq!(dump.raw.len(), 3);
+}
+
+#[tokio::test]
+async fn saved_listing_error_quotes_a_capped_one_line_excerpt() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/psophis/saved.json"))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_string(crate::test_support::long_error_page()),
+        )
+        .mount(&server)
+        .await;
+
+    let err = saved_client(&server).fetch_saved().await.unwrap_err();
+    crate::test_support::assert_quotes_capped_excerpt(
+        &err.to_string(),
+        "saved listing returned 404 Not Found",
+    );
+}

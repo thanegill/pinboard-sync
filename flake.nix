@@ -87,14 +87,13 @@
 
           nixos-module =
             let
-              inherit (pkgs) lib;
               nixos = nixpkgs.lib.nixosSystem {
                 modules = [
                   self.nixosModules.default
                   {
                     nixpkgs.hostPlatform = "x86_64-linux";
                     boot.isContainer = true;
-                    system.stateVersion = lib.trivial.release;
+                    system.stateVersion = nixpkgs.lib.trivial.release;
                     services.pinboard-sync = {
                       enable = true;
                       cleanup.enable = true;

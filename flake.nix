@@ -7,7 +7,11 @@
   };
 
   outputs =
-    { self, nixpkgs, flake-utils }:
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
@@ -23,7 +27,10 @@
           # openssl-sys, which needs pkg-config + openssl at build time. On darwin
           # native-tls uses the Security framework (provided by the stdenv).
           # installShellFiles provides `installShellCompletion` for postInstall.
-          nativeBuildInputs = [ pkgs.pkg-config pkgs.installShellFiles ];
+          nativeBuildInputs = [
+            pkgs.pkg-config
+            pkgs.installShellFiles
+          ];
           buildInputs = [ pkgs.openssl ];
           # The `net_tests` integration tests spin up a mock HTTP server, which
           # can't bind a socket in the build sandbox. They run under `cargo test`
@@ -66,6 +73,37 @@
           # is exactly that LLVM and tracks the toolchain, so there's no version to keep in sync.
           LLVM_COV = pkgs.lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-cov";
           LLVM_PROFDATA = pkgs.lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-profdata";
+        };
+
+        checks = {
+          package = self.packages.${system}.default;
+
+          nixos-module =
+            let
+              inherit (pkgs) lib;
+              nixos = nixpkgs.lib.nixosSystem {
+                modules = [
+                  self.nixosModules.default
+                  {
+                    nixpkgs.hostPlatform = "x86_64-linux";
+                    boot.isContainer = true;
+                    system.stateVersion = lib.trivial.release;
+                    services.pinboard-sync = {
+                      enable = true;
+                      cleanup.enable = true;
+                      backup.enable = true;
+                      pinboardTokenFile = "/run/secrets/pinboard-token";
+                      settings.hackernews = [ { username = "example"; } ];
+                    };
+                  }
+                ];
+              };
+            in
+            # Discarding the context keeps this an evaluation-only check: the system's
+            # x86_64-linux store paths would otherwise have to be built here.
+            pkgs.writeText "pinboard-sync-nixos-module" (
+              builtins.unsafeDiscardStringContext nixos.config.system.build.toplevel.drvPath
+            );
         };
       }
     )

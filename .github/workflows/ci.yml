@@ -2,7 +2,8 @@ name: CI
 
 # Runs the same gate as the local dev shell on every branch push and PR:
 # fmt + clippy + the full test suite (incl. net_tests), plus `nix flake check`
-# (the sandboxed package build and both NixOS module evaluations).
+# (the flake's checks: the sandboxed package build and an evaluation of a NixOS
+# system with the module enabled).
 
 on:
   push:

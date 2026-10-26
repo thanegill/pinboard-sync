@@ -207,7 +207,7 @@ impl RedditListingEntry {
             title,
             note,
             created_utc: fields.created_utc,
-            author: fields.author.filter(|s| !s.is_empty()),
+            author: fields.author.filter(|s| !s.is_empty() && s != "[deleted]"),
             flair: fields.link_flair_text.filter(|s| !s.is_empty()),
             media_type,
         })

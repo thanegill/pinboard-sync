@@ -293,6 +293,27 @@ fn over_18_adds_nsfw_tag() {
         .contains(&"nsfw".to_string()));
 }
 
+#[test]
+fn a_deleted_author_gets_no_author_tag() {
+    for kind in ["t3", "t1"] {
+        let it = item(
+            kind,
+            serde_json::json!({
+                "name": format!("{kind}_abc"), "subreddit": "rust",
+                "permalink": "/r/rust/comments/abc/x/def/", "title": "T",
+                "author": "[deleted]"
+            }),
+        );
+        assert_eq!(it.author, None, "{kind}");
+        assert!(
+            !it.tags(&RedditConfig::default())
+                .iter()
+                .any(|t| t.starts_with("author:")),
+            "{kind}"
+        );
+    }
+}
+
 fn key(url: &str) -> Option<String> {
     reddit_key(&Url::parse(url).unwrap())
 }

@@ -63,20 +63,20 @@ async fn cleanup_merges_a_story_into_a_separately_saved_article() {
         algolia.uri(),
     );
     let bookmarks = pinboard.all.clone();
-    client
-        .cleanup(
-            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-            &HackerNewsCleanupOpts {
-                link_discussions: false,
-                dates: DateOpts {
-                    use_post_date: false,
-                    max_age_days: 30,
-                    stale_to_now: false,
-                },
+    run(
+        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
+        &client,
+        &HackerNewsCleanupOpts {
+            link_discussions: false,
+            dates: DateOpts {
+                use_post_date: false,
+                max_age_days: 30,
+                stale_to_now: false,
             },
-        )
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -141,20 +141,20 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
         algolia.uri(),
     );
     let bookmarks = pinboard.all.clone();
-    client
-        .cleanup(
-            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-            &HackerNewsCleanupOpts {
-                link_discussions: false,
-                dates: DateOpts {
-                    use_post_date: false,
-                    max_age_days: 30,
-                    stale_to_now: false,
-                },
+    run(
+        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
+        &client,
+        &HackerNewsCleanupOpts {
+            link_discussions: false,
+            dates: DateOpts {
+                use_post_date: false,
+                max_age_days: 30,
+                stale_to_now: false,
             },
-        )
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -210,20 +210,20 @@ async fn cleanup_preserves_existing_note_on_text_post() {
         algolia.uri(),
     );
     let bookmarks = pinboard.all.clone();
-    client
-        .cleanup(
-            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-            &HackerNewsCleanupOpts {
-                link_discussions: false,
-                dates: DateOpts {
-                    use_post_date: false,
-                    max_age_days: 30,
-                    stale_to_now: false,
-                },
+    run(
+        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
+        &client,
+        &HackerNewsCleanupOpts {
+            link_discussions: false,
+            dates: DateOpts {
+                use_post_date: false,
+                max_age_days: 30,
+                stale_to_now: false,
             },
-        )
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -277,20 +277,20 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
         algolia.uri(),
     );
     let bookmarks = pinboard.all.clone();
-    client
-        .cleanup(
-            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-            &HackerNewsCleanupOpts {
-                link_discussions: true,
-                dates: DateOpts {
-                    use_post_date: false,
-                    max_age_days: 30,
-                    stale_to_now: false,
-                },
+    run(
+        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
+        &client,
+        &HackerNewsCleanupOpts {
+            link_discussions: true,
+            dates: DateOpts {
+                use_post_date: false,
+                max_age_days: 30,
+                stale_to_now: false,
             },
-        )
-        .await
-        .unwrap();
+        },
+    )
+    .await
+    .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);

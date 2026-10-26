@@ -607,7 +607,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             let mut run = AllRun::default();
             if let Some(acct) = config.github.first() {
                 let dates = resolve_dates(&over, Some(acct), &config.defaults.github, config);
-                run.record(cleanup_github_for(&store, Some(acct), None, dates, config).await);
+                run.record(cleanup_one_github(&store, Some(acct), None, dates, config).await);
             }
             if let Some(acct) = config.reddit.first() {
                 let flags = RedditCleanupFlags {
@@ -664,12 +664,12 @@ async fn run_cleanup_github(
     let dates = resolve_dates(&over, account, &config.defaults.github, config);
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
-    cleanup_github_for(&store, account, args.github_token, dates, config).await
+    cleanup_one_github(&store, account, args.github_token, dates, config).await
 }
 
 /// Run github cleanup: build an API client from the account/env token and refresh
 /// renamed repos / titles / language.
-async fn cleanup_github_for<S: BookmarkStore + AccountState>(
+async fn cleanup_one_github<S: BookmarkStore + AccountState>(
     store: &S,
     account: Option<&GitHubAccount>,
     token_flag: Option<String>,
@@ -793,8 +793,9 @@ async fn cleanup_one_hackernews<S: BookmarkStore + AccountState>(
 ) -> Result<()> {
     let hn_config = resolve_hackernews_cleanup_config(account, link_tag)?;
     let hn = HackerNewsClient::for_cleanup(hn_config)?;
-    hn.cleanup(
+    hackernews::cleanup::run(
         store,
+        &hn,
         &HackerNewsCleanupOpts {
             link_discussions,
             dates: resolve_dates(over, account, &config.defaults.hackernews, config),

@@ -37,92 +37,91 @@ impl HackerNewsClient {
             ALGOLIA_BASE.to_string(),
         )
     }
+}
 
-    /// Normalize existing `news.ycombinator.com/item?id=*` bookmarks: re-fetch each
-    /// item and re-shape it (stories rewrite to the article URL, deleting the old HN
-    /// URL; comments/text posts update in place), preserving existing tags and the
-    /// creation time.
-    pub async fn cleanup<S: BookmarkStore + AccountState>(
-        &self,
-        store: &S,
-        opts: &HackerNewsCleanupOpts,
-    ) -> Result<(), SourceError> {
-        // Taken from the run's live view, so an earlier source's writes are already
-        // reflected.
-        let hackernews_bookmarks: Vec<Bookmark> = store
-            .snapshot()
-            .into_iter()
-            .filter(|bookmark| HackerNewsItemId::try_from(&bookmark.url).is_ok())
-            .collect();
+/// Normalize existing `news.ycombinator.com/item?id=*` bookmarks: re-fetch each item and
+/// re-shape it (stories rewrite to the article URL, deleting the old HN URL;
+/// comments/text posts update in place), preserving existing tags and the creation time.
+pub async fn run<S: BookmarkStore + AccountState>(
+    store: &S,
+    client: &HackerNewsClient,
+    opts: &HackerNewsCleanupOpts,
+) -> Result<(), SourceError> {
+    // Taken from the run's live view, so an earlier source's writes are already
+    // reflected.
+    let hackernews_bookmarks: Vec<Bookmark> = store
+        .snapshot()
+        .into_iter()
+        .filter(|bookmark| HackerNewsItemId::try_from(&bookmark.url).is_ok())
+        .collect();
 
-        // Batch-fetch every referenced item once.
-        let ids: Vec<HackerNewsItemId> = hackernews_bookmarks
-            .iter()
-            .filter_map(|bookmark| HackerNewsItemId::try_from(&bookmark.url).ok())
-            .collect();
-        let items = self.fetch_items(&ids, &mut RawSink::disabled()).await?;
+    // Batch-fetch every referenced item once.
+    let ids: Vec<HackerNewsItemId> = hackernews_bookmarks
+        .iter()
+        .filter_map(|bookmark| HackerNewsItemId::try_from(&bookmark.url).ok())
+        .collect();
+    let items = client.fetch_items(&ids, &mut RawSink::disabled()).await?;
 
-        let pass = HackerNewsCleanupPass {
-            items,
-            config: &self.config,
-        };
-        let items = run_pass(store, &hackernews_bookmarks, "HN", opts.dates, &pass).await;
+    let pass = HackerNewsCleanupPass {
+        items,
+        config: &client.config,
+    };
+    let items = run_pass(store, &hackernews_bookmarks, "HN", opts.dates, &pass).await;
 
-        // Each pass reaches its own verdict. Merging the tallies first would let this
-        // pass's bookmarks — which are planned from prefetched items and so can never
-        // fail — vouch for the discussion lookups, which are the only per-item network
-        // calls here and can fail on their own.
-        // Its candidates come from the view *after* the item pass wrote, so a bookmark that
-        // pass merged is re-planned from the merged record rather than from a stale copy.
-        let links = match opts.link_discussions {
-            true => Some(self.link_discussions(store, opts).await),
-            false => None,
-        };
-        // Both passes ran, so report both failures: letting the first `?` short-circuit
-        // would hide a wholesale failure of the second behind the first's message.
-        match (
-            items.into_result(),
-            links.map_or(Ok(()), PassOutcome::into_result),
-        ) {
-            // Flattening the pair loses each one's variant, which costs nothing here:
-            // HackerNews is public, so neither pass can produce a re-auth to act on.
-            (Err(items_err), Err(links_err)) => Err(SourceError::Other(anyhow!(
-                "{items_err:#}; and for discussion links: {links_err:#}"
-            ))),
-            (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
-            (Ok(()), Ok(())) => Ok(()),
-        }
+    // Each pass reaches its own verdict. Merging the tallies first would let this
+    // pass's bookmarks — which are planned from prefetched items and so can never
+    // fail — vouch for the discussion lookups, which are the only per-item network
+    // calls here and can fail on their own.
+    // Its candidates come from the view *after* the item pass wrote, so a bookmark that
+    // pass merged is re-planned from the merged record rather than from a stale copy.
+    let links = match opts.link_discussions {
+        true => Some(link_discussions(store, client, opts).await),
+        false => None,
+    };
+    // Both passes ran, so report both failures: letting the first `?` short-circuit
+    // would hide a wholesale failure of the second behind the first's message.
+    match (
+        items.into_result(),
+        links.map_or(Ok(()), PassOutcome::into_result),
+    ) {
+        // Flattening the pair loses each one's variant, which costs nothing here:
+        // HackerNews is public, so neither pass can produce a re-auth to act on.
+        (Err(items_err), Err(links_err)) => Err(SourceError::Other(anyhow!(
+            "{items_err:#}; and for discussion links: {links_err:#}"
+        ))),
+        (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
+        (Ok(()), Ok(())) => Ok(()),
     }
+}
 
-    /// For each article bookmark tagged `link_tag`, look it up on HN by URL and, if it
-    /// has a discussion, add `HN Link: <discussion>` to the notes and swap the marker
-    /// tag for the base HN tags (update in place). Default-off (opt-in via
-    /// `--link-discussions`) because it issues one Algolia query per tagged bookmark.
-    async fn link_discussions<S: BookmarkStore + AccountState>(
-        &self,
-        store: &S,
-        opts: &HackerNewsCleanupOpts,
-    ) -> PassOutcome {
-        // Read after the item pass, so a bookmark it merged into is seen as it now stands.
-        // A story merged onto a `link_tag`-tagged article carries that tag into the merged
-        // record, so this pass picks it up in the same run and the account settles in one.
-        let candidates: Vec<Bookmark> = store
-            .snapshot()
-            .into_iter()
-            .filter(|bookmark| {
-                HackerNewsItemId::try_from(&bookmark.url).is_err()
-                    && bookmark.tags.contains(&self.config.link_tag)
-            })
-            .collect();
-        run_pass(
-            store,
-            &candidates,
-            "HN discussion",
-            opts.dates,
-            &HackerNewsLinkPass { client: self },
-        )
-        .await
-    }
+/// For each article bookmark tagged `link_tag`, look it up on HN by URL and, if it has a
+/// discussion, add `HN Link: <discussion>` to the notes and swap the marker tag for the
+/// base HN tags (update in place). Default-off (opt-in via `--link-discussions`) because
+/// it issues one Algolia query per tagged bookmark.
+async fn link_discussions<S: BookmarkStore + AccountState>(
+    store: &S,
+    client: &HackerNewsClient,
+    opts: &HackerNewsCleanupOpts,
+) -> PassOutcome {
+    // Read after the item pass, so a bookmark it merged into is seen as it now stands.
+    // A story merged onto a `link_tag`-tagged article carries that tag into the merged
+    // record, so this pass picks it up in the same run and the account settles in one.
+    let candidates: Vec<Bookmark> = store
+        .snapshot()
+        .into_iter()
+        .filter(|bookmark| {
+            HackerNewsItemId::try_from(&bookmark.url).is_err()
+                && bookmark.tags.contains(&client.config.link_tag)
+        })
+        .collect();
+    run_pass(
+        store,
+        &candidates,
+        "HN discussion",
+        opts.dates,
+        &HackerNewsLinkPass { client },
+    )
+    .await
 }
 
 /// The HN item id referenced by a note's `HN Link: <url>` back-link marker, if the note

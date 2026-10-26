@@ -15,6 +15,8 @@ All notable changes to this project are documented here. The format is based on
 - Reddit no longer pauses after its last saved page when the page cap stops it.
 - `cleanup reddit` no longer adds an empty tag when `tags` is empty or starts with `""`,
   so it settles instead of rewriting every bookmark each run.
+- `cleanup reddit` no longer adds a bare subreddit tag when `tag_subreddit_prefix = ""`;
+  ones it already added stay until removed by hand.
 
 ## [0.6.0] - 2026-10-25
 

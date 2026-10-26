@@ -12,7 +12,7 @@ use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::html_to_plain;
 use crate::reddit::model::{cased_subreddit, reddit_key, RedditConfig};
 use crate::reddit::PostInfo;
-use crate::source::{host_matches, push_tag, SourceError, UrlExt};
+use crate::source::{host_matches, push_prefixed, push_tag, SourceError, UrlExt};
 use crate::timefmt::DateOpts;
 use url::Url;
 
@@ -285,7 +285,8 @@ fn is_comment_url(url: &Url) -> bool {
 
 /// Normalize a bookmark's tags: ensure the base tag, derive `subreddit:<sub>` from
 /// the URL (casing per [`cased_subreddit`]), and strip bare/legacy/duplicate
-/// subreddit forms. Returns a sorted, de-duplicated list.
+/// subreddit forms. An empty base tag or prefix adds no tag, as in sync. Returns a
+/// sorted, de-duplicated list.
 pub fn normalize_tags(
     url: &Url,
     existing: &[String],
@@ -296,11 +297,11 @@ pub fn normalize_tags(
     let mut set: BTreeSet<String> = existing.iter().cloned().collect();
     let mut ensured = Vec::new();
     push_tag(&mut ensured, base_tag);
-    set.extend(ensured);
     set.remove(prefix); // bare "subreddit:"
     set.remove(prefix.strip_suffix(':').unwrap_or(prefix)); // bare "subreddit"
 
-    if let Some(raw) = extract_subreddit(url) {
+    // With the subreddit tag disabled, a bare tag named like the subreddit is the user's.
+    if let Some(raw) = extract_subreddit(url).filter(|_| !prefix.is_empty()) {
         let cased = cased_subreddit(&raw);
         let forms = [
             raw.clone(),
@@ -317,8 +318,9 @@ pub fn normalize_tags(
             }
             set.remove(&format!("{prefix}{form}"));
         }
-        set.insert(format!("{prefix}{cased}"));
+        push_prefixed(&mut ensured, prefix, &cased);
     }
+    set.extend(ensured);
     set.into_iter().collect()
 }
 
@@ -510,6 +512,36 @@ mod tests {
             "nsfw",
         );
         assert_eq!(tags, vec!["subreddit:rust".to_string()]);
+    }
+
+    #[test]
+    fn normalize_tags_adds_and_strips_no_subreddit_tag_when_the_prefix_is_disabled() {
+        let tags = normalize_tags(
+            &url("https://old.reddit.com/r/rust/comments/x/"),
+            &[],
+            "reddit",
+            "",
+            "nsfw",
+        );
+        assert_eq!(tags, vec!["reddit".to_string()]);
+
+        let tags = normalize_tags(
+            &url("https://old.reddit.com/r/rust/comments/x/"),
+            &["rust".to_string()],
+            "reddit",
+            "",
+            "nsfw",
+        );
+        assert_eq!(tags, vec!["reddit".to_string(), "rust".to_string()]);
+
+        let tags = normalize_tags(
+            &url("https://old.reddit.com/r/nsfw/comments/x/"),
+            &["nsfw".to_string()],
+            "reddit",
+            "",
+            "nsfw",
+        );
+        assert_eq!(tags, vec!["nsfw".to_string(), "reddit".to_string()]);
     }
 
     #[test]

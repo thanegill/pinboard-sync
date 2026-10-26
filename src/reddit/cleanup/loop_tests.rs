@@ -620,6 +620,58 @@ async fn logs_and_skips_a_failing_update_then_continues() {
     );
 }
 
+#[tokio::test]
+async fn plans_the_tags_sync_writes_for_each_tag_config() {
+    let configs = [
+        RedditConfig::default(),
+        RedditConfig {
+            tags: vec![],
+            ..RedditConfig::default()
+        },
+        RedditConfig {
+            tags: vec![String::new()],
+            ..RedditConfig::default()
+        },
+        RedditConfig {
+            subreddit_prefix: String::new(),
+            ..RedditConfig::default()
+        },
+    ];
+    for config in configs {
+        let synced = listing_entry(
+            "t3",
+            json!({ "name": "t3_a", "subreddit": "rust",
+                    "permalink": "/r/rust/comments/a/x/", "title": "T" }),
+        )
+        .into_saved_item(&config.domain)
+        .unwrap()
+        .into_draft(&config)
+        .unwrap()
+        .bookmark;
+        let opts = RedditCleanupOpts {
+            config: config.clone(),
+            ..opts()
+        };
+        let pass = RedditCleanupPass {
+            info: HashMap::new(),
+            opts: &opts,
+        };
+        let mut want = synced.tags.clone();
+        want.sort();
+
+        for stored_tags in [vec![], synced.tags.clone()] {
+            let stored = Bookmark {
+                tags: stored_tags.clone(),
+                ..synced.clone()
+            };
+            let Plan::Bookmark(planned) = pass.plan(&stored).await.unwrap() else {
+                panic!("expected a planned bookmark for {config:?}");
+            };
+            assert_eq!(planned.tags, want, "{config:?}, stored {stored_tags:?}");
+        }
+    }
+}
+
 /// One cleanup run over `seed`, returning how many bookmarks it wrote and the account as
 /// Pinboard then stores it. Tags round-trip as Pinboard keeps them (space-joined on
 /// write, whitespace-split on read), which is what drops an empty tag.

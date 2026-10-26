@@ -83,16 +83,12 @@ pub fn prepare_new_drafts<S: Source>(
 /// as `http://x` vs `https://x`, would each be written on a first-time run). Order is
 /// preserved: jobs in order, drafts in order within a job.
 pub fn merge_deduped(per_job: Vec<Vec<BookmarkDraft>>) -> Vec<BookmarkDraft> {
-    let mut merged: Vec<BookmarkDraft> = Vec::new();
     let mut seen = HashSet::new();
-    for drafts in per_job {
-        for draft in drafts {
-            if seen.insert(draft.dedup_key.clone()) {
-                merged.push(draft);
-            }
-        }
-    }
-    merged
+    per_job
+        .into_iter()
+        .flatten()
+        .filter(|draft| seen.insert(draft.dedup_key.clone()))
+        .collect()
 }
 
 /// Tally of a write pass: how many drafts were written vs. failed.

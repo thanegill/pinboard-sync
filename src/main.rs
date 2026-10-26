@@ -38,7 +38,8 @@ use cli::{
 };
 use config::{Config, GitHubAccount, HackerNewsAccount, RedditAccount};
 use github::{GitHubClient, GitHubConfig};
-use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackerNewsConfig};
+use hackernews::cleanup::HackerNewsCleanupOpts;
+use hackernews::{HackerNewsClient, HackerNewsConfig};
 use hook::{cleanup_hook, handle_source_err, on_auth_failure_from_env};
 use jobs::{
     build_all_jobs, build_job, build_jobs, resolve_dates, DateOverrides, SourceAccount,

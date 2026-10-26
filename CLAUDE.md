@@ -166,7 +166,7 @@ a source runs several passes, each reaches its **own** verdict rather than pooli
 tallies, so a pass that can't fail can't vouch for one that can.
 
 The per-source planners live in [`src/reddit/cleanup.rs`](src/reddit/cleanup.rs),
-[`src/github/cleanup.rs`](src/github/cleanup.rs), and [`src/hackernews.rs`](src/hackernews.rs).
+[`src/github/cleanup.rs`](src/github/cleanup.rs), and [`src/hackernews/cleanup.rs`](src/hackernews/cleanup.rs).
 
 **`Bookmark` is service-agnostic; `PinboardBookmark` is the wire shape.** The domain
 [`Bookmark`](src/bookmark.rs) lives in [`src/bookmark.rs`](src/bookmark.rs) along with

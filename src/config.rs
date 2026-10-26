@@ -263,6 +263,7 @@ impl Config {
         }
         check_unique_names("reddit", &self.reddit)?;
         check_unique_names("github", &self.github)?;
+        check_one_unnamed("github", &self.github)?;
         check_unique_names("hackernews", &self.hackernews)?;
 
         for (index, account) in self.reddit.iter().enumerate() {
@@ -361,6 +362,26 @@ fn check_tag(field: &str, value: &Option<String>) -> Result<()> {
 fn check_tags(field: &str, values: &Option<Vec<String>>) -> Result<()> {
     for (index, v) in values.iter().flatten().enumerate() {
         reject_whitespace(&format!("{field}[{index}]"), v)?;
+    }
+    Ok(())
+}
+
+/// Error if two accounts of a source would both write the `source-default` backup files,
+/// so that every `backup --all` fails: each has no `name`, or one that [`slug`]s to
+/// `default` (empty, `default` itself, or only punctuation).
+///
+/// [`slug`]: crate::backup::slug
+fn check_one_unnamed<T: Named>(source: &str, accounts: &[T]) -> Result<()> {
+    let mut unnamed = accounts
+        .iter()
+        .enumerate()
+        .filter(|(_, account)| crate::backup::slug(account.account_name()) == "default")
+        .map(|(index, _)| index);
+    if let (Some(first), Some(second)) = (unnamed.next(), unnamed.next()) {
+        bail!(
+            "config: {source}[{first}] and {source}[{second}] would both back up as \
+             `{source}-default`; give one of them a distinct `name`"
+        );
     }
     Ok(())
 }

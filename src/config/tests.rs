@@ -137,6 +137,30 @@ fn validation_error_names_the_field_not_the_value() {
         "SECRET6",
         "github[2] has the same account name as github[0]",
     );
+    assert_error_hides(
+        "[[github]]\ntoken = \"ghp_SECRET7\"\n[[github]]\nname = \"work\"\n\
+         [[github]]\nname = \"\"\ntoken = \"ghp_SECRET8\"\n",
+        "SECRET",
+        "github[0] and github[2] would both back up as `github-default`",
+    );
+}
+
+#[test]
+fn a_github_name_that_slugs_to_default_counts_as_unnamed() {
+    for second_name in ["default", "Default", "!!", " "] {
+        let text = format!("[[github]]\n[[github]]\nname = \"{second_name}\"\n");
+        let error = format!("{:#}", Config::parse(&text).unwrap_err());
+        assert!(
+            error.contains("github[0] and github[1] would both back up"),
+            "{second_name:?}: {error}"
+        );
+    }
+}
+
+#[test]
+fn one_unnamed_github_account_is_fine() {
+    let config = Config::parse("[[github]]\n[[github]]\nname = \"work\"\n").unwrap();
+    assert_eq!(config.github.len(), 2);
 }
 
 #[test]

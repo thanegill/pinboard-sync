@@ -35,6 +35,8 @@ All notable changes to this project are documented here. The format is based on
   bookmarks `sync github` didn't write.
 - `cleanup github` skips a repo GitHub refuses with a lasting 403 (a ToS block or
   unauthorized SSO) instead of counting it as a failed lookup every run.
+- A config with two unnamed `[[github]]` accounts is rejected, rather than failing
+  every `backup --all` on their shared `github-default` files.
 
 ## [0.6.0] - 2026-10-25
 

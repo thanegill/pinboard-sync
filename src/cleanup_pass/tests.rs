@@ -2560,3 +2560,126 @@ async fn a_dry_run_previews_a_refusal() {
         ]
     );
 }
+
+#[tokio::test]
+async fn a_dry_run_names_a_target_occupied_by_a_refused_rewrite() {
+    // A is refused (its target couldn't be read), so A stays put and B, heading for A's
+    // URL, is refused in turn. The two reasons send the operator to different places, so
+    // each refusal has to name its own.
+    let books = vec![
+        bookmark("https://unreadable/"),
+        bookmark("https://a/"),
+        bookmark("https://b/"),
+    ];
+    let pass = FakePass(|bookmark: &Bookmark| match bookmark.url.as_str() {
+        "https://unreadable/" => Err(item_error()),
+        "https://a/" => Ok(Plan::Bookmark(Bookmark {
+            url: u("https://unreadable/"),
+            ..unchanged_plan(bookmark)
+        })),
+        _ => Ok(Plan::Bookmark(Bookmark {
+            url: u("https://a/"),
+            ..unchanged_plan(bookmark)
+        })),
+    });
+    let pinboard = FakePinboard::default();
+
+    let outcome = run_pass(
+        &store(&pinboard, &books, true),
+        &books,
+        "test",
+        NO_DATING,
+        &pass,
+    )
+    .await;
+    assert_eq!(outcome.refused, 2);
+    assert_eq!(
+        outcome.preview,
+        vec![
+            "[dry-run] https://unreadable/",
+            "          (refused: occupied by a bookmark this pass could not read)",
+            "[dry-run] https://a/",
+            "          (refused: occupied by a rewrite that was itself refused)",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_refusal_behind_a_failed_write_says_the_write_failed() {
+    // A's move fails, so A is still at its URL and B, heading there, must be refused.
+    // Only a real run can fail a write, so the reason shows in the log, not a preview.
+    let books = vec![bookmark("https://a/"), bookmark("https://b/")];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        let target = match bookmark.url.as_str() {
+            "https://a/" => "https://new/",
+            _ => "https://a/",
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(target),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let mut pinboard = FakePinboard::default();
+    pinboard.fail_update_urls.insert("https://new/".into());
+
+    let (outcome, logs) = crate::test_support::capturing_logs(run_pass(
+        &store(&pinboard, &books, false),
+        &books,
+        "test",
+        NO_DATING,
+        &pass,
+    ))
+    .await;
+    assert_eq!(outcome.refused, 1);
+    assert_eq!(outcome.write_failed, 1);
+    assert!(pinboard.ops.borrow().is_empty(), "nothing may land");
+    assert!(
+        logs.contains(
+            &"WARN skipping cleanup write to https://a/: occupied by a bookmark whose own \
+              rewrite failed"
+                .to_string()
+        ),
+        "{logs:#?}"
+    );
+}
+
+#[tokio::test]
+async fn a_dry_run_names_a_target_held_by_a_visibility_refusal() {
+    // A is held back for disagreeing with the public record staying at the target, so A
+    // stays put and B, heading for A's URL, is refused for the same reason as any other
+    // rewrite that was itself refused.
+    let mut resident = bookmark("https://target/");
+    resident.public = true;
+    let slice = vec![bookmark("https://a/"), bookmark("https://b/")];
+    let all = vec![slice[0].clone(), slice[1].clone(), resident];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        let target = match bookmark.url.as_str() {
+            "https://a/" => "https://target/",
+            _ => "https://a/",
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(target),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let pinboard = FakePinboard::default();
+
+    let outcome = run_pass(
+        &store(&pinboard, &all, true),
+        &slice,
+        "test",
+        NO_DATING,
+        &pass,
+    )
+    .await;
+    assert_eq!(outcome.refused, 2);
+    assert_eq!(
+        outcome.preview,
+        vec![
+            "[dry-run] https://a/",
+            "          (refused: would merge into https://target/, which is public)",
+            "[dry-run] https://a/",
+            "          (refused: occupied by a rewrite that was itself refused)",
+        ]
+    );
+}

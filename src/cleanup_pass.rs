@@ -375,7 +375,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // one of their URLs would overwrite it. Protect them and re-close the refusal set —
         // over the groups after this one only, which is why a failed write stays a failure
         // rather than becoming a refusal.
-        if let Some(stranded) = stranded {
+        if !stranded.is_empty() {
             for url in stranded {
                 untouchable.entry(url).or_insert(Refusal::WriteFailed);
             }
@@ -637,8 +637,8 @@ fn refuse_group(key: &url::Url, reason: Refusal, dry_run: bool, outcome: &mut Pa
 
 /// Write a lone plan with nothing stored at its target: skip it when nothing a write would
 /// change differs, else rewrite it (deleting the old URL when it moved and no other plan
-/// targets it) and tally the result. Returns the URLs a failed write left occupied, for the
-/// caller to protect.
+/// targets it) and tally the result. Returns the stored URLs a failed write left occupied,
+/// for the caller to protect: empty unless the write failed.
 async fn write_single<S: BookmarkStore>(
     store: &S,
     original: &Bookmark,
@@ -646,16 +646,15 @@ async fn write_single<S: BookmarkStore>(
     targets: &HashSet<&url::Url>,
     dry_run: bool,
     outcome: &mut PassOutcome,
-) -> Option<Vec<url::Url>> {
+) -> Vec<url::Url> {
     // The written fields that differ; empty means nothing a write would change.
     let changes = original.diff(planned);
     if changes.is_empty() {
-        return None;
+        return Vec::new();
     }
     // Delete the old URL only when it changed and no other planned write targets it;
     // otherwise that write's record lives there and must not be removed.
-    let url_changed = planned.url != original.url;
-    let delete_old = url_changed && !targets.contains(&original.url);
+    let delete_old = planned.url != original.url && !targets.contains(&original.url);
 
     if dry_run {
         emit_preview(&mut outcome.preview, &original.url, &changes);
@@ -678,7 +677,7 @@ async fn write_single<S: BookmarkStore>(
                 planned.url,
                 planned.tags.join(" ")
             );
-            None
+            Vec::new()
         }
         // The rewrite can half-apply just as a merge can: the record landed at the new URL
         // and only the old-URL delete failed. Count the change that really happened, and
@@ -687,13 +686,13 @@ async fn write_single<S: BookmarkStore>(
             outcome.changed += 1;
             outcome.write_failed += 1;
             error!("rewrote {} to {} but: {e:#}", original.url, planned.url);
-            None
+            Vec::new()
         }
         // The move didn't happen, so the record is still at its old URL.
         Some(e) => {
             outcome.write_failed += 1;
             error!("rewriting bookmark {}: {e:#}", original.url);
-            url_changed.then(|| vec![original.url.clone()])
+            vec![original.url.clone()]
         }
     }
 }
@@ -701,8 +700,8 @@ async fn write_single<S: BookmarkStore>(
 /// Field-merge a group — with the record staying at its target, if any — into one record,
 /// write it, and delete the absorbed URLs, so a later run sees a single bookmark at the
 /// target and converges. Skipped when the merge reproduces what is stored there and there
-/// is nothing to absorb. Returns the URLs a failed write left occupied, for the caller to
-/// protect.
+/// is nothing to absorb. Returns the stored URLs a failed write left occupied, for the
+/// caller to protect: empty unless the write failed.
 async fn write_merge<S: BookmarkStore>(
     store: &S,
     key: &url::Url,
@@ -711,7 +710,7 @@ async fn write_merge<S: BookmarkStore>(
     targets: &HashSet<&url::Url>,
     dry_run: bool,
     outcome: &mut PassOutcome,
-) -> Option<Vec<url::Url>> {
+) -> Vec<url::Url> {
     // The record that stays at this URL: an unplanned resident, else the member already
     // stored here. Whichever it is leads the merge, so its title and note are the base the
     // others extend. For an incumbent that is its *plan*, not its stored record — the plan
@@ -775,7 +774,7 @@ async fn write_merge<S: BookmarkStore>(
     let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].0));
     if stored_at_target.is_some_and(|stored| stored.diff(&merged).is_empty()) && old_urls.is_empty()
     {
-        return None;
+        return Vec::new();
     }
 
     if dry_run {
@@ -804,7 +803,7 @@ async fn write_merge<S: BookmarkStore>(
             outcome.changed += 1;
             let absorbed: Vec<String> = write.deleted.iter().map(|u| u.to_string()).collect();
             debug!("merged {target} <- [{}]", absorbed.join(" "));
-            None
+            Vec::new()
         }
         // Half-applied: the merged record landed and an absorbed URL survived. Count the
         // change, exactly as the rewrite path does — the account did change — and name what
@@ -815,7 +814,7 @@ async fn write_merge<S: BookmarkStore>(
             outcome.write_failed += 1;
             let stranded = old_urls.len() - write.deleted.len();
             error!("merged {target} but {stranded} absorbed URL(s) remain: {e:#}");
-            None
+            Vec::new()
         }
         // Nothing was written and nothing absorbed, so every member is still at its own
         // URL. Every member, not `old_urls`: that list deliberately excludes URLs another
@@ -823,13 +822,10 @@ async fn write_merge<S: BookmarkStore>(
         Some(e) => {
             outcome.write_failed += 1;
             error!("merging into {target}: {e:#}");
-            Some(
-                group
-                    .iter()
-                    .filter(|(original, _)| original.url != *target)
-                    .map(|(original, _)| original.url.clone())
-                    .collect(),
-            )
+            group
+                .iter()
+                .map(|(original, _)| original.url.clone())
+                .collect()
         }
     }
 }

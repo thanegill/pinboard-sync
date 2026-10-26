@@ -132,8 +132,8 @@ still marked occupied, though, so a third bookmark rewriting onto it is refused 
 Every refusal propagates — whatever didn't move keeps its own URL occupied — through
 `propagate_refusals`, a fixpoint because each refusal can occupy the URL that refuses the
 next. **Call it after any failure that leaves a record stranded at a URL another group could
-target** (`write_single`/`write_merge` return those URLs, and the write loop marks them and
-re-closes) — not after every error: a *half-applied* write (the record landed, a delete failed)
+target** (`write_single`/`write_merge` return every member's stored URL after a write that
+did not land, and the write loop marks them and re-closes) — not after every error: a *half-applied* write (the record landed, a delete failed)
 strands nothing, because the record is at its new URL and the old one is gone or is a URL no
 plan may write. It runs once up front, which is what makes pre-write refusals
 order-independent (and why the visibility check runs before it), and again after a write that

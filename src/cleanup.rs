@@ -8,11 +8,12 @@ use std::collections::{BTreeSet, HashMap};
 use anyhow::Result;
 
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Plan};
+use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::html_to_plain;
 use crate::model::{cased_subreddit, reddit_key};
 use crate::reddit::PostInfo;
 use crate::source::{host_matches, SourceError, UrlExt};
+use crate::timefmt::DateOpts;
 use url::Url;
 
 pub struct RedditCleanupOpts {

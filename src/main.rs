@@ -29,7 +29,6 @@ use log::{debug, error, info, warn};
 
 use backup::BackupSource;
 use bookmark::{AccountState, AccountView, Bookmark, BookmarkStore, CleanupStore};
-use cleanup_pass::DateOpts;
 use config::{Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit};
 use github::{GitHubClient, GitHubConfig};
 use hackernews::{HackerNewsCleanupOpts, HackerNewsClient, HackerNewsConfig};
@@ -40,6 +39,7 @@ use source::{
     github_token_settings, github_token_source, reddit_cookie_settings, reddit_cookie_source,
     BookmarkDraft, ConfiguredSecret, SecretRung, Source, SourceError, UrlKey,
 };
+use timefmt::DateOpts;
 use url::Url;
 
 #[derive(Parser)]

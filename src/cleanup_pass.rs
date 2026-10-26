@@ -30,49 +30,7 @@ use time::OffsetDateTime;
 
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::source::SourceError;
-
-/// The `use_post_date` policy: whether to date bookmarks by the source date, the backdate
-/// age cap, and whether `cleanup` pushes stale (older-than-cap) items to "now". Resolved
-/// once per account in `main`; `sync` reads the first two, and a `cleanup` pass applies
-/// all three uniformly via [`DateOpts::cleanup_date`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DateOpts {
-    pub use_post_date: bool,
-    /// Backdate age cap, in days.
-    pub max_age_days: u64,
-    pub stale_to_now: bool,
-}
-
-impl DateOpts {
-    /// The creation time a `cleanup` re-write should set. `candidate` is the source post
-    /// time (if known) and `existing` the bookmark's current time. Returns the source time
-    /// when dating is on and the post is within the cap; otherwise `now` when the post is
-    /// stale and `stale_to_now`; otherwise `existing` (unchanged). The age cap compares by
-    /// instant; the RFC3339 formatting happens at the write boundary.
-    pub fn cleanup_date(
-        self,
-        candidate: Option<OffsetDateTime>,
-        now: OffsetDateTime,
-        existing: Option<OffsetDateTime>,
-    ) -> Option<OffsetDateTime> {
-        if !self.use_post_date {
-            return existing;
-        }
-        match candidate {
-            Some(ts)
-                if crate::timefmt::within_age_cap(
-                    now.unix_timestamp(),
-                    ts.unix_timestamp(),
-                    self.max_age_days,
-                ) =>
-            {
-                Some(ts)
-            }
-            Some(_) if self.stale_to_now => Some(now),
-            _ => existing,
-        }
-    }
-}
+use crate::timefmt::DateOpts;
 
 /// What a pass decided about one bookmark. [`Plan::Unchanged`] and [`Plan::Skipped`]
 /// both mean "write nothing", but they say opposite things about the *source*: the
@@ -955,46 +913,6 @@ mod tests {
         max_age_days: 0,
         stale_to_now: false,
     };
-
-    #[test]
-    fn cleanup_date_honors_flag_cap_and_stale_fallback() {
-        use crate::timefmt::from_unix;
-        let now = from_unix(1_700_000_000).unwrap();
-        let recent = from_unix(1_700_000_000 - 5 * 86_400).unwrap(); // 5 days old
-        let old = from_unix(1_700_000_000 - 60 * 86_400).unwrap(); // 60 days old
-        let existing = from_unix(1_546_300_800); // Some(2019-01-01T00:00:00Z)
-        let dates = |use_post_date, stale_to_now| DateOpts {
-            use_post_date,
-            max_age_days: 30,
-            stale_to_now,
-        };
-
-        // Dating off → keep existing.
-        assert_eq!(
-            dates(false, true).cleanup_date(Some(recent), now, existing),
-            existing
-        );
-        // Within cap → source date.
-        assert_eq!(
-            dates(true, false).cleanup_date(Some(recent), now, existing),
-            Some(recent)
-        );
-        // Stale + default (no stale_to_now) → keep existing.
-        assert_eq!(
-            dates(true, false).cleanup_date(Some(old), now, existing),
-            existing
-        );
-        // Stale + stale_to_now → now.
-        assert_eq!(
-            dates(true, true).cleanup_date(Some(old), now, existing),
-            Some(now)
-        );
-        // No source date → keep existing.
-        assert_eq!(
-            dates(true, true).cleanup_date(None, now, existing),
-            existing
-        );
-    }
 
     #[tokio::test]
     async fn err_plan_counts_failed_and_continues() {

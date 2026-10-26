@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PassOutcome, Plan};
+use crate::cleanup_pass::{run_pass, CleanupPass, PassOutcome, Plan};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::{
     client_builder, retry_after_up_to, send_retrying, send_retrying_with, ConnectBudget,
@@ -23,6 +23,7 @@ use crate::source::{
     extend_unique, page_is_caught_up, push_prefixed, push_tag, push_tags, url_key, BookmarkDraft,
     Source, SourceError, UrlKey,
 };
+use crate::timefmt::DateOpts;
 use url::Url;
 
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.

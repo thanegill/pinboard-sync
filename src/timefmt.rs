@@ -1,7 +1,8 @@
 //! Date conversions for the `use_post_date` option: between unix epoch seconds (how
 //! source post dates are carried internally, so the age cap is a plain integer
 //! compare) and the RFC 3339 string Pinboard's `dt` expects (e.g.
-//! `2010-12-11T19:48:02Z`).
+//! `2010-12-11T19:48:02Z`) — plus the option itself, [`DateOpts`], which sync and every
+//! cleanup pass apply.
 
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -43,9 +44,48 @@ pub fn now_unix() -> i64 {
 
 /// Whether a post created at `timestamp` (epoch) is at most `max_age_days` old relative
 /// to `now` (epoch) — the `use_post_date` backdate cap. Shared by `sync` (which clears
-/// out-of-cap dates) and `cleanup` ([`crate::cleanup_pass::DateOpts::cleanup_date`]).
+/// out-of-cap dates) and `cleanup` ([`DateOpts::cleanup_date`]).
 pub fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
     now as i128 - timestamp as i128 <= max_age_days as i128 * 86_400
+}
+
+/// The `use_post_date` policy: whether to date bookmarks by the source date, the backdate
+/// age cap, and whether `cleanup` pushes stale (older-than-cap) items to "now". Resolved
+/// once per account in `main`; `sync` reads the first two, and a `cleanup` pass applies
+/// all three uniformly via [`DateOpts::cleanup_date`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DateOpts {
+    pub use_post_date: bool,
+    /// Backdate age cap, in days.
+    pub max_age_days: u64,
+    pub stale_to_now: bool,
+}
+
+impl DateOpts {
+    /// The creation time a `cleanup` re-write should set. `candidate` is the source post
+    /// time (if known) and `existing` the bookmark's current time. Returns the source time
+    /// when dating is on and the post is within the cap; otherwise `now` when the post is
+    /// stale and `stale_to_now`; otherwise `existing` (unchanged). The age cap compares by
+    /// instant; the RFC3339 formatting happens at the write boundary.
+    pub fn cleanup_date(
+        self,
+        candidate: Option<OffsetDateTime>,
+        now: OffsetDateTime,
+        existing: Option<OffsetDateTime>,
+    ) -> Option<OffsetDateTime> {
+        if !self.use_post_date {
+            return existing;
+        }
+        match candidate {
+            Some(ts)
+                if within_age_cap(now.unix_timestamp(), ts.unix_timestamp(), self.max_age_days) =>
+            {
+                Some(ts)
+            }
+            Some(_) if self.stale_to_now => Some(now),
+            _ => existing,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -100,5 +140,44 @@ mod tests {
         // A zero cap admits only same-instant posts.
         assert!(within_age_cap(now, now, 0));
         assert!(!within_age_cap(now, now - 1, 0));
+    }
+
+    #[test]
+    fn cleanup_date_honors_flag_cap_and_stale_fallback() {
+        let now = from_unix(1_700_000_000).unwrap();
+        let recent = from_unix(1_700_000_000 - 5 * 86_400).unwrap(); // 5 days old
+        let old = from_unix(1_700_000_000 - 60 * 86_400).unwrap(); // 60 days old
+        let existing = from_unix(1_546_300_800); // Some(2019-01-01T00:00:00Z)
+        let dates = |use_post_date, stale_to_now| DateOpts {
+            use_post_date,
+            max_age_days: 30,
+            stale_to_now,
+        };
+
+        // Dating off → keep existing.
+        assert_eq!(
+            dates(false, true).cleanup_date(Some(recent), now, existing),
+            existing
+        );
+        // Within cap → source date.
+        assert_eq!(
+            dates(true, false).cleanup_date(Some(recent), now, existing),
+            Some(recent)
+        );
+        // Stale + default (no stale_to_now) → keep existing.
+        assert_eq!(
+            dates(true, false).cleanup_date(Some(old), now, existing),
+            existing
+        );
+        // Stale + stale_to_now → now.
+        assert_eq!(
+            dates(true, true).cleanup_date(Some(old), now, existing),
+            Some(now)
+        );
+        // No source date → keep existing.
+        assert_eq!(
+            dates(true, true).cleanup_date(None, now, existing),
+            existing
+        );
     }
 }

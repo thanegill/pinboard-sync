@@ -11,13 +11,14 @@ use time::OffsetDateTime;
 
 use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
-use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Plan};
+use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::{client_builder, send_retrying, ConnectBudget};
 use crate::source::{
     deserialize_lenient, extend_unique, page_is_caught_up, push_prefixed, push_tags, url_key,
     BookmarkDraft, ConfiguredSecret, Source, SourceError, UrlExt, UrlKey,
 };
+use crate::timefmt::DateOpts;
 use url::Url;
 
 const UA: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));

@@ -44,6 +44,8 @@ All notable changes to this project are documented here. The format is based on
 - `cleanup_stale_to_now` re-dates a stale bookmark at most once per cap period, not on
   every run.
 - Dates are sent to Pinboard in UTC at whole seconds, the format its API documents.
+- The NixOS module passes a `%` in `onAuthFailure`, `backup.directory` or a secret path
+  through to the service as written.
 
 ## [0.6.0] - 2026-10-25
 

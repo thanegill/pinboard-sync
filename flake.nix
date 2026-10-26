@@ -98,7 +98,10 @@
                       enable = true;
                       cleanup.enable = true;
                       backup.enable = true;
-                      pinboardTokenFile = "/run/secrets/pinboard-token";
+                      backup.directory = "/var/lib/pinboard-sync/100%";
+                      onAuthFailure = "printf %s-alert";
+                      environmentFile = "/run/secrets/pinboard%-env";
+                      pinboardTokenFile = "/run/secrets/pinboard%-token";
                       settings.hackernews = [
                         {
                           enable = true;
@@ -120,6 +123,9 @@
               renderedConfig =
                 (pkgs.formats.toml { }).generate "pinboard-sync.toml"
                   nixos.config.services.pinboard-sync.renderedSettings;
+              unitFile =
+                name:
+                pkgs.writeText name (builtins.unsafeDiscardStringContext nixos.config.systemd.units.${name}.text);
             in
             # Discarding the context keeps the x86_64-linux system out of this check's
             # inputs, which would otherwise have to be built here.
@@ -129,6 +135,13 @@
                 summary=$(pinboard-sync config check ${renderedConfig})
                 echo "$summary"
                 [[ $summary == *" 1 hackernews account(s)"* ]]
+                grep -Fx 'Environment="PINBOARD_SYNC_ON_AUTH_FAILURE=printf %%s-alert"' \
+                  ${unitFile "pinboard-sync.service"}
+                grep -F '"--out" "/var/lib/pinboard-sync/100%%"' \
+                  ${unitFile "pinboard-sync-backup.service"}
+                grep -Fx 'EnvironmentFile=/run/secrets/pinboard%%-env' ${unitFile "pinboard-sync.service"}
+                grep -Fx 'LoadCredential=pinboard-token:/run/secrets/pinboard%%-token' \
+                  ${unitFile "pinboard-sync.service"}
                 echo ${builtins.unsafeDiscardStringContext nixos.config.system.build.toplevel.drvPath} > $out
               '';
         };

@@ -42,7 +42,7 @@ use github::{GitHubClient, GitHubConfig};
 use hackernews::cleanup::HackerNewsCleanupOpts;
 use hackernews::{HackerNewsClient, HackerNewsConfig};
 use hook::{cleanup_hook, handle_source_err, on_auth_failure_from_env};
-use jobs::backup_jobs::backup_jobs;
+use jobs::backup_jobs::{backup_jobs, BackupJob, SkippedTarget};
 use jobs::{
     build_all_jobs, build_jobs, open_pinboard, resolve_dates, AllRun, DateOverrides, SyncJob,
     SyncOverrides,
@@ -323,23 +323,35 @@ async fn run_sync_jobs(
 async fn run_backup(cmd: BackupCmd, config: &Config) -> Result<()> {
     let plan = backup_jobs(&cmd, config)?;
     let dir = resolve_backup_dir(plan.out.or_else(|| cmd.out.out.clone()), config)?;
-    let jobs = plan.jobs;
-    backup::check_stem_collisions(&jobs.iter().map(|j| j.stem.clone()).collect::<Vec<_>>())?;
-    backup::check_backup_dir(&dir)?;
+    back_up(plan.jobs, plan.skipped, &dir, plan.dry_run || cmd.dry_run).await
+}
 
-    let dry_run = plan.dry_run || cmd.dry_run;
+/// Run every job of a backup plan into `dir`, then write the manifest, failing the run
+/// if any target was `skipped` or failed.
+async fn back_up(
+    jobs: Vec<BackupJob>,
+    skipped: Vec<SkippedTarget>,
+    dir: &Path,
+    dry_run: bool,
+) -> Result<()> {
+    backup::check_stem_collisions(&jobs.iter().map(|j| j.stem.clone()).collect::<Vec<_>>())?;
+    backup::check_backup_dir(dir)?;
+
     let mut run = AllRun::default();
     let mut entries = Vec::new();
     let mut removed = Vec::new();
-    let mut failed = plan.skipped;
-    for target in &failed {
-        run.record(Err(anyhow!("{target} was skipped: no credential resolved")));
+    let mut failed = Vec::new();
+    for target in skipped {
+        run.record(Err(target
+            .reason
+            .context(format!("{} was skipped", target.label))));
+        failed.push(target.label);
     }
     // Sequential, unlike `sync`: backup writes are local, so concurrency would only
     // multiply simultaneous API pressure and interleave the dry-run output.
     for job in &jobs {
         info!("{}: backing up", job.label);
-        match backup::run_job(&job.client, &job.stem, &dir, dry_run).await {
+        match backup::run_job(&job.client, &job.stem, dir, dry_run).await {
             Ok(outcome) => {
                 // Recorded whether or not the target is trustworthy: it replaced these
                 // files either way, and leaving them out would let the merged manifest
@@ -372,7 +384,7 @@ async fn run_backup(cmd: BackupCmd, config: &Config) -> Result<()> {
         // targets — a target that failed left its previous files in place, and the
         // manifest is what stops them passing as part of this run.
         let now = timefmt::to_rfc3339(time::OffsetDateTime::now_utc()).unwrap_or_default();
-        backup::write_manifest(&dir, &entries, &removed, &failed, &now)?;
+        backup::write_manifest(dir, &entries, &removed, &failed, &now)?;
         info!(
             "backed up {} file(s) to {}",
             entries.len() + 1,
@@ -1062,6 +1074,72 @@ mod tests {
                 ("hackernews[main]", "hackernews-main"),
             ]
         );
-        assert_eq!(plan.skipped, ["pinboard"], "no Pinboard token in this test");
+        assert_eq!(
+            skipped_labels(&plan.skipped),
+            ["pinboard"],
+            "no Pinboard token in this test"
+        );
+    }
+
+    fn skipped_labels(skipped: &[SkippedTarget]) -> Vec<&str> {
+        skipped.iter().map(|target| target.label.as_str()).collect()
+    }
+
+    /// One account that can't be built (a github account with no token) must not cost the
+    /// rest of `backup --all` its snapshot: the others are still planned, and the run
+    /// records the failure in the manifest and exits non-zero.
+    #[tokio::test]
+    async fn backup_all_backs_up_the_rest_when_one_account_cannot_be_built() {
+        let mut config = Config {
+            reddit: vec![RedditAccount {
+                username: Some("alice".into()),
+                cookie: Some("reddit_session=x".into()),
+                ..Default::default()
+            }],
+            github: vec![GitHubAccount::default()],
+            ..Default::default()
+        };
+        config.pinboard.token = Some("user:tok".into());
+
+        let plan = backup_jobs(&parse_backup(&["--all"]), &config).expect("plans");
+        let labels: Vec<&str> = plan.jobs.iter().map(|job| job.label.as_str()).collect();
+        assert_eq!(labels, ["reddit[alice]", "pinboard"]);
+        assert_eq!(skipped_labels(&plan.skipped), ["github[default]"]);
+
+        // The planned jobs are dropped so nothing is contacted: what is under test is how
+        // the run accounts for the target it could not build.
+        let scratch = crate::test_support::scratch_dir("backup-skipped-account");
+        let dir = scratch.path().join("snapshot");
+        let result = back_up(Vec::new(), plan.skipped, &dir, false).await;
+
+        let err = result.expect_err("a skipped account fails the run");
+        assert_eq!(err.to_string(), "1 account(s) failed");
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["complete"], false);
+        assert_eq!(manifest["failed"], serde_json::json!(["github[default]"]));
+    }
+
+    #[test]
+    fn backup_source_all_backs_up_the_rest_when_one_account_cannot_be_built() {
+        let config = Config {
+            github: vec![
+                GitHubAccount {
+                    name: Some("tokenless".into()),
+                    ..Default::default()
+                },
+                GitHubAccount {
+                    name: Some("main".into()),
+                    token: Some("token".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let plan = backup_jobs(&parse_backup(&["github", "--all"]), &config).expect("plans");
+        let labels: Vec<&str> = plan.jobs.iter().map(|job| job.label.as_str()).collect();
+        assert_eq!(labels, ["github[main]"]);
+        assert_eq!(skipped_labels(&plan.skipped), ["github[tokenless]"]);
     }
 }

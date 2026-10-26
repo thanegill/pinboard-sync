@@ -3,12 +3,12 @@
 //! jobs, so account selection and the secret ladder behave identically, with Pinboard as
 //! one more target.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use log::warn;
 
-use super::{build_job, pinboard_client, SourceAccount, SourceClient, SyncOverrides};
+use super::{build_job, job_label, pinboard_client, SourceAccount, SourceClient, SyncOverrides};
 use crate::backup::{self, BackupSource};
-use crate::cli::{BackupCmd, BackupTarget};
+use crate::cli::{BackupCmd, BackupTarget, OutFlag};
 use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccount};
 use crate::hook::on_auth_failure_from_env;
 use crate::pinboard::PinboardClient;
@@ -47,11 +47,17 @@ impl BackupSource for BackupClient {
 /// target-level `--out`/`--dry-run`. Mirrors `run_sync`'s `(all, source)` match.
 pub struct BackupPlan {
     pub jobs: Vec<BackupJob>,
-    /// Targets that couldn't be built at all (no credential resolved). Counted as
+    /// Targets that couldn't be built at all (a credential that won't resolve). Counted as
     /// failures, so a run that quietly missed one can't report itself complete.
-    pub skipped: Vec<String>,
+    pub skipped: Vec<SkippedTarget>,
     pub out: Option<String>,
     pub dry_run: bool,
+}
+
+/// A target an `--all` plan could not build, and why.
+pub struct SkippedTarget {
+    pub label: String,
+    pub reason: anyhow::Error,
 }
 
 pub fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
@@ -62,72 +68,66 @@ pub fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
                 on_auth_failure: on_auth_failure_from_env(),
                 ..SyncOverrides::default()
             };
-            let mut jobs = Vec::new();
-            let mut skipped = Vec::new();
-            jobs.extend(every_backup_job::<RedditAccount>(&ovr, config)?);
-            jobs.extend(every_backup_job::<GitHubAccount>(&ovr, config)?);
-            jobs.extend(every_backup_job::<HackerNewsAccount>(&ovr, config)?);
+            let mut plan = BackupPlan {
+                jobs: Vec::new(),
+                skipped: Vec::new(),
+                out: None,
+                dry_run: false,
+            };
+            every_backup_job::<RedditAccount>(&ovr, config, &mut plan);
+            every_backup_job::<GitHubAccount>(&ovr, config, &mut plan);
+            every_backup_job::<HackerNewsAccount>(&ovr, config, &mut plan);
+            let has_source_targets = !plan.jobs.is_empty() || !plan.skipped.is_empty();
             match pinboard_backup_job(None, config)? {
-                Some(job) => jobs.push(job),
+                Some(job) => plan.jobs.push(job),
                 // Silence here would be the worst outcome: a nightly `--all` that quietly
                 // stops covering Pinboard (an unprovisioned sops secret makes
                 // `resolve_secret` warn and yield `None`) while still exiting 0. Recorded
                 // as a failed target so the manifest says `complete: false`.
-                None if !jobs.is_empty() => {
+                None if has_source_targets => {
                     warn!(
                         "backup --all: no Pinboard token resolved — the Pinboard account \
                          is NOT in this snapshot"
                     );
-                    skipped.push("pinboard".to_string());
+                    plan.skipped.push(SkippedTarget {
+                        label: "pinboard".to_string(),
+                        reason: anyhow!("no credential resolved"),
+                    });
                 }
                 None => {}
             }
-            if jobs.is_empty() {
+            if plan.jobs.is_empty() && plan.skipped.is_empty() {
                 bail!(
                     "backup --all found nothing to back up: configure an account with \
                      --config, or set a Pinboard token"
                 );
             }
-            Ok(BackupPlan {
-                jobs,
-                skipped,
-                out: None,
-                dry_run: false,
-            })
+            Ok(plan)
         }
-        (false, Some(BackupTarget::Reddit(args))) => Ok(BackupPlan {
-            jobs: source_backup_jobs::<RedditAccount>(
-                args.account.as_deref(),
-                args.all,
-                &SyncOverrides::from(args.clone()),
-                config,
-            )?,
-            skipped: Vec::new(),
-            out: args.out.out.clone(),
-            dry_run: args.dry_run,
-        }),
-        (false, Some(BackupTarget::Github(args))) => Ok(BackupPlan {
-            jobs: source_backup_jobs::<GitHubAccount>(
-                args.account.as_deref(),
-                args.all,
-                &SyncOverrides::from(args.clone()),
-                config,
-            )?,
-            skipped: Vec::new(),
-            out: args.out.out.clone(),
-            dry_run: args.dry_run,
-        }),
-        (false, Some(BackupTarget::Hackernews(args))) => Ok(BackupPlan {
-            jobs: source_backup_jobs::<HackerNewsAccount>(
-                args.account.as_deref(),
-                args.all,
-                &SyncOverrides::from(args.clone()),
-                config,
-            )?,
-            skipped: Vec::new(),
-            out: args.out.out.clone(),
-            dry_run: args.dry_run,
-        }),
+        (false, Some(BackupTarget::Reddit(args))) => source_backup_plan::<RedditAccount>(
+            args.account.as_deref(),
+            args.all,
+            &SyncOverrides::from(args.clone()),
+            &args.out,
+            args.dry_run,
+            config,
+        ),
+        (false, Some(BackupTarget::Github(args))) => source_backup_plan::<GitHubAccount>(
+            args.account.as_deref(),
+            args.all,
+            &SyncOverrides::from(args.clone()),
+            &args.out,
+            args.dry_run,
+            config,
+        ),
+        (false, Some(BackupTarget::Hackernews(args))) => source_backup_plan::<HackerNewsAccount>(
+            args.account.as_deref(),
+            args.all,
+            &SyncOverrides::from(args.clone()),
+            &args.out,
+            args.dry_run,
+            config,
+        ),
         (false, Some(BackupTarget::Pinboard(args))) => {
             let job = pinboard_backup_job(args.pinboard_token.clone(), config)?.context(
                 "missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or \
@@ -144,14 +144,22 @@ pub fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
     }
 }
 
-/// The backup jobs for one source, selecting by name / first / every account. Reuses
+/// The backup plan for one source, selecting by name / first / every account. Reuses
 /// `build_job` so account selection and the whole secret ladder behave as in `sync`.
-fn source_backup_jobs<A: SourceAccount>(
+fn source_backup_plan<A: SourceAccount>(
     name: Option<&str>,
     all: bool,
     ovr: &SyncOverrides,
+    out: &OutFlag,
+    dry_run: bool,
     config: &Config,
-) -> Result<Vec<BackupJob>> {
+) -> Result<BackupPlan> {
+    let mut plan = BackupPlan {
+        jobs: Vec::new(),
+        skipped: Vec::new(),
+        out: out.out.clone(),
+        dry_run,
+    };
     if all {
         if A::configured(config).is_empty() {
             bail!(
@@ -159,23 +167,26 @@ fn source_backup_jobs<A: SourceAccount>(
                 A::SOURCE
             );
         }
-        every_backup_job::<A>(ovr, config)
+        every_backup_job::<A>(ovr, config, &mut plan);
     } else {
         let account = config::select_account(A::configured(config), name)?;
-        Ok(vec![source_backup_job(account, ovr, config)?])
+        plan.jobs.push(source_backup_job(account, ovr, config)?);
     }
+    Ok(plan)
 }
 
-/// A backup job for every configured account of one source, stopping at the first that
-/// fails to build.
-fn every_backup_job<A: SourceAccount>(
-    ovr: &SyncOverrides,
-    config: &Config,
-) -> Result<Vec<BackupJob>> {
-    A::configured(config)
-        .iter()
-        .map(|a| source_backup_job(Some(a), ovr, config))
-        .collect()
+/// A backup job for every configured account of one source, with each account that fails
+/// to build recorded in `plan.skipped` instead, so the healthy ones are still backed up.
+fn every_backup_job<A: SourceAccount>(ovr: &SyncOverrides, config: &Config, plan: &mut BackupPlan) {
+    for account in A::configured(config) {
+        match source_backup_job(Some(account), ovr, config) {
+            Ok(job) => plan.jobs.push(job),
+            Err(reason) => plan.skipped.push(SkippedTarget {
+                label: job_label(Some(account)),
+                reason,
+            }),
+        }
+    }
 }
 
 /// Wrap one account's `SyncJob` as a backup job, keeping its client and auth hook and
@@ -215,7 +226,6 @@ fn pinboard_backup_job(flag: Option<String>, config: &Config) -> Result<Option<B
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::OutFlag;
     use crate::test_support::lock_on_auth_failure_env;
 
     fn backup_all() -> BackupCmd {

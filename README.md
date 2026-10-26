@@ -164,8 +164,8 @@ pinboard-sync backup reddit main --out DIR # just one source account
 ```
 
 `cleanup reddit` only contacts Reddit when marking NSFW or fixing placeholder titles
-(`--no-nsfw --no-titles` skip both, and the cookie). Two utility subcommands —
-`completions` and `config example` — are covered in
+(`--no-nsfw --no-titles` skip both, and the cookie). The utility subcommands —
+`completions`, `config example` and `config check` — are covered in
 [Shell completions and example config](#shell-completions-and-example-config).
 
 ### Per-run setting flags
@@ -381,7 +381,7 @@ print always matches your build.
 
 Every key is optional; an absent config means built-in defaults throughout. Unknown
 keys are a hard error rather than being ignored, so a typo fails the run instead of
-silently doing nothing.
+silently doing nothing. [`config check`](#config-check) catches it before a run.
 
 #### `[pinboard]` — the shared destination
 
@@ -514,9 +514,10 @@ Dating is off by default; enable it per the resolution tiers above.
 
 ## Shell completions and example config
 
-Two utility subcommands print to **stdout** so you can pipe or redirect them
+`completions` and `config example` print to **stdout** so you can pipe or redirect them
 wherever you like. (The Nix package runs both at build time and installs the results
-for you — see below — so these are mainly for non-Nix installs.)
+for you — see below — so these are mainly for non-Nix installs.) `config check`
+validates a config file you've written.
 
 ### `config example`
 
@@ -534,6 +535,25 @@ pinboard-sync --config pinboard-sync.toml sync --all --dry-run
 The template is embedded in the binary, so it always matches that build's schema. Its
 source is [`src/config.example.toml`](src/config.example.toml); a test fails the build
 if a config field is ever added without a line documenting it there.
+
+### `config check`
+
+`pinboard-sync config check <file>` parses and validates a config file exactly as a
+run's `--config` does: unknown keys, bad values, whitespace in tags, a malformed
+`reddit_domain` and duplicate account names all fail it. It contacts no service and
+uses no secret, so a `*_file` path is not opened and an inline token is not
+checked against Pinboard. Use `doctor` for that. It prints an `OK` line and exits 0, or
+prints the error and exits non-zero. As in a real run, the error names the key (and the
+line, for a syntax or type error), never the value:
+
+```console
+$ pinboard-sync config check pinboard-sync.toml
+pinboard-sync.toml: OK (1 reddit, 0 github, 1 hackernews account(s))
+$ pinboard-sync config check typo.toml
+ERROR parsing config: line 3, column 1: unknown field `tokn`, expected one of `token`, …
+```
+
+The flake's `checks.nixos-module` runs it against the TOML the NixOS module renders.
 
 ### `completions`
 
@@ -658,7 +678,7 @@ Run everything through the Nix dev shell so versions match the flake:
 nix develop --command cargo test
 nix develop --command cargo clippy --all-targets -- -D warnings
 nix develop --command cargo fmt --check
-nix flake check        # builds the package (runs the hermetic tests) + evaluates the module
+nix flake check        # builds the package (runs the hermetic tests) + evaluates the module and config-checks its TOML
 ```
 
 See [CLAUDE.md](CLAUDE.md) for the architecture.

@@ -24,7 +24,7 @@ mod test_support;
 mod timefmt;
 mod urls;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -93,6 +93,9 @@ async fn main() -> ExitCode {
                 print!("{}", include_str!("config.example.toml"));
                 Ok(())
             }
+            Command::Config {
+                action: ConfigAction::Check { file },
+            } => check_config(&file).map(|summary| println!("{summary}")),
         }
     }
     .await;
@@ -159,15 +162,8 @@ fn load_config(flag: Option<String>) -> Result<Config> {
         .filter(|s| !s.is_empty());
     match path {
         Some(path) => {
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading config file {path}"))?;
-            let config = Config::parse(&text)?;
-            info!(
-                "loaded config {path}: {} reddit, {} github, {} hackernews account(s)",
-                config.reddit.len(),
-                config.github.len(),
-                config.hackernews.len()
-            );
+            let config = read_config(Path::new(&path))?;
+            info!("loaded config {path}: {}", account_counts(&config));
             Ok(config)
         }
         None => {
@@ -175,6 +171,32 @@ fn load_config(flag: Option<String>) -> Result<Config> {
             Ok(Config::default())
         }
     }
+}
+
+fn read_config(path: &Path) -> Result<Config> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading config file {}", path.display()))?;
+    Config::parse(&text)
+}
+
+fn account_counts(config: &Config) -> String {
+    format!(
+        "{} reddit, {} github, {} hackernews account(s)",
+        config.reddit.len(),
+        config.github.len(),
+        config.hackernews.len()
+    )
+}
+
+/// The `config check` verdict: `path` read and validated exactly as `--config` is, which
+/// resolves no secret or `*_file` path and contacts no service.
+fn check_config(path: &Path) -> Result<String> {
+    let config = read_config(path)?;
+    Ok(format!(
+        "{}: OK ({})",
+        path.display(),
+        account_counts(&config)
+    ))
 }
 
 // --- sync --------------------------------------------------------------------
@@ -597,6 +619,74 @@ mod tests {
         let hn_config =
             resolve_hackernews_cleanup_config(None, Some("find-hn".into())).expect("valid tag");
         assert_eq!(hn_config.link_tag, "find-hn");
+    }
+
+    #[test]
+    fn config_check_takes_the_file_as_a_positional() {
+        use clap::Parser;
+        let argv = ["pinboard-sync", "config", "check", "pinboard-sync.toml"];
+        match Cli::try_parse_from(argv).expect("parses").command {
+            Command::Config {
+                action: ConfigAction::Check { file },
+            } => assert_eq!(file, Path::new("pinboard-sync.toml")),
+            _ => panic!("expected `config check`"),
+        }
+    }
+
+    fn check_config_text(text: &str) -> Result<String> {
+        let dir = crate::test_support::scratch_dir("config-check");
+        let path = dir.path().join("pinboard-sync.toml");
+        std::fs::write(&path, text).unwrap();
+        check_config(&path)
+    }
+
+    #[test]
+    fn config_check_reports_ok_with_the_account_counts() {
+        let summary = check_config_text("[[hackernews]]\nusername = \"example\"\n").unwrap();
+        assert!(
+            summary
+                .ends_with("pinboard-sync.toml: OK (0 reddit, 0 github, 1 hackernews account(s))"),
+            "{summary}"
+        );
+    }
+
+    #[test]
+    fn config_check_does_not_read_the_secret_files_it_names() {
+        let text = "[pinboard]\ntoken_file = \"/nonexistent/pinboard-token\"\n\
+                    [[reddit]]\ncookie_file = \"/nonexistent/reddit-cookie\"\n\
+                    [[github]]\ntoken_file = \"/nonexistent/github-token\"\n";
+        assert!(check_config_text(text).is_ok());
+    }
+
+    #[test]
+    fn config_check_failure_names_the_field_not_the_value() {
+        for (text, field) in [
+            (
+                "[pinboard]\ntoken = \"user:INLINESECRET\"\ntokn = \"user:TYPOSECRET\"\n",
+                "unknown field `tokn`",
+            ),
+            (
+                "[[reddit]]\ntags = [\"reddit_session=SECRET x\"]\n",
+                "`reddit[0].tags[0]` must not contain whitespace",
+            ),
+            (
+                "[[github]]\nlimit = \"ghp_SECRET\"\n",
+                "line 2, column 9: `limit` must be",
+            ),
+        ] {
+            let error = format!("{:#}", check_config_text(text).unwrap_err());
+            assert!(error.contains(field), "{error}");
+            assert!(!error.contains("SECRET"), "{error}");
+        }
+    }
+
+    #[test]
+    fn config_check_of_a_missing_file_names_the_path() {
+        let dir = crate::test_support::scratch_dir("config-check-missing");
+        let path = dir.path().join("absent.toml");
+        let error = format!("{:#}", check_config(&path).unwrap_err());
+        assert!(error.contains("reading config file"), "{error}");
+        assert!(error.contains("absent.toml"), "{error}");
     }
 
     /// Parse `sync <extra>` (no source subcommand) and return the top-level command.

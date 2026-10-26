@@ -14,7 +14,7 @@ use crate::source::{BookmarkDraft, Source};
 use crate::timefmt::DateOpts;
 
 /// The drafts not already present on Pinboard, matching each existing bookmark URL
-/// through this source's [`UrlKey::dedup_key`].
+/// through this source's [`UrlKey::dedup_key`](crate::source::UrlKey::dedup_key).
 pub fn filter_new<S: Source>(
     source: &S,
     drafts: Vec<BookmarkDraft>,

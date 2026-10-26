@@ -161,7 +161,7 @@ impl Source for FakeReddit {
 
 impl UrlKey for FakeReddit {
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        reddit_key(url)
+        reddit_key(url, &RedditConfig::default().domain)
     }
 }
 

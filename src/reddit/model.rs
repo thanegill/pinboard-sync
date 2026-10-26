@@ -372,7 +372,7 @@ impl RedditSavedItem {
             }
         };
         // The host-agnostic dedup key, derived from the same URL.
-        let dedup_key = reddit_key(&url).unwrap_or_else(|| url.to_string());
+        let dedup_key = reddit_key(&url, &cfg.domain).unwrap_or_else(|| url.to_string());
         let timestamp = self
             .created_utc
             .and_then(|s| crate::timefmt::from_unix(s as i64));
@@ -411,9 +411,11 @@ pub fn cased_subreddit(subreddit: &str) -> String {
 /// Build a dedup key from a full Reddit URL: the path, lowercased, with query/fragment
 /// and trailing slash removed. Returns `None` for non-Reddit URLs. Only the path is
 /// used, so the same post saved under any reddit host (`old.`/`www.`/`m.`) maps to the
-/// same key.
-pub fn reddit_key(url: &Url) -> Option<String> {
-    if !host_matches(url.host_str()?, "reddit.com") {
+/// same key. `domain` is the account's `reddit_domain`, a Reddit host even outside
+/// reddit.com (a mirror), since that is where sync writes the account's bookmarks.
+pub fn reddit_key(url: &Url, domain: &str) -> Option<String> {
+    let host = url.host_str()?;
+    if !(host_matches(host, "reddit.com") || host.eq_ignore_ascii_case(domain)) {
         return None;
     }
     let key = url.path().trim_end_matches('/').to_ascii_lowercase();

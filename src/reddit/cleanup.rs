@@ -149,12 +149,18 @@ impl CleanupPass for RedditCleanupPass<'_> {
         let note = if is_comment_url(&new_url) {
             bookmark.note.clone()
         } else if let Some(post) = post {
-            if note_is_tool_generated(&bookmark.note, &post.note, &post.selftext, &new_url) {
+            if note_is_tool_generated(
+                &bookmark.note,
+                &post.note,
+                &post.selftext,
+                &new_url,
+                &opts.config.domain,
+            ) {
                 post.note.clone()
             } else {
                 bookmark.note.clone()
             }
-        } else if is_self_link_notes(&bookmark.note, &new_url) {
+        } else if is_self_link_notes(&bookmark.note, &new_url, &opts.config.domain) {
             String::new()
         } else {
             bookmark.note.clone()
@@ -381,22 +387,31 @@ pub fn normalize_tags(
 /// annotation to preserve. Recognized tool shapes: empty, the current rebuild, the raw
 /// `selftext` from before the `<blockquote>` retrofit, or a bare self-link an older sync
 /// left in an empty self-post.
-fn note_is_tool_generated(note: &str, rebuilt: &str, selftext: &str, url: &Url) -> bool {
+fn note_is_tool_generated(
+    note: &str,
+    rebuilt: &str,
+    selftext: &str,
+    url: &Url,
+    domain: &str,
+) -> bool {
     let trimmed = note.trim();
     trimmed.is_empty()
         || note == rebuilt
         || (!selftext.trim().is_empty() && trimmed == selftext.trim())
-        || is_self_link_notes(note, url)
+        || is_self_link_notes(note, url, domain)
 }
 
 /// Whether `notes` is nothing but a Reddit link to the same post as `url` — the
 /// duplicated self-link older syncs wrote into empty self-posts' notes. Compared by
-/// [`reddit_key`], so it matches across hosts/casing; non-Reddit notes (e.g. a link
-/// post's external URL) and free-text notes don't match and are left untouched.
-fn is_self_link_notes(notes: &str, url: &Url) -> bool {
+/// [`reddit_key`] (with `domain`, the account's `reddit_domain`), so it matches across
+/// hosts/casing; non-Reddit notes (e.g. a link post's external URL) and free-text notes
+/// don't match and are left untouched.
+fn is_self_link_notes(notes: &str, url: &Url, domain: &str) -> bool {
     let notes_key = Url::parse(notes.trim()).ok();
-    let notes_key = notes_key.as_ref().and_then(reddit_key);
-    notes_key.is_some() && notes_key == reddit_key(url)
+    let notes_key = notes_key
+        .as_ref()
+        .and_then(|notes_url| reddit_key(notes_url, domain));
+    notes_key.is_some() && notes_key == reddit_key(url, domain)
 }
 
 /// The generic placeholder titles Reddit bookmarks often get from a browser.

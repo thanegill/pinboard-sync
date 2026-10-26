@@ -335,9 +335,9 @@ impl BackupSource for RedditClient {
 
 impl UrlKey for RedditClient {
     /// Reddit's dedup key is the host-agnostic permalink path, so the same post matches
-    /// across `old.`/`www.`/`m.` subdomains.
+    /// across `old.`/`www.`/`m.` subdomains and the configured `reddit_domain`.
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        reddit_key(url)
+        reddit_key(url, &self.config.domain)
     }
 }
 

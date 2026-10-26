@@ -338,7 +338,38 @@ fn a_deleted_author_gets_no_author_tag() {
 }
 
 fn key(url: &str) -> Option<String> {
-    reddit_key(&Url::parse(url).unwrap())
+    reddit_key(&Url::parse(url).unwrap(), "old.reddit.com")
+}
+
+#[test]
+fn reddit_key_treats_the_configured_domain_as_reddit() {
+    let mirror = |url: &str| reddit_key(&Url::parse(url).unwrap(), "redlib.example.org");
+    let want = Some("/r/rust/comments/abc/title".to_string());
+    assert_eq!(
+        mirror("https://redlib.example.org/r/rust/comments/abc/title/"),
+        want
+    );
+    assert_eq!(
+        mirror("https://www.reddit.com/r/Rust/comments/abc/title/"),
+        want
+    );
+    // The URL's host comes back lowercased, whatever case the config spells it in.
+    assert_eq!(
+        reddit_key(
+            &Url::parse("https://Redlib.Example.org/r/rust/comments/abc/title/").unwrap(),
+            "Redlib.Example.org"
+        ),
+        want
+    );
+    // Only the configured host itself, not its parent or a sibling.
+    assert_eq!(
+        mirror("https://example.org/r/rust/comments/abc/title/"),
+        None
+    );
+    assert_eq!(
+        key("https://redlib.example.org/r/rust/comments/abc/title/"),
+        None
+    );
 }
 
 #[test]

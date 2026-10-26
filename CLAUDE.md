@@ -305,7 +305,8 @@ string on them), so `push_prefixed` slugs internal whitespace in the value (e.g.
 GitHub language `Jupyter Notebook` → `lang:jupyter-notebook`) and `Config::parse`
 rejects whitespace in config-supplied tags/prefixes. Reddit's URL host is the configurable `reddit_domain` (used
 by both sync `bookmark_url` and cleanup's `normalize_url`); `reddit_key` stays
-host-agnostic so dedup matches across subdomains.
+host-agnostic so dedup matches across subdomains, and takes that domain too, so a
+mirror outside reddit.com still counts as a Reddit host.
 
 **Config + secret resolution.** [`src/config.rs`](src/config.rs) parses the
 `--config` TOML: one `[pinboard]` destination, `[hooks]`, and per-source account

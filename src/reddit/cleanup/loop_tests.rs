@@ -511,6 +511,52 @@ async fn skips_unchanged_and_non_reddit() {
 }
 
 #[tokio::test]
+async fn bookmarks_moved_to_a_mirror_domain_still_dedup_for_sync() {
+    let mirror = RedditConfig {
+        domain: "redlib.example.org".into(),
+        ..RedditConfig::default()
+    };
+    let seed = vec![bookmark(
+        "https://www.reddit.com/r/rust/comments/a/x/",
+        "T",
+        "reddit subreddit:rust",
+    )];
+    let pinboard = FakePinboard {
+        all: seed.clone(),
+        ..Default::default()
+    };
+    let opts = RedditCleanupOpts {
+        config: mirror.clone(),
+        ..opts()
+    };
+    run(
+        &pinboard.cleanup_store(false),
+        Some(&FakeReddit::default()),
+        &opts,
+    )
+    .await
+    .unwrap();
+    let account = crate::test_support::replay(&seed, &pinboard.ops.borrow());
+    assert_eq!(
+        account[0].url.as_str(),
+        "https://redlib.example.org/r/rust/comments/a/x/"
+    );
+
+    let mut client = crate::reddit::RedditClient::for_test(None, None, "http://unused".into());
+    client.config = mirror;
+    let saved = listing_entry(
+        "t3",
+        json!({ "name": "t3_a", "subreddit": "rust",
+                "permalink": "/r/rust/comments/a/x/", "title": "T" }),
+    );
+    let drafts = client.shape(vec![saved]);
+    assert!(
+        crate::sync::filter_new(&client, drafts, &account).is_empty(),
+        "sync must not re-add the save cleanup moved onto the mirror"
+    );
+}
+
+#[tokio::test]
 async fn dry_run_writes_nothing() {
     let pinboard = FakePinboard {
         all: vec![bookmark(

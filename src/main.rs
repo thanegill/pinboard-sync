@@ -1509,16 +1509,12 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                 run.record(cleanup_github_for(&store, Some(acct), None, dates, config).await);
             }
             if let Some(acct) = config.reddit.first() {
-                let args = RedditCleanupArgs {
-                    account: None,
-                    reddit_cookie: None,
-                    pinboard_token: None,
-                    no_nsfw: false,
-                    no_titles: false,
-                    dates: DateFlags::default(),
-                    dry_run: cmd.dry_run,
+                let flags = RedditCleanupFlags {
+                    cookie: None,
+                    mark_nsfw: true,
+                    fix_titles: true,
                 };
-                run.record(cleanup_one_reddit(Some(acct), &args, &over, &store, config).await);
+                run.record(cleanup_one_reddit(Some(acct), flags, &over, &store, config).await);
             }
             if let Some(acct) = config.hackernews.first() {
                 run.record(
@@ -1593,20 +1589,20 @@ async fn cleanup_github_for<S: BookmarkStore + AccountState>(
 }
 
 async fn run_cleanup_reddit(
-    mut args: RedditCleanupArgs,
+    args: RedditCleanupArgs,
     top_dry_run: bool,
     top: &DateOverrides,
     config: &Config,
 ) -> Result<()> {
-    args.dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
+    let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     // One pass over the Pinboard account's reddit bookmarks, using the selected (or
     // first, or implicit CLI/env) account's cookie + domain/tags.
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let account = config::select_account(&config.reddit, args.account.as_deref())?;
-    let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), args.dry_run);
+    let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
     cleanup_one_reddit(
         account,
-        &args,
+        RedditCleanupFlags::from(&args),
         &DateOverrides::from(&args.dates).with_top_level(top),
         &store,
         config,
@@ -1614,29 +1610,43 @@ async fn run_cleanup_reddit(
     .await
 }
 
+/// The `cleanup reddit` choices that are not account settings: the cookie flag, and which
+/// `/api/info`-backed fixes to make.
+struct RedditCleanupFlags {
+    cookie: Option<String>,
+    mark_nsfw: bool,
+    fix_titles: bool,
+}
+
+impl From<&RedditCleanupArgs> for RedditCleanupFlags {
+    fn from(args: &RedditCleanupArgs) -> Self {
+        RedditCleanupFlags {
+            cookie: args.reddit_cookie.clone(),
+            mark_nsfw: !args.no_nsfw,
+            fix_titles: !args.no_titles,
+        }
+    }
+}
+
 async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     account: Option<&RedditAccount>,
-    args: &RedditCleanupArgs,
+    flags: RedditCleanupFlags,
     over: &DateOverrides,
     store: &S,
     config: &Config,
 ) -> Result<()> {
-    let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
     let opts = cleanup::RedditCleanupOpts {
-        mark_nsfw: !args.no_nsfw,
-        fix_titles: !args.no_titles,
-        base_tag: reddit_config.tags.first().cloned().unwrap_or_default(),
-        subreddit_tag_prefix: reddit_config.subreddit_prefix.clone(),
-        nsfw_tag: reddit_config.nsfw.clone(),
-        domain: reddit_config.domain.clone(),
+        mark_nsfw: flags.mark_nsfw,
+        fix_titles: flags.fix_titles,
+        config: account.map(RedditConfig::from).unwrap_or_default(),
         dates: resolve_dates(over, account, &config.defaults.reddit, config),
     };
 
     // Reddit (for /api/info) is needed when marking NSFW, fixing titles, or dating by
     // the source post (the post's created_utc comes from /api/info too).
     let reddit = if opts.mark_nsfw || opts.fix_titles || opts.dates.use_post_date {
-        let cookie = resolve_reddit_cookie(args.reddit_cookie.clone(), account)
-            .with_context(missing_reddit_cookie)?;
+        let cookie =
+            resolve_reddit_cookie(flags.cookie, account).with_context(missing_reddit_cookie)?;
         Some(RedditClient::for_info(Some(cookie))?)
     } else {
         None

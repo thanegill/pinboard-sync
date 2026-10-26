@@ -294,6 +294,14 @@ pub struct RedditConfig {
     pub media_types: Vec<String>,
 }
 
+impl RedditConfig {
+    /// The first configured base tag, the one `cleanup` keeps when it normalizes tags, or
+    /// `""` when `tags` is empty.
+    pub fn base_tag(&self) -> &str {
+        self.tags.first().map_or("", String::as_str)
+    }
+}
+
 impl Default for RedditConfig {
     fn default() -> Self {
         Self {

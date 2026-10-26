@@ -74,6 +74,37 @@
           LLVM_COV = pkgs.lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-cov";
           LLVM_PROFDATA = pkgs.lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-profdata";
         };
+
+        checks = {
+          package = self.packages.${system}.default;
+
+          nixos-module =
+            let
+              inherit (pkgs) lib;
+              nixos = nixpkgs.lib.nixosSystem {
+                modules = [
+                  self.nixosModules.default
+                  {
+                    nixpkgs.hostPlatform = "x86_64-linux";
+                    boot.isContainer = true;
+                    system.stateVersion = lib.trivial.release;
+                    services.pinboard-sync = {
+                      enable = true;
+                      cleanup.enable = true;
+                      backup.enable = true;
+                      pinboardTokenFile = "/run/secrets/pinboard-token";
+                      settings.hackernews = [ { username = "example"; } ];
+                    };
+                  }
+                ];
+              };
+            in
+            # Discarding the context keeps this an evaluation-only check: the system's
+            # x86_64-linux store paths would otherwise have to be built here.
+            pkgs.writeText "pinboard-sync-nixos-module" (
+              builtins.unsafeDiscardStringContext nixos.config.system.build.toplevel.drvPath
+            );
+        };
       }
     )
     // {

@@ -20,6 +20,12 @@ nix develop --command cargo fmt --check
 nix flake check                              # builds the package (runs tests) + evaluates the NixOS module
 ```
 
+`nix flake check` runs the flake's `checks` for the host system only: `checks.package`
+is the package build, whose `doCheck` runs the hermetic tests, and `checks.nixos-module`
+instantiates an x86_64-linux system with the module and all three timers enabled, which
+fails on a module assertion or an undefined option without building anything for Linux.
+CI runs it on x86_64-linux.
+
 `cargo clippy -D warnings` and `cargo fmt --check` are the gate — keep both clean.
 Commit often: each working feature or structural piece, with its tests, keeping the
 gate green.

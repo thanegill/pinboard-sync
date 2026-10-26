@@ -11,6 +11,10 @@ All notable changes to this project are documented here. The format is based on
 - `cleanup reddit` now adds the author, flair, media and comment tags `sync` writes,
   each only when the bookmark has no tag of that kind yet.
 
+### Removed
+
+- The flake no longer has `x86_64-darwin` outputs, which nixpkgs 26.11 dropped.
+
 ### Fixed
 
 - A Reddit cookie with a stray `;` (`abc;`, `a=1;;`) is sent without it, so a bare value

@@ -340,7 +340,7 @@ and never re-auths. **`cleanup` fires it too, not just `sync`** — which is why
 flattening the variant at that boundary is exactly what used to lose the hook. Every
 re-auth-capable read in `cleanup` is covered, not only the pass — GitHub's `repo()`
 mid-pass (via `Halt`), GitHub's `fetch()` for `use_post_date` star dates, and Reddit's
-`/api/info`, whose expired cookie is by far the most common in practice. `main`'s
+`/api/info`, whose expired cookie is by far the most common in practice. [`src/hook.rs`](src/hook.rs)'s
 `handle_source_err` is the single place the hook is fired, shared with `sync`; `cleanup`
 resolves the command through `PINBOARD_SYNC_ON_AUTH_FAILURE` → account →
 `[defaults.<source>]` → `[hooks]` (no `--on-auth-failure` flag on `cleanup`, unlike

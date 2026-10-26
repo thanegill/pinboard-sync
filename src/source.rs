@@ -37,7 +37,7 @@ impl SourceError {
     /// Flatten into a plain `anyhow::Error`: the re-auth, rate-limit or block message on
     /// its own (without the variant's prefix) or the inner error unwrapped.
     ///
-    /// Only once nothing needs the variant any more: `main`'s `handle_source_err`, after it
+    /// Only once nothing needs the variant any more: `hook::handle_source_err`, after it
     /// has decided on the hook; `doctor`, which reports each credential rather than acting
     /// on it; and HackerNews, which is public and cannot need re-authentication. Everywhere
     /// else the variant is what decides whether the `--on-auth-failure` hook fires, so

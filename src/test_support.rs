@@ -281,3 +281,13 @@ impl BookmarkStore for FakePinboard {
         Ok(())
     }
 }
+
+/// Serializes tests that read or write `PINBOARD_SYNC_ON_AUTH_FAILURE`, since
+/// the env var is process-global and clap reads it at parse time.
+static ON_AUTH_FAILURE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn lock_on_auth_failure_env() -> std::sync::MutexGuard<'static, ()> {
+    ON_AUTH_FAILURE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}

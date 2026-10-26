@@ -5,12 +5,13 @@
 //! be unit-tested with in-memory fakes.
 
 use std::collections::HashSet;
-use std::num::NonZeroUsize;
 
 use log::{debug, error};
 
 use crate::bookmark::{Bookmark, BookmarkStore};
+use crate::config::SyncLimit;
 use crate::source::{BookmarkDraft, Source};
+use crate::timefmt::DateOpts;
 
 /// The drafts not already present on Pinboard, matching each existing bookmark URL
 /// through this source's [`UrlKey::dedup_key`].
@@ -26,17 +27,17 @@ pub fn filter_new<S: Source>(
         .collect()
 }
 
-/// The per-account write knobs resolved for one sync job: the flags stamped onto every
-/// new bookmark and the caps applied to the batch. Mirrors the resolved fields of a
-/// `SyncJob` so the per-job transform can run without the concrete client.
+/// The per-account settings resolved for one sync job: how much to read and write, the
+/// flags stamped onto every new bookmark, and the post-date policy. A `SyncJob` carries one
+/// next to its client, so the per-job transform can run without the concrete client.
 #[derive(Debug, Clone, Copy)]
 pub struct JobSettings {
+    pub limit: SyncLimit,
+    /// To-read flag for this account's new bookmarks.
     pub toread: bool,
+    /// Public/shared flag for this account's new bookmarks.
     pub shared: bool,
-    pub use_post_date: bool,
-    pub max_age_days: u64,
-    /// The most new bookmarks to write, if capped.
-    pub limit: Option<NonZeroUsize>,
+    pub dates: DateOpts,
 }
 
 /// The new drafts for one account, ready to write: those not already on Pinboard
@@ -66,15 +67,15 @@ pub fn prepare_new_drafts<S: Source>(
     for d in &mut new {
         d.bookmark.read_later = settings.toread;
         d.bookmark.public = settings.shared;
-        d.bookmark.timestamp = if settings.use_post_date {
+        d.bookmark.timestamp = if settings.dates.use_post_date {
             d.bookmark.timestamp.filter(|t| {
-                crate::timefmt::within_age_cap(now, t.unix_timestamp(), settings.max_age_days)
+                crate::timefmt::within_age_cap(now, t.unix_timestamp(), settings.dates.max_age_days)
             })
         } else {
             None
         };
     }
-    if let Some(limit) = settings.limit {
+    if let Some(limit) = settings.limit.write_cap() {
         new.truncate(limit.get());
     }
     new.reverse();
@@ -101,22 +102,23 @@ pub fn merge_deduped(per_job: Vec<Vec<BookmarkDraft>>) -> Vec<BookmarkDraft> {
 }
 
 /// Tally of a write pass: how many drafts were written vs. failed.
+#[must_use]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct WriteOutcome {
+pub struct WriteTally {
     pub written: usize,
     pub failed: usize,
 }
 
 /// Write `drafts` to Pinboard sequentially (the store spaces its own `posts/add` calls).
 /// A single bookmark that fails to write (e.g. a rejected URL) is logged and skipped so
-/// the rest still go through; the failure is reflected in the returned [`WriteOutcome`]
+/// the rest still go through; the failure is reflected in the returned [`WriteTally`]
 /// for a non-zero exit. Writes nothing in `dry_run`.
 pub async fn write_drafts<P: BookmarkStore>(
     pinboard: &P,
     drafts: &[BookmarkDraft],
     dry_run: bool,
-) -> WriteOutcome {
-    let mut outcome = WriteOutcome::default();
+) -> WriteTally {
+    let mut outcome = WriteTally::default();
     for draft in drafts {
         let bm = &draft.bookmark;
         if dry_run {
@@ -157,6 +159,8 @@ pub async fn write_drafts<P: BookmarkStore>(
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use super::*;
     use crate::source::{page_is_caught_up, Source, SourceError, UrlKey};
     use crate::test_support::{listing_entry, replay, FakePinboard, FakeReddit};
@@ -254,11 +258,14 @@ mod tests {
         limit: Option<NonZeroUsize>,
     ) -> JobSettings {
         JobSettings {
+            limit: limit.map_or(SyncLimit::All, SyncLimit::Max),
             toread: false,
             shared: false,
-            use_post_date,
-            max_age_days,
-            limit,
+            dates: DateOpts {
+                use_post_date,
+                max_age_days,
+                stale_to_now: false,
+            },
         }
     }
 
@@ -364,7 +371,7 @@ mod tests {
             draft("https://b.test/", false, false),
         ];
         let pinboard = FakePinboard::default();
-        write_drafts(&pinboard, &drafts, false).await;
+        let _ = write_drafts(&pinboard, &drafts, false).await;
         let added = pinboard.added.borrow();
         assert_eq!(added.len(), 2);
         assert!(added[0].toread && added[0].shared);
@@ -390,7 +397,7 @@ mod tests {
             draft("https://b.test/", None),
         ];
         let pinboard = FakePinboard::default();
-        write_drafts(&pinboard, &drafts, false).await;
+        let _ = write_drafts(&pinboard, &drafts, false).await;
         let added = pinboard.added.borrow();
         assert_eq!(added[0].dt, "2010-12-11T19:48:02Z");
         assert_eq!(added[1].dt, "");
@@ -426,11 +433,14 @@ mod tests {
             ..Default::default()
         };
         let job = JobSettings {
+            limit: SyncLimit::All,
             toread: true,
             shared: true,
-            use_post_date: true,
-            max_age_days: 30,
-            limit: None,
+            dates: DateOpts {
+                use_post_date: true,
+                max_age_days: 30,
+                stale_to_now: false,
+            },
         };
         let drafts = reddit.fetch().await.unwrap();
         let new = prepare_new_drafts(&reddit, drafts, &[], &job, now);
@@ -655,7 +665,7 @@ mod tests {
             0,
         );
         let pinboard = FakePinboard::default();
-        write_drafts(&pinboard, &new, false).await;
+        let _ = write_drafts(&pinboard, &new, false).await;
         assert_eq!(
             added_urls(&pinboard),
             ["https://a.test/", "https://b.test/", "https://c.test/"]
@@ -678,7 +688,7 @@ mod tests {
             0,
         );
         let pinboard = FakePinboard::default();
-        write_drafts(&pinboard, &new, false).await;
+        let _ = write_drafts(&pinboard, &new, false).await;
         assert_eq!(
             added_urls(&pinboard),
             ["https://c.test/", "https://d.test/"]
@@ -718,7 +728,7 @@ mod tests {
             &job,
             0,
         );
-        write_drafts(&pinboard, &first_run[..killed_after], false).await;
+        let _ = write_drafts(&pinboard, &first_run[..killed_after], false).await;
 
         let account = replay(&[], &pinboard.ops.borrow());
         let second_run = prepare_new_drafts(
@@ -728,7 +738,7 @@ mod tests {
             &job,
             0,
         );
-        write_drafts(&pinboard, &second_run, false).await;
+        let _ = write_drafts(&pinboard, &second_run, false).await;
 
         let mut written = added_urls(&pinboard);
         written.sort();
@@ -785,7 +795,7 @@ mod tests {
             ));
         }
         let pinboard = FakePinboard::default();
-        write_drafts(&pinboard, &merge_deduped(per_job), false).await;
+        let _ = write_drafts(&pinboard, &merge_deduped(per_job), false).await;
 
         assert_eq!(
             added_urls(&pinboard),

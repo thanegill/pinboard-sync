@@ -39,6 +39,7 @@ use source::{
     github_token_settings, github_token_source, reddit_cookie_settings, reddit_cookie_source,
     BookmarkDraft, ConfiguredSecret, SecretRung, Source, SourceError, UrlKey,
 };
+use sync::JobSettings;
 use timefmt::DateOpts;
 use url::Url;
 
@@ -834,27 +835,16 @@ struct SyncJob {
     /// Human label for logs, e.g. `reddit[alice]`.
     label: String,
     hook: Option<String>,
-    common: JobCommon,
+    settings: JobSettings,
 }
 
 impl SyncJob {
     /// The source's drafts: read incrementally against `existing` under
     /// [`SyncLimit::Auto`], else in full.
     async fn fetch(&self, existing: &[Bookmark]) -> Result<Vec<BookmarkDraft>, SourceError> {
-        match self.common.limit {
+        match self.settings.limit {
             SyncLimit::Auto => self.client.fetch_incremental(existing).await,
             SyncLimit::All | SyncLimit::Max(_) => self.client.fetch().await,
-        }
-    }
-
-    fn settings(&self) -> sync::JobSettings {
-        let common = &self.common;
-        sync::JobSettings {
-            toread: common.toread,
-            shared: common.shared,
-            use_post_date: common.dates.use_post_date,
-            max_age_days: common.dates.max_age_days,
-            limit: common.limit.write_cap(),
         }
     }
 }
@@ -986,22 +976,13 @@ impl UrlKey for SourceClient {
 /// `limit`/`toread`/`shared` trio through [`resolve_setting`] plus the dates through
 /// [`resolve_dates`], each on the flag → account → per-source default → `[pinboard]`
 /// global ladder. Leaves client/secret/hook construction to each source builder.
-struct JobCommon {
-    limit: SyncLimit,
-    /// To-read flag for this account's new bookmarks.
-    toread: bool,
-    /// Public/shared flag for this account's new bookmarks.
-    shared: bool,
-    dates: DateOpts,
-}
-
-fn resolve_job_common(
+fn resolve_job_settings(
     account: Option<&impl config::Account>,
     ovr: &SyncOverrides,
     src: &config::SourceDefaults,
     config: &Config,
-) -> JobCommon {
-    JobCommon {
+) -> JobSettings {
+    JobSettings {
         limit: resolve_setting(
             ovr.limit,
             account.and_then(|a| a.limit()),
@@ -1045,12 +1026,12 @@ fn build_reddit_job(
         src.on_auth_failure.as_deref(),
         config,
     );
-    let common = resolve_job_common(account, ovr, src, config);
+    let settings = resolve_job_settings(account, ovr, src, config);
     Ok(SyncJob {
         client: SourceClient::Reddit(RedditClient::for_user(username, cookie, reddit_config)?),
         label: job_label("reddit", account),
         hook,
-        common,
+        settings,
     })
 }
 
@@ -1069,12 +1050,12 @@ fn build_github_job(
         src.on_auth_failure.as_deref(),
         config,
     );
-    let common = resolve_job_common(account, ovr, src, config);
+    let settings = resolve_job_settings(account, ovr, src, config);
     Ok(SyncJob {
         client: SourceClient::GitHub(GitHubClient::new(token, github_config)?),
         label: job_label("github", account),
         hook,
-        common,
+        settings,
     })
 }
 
@@ -1094,13 +1075,13 @@ fn build_hackernews_job(
     )?;
     let hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
     let src = &config.defaults.hackernews;
-    let common = resolve_job_common(account, ovr, src, config);
+    let settings = resolve_job_settings(account, ovr, src, config);
     Ok(SyncJob {
         // HackerNews favorites are public, so there is no auth-failure hook.
         client: SourceClient::HackerNews(HackerNewsClient::new(username, hn_config)?),
         label: job_label("hackernews", account),
         hook: None,
-        common,
+        settings,
     })
 }
 
@@ -1122,7 +1103,7 @@ async fn run_sync_jobs(
     let fetched = futures::future::join_all(jobs.iter().map(|job| async move {
         let drafts = job.fetch(bookmarks).await?;
         let fetched = drafts.len();
-        let new = sync::prepare_new_drafts(&job.client, drafts, bookmarks, &job.settings(), now);
+        let new = sync::prepare_new_drafts(&job.client, drafts, bookmarks, &job.settings, now);
         info!(
             "{}: fetched {fetched}, {} new after dedup",
             job.label,
@@ -2312,21 +2293,21 @@ mod tests {
     }
 
     fn assert_wired(job: &SyncJob) {
-        let common = &job.common;
+        let settings = &job.settings;
         assert_eq!(
-            common.limit,
+            settings.limit,
             SyncLimit::Max(NonZeroUsize::new(7).unwrap()),
             "limit"
         );
-        assert!(common.toread, "toread");
-        assert!(!common.shared, "shared (from --public=false)");
-        assert!(common.dates.use_post_date, "use_post_date");
-        assert_eq!(common.dates.max_age_days, 99, "max_age_days");
+        assert!(settings.toread, "toread");
+        assert!(!settings.shared, "shared (from --public=false)");
+        assert!(settings.dates.use_post_date, "use_post_date");
+        assert_eq!(settings.dates.max_age_days, 99, "max_age_days");
     }
 
     /// The write settings of a job a test only fetches through: everything off but `limit`.
-    pub(super) fn fetch_only(limit: SyncLimit) -> JobCommon {
-        JobCommon {
+    pub(super) fn fetch_only(limit: SyncLimit) -> JobSettings {
+        JobSettings {
             limit,
             toread: false,
             shared: false,
@@ -2974,7 +2955,7 @@ mod net_tests {
             )),
             label: "hackernews[u]".into(),
             hook: None,
-            common: fetch_only(limit),
+            settings: fetch_only(limit),
         };
         let existing = [Bookmark {
             url: Url::parse("https://news.ycombinator.com/item?id=1").unwrap(),
@@ -3028,7 +3009,7 @@ mod net_tests {
                 client: client(&server),
                 label: "test".into(),
                 hook: None,
-                common: fetch_only(limit),
+                settings: fetch_only(limit),
             };
 
             crate::http::recording_waits(job.fetch(existing))

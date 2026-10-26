@@ -7,7 +7,7 @@
 }:
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "pinboard-sync";
-  version = "0.6.0";
+  version = (lib.importTOML ../Cargo.toml).package.version;
   src = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [

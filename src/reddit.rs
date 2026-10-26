@@ -249,9 +249,11 @@ impl PostInfo for RedditClient {
     /// Returns the entries that exist.
     async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError> {
         let mut out: Vec<RedditListingEntry> = Vec::new();
-        let chunks: Vec<&[String]> = fullnames.chunks(100).collect();
         let endpoint = format!("{}/api/info.json", self.base);
-        for (i, chunk) in chunks.iter().enumerate() {
+        for (i, chunk) in fullnames.chunks(100).enumerate() {
+            if i > 0 {
+                crate::http::sleep(REQUEST_PAUSE).await;
+            }
             let ids = chunk.join(",");
             let resp = self
                 .http
@@ -266,9 +268,6 @@ impl PostInfo for RedditClient {
             let listing: RedditListing =
                 decode_reddit_json(resp, "api/info", self.cookie.as_ref()).await?;
             out.extend(listing.data.children);
-            if i + 1 < chunks.len() {
-                crate::http::sleep(REQUEST_PAUSE).await;
-            }
         }
         Ok(out)
     }

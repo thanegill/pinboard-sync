@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- `cleanup reddit` now adds the author, flair, media and comment tags `sync` writes,
+  each only when the bookmark has no tag of that kind yet.
+
 ### Fixed
 
 - A Reddit cookie with a stray `;` (`abc;`, `a=1;;`) is sent without it, so a bare value

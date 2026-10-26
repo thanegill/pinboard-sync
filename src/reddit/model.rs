@@ -163,7 +163,7 @@ impl RedditListingEntry {
             _ => {
                 log::warn!(
                     "skipping reddit {wire_kind} entry: missing subreddit/permalink — \
-                     the saved-listing response shape may have changed"
+                     the Reddit response shape may have changed"
                 );
                 return None;
             }
@@ -331,18 +331,32 @@ impl RedditSavedItem {
         if self.over_18 {
             push_tag(&mut tags, &cfg.nsfw);
         }
+        tags.extend(self.detail_tags(cfg).into_iter().map(|(_, tag)| tag));
+        tags
+    }
+
+    /// The author, flair and media-type tags, each paired with the config prefix that
+    /// marks its family. Shared with `cleanup`, which backfills a family only when the
+    /// stored bookmark has no tag with that prefix.
+    pub(crate) fn detail_tags<'c>(&self, cfg: &'c RedditConfig) -> Vec<(&'c str, String)> {
+        let mut families: Vec<(&'c str, String)> = Vec::new();
+        let mut push = |prefix: &'c str, value: &str| {
+            let mut tag = Vec::new();
+            push_prefixed(&mut tag, prefix, value);
+            families.extend(tag.into_iter().map(|tag| (prefix, tag)));
+        };
         if let Some(author) = &self.author {
-            push_prefixed(&mut tags, &cfg.author_prefix, author);
+            push(&cfg.author_prefix, author);
         }
         if let Some(flair) = &self.flair {
-            push_prefixed(&mut tags, &cfg.flair_prefix, &flair.to_lowercase());
+            push(&cfg.flair_prefix, &flair.to_lowercase());
         }
         if let Some(media_type) = &self.media_type {
             if cfg.media_types.iter().any(|t| t == media_type) {
-                push_prefixed(&mut tags, &cfg.media_prefix, media_type);
+                push(&cfg.media_prefix, media_type);
             }
         }
-        tags
+        families
     }
 
     /// Shape this item into a Pinboard draft using the reddit config. `None` (with a

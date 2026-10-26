@@ -1,7 +1,8 @@
 //! `cleanup` subcommand: normalize existing Reddit bookmarks in a Pinboard
 //! account. Rewrites URLs to `old.reddit.com` (unwrapping `over18` redirects),
 //! normalizes tags, and — using Reddit's `/api/info` for authoritative data —
-//! marks NSFW posts and replaces generic placeholder titles.
+//! marks NSFW posts, replaces generic placeholder titles, and backfills the author,
+//! flair and media-type tags sync writes.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -10,9 +11,11 @@ use anyhow::Result;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::html_to_plain;
-use crate::reddit::model::{cased_subreddit, reddit_key, RedditConfig};
+use crate::reddit::model::{
+    cased_subreddit, reddit_key, RedditConfig, RedditKind, RedditSavedItem,
+};
 use crate::reddit::PostInfo;
-use crate::source::{host_matches, push_prefixed, push_tags, SourceError, UrlExt};
+use crate::source::{extend_unique, host_matches, push_prefixed, push_tags, SourceError, UrlExt};
 use crate::timefmt::DateOpts;
 use url::Url;
 
@@ -41,6 +44,16 @@ struct RedditPostMeta {
     selftext: String,
 }
 
+/// What `/api/info` said about the bookmarks' posts and comments.
+#[derive(Default)]
+struct RedditInfo {
+    /// Per-post data, keyed by `t3_` fullname.
+    posts: HashMap<String, RedditPostMeta>,
+    /// Each post and comment shaped as `sync` shapes it, for the tags drawn from its own
+    /// data, keyed by `t3_`/`t1_` fullname.
+    items: HashMap<String, RedditSavedItem>,
+}
+
 pub async fn run<S: BookmarkStore + AccountState, R: PostInfo>(
     store: &S,
     reddit: Option<&R>,
@@ -61,9 +74,10 @@ pub async fn run<S: BookmarkStore + AccountState, R: PostInfo>(
 }
 
 /// Re-shapes one reddit bookmark: normalize the URL/tags, then apply the authoritative
-/// `/api/info` data (NSFW marker, placeholder-title replacement, post date, rebuilt notes).
+/// `/api/info` data (NSFW marker, placeholder-title replacement, post date, rebuilt notes,
+/// and the author/flair/media tags missing from the bookmark).
 struct RedditCleanupPass<'a> {
-    info: HashMap<String, RedditPostMeta>,
+    info: RedditInfo,
     opts: &'a RedditCleanupOpts,
 }
 
@@ -82,7 +96,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
             &opts.config.subreddit_prefix,
             &opts.config.nsfw,
         );
-        let post = post_fullname(&new_url).and_then(|f| self.info.get(&f));
+        let post = post_fullname(&new_url).and_then(|f| self.info.posts.get(&f));
 
         if opts.mark_nsfw
             && !opts.config.nsfw.is_empty()
@@ -90,8 +104,22 @@ impl CleanupPass for RedditCleanupPass<'_> {
             && !tags.iter().any(|t| t == &opts.config.nsfw)
         {
             tags.push(opts.config.nsfw.clone());
-            tags.sort();
         }
+
+        let own_fullname = if is_comment_url(&new_url) {
+            extend_unique(&mut tags, std::slice::from_ref(&opts.config.comment));
+            comment_fullname(&new_url)
+        } else {
+            post_fullname(&new_url)
+        };
+        if let Some(item) = own_fullname.and_then(|f| self.info.items.get(&f)) {
+            for (prefix, tag) in item.detail_tags(&opts.config) {
+                if !tags.iter().any(|t| t.starts_with(prefix)) {
+                    tags.push(tag);
+                }
+            }
+        }
+        tags.sort();
 
         let mut title = html_to_plain(&bookmark.title);
         if opts.fix_titles && is_placeholder_title(&title) {
@@ -100,10 +128,10 @@ impl CleanupPass for RedditCleanupPass<'_> {
             }
         }
 
-        // Reshape the notes. Only for *post* bookmarks: `/api/info` is keyed by the post
-        // fullname (`post_fullname`), so a comment's own body is never fetched — leave those
-        // notes alone. When we have authoritative data, retrofit the rebuild (selftext in a
-        // <blockquote>, or a link post's external URL) onto the stored notes *only* when
+        // Reshape the notes. Only for *post* bookmarks: `post` is keyed by the post fullname
+        // (`post_fullname`), and a comment's own entry is used only for its tags, so leave
+        // those notes alone. When we have authoritative data, retrofit the rebuild (selftext
+        // in a <blockquote>, or a link post's external URL) onto the stored notes *only* when
         // those notes are ones the tool itself wrote (empty, the current rebuild, the raw
         // pre-<blockquote> selftext, or a bare self-link an older sync left) — a hand-written
         // annotation on a manually-saved bookmark is preserved. Without an entry this run,
@@ -122,7 +150,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
             bookmark.note.clone()
         };
 
-        // `/api/info` is keyed by the post fullname, so `post` for a comment bookmark is the
+        // `post` is keyed by the post fullname, so for a comment bookmark it is the
         // *parent thread's* meta; its `created_utc` is the thread-creation time, not the
         // comment's. Never re-date a comment by it -- leave a None candidate so the driver
         // keeps the comment's stored timestamp (as with its notes above).
@@ -146,44 +174,44 @@ impl CleanupPass for RedditCleanupPass<'_> {
 }
 
 /// Batch-fetch `over_18` + `title` + `created_utc` + the rebuilt notes for every post
-/// referenced by the bookmarks, keyed by fullname. Empty when none of NSFW tagging, title
-/// fixing, or `use_post_date` is requested — the notes retrofit then rides on whichever of
-/// those caused the `/api/info` call (it needs no extra fetch of its own).
+/// referenced by the bookmarks, and each post and comment bookmark's own entry for its
+/// tags. Empty when none of NSFW tagging, title fixing, or `use_post_date` is requested —
+/// the notes retrofit and the tag backfill then ride on whichever of those caused the
+/// `/api/info` call (they need no extra fetch of their own).
 async fn fetch_post_info<R: PostInfo>(
     reddit: Option<&R>,
     opts: &RedditCleanupOpts,
     bookmarks: &[Bookmark],
-) -> Result<HashMap<String, RedditPostMeta>, SourceError> {
-    let mut map = HashMap::new();
+) -> Result<RedditInfo, SourceError> {
+    let mut info = RedditInfo::default();
     if !(opts.mark_nsfw || opts.fix_titles || opts.dates.use_post_date) {
-        return Ok(map);
+        return Ok(info);
     }
     let Some(reddit) = reddit else {
-        return Ok(map);
+        return Ok(info);
     };
 
     let fullnames: Vec<String> = bookmarks
         .iter()
-        .filter_map(|bookmark| {
+        .flat_map(|bookmark| {
             let url = normalize_url(&bookmark.url, &opts.config.domain)
                 .unwrap_or_else(|| bookmark.url.clone());
-            post_fullname(&url)
+            [post_fullname(&url), comment_fullname(&url)]
         })
+        .flatten()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
     if fullnames.is_empty() {
-        return Ok(map);
+        return Ok(info);
     }
 
     let entries = reddit.info(&fullnames).await?;
     for entry in entries {
-        if let Some(name) = entry.fields.name.clone() {
+        if let (RedditKind::Post, Some(name)) = (entry.kind, entry.fields.name.clone()) {
             // Rebuild the notes from authoritative data the same way sync does, so the
-            // <blockquote> shaping retrofits onto existing bookmarks. These entries are
-            // always posts (`/api/info` is queried with post fullnames), so build the
-            // post-shaped notes — selftext quoted, empty for an empty self-post, else the
-            // external URL.
+            // <blockquote> shaping retrofits onto existing bookmarks: selftext quoted,
+            // empty for an empty self-post, else the external URL.
             let selftext = entry.fields.selftext.clone().unwrap_or_default();
             let note = crate::reddit::model::reddit_note(
                 false,
@@ -194,19 +222,22 @@ async fn fetch_post_info<R: PostInfo>(
                 None,
                 &opts.config.domain,
             );
-            map.insert(
+            info.posts.insert(
                 name,
                 RedditPostMeta {
                     over_18: entry.fields.over_18,
-                    title: entry.fields.title.filter(|s| !s.is_empty()),
+                    title: entry.fields.title.clone().filter(|s| !s.is_empty()),
                     created_utc: entry.fields.created_utc,
                     note,
                     selftext,
                 },
             );
         }
+        if let Some(item) = entry.into_saved_item(&opts.config.domain) {
+            info.items.insert(item.fullname.clone(), item);
+        }
     }
-    Ok(map)
+    Ok(info)
 }
 
 // --- pure transforms ---------------------------------------------------------
@@ -272,8 +303,9 @@ pub fn post_fullname(url: &Url) -> Option<String> {
 }
 
 /// Whether a reddit URL points at a comment (`/comments/<post>/<slug>/<comment>/`) rather
-/// than a post. Used to skip the notes retrofit for comments, whose own body `/api/info`
-/// never returns (it is keyed by the post fullname; see [`post_fullname`]).
+/// than a post. Decides the `reddit-comment` tag, which fullname a bookmark's own tags come
+/// from, and skips the notes retrofit for comments, whose post-keyed data (see
+/// [`post_fullname`]) is the parent thread's.
 fn is_comment_url(url: &Url) -> bool {
     let Some((_, rest)) = url.path().split_once("/comments/") else {
         return false;
@@ -281,6 +313,16 @@ fn is_comment_url(url: &Url) -> bool {
     // `Url::path` excludes any query/fragment.
     // post → [id, slug]; comment → [id, slug, comment-id].
     rest.split('/').filter(|s| !s.is_empty()).count() >= 3
+}
+
+/// The comment fullname (`t1_<id>`) from a comment permalink's third segment after
+/// `/comments/`, or `None` for a post permalink.
+fn comment_fullname(url: &Url) -> Option<String> {
+    let (_, rest) = url.path().split_once("/comments/")?;
+    let id = rest.split('/').filter(|s| !s.is_empty()).nth(2)?;
+    id.chars()
+        .all(char::is_alphanumeric)
+        .then(|| format!("t1_{id}"))
 }
 
 /// Normalize a bookmark's tags: ensure the base tags, derive `subreddit:<sub>` from

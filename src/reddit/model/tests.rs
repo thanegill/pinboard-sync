@@ -125,6 +125,29 @@ fn post_tags_include_author_flair_and_type() {
 }
 
 #[test]
+fn tags_come_in_a_fixed_order() {
+    let it = item(
+        "t3",
+        serde_json::json!({
+            "name": "t3_abc", "subreddit": "rust", "permalink": "/r/rust/comments/abc/x/",
+            "title": "T", "author": "alice", "link_flair_text": "Help Wanted",
+            "post_hint": "image", "over_18": true
+        }),
+    );
+    assert_eq!(
+        it.tags(&RedditConfig::default()),
+        vec![
+            "reddit",
+            "subreddit:rust",
+            "nsfw",
+            "author:reddit:alice",
+            "reddit-flair:help-wanted",
+            "type:image"
+        ]
+    );
+}
+
+#[test]
 fn media_type_tag_is_gated_by_the_media_types_allowlist() {
     let img = item(
         "t3",

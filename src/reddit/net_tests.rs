@@ -505,3 +505,58 @@ async fn saved_listing_error_quotes_a_capped_one_line_excerpt() {
         "saved listing returned 404 Not Found",
     );
 }
+
+#[tokio::test]
+async fn cleanup_looks_up_comments_by_their_own_fullname_in_the_post_batch() {
+    use crate::reddit::cleanup::{run, RedditCleanupOpts};
+    use crate::test_support::{stored_at, FakePinboard, NO_DATING};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/info.json"))
+        .and(query_param("id", "t1_c,t3_a"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": null, "children": [
+                { "kind": "t3", "data": { "name": "t3_a", "subreddit": "rust",
+                  "permalink": "/r/rust/comments/a/x/", "title": "T", "author": "alice" } },
+                { "kind": "t1", "data": { "name": "t1_c", "subreddit": "rust",
+                  "permalink": "/r/rust/comments/a/x/c/", "author": "bob" } }
+            ] }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let pinboard = FakePinboard {
+        all: vec![
+            stored_at("https://old.reddit.com/r/rust/comments/a/x/"),
+            stored_at("https://old.reddit.com/r/rust/comments/a/x/c/"),
+        ],
+        ..Default::default()
+    };
+    let client = RedditClient::for_test(Some("reddit_session=secret".into()), None, server.uri());
+    let opts = RedditCleanupOpts {
+        mark_nsfw: true,
+        fix_titles: false,
+        config: RedditConfig::default(),
+        dates: NO_DATING,
+    };
+
+    run(&pinboard.cleanup_store(false), Some(&client), &opts)
+        .await
+        .unwrap();
+
+    let updated = pinboard.updated.borrow();
+    let tags_of = |url: &str| {
+        updated
+            .iter()
+            .find(|u| u.url == url)
+            .map(|u| u.tags.clone())
+            .unwrap()
+    };
+    assert!(tags_of("https://old.reddit.com/r/rust/comments/a/x/")
+        .contains(&"author:reddit:alice".to_string()));
+    assert!(tags_of("https://old.reddit.com/r/rust/comments/a/x/c/")
+        .contains(&"author:reddit:bob".to_string()));
+}

@@ -49,6 +49,9 @@ All notable changes to this project are documented here. The format is based on
 - A `reddit_domain` outside reddit.com no longer makes every `sync` re-add every save.
 - A HackerNews favorite linking a Reddit or GitHub page is no longer re-added after
   `cleanup` moves it to its canonical URL, unless `reddit_domain` is outside reddit.com.
+- Commas, which Pinboard forbids in tags, are slugged like spaces in derived tags
+  (`reddit-flair:help-question`) and rejected in configured ones; tags already written
+  with a comma stay until removed by hand.
 
 ## [0.6.0] - 2026-10-25
 

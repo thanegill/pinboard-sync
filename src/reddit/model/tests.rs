@@ -125,6 +125,29 @@ fn post_tags_include_author_flair_and_type() {
 }
 
 #[test]
+fn flair_commas_are_slugged_like_whitespace() {
+    // Pinboard tags may not contain commas any more than whitespace.
+    for (flair, want) in [
+        ("Help, Question", "reddit-flair:help-question"),
+        ("a,b", "reddit-flair:a-b"),
+        (",Meta,", "reddit-flair:meta"),
+    ] {
+        let it = item(
+            "t3",
+            serde_json::json!({
+                "name": "t3_abc", "subreddit": "rust", "permalink": "/r/rust/comments/abc/x/",
+                "title": "T", "link_flair_text": flair
+            }),
+        );
+        assert_eq!(
+            it.tags(&RedditConfig::default()),
+            vec!["reddit", "subreddit:rust", want],
+            "{flair:?}"
+        );
+    }
+}
+
+#[test]
 fn tags_come_in_a_fixed_order() {
     let it = item(
         "t3",

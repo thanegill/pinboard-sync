@@ -573,7 +573,7 @@ fn resolve_hackernews_cleanup_config(
 ) -> Result<HackerNewsConfig> {
     let mut hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
     if let Some(tag) = link_tag {
-        config::reject_whitespace("--link-tag", &tag)?;
+        config::reject_untaggable("--link-tag", &tag)?;
         hn_config.link_tag = tag;
     }
     Ok(hn_config)
@@ -610,8 +610,9 @@ mod tests {
     use crate::test_support::lock_on_auth_failure_env;
 
     #[test]
-    fn link_tag_override_rejects_whitespace() {
+    fn link_tag_override_rejects_whitespace_and_commas() {
         assert!(resolve_hackernews_cleanup_config(None, Some("find hn".into())).is_err());
+        assert!(resolve_hackernews_cleanup_config(None, Some("find,hn".into())).is_err());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! A bookmark's tag list: the helpers every source shapes its configured tags through,
-//! where an empty tag means "disabled" and whitespace can't survive (Pinboard splits the
-//! tag string on it).
+//! where an empty tag means "disabled" and whitespace and commas can't survive (Pinboard
+//! splits the tag string on whitespace and forbids commas).
 
 use std::collections::BTreeSet;
 
@@ -19,11 +19,12 @@ pub fn push_tags(tags: &mut Vec<String>, keys: &[String]) {
     }
 }
 
-/// Append `prefix + value` to `tags`, collapsing internal whitespace in `value` to
-/// `-` (Pinboard tags can't contain spaces — the API splits on them). Skipped if
-/// `prefix` is empty or `value` is empty/all-whitespace.
+/// Append `prefix + value` to `tags`, collapsing each internal run of whitespace and
+/// commas in `value` to `-` (Pinboard tags can't contain either — the API splits on
+/// whitespace, and its docs forbid commas). Skipped if `prefix` is empty or `value` is
+/// nothing but whitespace and commas.
 pub fn push_prefixed(tags: &mut Vec<String>, prefix: &str, value: &str) {
-    let value = crate::htmltext::collapse_whitespace(value, "-");
+    let value = crate::htmltext::collapse_whitespace(&value.replace(',', " "), "-");
     if !prefix.is_empty() && !value.is_empty() {
         tags.push(format!("{prefix}{value}"));
     }
@@ -58,6 +59,15 @@ mod tests {
         push_prefixed(&mut tags, "y:", "   "); // all whitespace → skipped
         push_prefixed(&mut tags, "", "v"); // empty prefix → skipped
         assert_eq!(tags, vec!["lang:Jupyter-Notebook", "x:spaced-out"]);
+    }
+
+    #[test]
+    fn push_prefixed_slugs_commas_like_whitespace() {
+        let mut tags = Vec::new();
+        push_prefixed(&mut tags, "f:", "Help, Question");
+        push_prefixed(&mut tags, "g:", "a,,b");
+        push_prefixed(&mut tags, "h:", " , "); // nothing but separators → skipped
+        assert_eq!(tags, vec!["f:Help-Question", "g:a-b"]);
     }
 
     #[test]

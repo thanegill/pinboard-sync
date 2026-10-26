@@ -304,9 +304,10 @@ base tag plus any extras, and `push_tag`/`push_prefixed` in [`src/tags.rs`](src/
 render them (empty string disables a tag). `reddit::model`'s tag tests
 ([`src/reddit/model/tests.rs`](src/reddit/model/tests.rs)) are the spec — keep them in
 sync with rule changes. Pinboard tags can't contain spaces (the API splits the tag
-string on them), so `push_prefixed` slugs internal whitespace in the value (e.g. the
-GitHub language `Jupyter Notebook` → `lang:jupyter-notebook`) and `Config::parse`
-rejects whitespace in config-supplied tags/prefixes. Reddit's URL host is the configurable `reddit_domain` (used
+string on them) or commas (its API docs forbid them), so `push_prefixed` slugs internal
+whitespace and commas in the value (e.g. the GitHub language `Jupyter Notebook` →
+`lang:jupyter-notebook`) and `Config::parse` rejects both in config-supplied
+tags/prefixes. Reddit's URL host is the configurable `reddit_domain` (used
 by both sync `bookmark_url` and cleanup's `normalize_url`); `reddit_key` stays
 host-agnostic so dedup matches across subdomains, and takes that domain too, so a
 mirror outside reddit.com still counts as a Reddit host.

@@ -297,6 +297,30 @@ fn rejects_whitespace_in_tags() {
 }
 
 #[test]
+fn rejects_commas_in_tags_without_quoting_them() {
+    assert_error_hides(
+        "[[reddit]]\ntags = [\"reddit\", \"SECRET7,x\"]\n",
+        "SECRET7",
+        "`reddit[0].tags[1]` must not contain a comma",
+    );
+    assert_error_hides(
+        "[[reddit]]\ntag_flair_prefix = \"SECRET8,\"\n",
+        "SECRET8",
+        "`reddit[0].tag_flair_prefix` must not contain a comma",
+    );
+    assert_error_hides(
+        "[[github]]\ntags = [\"SECRET9,x\"]\n",
+        "SECRET9",
+        "`github[0].tags[0]` must not contain a comma",
+    );
+    assert_error_hides(
+        "[[hackernews]]\ntag_link = \"find,SECRET10\"\n",
+        "SECRET10",
+        "`hackernews[0].tag_link` must not contain a comma",
+    );
+}
+
+#[test]
 fn rejects_duplicate_account_names() {
     let dup = r#"
             [[reddit]]

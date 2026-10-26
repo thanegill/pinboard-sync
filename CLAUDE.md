@@ -451,9 +451,11 @@ same statuses a real permission denial uses — so `github::rate_limit_message` 
 the headers instead: `x-ratelimit-remaining: 0` (with `x-ratelimit-reset` for the
 instant) or a `retry-after`. It must not become `ReauthRequired` (no credential change
 clears a quota, and firing the hook would send the operator after the wrong problem) nor
-a permanent skip like the `451` arm. Retrying is not the answer either: `send`'s
-2s-linear backoff over 4 attempts totals ~12s, while a primary limit resets up to an hour
-out and GitHub asks for a minute on secondary limits, so it would only fail more slowly.
+a permanent skip (`github::permanent_refusal`: a 451, or a 403 with a `block` body or
+`X-GitHub-SSO: required`, which defers to `rate_limit_message` first). Retrying is not
+the answer either: `send`'s 2s-linear backoff over 4 attempts totals ~12s, while a
+primary limit resets up to an hour out and GitHub asks for a minute on secondary
+limits, so it would only fail more slowly.
 The 403 form isn't retried; the **429** form still is, by the default
 `backoff_if_transient` classifier, and those ~12s are simply wasted before the response
 is read — harmless, and the reason a `rate_limit_message` unit test uses a synthesized

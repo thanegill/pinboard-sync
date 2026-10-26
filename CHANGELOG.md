@@ -33,6 +33,8 @@ All notable changes to this project are documented here. The format is based on
   `author:reddit:[deleted]` tag.
 - `cleanup github` keeps hand-written notes, and the title, tags and date of repo
   bookmarks `sync github` didn't write.
+- `cleanup github` skips a repo GitHub refuses with a lasting 403 (a ToS block or
+  unauthorized SSO) instead of counting it as a failed lookup every run.
 
 ## [0.6.0] - 2026-10-25
 

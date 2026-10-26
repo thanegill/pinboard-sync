@@ -264,8 +264,10 @@ grows. Rare, but if you see a note accumulating `… [truncated]` markers, short
   their title only while it is still `owner/repo`. Under `use_post_date` they are
   re-dated to the star time only while both title and notes are still the tool's. So a
   repo saved by hand or bookmarked by `sync hackernews` keeps its title, tags and date.
-  A repo that no longer exists (404) keeps just the URL canonicalization. Needs the
-  GitHub token; without `use_post_date` the bookmark's creation time is preserved.
+  A repo that no longer exists (404), is blocked (a DMCA 451 or a Terms of Service 403),
+  or sits behind organization SSO the token isn't authorized for keeps just the URL
+  canonicalization, with a warning for the last two. Needs the GitHub token; without
+  `use_post_date` the bookmark's creation time is preserved.
 
 - **HackerNews** (`cleanup hackernews`) — rewrites favorited *story* bookmarks whose
   URL is the HN item page (`news.ycombinator.com/item?id=…`) to the linked **article**,

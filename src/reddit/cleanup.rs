@@ -12,7 +12,7 @@ use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::html_to_plain;
 use crate::reddit::model::{cased_subreddit, reddit_key, RedditConfig};
 use crate::reddit::PostInfo;
-use crate::source::{host_matches, SourceError, UrlExt};
+use crate::source::{host_matches, push_tag, SourceError, UrlExt};
 use crate::timefmt::DateOpts;
 use url::Url;
 
@@ -294,7 +294,9 @@ pub fn normalize_tags(
     nsfw_tag: &str,
 ) -> Vec<String> {
     let mut set: BTreeSet<String> = existing.iter().cloned().collect();
-    set.insert(base_tag.to_string());
+    let mut ensured = Vec::new();
+    push_tag(&mut ensured, base_tag);
+    set.extend(ensured);
     set.remove(prefix); // bare "subreddit:"
     set.remove(prefix.strip_suffix(':').unwrap_or(prefix)); // bare "subreddit"
 
@@ -496,6 +498,18 @@ mod tests {
             tags,
             vec!["reddit".to_string(), "subreddit:reddit".to_string()]
         );
+    }
+
+    #[test]
+    fn normalize_tags_adds_no_empty_tag_when_the_base_tag_is_disabled() {
+        let tags = normalize_tags(
+            &url("https://old.reddit.com/r/rust/comments/x/"),
+            &[],
+            "",
+            "subreddit:",
+            "nsfw",
+        );
+        assert_eq!(tags, vec!["subreddit:rust".to_string()]);
     }
 
     #[test]

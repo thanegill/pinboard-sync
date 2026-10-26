@@ -295,10 +295,13 @@ pub struct RedditConfig {
 }
 
 impl RedditConfig {
-    /// The first configured base tag, the one `cleanup` keeps when it normalizes tags, or
-    /// `""` when `tags` is empty.
+    /// The first non-empty configured base tag, the one `cleanup` keeps when it normalizes
+    /// tags, or `""` (disabled, as for [`push_tag`]) when there is none.
     pub fn base_tag(&self) -> &str {
-        self.tags.first().map_or("", String::as_str)
+        self.tags
+            .iter()
+            .find(|tag| !tag.is_empty())
+            .map_or("", String::as_str)
     }
 }
 

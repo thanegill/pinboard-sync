@@ -619,3 +619,52 @@ async fn logs_and_skips_a_failing_update_then_continues() {
         "https://old.reddit.com/r/rust/comments/b/y/"
     );
 }
+
+/// One cleanup run over `seed`, returning how many bookmarks it wrote and the account as
+/// Pinboard then stores it. Tags round-trip as Pinboard keeps them (space-joined on
+/// write, whitespace-split on read), which is what drops an empty tag.
+async fn run_and_store(seed: Vec<Bookmark>, opts: &RedditCleanupOpts) -> (usize, Vec<Bookmark>) {
+    let pinboard = FakePinboard {
+        all: seed.clone(),
+        ..Default::default()
+    };
+    run(&pinboard.cleanup_store(false), None::<&FakeReddit>, opts)
+        .await
+        .unwrap();
+    let mut stored = crate::test_support::replay(&seed, &pinboard.ops.borrow());
+    for bookmark in &mut stored {
+        bookmark.tags = bookmark
+            .tags
+            .join(" ")
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+    }
+    (pinboard.updated.into_inner().len(), stored)
+}
+
+#[tokio::test]
+async fn settles_after_one_run_when_base_tags_are_disabled() {
+    for tags in [vec![], vec![String::new()]] {
+        let opts = RedditCleanupOpts {
+            config: RedditConfig {
+                tags: tags.clone(),
+                ..RedditConfig::default()
+            },
+            ..opts()
+        };
+        let seed = vec![
+            bookmark("https://www.reddit.com/r/rust/comments/a/x/", "T", ""),
+            bookmark(
+                "https://old.reddit.com/r/rust/comments/b/y/",
+                "T",
+                "subreddit:rust",
+            ),
+        ];
+
+        let (first_writes, stored) = run_and_store(seed, &opts).await;
+        assert_eq!(first_writes, 1, "tags = {tags:?}");
+        let (second_writes, _) = run_and_store(stored, &opts).await;
+        assert_eq!(second_writes, 0, "tags = {tags:?}");
+    }
+}

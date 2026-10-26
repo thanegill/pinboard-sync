@@ -49,6 +49,33 @@ fn post_url_and_tags() {
 }
 
 #[test]
+fn empty_base_tags_add_no_tag_and_cleanup_keeps_the_first_non_empty_one() {
+    let it = item(
+        "t3",
+        serde_json::json!({
+            "name": "t3_abc", "subreddit": "rust",
+            "permalink": "/r/rust/comments/abc/x/", "title": "T"
+        }),
+    );
+    for (tags, want, base_tag) in [
+        (vec![], vec!["subreddit:rust"], ""),
+        (vec![""], vec!["subreddit:rust"], ""),
+        (
+            vec!["", "reddit"],
+            vec!["reddit", "subreddit:rust"],
+            "reddit",
+        ),
+    ] {
+        let cfg = RedditConfig {
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..RedditConfig::default()
+        };
+        assert_eq!(it.tags(&cfg), want, "tags = {tags:?}");
+        assert_eq!(cfg.base_tag(), base_tag, "tags = {tags:?}");
+    }
+}
+
+#[test]
 fn into_draft_skips_item_with_unparseable_url() {
     // A `domain` that can't form a valid URL (a space in the host) — the item is
     // dropped rather than producing a draft with no URL.

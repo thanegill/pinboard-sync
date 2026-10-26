@@ -23,9 +23,16 @@
       ];
 
       perSystem =
-        { pkgs, self', ... }:
+        {
+          lib,
+          pkgs,
+          self',
+          ...
+        }:
         {
           packages.default = pkgs.callPackage ./nix/package.nix { };
+
+          formatter = pkgs.nixfmt-tree;
 
           devShells.default = pkgs.mkShell {
             packages = with pkgs; [
@@ -42,12 +49,33 @@
             buildInputs = [ pkgs.openssl ];
             # cargo-llvm-cov needs llvm-tools matching rustc's LLVM. `rustc.llvmPackages.llvm`
             # is exactly that LLVM and tracks the toolchain, so there's no version to keep in sync.
-            LLVM_COV = pkgs.lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-cov";
-            LLVM_PROFDATA = pkgs.lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-profdata";
+            LLVM_COV = lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-cov";
+            LLVM_PROFDATA = lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-profdata";
           };
 
           checks = {
             package = self'.packages.default;
+
+            nix-lint =
+              pkgs.runCommand "pinboard-sync-nix-lint"
+                {
+                  nativeBuildInputs = [
+                    pkgs.nixfmt
+                    pkgs.statix
+                    pkgs.deadnix
+                  ];
+                  src = lib.fileset.toSource {
+                    root = ./.;
+                    fileset = lib.fileset.fileFilter (file: file.hasExt "nix") ./.;
+                  };
+                }
+                ''
+                  cd "$src"
+                  find . -name '*.nix' -exec nixfmt --check {} +
+                  statix check .
+                  deadnix --fail .
+                  touch "$out"
+                '';
 
             nixos-module =
               let

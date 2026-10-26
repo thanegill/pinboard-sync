@@ -691,7 +691,8 @@ Run everything through the Nix dev shell so versions match the flake:
 nix develop --command cargo test
 nix develop --command cargo clippy --all-targets -- -D warnings
 nix develop --command cargo fmt --check
-nix flake check        # builds the package (runs the hermetic tests) + evaluates the module and config-checks its TOML
+nix flake check        # builds the package (runs the hermetic tests) + evaluates the module and config-checks its TOML + lints the Nix files
+nix fmt                # formats the Nix files
 ```
 
 See [CLAUDE.md](CLAUDE.md) for the architecture.

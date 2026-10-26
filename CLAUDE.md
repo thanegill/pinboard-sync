@@ -17,7 +17,8 @@ nix develop --command cargo test
 nix develop --command cargo test <name>      # single test
 nix develop --command cargo clippy --all-targets -- -D warnings
 nix develop --command cargo fmt --check
-nix flake check                              # builds the package (runs tests) + evaluates the NixOS module and config-checks its TOML
+nix flake check                              # builds the package (runs tests) + evaluates the NixOS module and config-checks its TOML + lints the Nix files
+nix fmt                                      # formats the Nix files (nixfmt, via nixfmt-tree)
 ```
 
 `nix flake check` runs the flake's `checks` for the host system only: `checks.package`
@@ -27,8 +28,9 @@ fails on a module assertion or an undefined option without building anything for
 It also runs the host's `pinboard-sync config check` on the module's rendered settings,
 re-rendered from the internal `services.pinboard-sync.renderedSettings` option with the
 host's `pkgs.formats.toml`, because the module's own config file is an x86_64-linux
-derivation. So a key the binary would reject fails the check too. CI runs it on
-x86_64-linux.
+derivation. So a key the binary would reject fails the check too. `checks.nix-lint`
+runs `nixfmt --check`, statix and deadnix over every `.nix` file. CI runs
+`nix flake check` on x86_64-linux, in its `flake` job.
 
 `cargo clippy -D warnings` and `cargo fmt --check` are the gate — keep both clean.
 Commit often: each working feature or structural piece, with its tests, keeping the

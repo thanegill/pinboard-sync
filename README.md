@@ -256,11 +256,16 @@ grows. Rare, but if you see a note accumulating `… [truncated]` markers, short
   `https://github.com/<owner>/<repo>` (forcing https, lowercasing the host, dropping a
   `.git` suffix, trailing slash, and any query/fragment); deeper links like
   `/tree/...` or `/issues` are left alone. It then looks each repo up via the GitHub
-  API, which follows **renames and transfers** — rewriting a moved repo's URL to its
-  current location, refreshing the title to the current `owner/repo`, and refreshing
-  the `lang:` tag. A repo that no longer exists (404) keeps just the URL
-  canonicalization. Needs the GitHub token; existing notes and the bookmark's creation
-  time are preserved.
+  API, which follows **renames and transfers**, and rewrites a moved repo's URL to its
+  current location. It refreshes only what `sync github` wrote. Notes are rebuilt from
+  the repo's description only when they are empty or in the shape sync writes; any
+  other notes are kept. The base tags and the `lang:` tag are refreshed only on
+  bookmarks carrying the first non-empty entry of `tags` (`github-star` by default), and
+  their title only while it is still `owner/repo`. Under `use_post_date` they are
+  re-dated to the star time only while both title and notes are still the tool's. So a
+  repo saved by hand or bookmarked by `sync hackernews` keeps its title, tags and date.
+  A repo that no longer exists (404) keeps just the URL canonicalization. Needs the
+  GitHub token; without `use_post_date` the bookmark's creation time is preserved.
 
 - **HackerNews** (`cleanup hackernews`) — rewrites favorited *story* bookmarks whose
   URL is the HN item page (`news.ycombinator.com/item?id=…`) to the linked **article**,

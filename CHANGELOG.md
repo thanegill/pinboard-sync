@@ -31,6 +31,8 @@ All notable changes to this project are documented here. The format is based on
   the first; an extra tag named like the subreddit is no longer stripped.
 - Reddit items whose author shows as `[deleted]` no longer get an
   `author:reddit:[deleted]` tag.
+- `cleanup github` keeps hand-written notes, and the title, tags and date of repo
+  bookmarks `sync github` didn't write.
 
 ## [0.6.0] - 2026-10-25
 

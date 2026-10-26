@@ -330,7 +330,11 @@ top-level) runs every configured account, aggregating failures via `AllRun` and
 exiting non-zero if any fail. `cleanup --all` runs once per source (reddit, github,
 hackernews), since it normalizes the shared bookmark set. `cleanup github`
 canonicalizes repo-root URLs and looks each repo up via the API to rewrite
-renamed/moved repos and refresh the title + language tag.
+renamed/moved repos. It refreshes only what the tool wrote: notes in `github_note`'s
+shape, the base/language tags of bookmarks carrying the base tag, their title only
+while it is still `owner/repo`, and their star date only while the notes are the tool's
+too. A repo root is often another source's bookmark (an HN story linking it, or one a
+rename merged a star into), so never widen that.
 
 **`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
 `SyncJob { client: SourceClient, hook, settings }`, `settings` a `sync::JobSettings` holding the

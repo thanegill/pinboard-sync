@@ -676,11 +676,10 @@ async fn cleanup_github_for<S: BookmarkStore + AccountState>(
     dates: DateOpts,
     config: &Config,
 ) -> Result<()> {
-    let github_config = account.map(GitHubConfig::from).unwrap_or_default();
     let token = resolve_github_token(token_flag, account).with_context(missing_github_token)?;
     let hook = cleanup_hook(account, config);
-    let client = GitHubClient::new(token, github_config.clone())?;
-    github::cleanup::run(store, &client, &github_config, dates)
+    let client = GitHubClient::new(token, account.map(GitHubConfig::from).unwrap_or_default())?;
+    github::cleanup::run(store, &client, dates)
         .await
         .map_err(|e| handle_source_err(e, hook.as_deref()))
 }

@@ -522,7 +522,6 @@ async fn cleanup_with_post_dates_reads_every_star_page() {
     cleanup::run(
         &CleanupStore::new(&pinboard, AccountView::new(bookmarks), false),
         &star_client(&server),
-        &GitHubConfig::default(),
         DateOpts {
             use_post_date: true,
             max_age_days: 30,

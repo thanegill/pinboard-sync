@@ -39,7 +39,6 @@ async fn cleanup_surfaces_an_expired_token_as_reauth() {
     let err = run(
         &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
         &client,
-        &GitHubConfig::default(),
         DateOpts {
             use_post_date: false,
             max_age_days: 30,
@@ -121,7 +120,6 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
     let err = run(
         &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
         &client,
-        &GitHubConfig::default(),
         DateOpts {
             use_post_date: false,
             max_age_days: 30,
@@ -190,7 +188,6 @@ async fn cleanup_survives_a_permanently_blocked_repo() {
     run(
         &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
         &client,
-        &GitHubConfig::default(),
         DateOpts {
             use_post_date: false,
             max_age_days: 30,
@@ -243,7 +240,6 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
     run(
         &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
         &client,
-        &GitHubConfig::default(),
         DateOpts {
             use_post_date: false,
             max_age_days: 30,
@@ -309,7 +305,6 @@ async fn cleanup_leaves_deep_links_and_gists_untouched() {
     run(
         &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
         &client,
-        &GitHubConfig::default(),
         DateOpts {
             use_post_date: false,
             max_age_days: 30,
@@ -359,7 +354,6 @@ async fn cleanup_canonicalizes_non_canonical_repo_root() {
     run(
         &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
         &client,
-        &GitHubConfig::default(),
         DateOpts {
             use_post_date: false,
             max_age_days: 30,
@@ -415,7 +409,6 @@ async fn cleanup_folds_www_host_onto_github_com() {
     run(
         &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
         &client,
-        &GitHubConfig::default(),
         DateOpts {
             use_post_date: false,
             max_age_days: 30,
@@ -471,7 +464,6 @@ async fn cleanup_rewrites_notes_only_to_retrofit_the_blockquote() {
     run(
         &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
         &client,
-        &GitHubConfig::default(),
         DateOpts {
             use_post_date: false,
             max_age_days: 30,

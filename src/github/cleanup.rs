@@ -26,7 +26,6 @@ use crate::timefmt::DateOpts;
 pub async fn run<S: BookmarkStore + AccountState>(
     store: &S,
     client: &GitHubClient,
-    config: &GitHubConfig,
     dates: DateOpts,
 ) -> Result<(), SourceError> {
     // Taken from the run's live view, so an earlier source's writes are already reflected.
@@ -50,11 +49,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
         HashMap::new()
     };
 
-    let pass = GitHubCleanupPass {
-        client,
-        config,
-        star_dates,
-    };
+    let pass = GitHubCleanupPass { client, star_dates };
     run_pass(store, &gh_bms, "github", dates, &pass)
         .await
         .into_result()
@@ -66,7 +61,6 @@ pub async fn run<S: BookmarkStore + AccountState>(
 /// language tag. A 404 keeps just the canonicalization.
 struct GitHubCleanupPass<'a> {
     client: &'a GitHubClient,
-    config: &'a GitHubConfig,
     star_dates: HashMap<String, OffsetDateTime>,
 }
 
@@ -98,7 +92,7 @@ impl CleanupPass for GitHubCleanupPass<'_> {
                 info.homepage.as_deref(),
                 &info.html_url,
             );
-            tags = refresh_tags(bookmark.tags.clone(), &info, self.config);
+            tags = refresh_tags(bookmark.tags.clone(), &info, &self.client.config);
             url = Url::parse(&info.html_url).unwrap_or(url); // follows renames/transfers
         }
 

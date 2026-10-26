@@ -1,6 +1,5 @@
 use super::*;
-use crate::pinboard::PinboardBookmark;
-use crate::test_support::{listing_entry, FakePinboard, FakeReddit, NO_DATING};
+use crate::test_support::{listing_entry, stored_at, FakePinboard, FakeReddit, NO_DATING};
 use serde_json::json;
 
 fn opts() -> RedditCleanupOpts {
@@ -19,35 +18,26 @@ const DATED: DateOpts = DateOpts {
     stale_to_now: false,
 };
 
-fn bookmark(url: &str, description: &str, tags: &str) -> Bookmark {
-    PinboardBookmark {
-        url: url.into(),
-        description: description.into(),
-        extended: String::new(),
-        tags: tags.into(),
-        time: String::new(),
-        shared: "no".into(),
-        toread: "no".into(),
+fn bookmark(url: &str, title: &str, tags: &str) -> Bookmark {
+    Bookmark {
+        title: title.into(),
+        tags: tags.split_whitespace().map(String::from).collect(),
+        ..stored_at(url)
     }
-    .try_into()
-    .unwrap()
 }
 
 #[tokio::test]
 async fn normalizes_url_tags_nsfw_and_title() {
     let pinboard = FakePinboard {
         // Carries notes + metadata that cleanup must preserve across the re-add.
-        all: vec![PinboardBookmark {
-            url: "https://www.reddit.com/r/NEWS/comments/abc/x/".into(),
-            description: "Reddit - Dive into anything".into(),
-            extended: "original notes".into(),
-            tags: String::new(),
-            time: "2023-11-14T22:13:20Z".into(),
-            shared: "yes".into(),
-            toread: "yes".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "Reddit - Dive into anything".into(),
+            note: "original notes".into(),
+            timestamp: crate::timefmt::parse_rfc3339("2023-11-14T22:13:20Z"),
+            public: true,
+            read_later: true,
+            ..stored_at("https://www.reddit.com/r/NEWS/comments/abc/x/")
+        }],
         ..Default::default()
     };
     let reddit = FakeReddit {
@@ -235,17 +225,13 @@ async fn strips_self_link_notes_from_a_self_post() {
     // permalink. No /api/info this run (nsfw/titles off), so the string-based
     // self-link drop applies. The URL is already normalized, so only the notes change.
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://old.reddit.com/r/rust/comments/a/x/".into(),
-            description: "A real title".into(),
-            extended: "https://www.reddit.com/r/rust/comments/a/x/".into(),
-            tags: "reddit subreddit:rust".into(),
-            time: "2023-11-14T22:13:20Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "A real title".into(),
+            note: "https://www.reddit.com/r/rust/comments/a/x/".into(),
+            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            timestamp: crate::timefmt::parse_rfc3339("2023-11-14T22:13:20Z"),
+            ..stored_at("https://old.reddit.com/r/rust/comments/a/x/")
+        }],
         ..Default::default()
     };
     let opts = RedditCleanupOpts {
@@ -274,17 +260,13 @@ async fn keeps_external_link_notes_on_a_link_post() {
     // A link post's notes hold the external URL — not the bookmark's own
     // permalink — so cleanup must preserve them while rewriting the host.
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://www.reddit.com/r/rust/comments/b/y/".into(),
-            description: "A real title".into(),
-            extended: "https://example.com/article".into(),
-            tags: "reddit subreddit:rust".into(),
-            time: "2023-11-14T22:13:20Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "A real title".into(),
+            note: "https://example.com/article".into(),
+            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            timestamp: crate::timefmt::parse_rfc3339("2023-11-14T22:13:20Z"),
+            ..stored_at("https://www.reddit.com/r/rust/comments/b/y/")
+        }],
         ..Default::default()
     };
     let opts = RedditCleanupOpts {
@@ -316,17 +298,12 @@ async fn retrofits_self_post_notes_with_blockquote() {
     // /api/info present, the rebuild wraps the authoritative selftext in a
     // <blockquote>; ext_changed triggers the write.
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://old.reddit.com/r/rust/comments/a/x/".into(),
-            description: "A real title".into(),
-            extended: "the body text".into(), // pre-blockquote notes
-            tags: "reddit subreddit:rust".into(),
-            time: String::new(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "A real title".into(),
+            note: "the body text".into(), // pre-blockquote notes
+            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            ..stored_at("https://old.reddit.com/r/rust/comments/a/x/")
+        }],
         ..Default::default()
     };
     let reddit = FakeReddit {
@@ -360,17 +337,12 @@ async fn preserves_hand_written_note_on_a_self_post() {
     // must not clobber it with the <blockquote>-wrapped selftext. The www host forces a
     // URL rewrite so an update is still emitted and we can observe the preserved note.
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://www.reddit.com/r/rust/comments/a/x/".into(),
-            description: "A real title".into(),
-            extended: "my own thoughts -- revisit this later".into(),
-            tags: "reddit subreddit:rust".into(),
-            time: String::new(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "A real title".into(),
+            note: "my own thoughts -- revisit this later".into(),
+            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            ..stored_at("https://www.reddit.com/r/rust/comments/a/x/")
+        }],
         ..Default::default()
     };
     let reddit = FakeReddit {
@@ -398,17 +370,11 @@ async fn retrofits_empty_note_from_authoritative_selftext() {
     // <blockquote> -- an empty stored note is recognizably tool-shaped, so the rebuild
     // fills it in. The www host forces the URL rewrite that carries the write.
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://www.reddit.com/r/rust/comments/a/x/".into(),
-            description: "A real title".into(),
-            extended: String::new(),
-            tags: "reddit subreddit:rust".into(),
-            time: String::new(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "A real title".into(),
+            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            ..stored_at("https://www.reddit.com/r/rust/comments/a/x/")
+        }],
         ..Default::default()
     };
     let reddit = FakeReddit {
@@ -440,17 +406,16 @@ async fn leaves_comment_notes_untouched() {
     // post's selftext must not leak into the comment's notes.
     let stored = "Thread: https://old.reddit.com/r/rust/comments/a/x/\n\nmy comment";
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://old.reddit.com/r/rust/comments/a/x/c/".into(),
-            description: "Parent title".into(),
-            extended: stored.into(),
-            tags: "reddit subreddit:rust reddit-comment".into(),
-            time: String::new(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "Parent title".into(),
+            note: stored.into(),
+            tags: vec![
+                "reddit".into(),
+                "subreddit:rust".into(),
+                "reddit-comment".into(),
+            ],
+            ..stored_at("https://old.reddit.com/r/rust/comments/a/x/c/")
+        }],
         ..Default::default()
     };
     let reddit = FakeReddit {
@@ -477,17 +442,17 @@ async fn use_post_date_leaves_comment_timestamp_untouched() {
     // (post_fullname → t3), so its `created_utc` is the *thread* creation time, not the
     // comment's. That must not be applied to the comment — its stored date stays.
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://old.reddit.com/r/rust/comments/a/x/c/".into(),
-            description: "Parent title".into(),
-            extended: "my comment note".into(),
-            tags: "reddit subreddit:rust reddit-comment".into(),
-            time: "2019-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "Parent title".into(),
+            note: "my comment note".into(),
+            tags: vec![
+                "reddit".into(),
+                "subreddit:rust".into(),
+                "reddit-comment".into(),
+            ],
+            timestamp: crate::timefmt::parse_rfc3339("2019-01-01T00:00:00Z"),
+            ..stored_at("https://old.reddit.com/r/rust/comments/a/x/c/")
+        }],
         ..Default::default()
     };
     let reddit = FakeReddit {

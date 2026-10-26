@@ -1,6 +1,6 @@
 use super::*;
 use crate::bookmark::{AccountState, AccountView, CleanupStore};
-use crate::test_support::{url as u, FakePinboard, Op, NO_DATING};
+use crate::test_support::{stored_at, url as u, FakePinboard, Op, NO_DATING};
 use anyhow::anyhow;
 
 /// Wrap the fake in the production store so every test exercises the same view
@@ -28,13 +28,11 @@ fn item_error() -> SourceError {
 
 fn bookmark(url: &str) -> Bookmark {
     Bookmark {
-        url: u(url),
         title: "Title".into(),
         note: "notes".into(),
         tags: vec!["a".into(), "b".into()],
         timestamp: crate::timefmt::from_unix(1_577_836_800), // 2020-01-01T00:00:00Z
-        public: false,
-        read_later: false,
+        ..stored_at(url)
     }
 }
 

@@ -379,17 +379,12 @@ impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
 #[cfg(test)]
 mod write_outcome_tests {
     use super::*;
-    use crate::test_support::FakePinboard;
+    use crate::test_support::{stored_at, FakePinboard};
 
     fn at(url: &str) -> Bookmark {
         Bookmark {
-            url: Url::parse(url).unwrap(),
             title: "T".into(),
-            note: String::new(),
-            tags: Vec::new(),
-            timestamp: None,
-            public: false,
-            read_later: false,
+            ..stored_at(url)
         }
     }
 
@@ -514,7 +509,7 @@ mod write_outcome_tests {
 #[cfg(test)]
 mod cleanup_store_tests {
     use super::*;
-    use crate::test_support::FakePinboard;
+    use crate::test_support::{stored_at, FakePinboard};
 
     #[tokio::test]
     async fn all_answers_from_the_view_without_fetching() {
@@ -542,13 +537,9 @@ mod cleanup_store_tests {
 
     fn at(url: &str, note: &str) -> Bookmark {
         Bookmark {
-            url: Url::parse(url).unwrap(),
             title: "T".into(),
             note: note.into(),
-            tags: Vec::new(),
-            timestamp: None,
-            public: false,
-            read_later: false,
+            ..stored_at(url)
         }
     }
 
@@ -635,16 +626,13 @@ mod cleanup_store_tests {
 #[cfg(test)]
 mod account_view_tests {
     use super::*;
+    use crate::test_support::stored_at;
 
     fn at(url: &str, note: &str) -> Bookmark {
         Bookmark {
-            url: Url::parse(url).unwrap(),
             title: "T".into(),
             note: note.into(),
-            tags: Vec::new(),
-            timestamp: None,
-            public: false,
-            read_later: false,
+            ..stored_at(url)
         }
     }
 
@@ -724,13 +712,10 @@ mod tests {
 
     fn bookmark() -> Bookmark {
         Bookmark {
-            url: Url::parse("https://example.com/").unwrap(),
             title: "Title".into(),
             note: "note".into(),
             tags: vec!["a".into(), "b".into()],
-            timestamp: None,
-            public: false,
-            read_later: false,
+            ..crate::test_support::stored_at("https://example.com/")
         }
     }
 
@@ -792,5 +777,27 @@ mod tests {
         let mut bad = wire("");
         bad.url = "not a url".into();
         assert!(Bookmark::try_from(bad).is_err());
+    }
+
+    #[test]
+    fn only_a_yes_flag_reads_as_true() {
+        // A `shared=yes` read as private would make cleanup write every shared bookmark
+        // back as private.
+        let flagged = Bookmark::try_from(PinboardBookmark {
+            shared: "yes".into(),
+            toread: "yes".into(),
+            ..wire("")
+        })
+        .unwrap();
+        assert!(flagged.public && flagged.read_later);
+        for other in ["no", ""] {
+            let unflagged = Bookmark::try_from(PinboardBookmark {
+                shared: other.into(),
+                toread: other.into(),
+                ..wire("")
+            })
+            .unwrap();
+            assert!(!unflagged.public && !unflagged.read_later, "{other:?}");
+        }
     }
 }

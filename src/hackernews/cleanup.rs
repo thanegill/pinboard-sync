@@ -259,7 +259,7 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::url;
+    use crate::test_support::stored_at;
     use serde_json::json;
 
     fn item(value: serde_json::Value) -> HackerNewsItem {
@@ -310,13 +310,10 @@ mod tests {
     #[tokio::test]
     async fn plan_appends_hn_link_to_user_note_while_merging_base_tags() {
         let stored = Bookmark {
-            url: url("https://news.ycombinator.com/item?id=42"),
             title: "old title".into(),
             note: "my own thoughts on this".into(),
             tags: vec!["mine".into()],
-            timestamp: None,
-            public: false,
-            read_later: false,
+            ..stored_at("https://news.ycombinator.com/item?id=42")
         };
         let items = story_pass_items();
         let config = HackerNewsConfig::default();
@@ -342,13 +339,10 @@ mod tests {
     #[tokio::test]
     async fn plan_does_not_duplicate_existing_hn_link_line() {
         let stored = Bookmark {
-            url: url("https://news.ycombinator.com/item?id=42"),
             title: "old title".into(),
             note: "my note\n\nHN Link: https://news.ycombinator.com/item?id=42".into(),
             tags: vec!["mine".into()],
-            timestamp: None,
-            public: false,
-            read_later: false,
+            ..stored_at("https://news.ycombinator.com/item?id=42")
         };
         let items = story_pass_items();
         let config = HackerNewsConfig::default();
@@ -373,13 +367,10 @@ mod tests {
         // re-shaping it would corrupt the bookmark as the wrong item, so cleanup must
         // leave it unchanged rather than rewrite its url/title/tags.
         let stored = Bookmark {
-            url: url("https://news.ycombinator.com/item?id=999"),
             title: "Meta post".into(),
             note: "HN Link: https://news.ycombinator.com/item?id=42".into(),
             tags: vec!["hackernews".into()],
-            timestamp: None,
-            public: false,
-            read_later: false,
+            ..stored_at("https://news.ycombinator.com/item?id=999")
         };
         // The fetched item 999 is a *different* item (an external article) that a
         // re-shape would rewrite the bookmark to.
@@ -404,13 +395,9 @@ mod tests {
     #[tokio::test]
     async fn plan_uses_generated_note_when_stored_note_empty() {
         let stored = Bookmark {
-            url: url("https://news.ycombinator.com/item?id=42"),
             title: "old title".into(),
-            note: String::new(),
             tags: vec!["mine".into()],
-            timestamp: None,
-            public: false,
-            read_later: false,
+            ..stored_at("https://news.ycombinator.com/item?id=42")
         };
         let items = story_pass_items();
         let config = HackerNewsConfig::default();

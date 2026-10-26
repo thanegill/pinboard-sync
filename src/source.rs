@@ -238,15 +238,7 @@ mod tests {
     #[test]
     fn a_page_is_caught_up_only_when_it_has_no_new_draft() {
         let draft = |key: &str| BookmarkDraft {
-            bookmark: Bookmark {
-                url: Url::parse("https://example.com/").unwrap(),
-                title: String::new(),
-                note: String::new(),
-                tags: Vec::new(),
-                timestamp: None,
-                public: false,
-                read_later: false,
-            },
+            bookmark: crate::test_support::stored_at("https://example.com/"),
             dedup_key: key.into(),
         };
         let synced_keys: HashSet<String> = ["a".into(), "b".into()].into();

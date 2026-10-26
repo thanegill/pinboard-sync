@@ -235,13 +235,8 @@ async fn incremental_fetch_stops_each_stream_at_a_synced_page() {
     ]
     .into_iter()
     .map(|(url, note)| Bookmark {
-        url: Url::parse(url).unwrap(),
-        title: String::new(),
         note: note.into(),
-        tags: Vec::new(),
-        timestamp: None,
-        public: false,
-        read_later: false,
+        ..crate::test_support::stored_at(url)
     })
     .collect();
 

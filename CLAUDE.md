@@ -342,9 +342,10 @@ resolves the command through `PINBOARD_SYNC_ON_AUTH_FAILURE` → account →
 load-bearing**: [`nix/module.nix`](nix/module.nix) exports `onAuthFailure` only into the
 unit environment — it never reaches the generated TOML — and runs the `cleanup --all`
 timer with it, so resolving from config alone would leave the hook dead for the
-deployment it exists to serve. Every client sends through
-`http::send_retrying`
-([`src/http.rs`](src/http.rs)), which backs off on network errors / 429 / 5xx but
+deployment it exists to serve. Every client sends through its `http::RetryingClient`
+([`src/http.rs`](src/http.rs)) — the `reqwest::Client` plus its `max_attempts`, base
+delay and `ConnectBudget`, fixed where the client is built — whose `send`/`send_with` are
+`http::send_retrying`/`send_retrying_with` with those settings. That backs off on network errors / 429 / 5xx but
 returns other statuses as-is. It builds the request once and hands it to tower's
 `retry::Retry` over the request's `reqwest::Client`; every decision lives in
 `http::RetryPolicy`, whose waits go through `http::sleep`, and its unit tests drive the
@@ -369,8 +370,8 @@ other clients keep backing off on 429. A request that could not establish a conn
 own exponential `CONNECT_BACKOFF` (5s … 80s, ~2.5 minutes in all), on top of and
 separate from the caller's linear `max_attempts` budget, so a resolver restart during a
 NixOS switch doesn't fail a timer-started run; tests inject a zero schedule through
-`send_with_connect_backoff`. That long wait is **once per host per client**: each client
-owns a `ConnectBudget`, keyed by the request URL's host and port (HackerNews reaches both
+`send_with_connect_backoff`. That long wait is **once per host per client**: each client's
+`RetryingClient` owns a `ConnectBudget`, keyed by the request URL's host and port (HackerNews reaches both
 its site and Algolia), whose entry is spent when one request waits out the whole
 schedule and still can't connect. After that the host's connect errors take the linear
 policy. A request whose last *linear* attempt still got no response, whether it could not

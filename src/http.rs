@@ -509,6 +509,67 @@ where
     .await
 }
 
+/// A client's `reqwest::Client` together with how its requests are retried: the linear
+/// backoff's attempts and base delay, and its [`ConnectBudget`]. Every request a service
+/// client sends goes through [`RetryingClient::send`], so the retry settings are chosen
+/// once, where the client is built, rather than at each call.
+pub struct RetryingClient {
+    client: reqwest::Client,
+    budget: ConnectBudget,
+    max_attempts: u32,
+    base_delay: Duration,
+}
+
+impl RetryingClient {
+    pub fn new(client: reqwest::Client, max_attempts: u32, base_delay: Duration) -> Self {
+        RetryingClient {
+            client,
+            budget: ConnectBudget::default(),
+            max_attempts,
+            base_delay,
+        }
+    }
+
+    /// A GET request on the underlying client, for `build` to start from.
+    pub fn get(&self, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
+        self.client.get(url)
+    }
+
+    /// [`send_retrying`] with this client's retry settings.
+    pub async fn send(
+        &self,
+        label: &str,
+        build: impl FnOnce() -> reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response> {
+        send_retrying(
+            label,
+            &self.budget,
+            self.max_attempts,
+            self.base_delay,
+            build,
+        )
+        .await
+    }
+
+    /// [`send_retrying_with`] with this client's retry settings.
+    pub async fn send_with(
+        &self,
+        label: &str,
+        classify: impl Fn(&reqwest::Response) -> Verdict,
+        build: impl FnOnce() -> reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response> {
+        send_retrying_with(
+            label,
+            &self.budget,
+            self.max_attempts,
+            self.base_delay,
+            classify,
+            build,
+        )
+        .await
+    }
+}
+
 async fn send_with_connect_backoff<F>(
     label: &str,
     budget: &ConnectBudget,

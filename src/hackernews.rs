@@ -16,9 +16,7 @@ use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, PassOutcome, Plan};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
-use crate::http::{
-    client_builder, retry_after_up_to, send_retrying, send_retrying_with, ConnectBudget,
-};
+use crate::http::{client_builder, retry_after_up_to, RetryingClient};
 use crate::source::{
     extend_unique, page_is_caught_up, push_prefixed, push_tag, push_tags, url_key, BookmarkDraft,
     Source, SourceError, UrlKey,
@@ -272,14 +270,13 @@ impl HackerNewsItem {
 
 /// Reads a user's public HackerNews favorites.
 pub struct HackerNewsClient {
-    http: reqwest::Client,
+    http: RetryingClient,
     username: String,
     config: HackerNewsConfig,
     /// HN site base (overridden in tests).
     base: String,
     /// Algolia API base (overridden in tests).
     algolia: String,
-    connect_budget: ConnectBudget,
 }
 
 impl HackerNewsClient {
@@ -303,12 +300,11 @@ impl HackerNewsClient {
             .build()
             .context("building HTTP client")?;
         Ok(Self {
-            http,
+            http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
             username,
             config,
             base,
             algolia,
-            connect_budget: ConnectBudget::default(),
         })
     }
 
@@ -363,15 +359,12 @@ impl HackerNewsClient {
             if page > 1 {
                 crate::http::sleep(FAVORITES_PAGE_PAUSE).await;
             }
-            let resp = send_retrying_with(
-                &label,
-                &self.connect_budget,
-                MAX_RETRIES,
-                RETRY_DELAY,
-                retry_after_up_to(FAVORITES_MAX_RETRY_AFTER),
-                || self.http.get(&url),
-            )
-            .await?;
+            let resp = self
+                .http
+                .send_with(&label, retry_after_up_to(FAVORITES_MAX_RETRY_AFTER), || {
+                    self.http.get(&url)
+                })
+                .await?;
             let status = resp.status();
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 let retry_after = resp
@@ -466,19 +459,15 @@ impl HackerNewsClient {
                 .collect::<Vec<_>>()
                 .join(" OR ");
             let hits_per_page = chunk.len().to_string();
-            let resp = send_retrying(
-                "hn algolia",
-                &self.connect_budget,
-                MAX_RETRIES,
-                RETRY_DELAY,
-                || {
+            let resp = self
+                .http
+                .send("hn algolia", || {
                     self.http.get(&endpoint).query(&[
                         ("filters", filters.as_str()),
                         ("hitsPerPage", hits_per_page.as_str()),
                     ])
-                },
-            )
-            .await?;
+                })
+                .await?;
             let resp = algolia_success(resp, "hn algolia").await?;
             let body = resp.text().await.context("reading hn algolia response")?;
             sink.push("", RawKind::Json, &body);
@@ -496,20 +485,16 @@ impl HackerNewsClient {
     /// the id only when a hit's URL matches `url` (so loose matches are ignored).
     async fn search_by_url(&self, url: &Url) -> Result<Option<HackerNewsItemId>, SourceError> {
         let endpoint = format!("{}/api/v1/search", self.algolia);
-        let resp = send_retrying(
-            "hn algolia url",
-            &self.connect_budget,
-            MAX_RETRIES,
-            RETRY_DELAY,
-            || {
+        let resp = self
+            .http
+            .send("hn algolia url", || {
                 self.http.get(&endpoint).query(&[
                     ("restrictSearchableAttributes", "url"),
                     ("query", url.as_str()),
                     ("hitsPerPage", "5"),
                 ])
-            },
-        )
-        .await?;
+            })
+            .await?;
         let resp = algolia_success(resp, "hn algolia url search").await?;
         let search: AlgoliaSearchResponse =
             resp.json().await.context("parsing hn algolia response")?;

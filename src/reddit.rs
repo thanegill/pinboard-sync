@@ -16,7 +16,7 @@ use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::Bookmark;
-use crate::http::{client_builder, send_retrying, ConnectBudget};
+use crate::http::{client_builder, RetryingClient};
 use crate::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
 use crate::source::{
     page_is_caught_up, reddit_cookie_settings, BookmarkDraft, ConfiguredSecret, Source,
@@ -86,7 +86,7 @@ impl TryFrom<ConfiguredSecret> for SessionCookie {
 /// Reads Reddit's saved listing and `/api/info.json`, authenticated by a session
 /// cookie over native-tls.
 pub struct RedditClient {
-    http: reqwest::Client,
+    http: RetryingClient,
     cookie: Option<SessionCookie>,
     /// Whose saved listing to read; required by `fetch_saved`.
     username: Option<String>,
@@ -94,7 +94,6 @@ pub struct RedditClient {
     base: String,
     /// Per-account config: bookmark domain + tag vocabulary for shaping drafts.
     config: RedditConfig,
-    connect_budget: ConnectBudget,
 }
 
 impl RedditClient {
@@ -134,12 +133,11 @@ impl RedditClient {
             .build()
             .context("building HTTP client")?;
         Ok(Self {
-            http,
+            http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
             cookie: cookie.and_then(|cookie| SessionCookie::try_from(cookie).ok()),
             username,
             base,
             config,
-            connect_budget: ConnectBudget::default(),
         })
     }
 
@@ -208,12 +206,9 @@ impl RedditClient {
                 crate::http::sleep(REQUEST_PAUSE).await;
             }
             let after_ref = after.as_deref();
-            let resp = send_retrying(
-                "saved listing",
-                &self.connect_budget,
-                MAX_RETRIES,
-                RETRY_DELAY,
-                || {
+            let resp = self
+                .http
+                .send("saved listing", || {
                     let mut req = self
                         .http
                         .get(&endpoint)
@@ -222,9 +217,8 @@ impl RedditClient {
                         req = req.query(&[("after", a)]);
                     }
                     self.with_cookie(req)
-                },
-            )
-            .await?;
+                })
+                .await?;
             let body = reddit_body(resp, "saved listing", self.cookie.as_ref()).await?;
             sink.push("", RawKind::Json, &body);
             let listing: RedditListing = serde_json::from_str(&body)
@@ -264,20 +258,16 @@ impl PostInfo for RedditClient {
         let endpoint = format!("{}/api/info.json", self.base);
         for (i, chunk) in chunks.iter().enumerate() {
             let ids = chunk.join(",");
-            let resp = send_retrying(
-                "api/info",
-                &self.connect_budget,
-                MAX_RETRIES,
-                RETRY_DELAY,
-                || {
+            let resp = self
+                .http
+                .send("api/info", || {
                     self.with_cookie(
                         self.http
                             .get(&endpoint)
                             .query(&[("id", ids.as_str()), ("raw_json", "1")]),
                     )
-                },
-            )
-            .await?;
+                })
+                .await?;
             let listing: RedditListing =
                 decode_reddit_json(resp, "api/info", self.cookie.as_ref()).await?;
             out.extend(listing.data.children);

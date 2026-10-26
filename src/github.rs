@@ -13,7 +13,7 @@ use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::{blockquote, html_to_plain};
-use crate::http::{client_builder, send_retrying, ConnectBudget};
+use crate::http::{client_builder, RetryingClient};
 use crate::source::{
     deserialize_lenient, extend_unique, page_is_caught_up, push_prefixed, push_tags, url_key,
     BookmarkDraft, ConfiguredSecret, Source, SourceError, UrlExt, UrlKey,
@@ -203,11 +203,10 @@ fn rate_limit_message(
 
 /// Reads a user's starred repos via a personal access token.
 pub struct GitHubClient {
-    http: reqwest::Client,
+    http: RetryingClient,
     config: GitHubConfig,
     /// API base (overridden in tests).
     base: String,
-    connect_budget: ConnectBudget,
     /// The setting the token came from, for messages; never the token itself.
     token_source: &'static str,
     /// Only to [redact](crate::http::redact) it from a response body that is logged or
@@ -250,10 +249,9 @@ impl GitHubClient {
             .build()
             .context("building HTTP client")?;
         Ok(Self {
-            http,
+            http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
             config,
             base,
-            connect_budget: ConnectBudget::default(),
             token_source: token.source,
             token: token.value.trim().to_string(),
         })
@@ -285,14 +283,10 @@ impl GitHubClient {
     /// inaccessible — deleted or private (404), or blocked under the DMCA (451).
     async fn repo(&self, owner: &str, name: &str) -> Result<Option<GitHubRepo>, SourceError> {
         let endpoint = format!("{}/repos/{}/{}", self.base, owner, name);
-        let resp = send_retrying(
-            "github repo",
-            &self.connect_budget,
-            MAX_RETRIES,
-            RETRY_DELAY,
-            || self.http.get(&endpoint),
-        )
-        .await?;
+        let resp = self
+            .http
+            .send("github repo", || self.http.get(&endpoint))
+            .await?;
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(self.token_refused());
@@ -362,12 +356,9 @@ impl GitHubClient {
                 warn!("github starred: 'next' link looped back to page {page}; stopping");
                 break;
             }
-            let resp = send_retrying(
-                "github starred",
-                &self.connect_budget,
-                MAX_RETRIES,
-                RETRY_DELAY,
-                || {
+            let resp = self
+                .http
+                .send("github starred", || {
                     // The star+json media type makes each element `{ starred_at, repo }`, so
                     // we can date each bookmark by when it was starred.
                     self.http
@@ -379,9 +370,8 @@ impl GitHubClient {
                             ("per_page", STARRED_PER_PAGE),
                         ])
                         .query(&[("page", page)])
-                },
-            )
-            .await?;
+                })
+                .await?;
 
             let status = resp.status();
             if status == reqwest::StatusCode::UNAUTHORIZED {

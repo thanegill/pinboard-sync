@@ -504,8 +504,8 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
 
 - **native-tls, not rustls.** Reddit's anti-bot edge 403s rustls's TLS fingerprint
   but accepts native-tls's, so `reqwest` is built with `native-tls`. On Linux that's
-  OpenSSL via `openssl-sys`, so the flake carries `pkg-config` + `openssl` and the
-  closure includes OpenSSL. Keep it this way.
+  OpenSSL via `openssl-sys`, so [`nix/package.nix`](nix/package.nix) carries
+  `pkg-config` + `openssl` and the closure includes OpenSSL. Keep it this way.
 - **`native-tls-alpn` is load-bearing too.** Reddit's edge also 403s (with its
   network-security page) a TLS 1.3 ClientHello that carries no ALPN extension, which is
   what plain `native-tls` sends ([#78](https://github.com/thanegill/pinboard-sync/issues/78));
@@ -523,7 +523,7 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   logs which protocol each response came over.
 - **The Nix package build runs the tests** (`buildRustPackage` `doCheck`), so a
   failing test blocks `nix build`/`nix flake check`. The `net_tests` modules bind a
-  socket, which the sandbox forbids — the flake's `checkFlags = [ "--skip=net_tests" ]`
+  socket, which the sandbox forbids — the package's `checkFlags = [ "--skip=net_tests" ]`
   excludes them there; they still run under `cargo test`. Keep all *other* tests
   hermetic (no network/sockets). A `net_tests` case that points a real client at a dead
   port sleeps the real ~2.5-minute `CONNECT_BACKOFF` unless it runs inside

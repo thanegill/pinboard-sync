@@ -5,7 +5,7 @@ name: Release
 #   git tag v0.3.0 && git push origin v0.3.0
 #
 # This workflow then does the bookkeeping a release needs: it stamps the tag's
-# version into Cargo.toml / Cargo.lock / flake.nix, rolls the changelog's
+# version into Cargo.toml / Cargo.lock / nix/package.nix, rolls the changelog's
 # [Unreleased] section over to that version, commits the result back to master,
 # builds the binary through the flake (which also runs the test suite), and
 # publishes a GitHub release with the changelog section as its notes. You never
@@ -49,8 +49,8 @@ jobs:
           sed -i -E "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
           # Cargo.lock: the version line directly under this crate's package entry.
           sed -i "/^name = \"pinboard-sync\"/{n;s/^version = .*/version = \"$VERSION\"/}" Cargo.lock
-          # flake.nix: the first `version = "...";` (the buildRustPackage attr).
-          sed -i -E "0,/version = \".*\";/s//version = \"$VERSION\";/" flake.nix
+          # nix/package.nix: the first `version = "...";` (the buildRustPackage attr).
+          sed -i -E "0,/version = \".*\";/s//version = \"$VERSION\";/" nix/package.nix
 
       - name: Roll over the changelog
         env:
@@ -86,7 +86,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock flake.nix CHANGELOG.md
+          git add Cargo.toml Cargo.lock nix/package.nix CHANGELOG.md
           git commit -m "chore: release v$VERSION"
 
       - name: Install Nix

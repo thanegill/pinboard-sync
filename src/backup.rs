@@ -31,6 +31,10 @@ use serde_json::Value;
 use crate::bookmark::Bookmark;
 use crate::source::{BookmarkDraft, SourceError};
 
+mod fs;
+
+use fs::{create_backup_tmp, create_private_dir, write_atomically};
+
 /// The media kind of a captured body, which picks the backup file's extension and the
 /// sanity check applied before it may replace a good snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -727,119 +731,6 @@ pub fn write_files(
         written.push(ManifestEntry::from(file));
     }
     Ok(())
-}
-
-/// Create `dir` (and its parents) mode 0700. A snapshot holds every private bookmark, so
-/// the directory is no more readable than the files in it.
-fn create_private_dir(dir: &Path) -> Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-
-    if dir.is_dir() {
-        return Ok(());
-    }
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .with_context(|| format!("creating {}", dir.display()))
-}
-
-/// Atomically replace `path` with `body`: write a private, fsync'd temp file next to it
-/// and rename it over the target. A partial or crashed write leaves the previous snapshot
-/// intact rather than truncating it. Snapshots hold every private bookmark, so the file
-/// is created mode 0600.
-fn write_atomically(path: &Path, body: &str) -> Result<()> {
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("pinboard-backup");
-    let (tmp, mut file) = create_backup_tmp(&dir, file_name)?;
-    write_backup_tmp(&tmp, &mut file, body)
-        .and_then(|()| {
-            std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
-            sync_dir(&dir);
-            Ok(())
-        })
-        .inspect_err(|_| {
-            let _ = std::fs::remove_file(&tmp);
-        })
-}
-
-/// Open `tmp` as a brand-new mode-0600 regular file. `create_new` (O_EXCL) never follows a
-/// pre-existing symlink and never reuses an existing file's contents or permissions, so the
-/// 0600 promise holds; a path that already exists errors with `AlreadyExists` instead.
-fn open_new_private(tmp: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(tmp)
-}
-
-/// Create a fresh, private temp file next to the backup target and return it with its path.
-/// Each attempt mixes fresh entropy into the name, so a leftover temp from a crashed run
-/// (even one with this pid) can't be reused; `open_new_private` guarantees the file is new.
-fn create_backup_tmp(dir: &Path, file_name: &str) -> Result<(PathBuf, std::fs::File)> {
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-    let pid = std::process::id();
-
-    create_new_temp(dir, || {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let nonce = nanos ^ u128::from(COUNTER.fetch_add(1, Ordering::Relaxed));
-        format!(".{file_name}.tmp.{pid}.{nonce:x}")
-    })
-}
-
-/// Open a fresh private temp file in `dir`, drawing candidate names from `next_name` and
-/// retrying whenever the chosen path already exists (a leftover temp, a squatter). Bounded
-/// so a name generator that keeps yielding a colliding name can't spin forever.
-fn create_new_temp(
-    dir: &Path,
-    mut next_name: impl FnMut() -> String,
-) -> Result<(PathBuf, std::fs::File)> {
-    let mut last_err = None;
-    for _ in 0..100 {
-        let tmp = dir.join(next_name());
-        match open_new_private(&tmp) {
-            Ok(file) => return Ok((tmp, file)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(e),
-            Err(e) => {
-                return Err(e)
-                    .with_context(|| format!("creating backup temp file in {}", dir.display()));
-            }
-        }
-    }
-    Err(last_err.expect("loop ran at least once"))
-        .with_context(|| format!("creating a unique backup temp file in {}", dir.display()))
-}
-
-/// Write `body` to the already-opened temp `file` and fsync it, so the bytes are on disk
-/// before the caller renames it over the real target.
-fn write_backup_tmp(tmp: &Path, file: &mut std::fs::File, body: &str) -> Result<()> {
-    use std::io::Write;
-
-    file.write_all(body.as_bytes())
-        .with_context(|| format!("writing backup to {}", tmp.display()))?;
-    file.sync_all()
-        .with_context(|| format!("flushing backup to {}", tmp.display()))
-}
-
-/// Best-effort fsync of the directory so the rename itself survives a crash.
-fn sync_dir(dir: &Path) {
-    if let Ok(handle) = std::fs::File::open(dir) {
-        let _ = handle.sync_all();
-    }
 }
 
 #[cfg(test)]

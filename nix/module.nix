@@ -1,19 +1,48 @@
 self:
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   cfg = config.services.pinboard-sync;
 
-  sources = [ "reddit" "github" "hackernews" ];
+  sources = [
+    "reddit"
+    "github"
+    "hackernews"
+  ];
 
   # Per-credential `*File` options: each maps a nullable-path option to the systemd
   # credential name (loaded into the tmpfs credentials dir under a transient DynamicUser)
   # and the `<VAR>_FILE` env var the binary reads the trimmed value from.
   credentialFiles = [
-    { option = "pinboardTokenFile"; credential = "pinboard-token"; variable = "PINBOARD_TOKEN_FILE"; }
-    { option = "redditUsernameFile"; credential = "reddit-username"; variable = "REDDIT_USERNAME_FILE"; }
-    { option = "redditCookieFile"; credential = "reddit-cookie"; variable = "REDDIT_COOKIE_FILE"; }
-    { option = "githubTokenFile"; credential = "github-token"; variable = "GITHUB_TOKEN_FILE"; }
-    { option = "hnUsernameFile"; credential = "hn-username"; variable = "HN_USERNAME_FILE"; }
+    {
+      option = "pinboardTokenFile";
+      credential = "pinboard-token";
+      variable = "PINBOARD_TOKEN_FILE";
+    }
+    {
+      option = "redditUsernameFile";
+      credential = "reddit-username";
+      variable = "REDDIT_USERNAME_FILE";
+    }
+    {
+      option = "redditCookieFile";
+      credential = "reddit-cookie";
+      variable = "REDDIT_COOKIE_FILE";
+    }
+    {
+      option = "githubTokenFile";
+      credential = "github-token";
+      variable = "GITHUB_TOKEN_FILE";
+    }
+    {
+      option = "hnUsernameFile";
+      credential = "hn-username";
+      variable = "HN_USERNAME_FILE";
+    }
   ];
   setCredentialFiles = lib.filter (c: cfg.${c.option} != null) credentialFiles;
 
@@ -21,16 +50,17 @@ let
   # the disabled accounts and strip the `enable` key — the binary's config rejects
   # unknown fields — so the plain `sync --all` / `cleanup --all` run covers exactly the
   # enabled accounts.
-  pruneAccounts = accounts: map (a: removeAttrs a [ "enable" ]) (lib.filter (a: a.enable or true) accounts);
+  pruneAccounts =
+    accounts: map (a: removeAttrs a [ "enable" ]) (lib.filter (a: a.enable or true) accounts);
 
   tomlFormat = pkgs.formats.toml { };
   # Non-secret settings rendered to the store and passed via --config. Secrets are
   # NOT placed here (it lands in the world-readable nix store) — they come from the
   # `environmentFile` (a sops-nix rendered template) or the per-credential `*File`
   # options (systemd `LoadCredential`).
-  configSettings = cfg.settings // lib.mapAttrs (_: pruneAccounts) (
-    lib.filterAttrs (name: _: lib.elem name sources) cfg.settings
-  );
+  configSettings =
+    cfg.settings
+    // lib.mapAttrs (_: pruneAccounts) (lib.filterAttrs (name: _: lib.elem name sources) cfg.settings);
   configFile = tomlFormat.generate "pinboard-sync.toml" configSettings;
 
   # Credential file paths the rendered config table supplies itself: the `[pinboard]`
@@ -45,7 +75,9 @@ let
   # readable by that user (e.g. sops mode 0444) — a root-owned 0400 secret passes the
   # assertion but fails to read at runtime. See the `settings` option description.
   settingsCredentialFiles =
-    lib.optional ((configSettings.pinboard.token_file or null) != null) configSettings.pinboard.token_file
+    lib.optional (
+      (configSettings.pinboard.token_file or null) != null
+    ) configSettings.pinboard.token_file
     ++ lib.filter (p: p != null) (
       map (a: a.cookie_file or null) (configSettings.reddit or [ ])
       ++ map (a: a.token_file or null) (configSettings.github or [ ])
@@ -76,38 +108,52 @@ let
   #
   # `extraServiceConfig` is merged over the hardening last, so a unit that needs more
   # (the backup timer's `StateDirectory`) adds it without reaching around the factory.
-  mkService = { description, schedule, args, extraServiceConfig ? { } }: {
-    inherit description;
-    after = [ "network-online.target" ];
-    wants = [ "network-online.target" ];
-    startAt = schedule;
-    environment =
-      { PINBOARD_SYNC_CONFIG = toString configFile; }
+  mkService =
+    {
+      description,
+      schedule,
+      args,
+      extraServiceConfig ? { },
+    }:
+    {
+      inherit description;
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      startAt = schedule;
+      environment = {
+        PINBOARD_SYNC_CONFIG = toString configFile;
+      }
       // lib.optionalAttrs (cfg.onAuthFailure != null) {
         PINBOARD_SYNC_ON_AUTH_FAILURE = cfg.onAuthFailure;
       }
       // lib.listToAttrs (map (c: lib.nameValuePair c.variable "%d/${c.credential}") setCredentialFiles);
-    serviceConfig = {
-      Type = "oneshot";
-      ExecStart = "${lib.getExe cfg.package} ${lib.escapeShellArgs args}";
-      DynamicUser = true;
-      NoNewPrivileges = true;
-      ProtectSystem = "strict";
-      ProtectHome = true;
-      PrivateTmp = true;
-      PrivateDevices = true;
-      ProtectKernelTunables = true;
-      ProtectKernelModules = true;
-      ProtectControlGroups = true;
-      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
-      RestrictNamespaces = true;
-      LockPersonality = true;
-    } // lib.optionalAttrs (cfg.environmentFile != null) {
-      EnvironmentFile = cfg.environmentFile;
-    } // lib.optionalAttrs (setCredentialFiles != [ ]) {
-      LoadCredential = map (c: "${c.credential}:${toString cfg.${c.option}}") setCredentialFiles;
-    } // extraServiceConfig;
-  };
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${lib.getExe cfg.package} ${lib.escapeShellArgs args}";
+        DynamicUser = true;
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+        ];
+        RestrictNamespaces = true;
+        LockPersonality = true;
+      }
+      // lib.optionalAttrs (cfg.environmentFile != null) {
+        EnvironmentFile = cfg.environmentFile;
+      }
+      // lib.optionalAttrs (setCredentialFiles != [ ]) {
+        LoadCredential = map (c: "${c.credential}:${toString cfg.${c.option}}") setCredentialFiles;
+      }
+      // extraServiceConfig;
+    };
 in
 {
   options.services.pinboard-sync = {
@@ -121,7 +167,7 @@ in
     };
 
     settings = lib.mkOption {
-      type = tomlFormat.type;
+      inherit (tomlFormat) type;
       default = { };
       example = lib.literalExpression ''
         {
@@ -160,7 +206,9 @@ in
     };
 
     sync = {
-      enable = lib.mkEnableOption "the periodic sync timer" // { default = true; };
+      enable = lib.mkEnableOption "the periodic sync timer" // {
+        default = true;
+      };
       schedule = lib.mkOption {
         type = lib.types.str;
         default = "*:0/30";
@@ -333,45 +381,59 @@ in
       }
     ];
 
-    # `--config` (PINBOARD_SYNC_CONFIG) is in the environment, so the verb is all that's
-    # needed; `--all` runs every account left in the generated config (disabled
-    # accounts were pruned above).
-    systemd.services.pinboard-sync =
-      lib.mkIf cfg.sync.enable (mkService {
-        description = "Sync saved/favorited items to Pinboard";
-        schedule = cfg.sync.schedule;
-        args = [ "sync" "--all" ];
-      });
+    systemd = {
+      services = {
+        # `--config` (PINBOARD_SYNC_CONFIG) is in the environment, so the verb is all that's
+        # needed; `--all` runs every account left in the generated config (disabled
+        # accounts were pruned above).
+        pinboard-sync = lib.mkIf cfg.sync.enable (mkService {
+          description = "Sync saved/favorited items to Pinboard";
+          schedule = cfg.sync.schedule;
+          args = [
+            "sync"
+            "--all"
+          ];
+        });
 
-    systemd.services.pinboard-sync-cleanup =
-      lib.mkIf cfg.cleanup.enable (mkService {
-        description = "Normalize existing Pinboard bookmarks";
-        schedule = cfg.cleanup.schedule;
-        args = [ "cleanup" "--all" ];
-      });
+        pinboard-sync-cleanup = lib.mkIf cfg.cleanup.enable (mkService {
+          description = "Normalize existing Pinboard bookmarks";
+          schedule = cfg.cleanup.schedule;
+          args = [
+            "cleanup"
+            "--all"
+          ];
+        });
 
-    # `StateDirectory` gives the hardened service its one writable location
-    # (`/var/lib/pinboard-sync`), which `backup.directory` is asserted to live under.
-    systemd.services.pinboard-sync-backup =
-      lib.mkIf cfg.backup.enable (mkService {
-        description = "Back up every source and the Pinboard account to disk";
-        schedule = cfg.backup.schedule;
-        # `--out` tops the directory resolution tier, so this option wins over any
-        # `settings.backup.directory` in the rendered config.
-        args = [ "backup" "--all" "--out" cfg.backup.directory ];
-        extraServiceConfig.StateDirectory = "pinboard-sync";
-      });
+        # `StateDirectory` gives the hardened service its one writable location
+        # (`/var/lib/pinboard-sync`), which `backup.directory` is asserted to live under.
+        pinboard-sync-backup = lib.mkIf cfg.backup.enable (mkService {
+          description = "Back up every source and the Pinboard account to disk";
+          schedule = cfg.backup.schedule;
+          # `--out` tops the directory resolution tier, so this option wins over any
+          # `settings.backup.directory` in the rendered config.
+          args = [
+            "backup"
+            "--all"
+            "--out"
+            cfg.backup.directory
+          ];
+          extraServiceConfig.StateDirectory = "pinboard-sync";
+        });
+      };
 
-    # Fire a missed run on next boot (the machine may be asleep/off at the scheduled
-    # instant — especially for the weekly cleanup).
-    systemd.timers.pinboard-sync = lib.mkIf cfg.sync.enable {
-      timerConfig.Persistent = true;
-    };
-    systemd.timers.pinboard-sync-cleanup = lib.mkIf cfg.cleanup.enable {
-      timerConfig.Persistent = true;
-    };
-    systemd.timers.pinboard-sync-backup = lib.mkIf cfg.backup.enable {
-      timerConfig.Persistent = true;
+      # Fire a missed run on next boot (the machine may be asleep/off at the scheduled
+      # instant — especially for the weekly cleanup).
+      timers = {
+        pinboard-sync = lib.mkIf cfg.sync.enable {
+          timerConfig.Persistent = true;
+        };
+        pinboard-sync-cleanup = lib.mkIf cfg.cleanup.enable {
+          timerConfig.Persistent = true;
+        };
+        pinboard-sync-backup = lib.mkIf cfg.backup.enable {
+          timerConfig.Persistent = true;
+        };
+      };
     };
   };
 }

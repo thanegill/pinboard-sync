@@ -101,7 +101,8 @@ pub fn missing_github_token() -> String {
 }
 
 /// The Reddit cookie through [`resolve_secret`]'s ladder, skipping a candidate that
-/// configures no session (see [`reddit::is_configured_cookie`]) as a blank one is skipped.
+/// configures no session (see [`reddit::cookie::is_configured_cookie`]) as a blank one is
+/// skipped.
 pub fn resolve_reddit_cookie(
     flag: Option<String>,
     account: Option<&RedditAccount>,
@@ -140,7 +141,7 @@ fn first_configured_cookie(
 ) -> Option<ConfiguredSecret> {
     first_configured(
         candidates,
-        reddit::is_configured_cookie,
+        reddit::cookie::is_configured_cookie,
         reddit_cookie_source,
     )
 }

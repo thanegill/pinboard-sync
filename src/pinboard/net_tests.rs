@@ -353,3 +353,58 @@ async fn delete_succeeds_on_done() {
         .await
         .unwrap();
 }
+
+fn item_not_found() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({"result_code": "item not found"}))
+}
+
+const SHORT_READ_TIMEOUT: Duration = Duration::from_millis(300);
+
+/// The first delete is carried out but its response never arrives within the read
+/// timeout, so the retry finds the bookmark already gone: that is the delete succeeding.
+#[tokio::test]
+async fn a_retried_delete_that_finds_the_item_gone_succeeds() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/delete"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"result_code": "done"}))
+                .set_delay(SHORT_READ_TIMEOUT * 10),
+        )
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/posts/delete"))
+        .respond_with(item_not_found())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let pinboard = PinboardClient::with_read_timeout(server.uri(), SHORT_READ_TIMEOUT).unwrap();
+
+    let (deleted, _) = crate::http::recording_waits(
+        pinboard.delete(&Url::parse("https://old.reddit.com/r/x/").unwrap()),
+    )
+    .await;
+
+    deleted.unwrap();
+}
+
+#[tokio::test]
+async fn a_first_delete_that_finds_no_item_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/delete"))
+        .respond_with(item_not_found())
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let err = client(&server)
+        .delete(&Url::parse("https://old.reddit.com/r/x/").unwrap())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("item not found"), "{err}");
+}

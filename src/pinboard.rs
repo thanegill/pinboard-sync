@@ -5,13 +5,15 @@ use std::cell::Cell;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use log::warn;
+use log::{debug, warn};
 use serde::Deserialize;
 use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage};
 use crate::bookmark::{Bookmark, BookmarkStore};
-use crate::http::{client_builder, error_with_body, redact, RetryingClient, REDACTED, USER_AGENT};
+use crate::http::{
+    answered_a_retry, client_builder, error_with_body, redact, RetryingClient, REDACTED, USER_AGENT,
+};
 use crate::source::SourceError;
 
 const DEFAULT_BASE: &str = "https://api.pinboard.in/v1";
@@ -127,11 +129,21 @@ pub struct PinboardClient {
 
 impl PinboardClient {
     pub fn new(auth_token: String, rate_limit_secs: u64) -> Result<Self> {
-        Self::build(auth_token, rate_limit_secs, DEFAULT_BASE.to_string())
+        Self::build(
+            auth_token,
+            rate_limit_secs,
+            DEFAULT_BASE.to_string(),
+            client_builder(),
+        )
     }
 
-    fn build(auth_token: String, rate_limit_secs: u64, base: String) -> Result<Self> {
-        let http = client_builder()
+    fn build(
+        auth_token: String,
+        rate_limit_secs: u64,
+        base: String,
+        http: reqwest::ClientBuilder,
+    ) -> Result<Self> {
+        let http = http
             .user_agent(USER_AGENT)
             .build()
             .context("building HTTP client")?;
@@ -253,6 +265,8 @@ impl BookmarkStore for PinboardClient {
         Ok(wire_to_bookmarks(wire))
     }
 
+    /// An `item not found` answering a retry counts as done: the attempt before it may have
+    /// deleted the bookmark before its response was lost. On a first attempt it is an error.
     async fn delete(&self, url: &Url) -> Result<()> {
         let params = [
             ("url", url.as_str()),
@@ -262,10 +276,15 @@ impl BookmarkStore for PinboardClient {
         let resp = self
             .get_with_backoff(&self.url("posts/delete"), &params)
             .await?;
+        let retried = answered_a_retry(&resp);
         let parsed: AddResponse = resp
             .json()
             .await
             .context("parsing Pinboard posts/delete response")?;
+        if retried && parsed.result_code == "item not found" {
+            debug!("posts/delete retry found {url} already gone");
+            return Ok(());
+        }
         parsed.into_result("Pinboard posts/delete failed", &self.auth_token)
     }
 
@@ -462,7 +481,17 @@ impl PinboardClient {
     /// pacing so `net_tests` don't sleep.
     #[cfg(test)]
     pub fn with_base_url(auth_token: String, base: String) -> Result<Self> {
-        Self::build(auth_token, 0, base)
+        Self::build(auth_token, 0, base, client_builder())
+    }
+
+    #[cfg(test)]
+    pub fn with_read_timeout(base: String, read_timeout: Duration) -> Result<Self> {
+        Self::build(
+            "user:tok".into(),
+            0,
+            base,
+            client_builder().read_timeout(read_timeout),
+        )
     }
 }
 

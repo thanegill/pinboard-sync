@@ -583,25 +583,19 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
         (false, Some(SyncSource::Reddit(args))) => {
             let (account, all) = (args.account.clone(), args.all);
             let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-            let jobs = build_jobs(&config.reddit, account.as_deref(), all, |a| {
-                build_reddit_job(a, &ovr, config)
-            })?;
+            let jobs = build_jobs::<RedditAccount>(account.as_deref(), all, &ovr, config)?;
             (jobs, ovr, 0)
         }
         (false, Some(SyncSource::Github(args))) => {
             let (account, all) = (args.account.clone(), args.all);
             let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-            let jobs = build_jobs(&config.github, account.as_deref(), all, |a| {
-                build_github_job(a, &ovr, config)
-            })?;
+            let jobs = build_jobs::<GitHubAccount>(account.as_deref(), all, &ovr, config)?;
             (jobs, ovr, 0)
         }
         (false, Some(SyncSource::Hackernews(args))) => {
             let (account, all) = (args.account.clone(), args.all);
             let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-            let jobs = build_jobs(&config.hackernews, account.as_deref(), all, |a| {
-                build_hackernews_job(a, &ovr, config)
-            })?;
+            let jobs = build_jobs::<HackerNewsAccount>(account.as_deref(), all, &ovr, config)?;
             (jobs, ovr, 0)
         }
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
@@ -628,43 +622,48 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
 fn build_all_jobs(config: &Config, ovr: &SyncOverrides) -> (Vec<SyncJob>, usize) {
     let mut jobs = Vec::new();
     let mut run = AllRun::default();
-    for acct in &config.reddit {
-        match build_reddit_job(Some(acct), ovr, config) {
-            Ok(job) => jobs.push(job),
-            Err(e) => run.record(Err(e)),
-        }
-    }
-    for acct in &config.github {
-        match build_github_job(Some(acct), ovr, config) {
-            Ok(job) => jobs.push(job),
-            Err(e) => run.record(Err(e)),
-        }
-    }
-    for acct in &config.hackernews {
-        match build_hackernews_job(Some(acct), ovr, config) {
-            Ok(job) => jobs.push(job),
-            Err(e) => run.record(Err(e)),
-        }
-    }
+    build_every_job::<RedditAccount>(config, ovr, &mut jobs, &mut run);
+    build_every_job::<GitHubAccount>(config, ovr, &mut jobs, &mut run);
+    build_every_job::<HackerNewsAccount>(config, ovr, &mut jobs, &mut run);
     (jobs, run.failed)
+}
+
+/// [`build_all_jobs`] for one source: a job for each of its configured accounts, with each
+/// account that fails to build recorded in `run` instead.
+fn build_every_job<A: SourceAccount>(
+    config: &Config,
+    ovr: &SyncOverrides,
+    jobs: &mut Vec<SyncJob>,
+    run: &mut AllRun,
+) {
+    for account in A::configured(config) {
+        match build_job(Some(account), ovr, config) {
+            Ok(job) => jobs.push(job),
+            Err(e) => run.record(Err(e)),
+        }
+    }
 }
 
 /// Build one job per account: every account when `all`, else the named (or first,
 /// or implicit CLI/env) account.
-fn build_jobs<T: config::Named>(
-    accounts: &[T],
+fn build_jobs<A: SourceAccount>(
     name: Option<&str>,
     all: bool,
-    build: impl Fn(Option<&T>) -> Result<SyncJob>,
+    ovr: &SyncOverrides,
+    config: &Config,
 ) -> Result<Vec<SyncJob>> {
+    let accounts = A::configured(config);
     if all {
         if accounts.is_empty() {
             bail!("--all requires a --config with at least one configured account");
         }
-        accounts.iter().map(|a| build(Some(a))).collect()
+        accounts
+            .iter()
+            .map(|a| build_job(Some(a), ovr, config))
+            .collect()
     } else {
         let account = config::select_account(accounts, name)?;
-        Ok(vec![build(account)?])
+        Ok(vec![build_job(account, ovr, config)?])
     }
 }
 
@@ -797,9 +796,10 @@ impl SyncJob {
 
 /// A log/display label for a job: `source[account]`, or `source[default]` when no
 /// named account (an implicit CLI/env invocation).
-fn job_label<T: config::Named>(source: &str, account: Option<&T>) -> String {
+fn job_label<A: SourceAccount>(account: Option<&A>) -> String {
     format!(
-        "{source}[{}]",
+        "{}[{}]",
+        A::SOURCE,
         account.and_then(|a| a.account_name()).unwrap_or("default")
     )
 }
@@ -951,83 +951,149 @@ fn resolve_job_settings(
     }
 }
 
-fn build_reddit_job(
-    account: Option<&RedditAccount>,
-    ovr: &SyncOverrides,
-    config: &Config,
-) -> Result<SyncJob> {
-    let username = resolve_secret(
-        ovr.reddit_username.clone(),
-        "REDDIT_USERNAME",
-        account.and_then(|a| a.username.clone()),
-        None,
-    )
-    .context("missing Reddit username (set --reddit-username, REDDIT_USERNAME, or `username` in the config)")?;
-    let cookie = resolve_reddit_cookie(ovr.reddit_cookie.clone(), account);
-    let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
-    let src = &config.defaults.reddit;
-    let hook = resolve_hook(
-        ovr.on_auth_failure.clone(),
-        account.and_then(|a| a.on_auth_failure.as_deref()),
-        src.on_auth_failure.as_deref(),
-        config,
-    );
-    let settings = resolve_job_settings(account, ovr, src, config);
-    Ok(SyncJob {
-        client: SourceClient::Reddit(RedditClient::for_user(username, cookie, reddit_config)?),
-        label: job_label("reddit", account),
-        hook,
-        settings,
-    })
+/// What `sync`, `backup` and `doctor` need from one source's account type, so each
+/// handles the three sources through one generic path: where its accounts and per-source
+/// defaults live in the config, how its client is built from an account plus the CLI
+/// overrides, and which auth-failure hook its jobs carry.
+trait SourceAccount: config::Account + Sized {
+    /// The source's name in job labels, backup file stems and `doctor` lines.
+    const SOURCE: &'static str;
+
+    /// The source's configured accounts (`[[reddit]]` and so on).
+    fn configured(config: &Config) -> &[Self];
+
+    /// The source's `[defaults.<source>]` tier.
+    fn defaults(config: &Config) -> &config::SourceDefaults;
+
+    /// The account's own `on_auth_failure` override.
+    fn on_auth_failure(&self) -> Option<&str>;
+
+    /// The client for `account`, or for the implicit CLI/env account when `None`, with
+    /// its credentials resolved through the secret ladder.
+    fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient>;
+
+    /// The auth-failure hook for `account`: `top` (the flag or env value the command
+    /// resolved), else the account's, else the per-source default, else `[hooks]`. Both
+    /// `sync` jobs and `cleanup` resolve it here, so a source that never re-authenticates
+    /// can rule a hook out for every command at once.
+    fn hook(account: Option<&Self>, top: Option<String>, config: &Config) -> Option<String> {
+        resolve_hook(
+            top,
+            account.and_then(Self::on_auth_failure),
+            Self::defaults(config).on_auth_failure.as_deref(),
+            config,
+        )
+    }
 }
 
-fn build_github_job(
-    account: Option<&GitHubAccount>,
-    ovr: &SyncOverrides,
-    config: &Config,
-) -> Result<SyncJob> {
-    let token = resolve_github_token(ovr.github_token.clone(), account)
-        .with_context(missing_github_token)?;
-    let github_config = account.map(GitHubConfig::from).unwrap_or_default();
-    let src = &config.defaults.github;
-    let hook = resolve_hook(
-        ovr.on_auth_failure.clone(),
-        account.and_then(|a| a.on_auth_failure.as_deref()),
-        src.on_auth_failure.as_deref(),
-        config,
-    );
-    let settings = resolve_job_settings(account, ovr, src, config);
-    Ok(SyncJob {
-        client: SourceClient::GitHub(GitHubClient::new(token, github_config)?),
-        label: job_label("github", account),
-        hook,
-        settings,
-    })
+impl SourceAccount for RedditAccount {
+    const SOURCE: &'static str = "reddit";
+
+    fn configured(config: &Config) -> &[Self] {
+        &config.reddit
+    }
+
+    fn defaults(config: &Config) -> &config::SourceDefaults {
+        &config.defaults.reddit
+    }
+
+    fn on_auth_failure(&self) -> Option<&str> {
+        self.on_auth_failure.as_deref()
+    }
+
+    fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient> {
+        let username = resolve_secret(
+            ovr.reddit_username.clone(),
+            "REDDIT_USERNAME",
+            account.and_then(|a| a.username.clone()),
+            None,
+        )
+        .context("missing Reddit username (set --reddit-username, REDDIT_USERNAME, or `username` in the config)")?;
+        let cookie = resolve_reddit_cookie(ovr.reddit_cookie.clone(), account);
+        let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
+        Ok(SourceClient::Reddit(RedditClient::for_user(
+            username,
+            cookie,
+            reddit_config,
+        )?))
+    }
 }
 
-fn build_hackernews_job(
-    account: Option<&HackerNewsAccount>,
+impl SourceAccount for GitHubAccount {
+    const SOURCE: &'static str = "github";
+
+    fn configured(config: &Config) -> &[Self] {
+        &config.github
+    }
+
+    fn defaults(config: &Config) -> &config::SourceDefaults {
+        &config.defaults.github
+    }
+
+    fn on_auth_failure(&self) -> Option<&str> {
+        self.on_auth_failure.as_deref()
+    }
+
+    fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient> {
+        let token = resolve_github_token(ovr.github_token.clone(), account)
+            .with_context(missing_github_token)?;
+        let github_config = account.map(GitHubConfig::from).unwrap_or_default();
+        Ok(SourceClient::GitHub(GitHubClient::new(
+            token,
+            github_config,
+        )?))
+    }
+}
+
+impl SourceAccount for HackerNewsAccount {
+    const SOURCE: &'static str = "hackernews";
+
+    fn configured(config: &Config) -> &[Self] {
+        &config.hackernews
+    }
+
+    fn defaults(config: &Config) -> &config::SourceDefaults {
+        &config.defaults.hackernews
+    }
+
+    fn on_auth_failure(&self) -> Option<&str> {
+        None
+    }
+
+    fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient> {
+        let username = resolve_secret(
+            ovr.hackernews_username.clone(),
+            "HN_USERNAME",
+            account.and_then(|a| a.username.clone()),
+            None,
+        )
+        .context(
+            "missing HackerNews username (set --username, HN_USERNAME, or `username` in the config)",
+        )?;
+        let hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
+        Ok(SourceClient::HackerNews(HackerNewsClient::new(
+            username, hn_config,
+        )?))
+    }
+
+    /// None: HackerNews favorites are public, so nothing can need re-authenticating.
+    fn hook(_: Option<&Self>, _: Option<String>, _: &Config) -> Option<String> {
+        None
+    }
+}
+
+/// The `sync` job for `account` (or the implicit CLI/env account): its client, label and
+/// hook, and its settings resolved through [`resolve_job_settings`].
+fn build_job<A: SourceAccount>(
+    account: Option<&A>,
     ovr: &SyncOverrides,
     config: &Config,
 ) -> Result<SyncJob> {
-    let username = resolve_secret(
-        ovr.hackernews_username.clone(),
-        "HN_USERNAME",
-        account.and_then(|a| a.username.clone()),
-        None,
-    )
-    .context(
-        "missing HackerNews username (set --username, HN_USERNAME, or `username` in the config)",
-    )?;
-    let hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
-    let src = &config.defaults.hackernews;
-    let settings = resolve_job_settings(account, ovr, src, config);
     Ok(SyncJob {
-        // HackerNews favorites are public, so there is no auth-failure hook.
-        client: SourceClient::HackerNews(HackerNewsClient::new(username, hn_config)?),
-        label: job_label("hackernews", account),
-        hook: None,
-        settings,
+        client: A::client(account, ovr)?,
+        label: job_label(account),
+        hook: A::hook(account, ovr.on_auth_failure.clone(), config),
+        settings: resolve_job_settings(account, ovr, A::defaults(config), config),
     })
 }
 
@@ -1233,21 +1299,9 @@ fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
         (true, None) => {
             let mut jobs = Vec::new();
             let mut skipped = Vec::new();
-            for a in &config.reddit {
-                jobs.push(source_backup_job("reddit", Some(a), |x| {
-                    build_reddit_job(x, &ovr, config)
-                })?);
-            }
-            for a in &config.github {
-                jobs.push(source_backup_job("github", Some(a), |x| {
-                    build_github_job(x, &ovr, config)
-                })?);
-            }
-            for a in &config.hackernews {
-                jobs.push(source_backup_job("hackernews", Some(a), |x| {
-                    build_hackernews_job(x, &ovr, config)
-                })?);
-            }
+            jobs.extend(every_backup_job::<RedditAccount>(&ovr, config)?);
+            jobs.extend(every_backup_job::<GitHubAccount>(&ovr, config)?);
+            jobs.extend(every_backup_job::<HackerNewsAccount>(&ovr, config)?);
             match pinboard_backup_job(None, config)? {
                 Some(job) => jobs.push(job),
                 // Silence here would be the worst outcome: a nightly `--all` that quietly
@@ -1277,45 +1331,33 @@ fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
             })
         }
         (false, Some(BackupTarget::Reddit(args))) => Ok(BackupPlan {
-            jobs: source_backup_jobs(
-                "reddit",
-                &config.reddit,
+            jobs: source_backup_jobs::<RedditAccount>(
                 args.account.as_deref(),
                 args.all,
-                {
-                    let ovr = SyncOverrides::from(args.clone());
-                    move |a| build_reddit_job(a, &ovr, config)
-                },
+                &SyncOverrides::from(args.clone()),
+                config,
             )?,
             skipped: Vec::new(),
             out: args.out.out.clone(),
             dry_run: args.dry_run,
         }),
         (false, Some(BackupTarget::Github(args))) => Ok(BackupPlan {
-            jobs: source_backup_jobs(
-                "github",
-                &config.github,
+            jobs: source_backup_jobs::<GitHubAccount>(
                 args.account.as_deref(),
                 args.all,
-                {
-                    let ovr = SyncOverrides::from(args.clone());
-                    move |a| build_github_job(a, &ovr, config)
-                },
+                &SyncOverrides::from(args.clone()),
+                config,
             )?,
             skipped: Vec::new(),
             out: args.out.out.clone(),
             dry_run: args.dry_run,
         }),
         (false, Some(BackupTarget::Hackernews(args))) => Ok(BackupPlan {
-            jobs: source_backup_jobs(
-                "hackernews",
-                &config.hackernews,
+            jobs: source_backup_jobs::<HackerNewsAccount>(
                 args.account.as_deref(),
                 args.all,
-                {
-                    let ovr = SyncOverrides::from(args.clone());
-                    move |a| build_hackernews_job(a, &ovr, config)
-                },
+                &SyncOverrides::from(args.clone()),
+                config,
             )?,
             skipped: Vec::new(),
             out: args.out.out.clone(),
@@ -1338,39 +1380,51 @@ fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
 }
 
 /// The backup jobs for one source, selecting by name / first / every account. Reuses
-/// `build_jobs` so account selection and the whole secret ladder behave as in `sync`.
-fn source_backup_jobs<T: config::Account>(
-    source: &'static str,
-    accounts: &[T],
+/// `build_job` so account selection and the whole secret ladder behave as in `sync`.
+fn source_backup_jobs<A: SourceAccount>(
     name: Option<&str>,
     all: bool,
-    build: impl Fn(Option<&T>) -> Result<SyncJob>,
+    ovr: &SyncOverrides,
+    config: &Config,
 ) -> Result<Vec<BackupJob>> {
     if all {
-        if accounts.is_empty() {
-            bail!("--all requires a --config with at least one configured {source} account");
+        if A::configured(config).is_empty() {
+            bail!(
+                "--all requires a --config with at least one configured {} account",
+                A::SOURCE
+            );
         }
-        accounts
-            .iter()
-            .map(|a| source_backup_job(source, Some(a), &build))
-            .collect()
+        every_backup_job::<A>(ovr, config)
     } else {
-        let account = config::select_account(accounts, name)?;
-        Ok(vec![source_backup_job(source, account, &build)?])
+        let account = config::select_account(A::configured(config), name)?;
+        Ok(vec![source_backup_job(account, ovr, config)?])
     }
+}
+
+/// A backup job for every configured account of one source, stopping at the first that
+/// fails to build.
+fn every_backup_job<A: SourceAccount>(
+    ovr: &SyncOverrides,
+    config: &Config,
+) -> Result<Vec<BackupJob>> {
+    A::configured(config)
+        .iter()
+        .map(|a| source_backup_job(Some(a), ovr, config))
+        .collect()
 }
 
 /// Wrap one account's `SyncJob` as a backup job, keeping its client and auth hook and
 /// discarding the write-only settings (`limit`, `toread`, dates) backup has no use for.
-fn source_backup_job<T: config::Named>(
-    source: &'static str,
-    account: Option<&T>,
-    build: impl Fn(Option<&T>) -> Result<SyncJob>,
+fn source_backup_job<A: SourceAccount>(
+    account: Option<&A>,
+    ovr: &SyncOverrides,
+    config: &Config,
 ) -> Result<BackupJob> {
-    let job = build(account)?;
+    let job = build_job(account, ovr, config)?;
     Ok(BackupJob {
         stem: format!(
-            "{source}-{}",
+            "{}-{}",
+            A::SOURCE,
             backup::slug(account.and_then(config::Named::account_name))
         ),
         label: job.label.clone(),
@@ -1437,18 +1491,9 @@ async fn run_doctor(config: &Config) -> Result<()> {
     }
 
     let ovr = SyncOverrides::default();
-    failed += check_accounts("reddit", &config.reddit, |a| {
-        build_reddit_job(Some(a), &ovr, config)
-    })
-    .await;
-    failed += check_accounts("github", &config.github, |a| {
-        build_github_job(Some(a), &ovr, config)
-    })
-    .await;
-    failed += check_accounts("hackernews", &config.hackernews, |a| {
-        build_hackernews_job(Some(a), &ovr, config)
-    })
-    .await;
+    failed += check_accounts::<RedditAccount>(&ovr, config).await;
+    failed += check_accounts::<GitHubAccount>(&ovr, config).await;
+    failed += check_accounts::<HackerNewsAccount>(&ovr, config).await;
 
     if failed > 0 {
         bail!("{failed} check(s) failed");
@@ -1459,11 +1504,9 @@ async fn run_doctor(config: &Config) -> Result<()> {
 
 /// Probe each configured account by fetching its source; returns the count that
 /// failed. Reuses the normal job builders, so it exercises the real auth path.
-async fn check_accounts<T: config::Named>(
-    source: &str,
-    accounts: &[T],
-    build: impl Fn(&T) -> Result<SyncJob>,
-) -> usize {
+async fn check_accounts<A: SourceAccount>(ovr: &SyncOverrides, config: &Config) -> usize {
+    let source = A::SOURCE;
+    let accounts = A::configured(config);
     if accounts.is_empty() {
         println!("- {source} — no accounts configured");
         return 0;
@@ -1471,7 +1514,7 @@ async fn check_accounts<T: config::Named>(
     let mut failed = 0;
     for account in accounts {
         let name = account.account_name().unwrap_or("(unnamed)");
-        let result = match build(account) {
+        let result = match build_job(Some(account), ovr, config) {
             Ok(job) => job.client.fetch().await.map_err(SourceError::into_anyhow),
             Err(e) => Err(e),
         };
@@ -1577,11 +1620,7 @@ async fn cleanup_github_for<S: BookmarkStore + AccountState>(
 ) -> Result<()> {
     let github_config = account.map(GitHubConfig::from).unwrap_or_default();
     let token = resolve_github_token(token_flag, account).with_context(missing_github_token)?;
-    let hook = cleanup_hook(
-        account.and_then(|a| a.on_auth_failure.as_deref()),
-        config.defaults.github.on_auth_failure.as_deref(),
-        config,
-    );
+    let hook = cleanup_hook(account, config);
     let client = GitHubClient::new(token, github_config.clone())?;
     github::cleanup(store, &client, &github_config, dates)
         .await
@@ -1652,11 +1691,7 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
         None
     };
 
-    let hook = cleanup_hook(
-        account.and_then(|a| a.on_auth_failure.as_deref()),
-        config.defaults.reddit.on_auth_failure.as_deref(),
-        config,
-    );
+    let hook = cleanup_hook(account, config);
     cleanup::run(store, reddit.as_ref(), &opts)
         .await
         .map_err(|e| handle_source_err(e, hook.as_deref()))
@@ -1966,17 +2001,8 @@ fn resolve_hook(
 /// `onAuthFailure` *only* into the unit environment — it never reaches the generated
 /// TOML — and runs the `cleanup --all` timer with it. Resolving from config alone would
 /// leave the hook dead for the exact deployment it is meant to serve.
-fn cleanup_hook(
-    account_override: Option<&str>,
-    source_override: Option<&str>,
-    config: &Config,
-) -> Option<String> {
-    resolve_hook(
-        on_auth_failure_from_env(),
-        account_override,
-        source_override,
-        config,
-    )
+fn cleanup_hook<A: SourceAccount>(account: Option<&A>, config: &Config) -> Option<String> {
+    A::hook(account, on_auth_failure_from_env(), config)
 }
 
 fn resolve_pinboard_token(flag: Option<String>, pb: &config::PinboardConfig) -> Option<String> {
@@ -2279,33 +2305,33 @@ mod tests {
     }
 
     #[test]
-    fn build_reddit_job_wires_overrides_to_job_fields() {
+    fn build_job_wires_reddit_overrides_to_job_fields() {
         let ovr = SyncOverrides {
             reddit_username: Some("alice".into()),
             reddit_cookie: Some("reddit_session=x".into()),
             ..wiring_overrides()
         };
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_wired(&job);
     }
 
     #[test]
-    fn build_github_job_wires_overrides_to_job_fields() {
+    fn build_job_wires_github_overrides_to_job_fields() {
         let ovr = SyncOverrides {
             github_token: Some("ghp_test".into()),
             ..wiring_overrides()
         };
-        let job = build_github_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<GitHubAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_wired(&job);
     }
 
     #[test]
-    fn build_hackernews_job_wires_overrides_to_job_fields() {
+    fn build_job_wires_hackernews_overrides_to_job_fields() {
         let ovr = SyncOverrides {
             hackernews_username: Some("alice".into()),
             ..wiring_overrides()
         };
-        let job = build_hackernews_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<HackerNewsAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_wired(&job);
     }
 
@@ -2384,8 +2410,41 @@ mod tests {
             reddit_cookie: Some("reddit_session=x".into()),
             ..SyncOverrides::default()
         };
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("refresh-cookie"));
+    }
+
+    /// A reddit account with its own hook, in a config whose `[defaults.reddit]` has
+    /// another: the two config tiers `cleanup_hook` reads below the env var.
+    fn account_and_source_hooks() -> (RedditAccount, Config) {
+        let account = RedditAccount {
+            on_auth_failure: Some("account-hook".into()),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.defaults.reddit.on_auth_failure = Some("source-hook".into());
+        (account, config)
+    }
+
+    /// HackerNews is public, so no command may hand it a hook, whatever the env var or
+    /// `[hooks]` say.
+    #[test]
+    fn hackernews_resolves_no_hook_from_any_tier() {
+        let _env = lock_on_auth_failure_env();
+        std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
+        let mut config = Config::default();
+        config.hooks.on_auth_failure = Some("global-hook".into());
+        let cleanup = cleanup_hook::<HackerNewsAccount>(None, &config);
+        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
+        let ovr = SyncOverrides {
+            hackernews_username: Some("bob".into()),
+            on_auth_failure: Some("flag-hook".into()),
+            ..SyncOverrides::default()
+        };
+        let job = build_job::<HackerNewsAccount>(None, &ovr, &config).expect("builds");
+
+        assert_eq!(cleanup, None);
+        assert_eq!(job.hook, None);
     }
 
     #[test]
@@ -2396,7 +2455,7 @@ mod tests {
         // same environment. Miss this rung and the hook silently never fires for the
         // deployment the whole feature exists for.
         std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
-        let hook = cleanup_hook(None, None, &Config::default());
+        let hook = cleanup_hook::<RedditAccount>(None, &Config::default());
         std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
 
         assert_eq!(hook.as_deref(), Some("env-hook"));
@@ -2408,11 +2467,8 @@ mod tests {
         // Same precedence as `sync`, whose per-source flag is env-backed: the env var is
         // the top rung, above an account or `[defaults.<source>]` entry.
         std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
-        let hook = cleanup_hook(
-            Some("account-hook"),
-            Some("source-hook"),
-            &Config::default(),
-        );
+        let (account, config) = account_and_source_hooks();
+        let hook = cleanup_hook(Some(&account), &config);
         std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
 
         assert_eq!(hook.as_deref(), Some("env-hook"));
@@ -2422,11 +2478,8 @@ mod tests {
     fn cleanup_uses_the_account_hook_when_no_env_is_set() {
         let _env = lock_on_auth_failure_env();
         std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
-        let hook = cleanup_hook(
-            Some("account-hook"),
-            Some("source-hook"),
-            &Config::default(),
-        );
+        let (account, config) = account_and_source_hooks();
+        let hook = cleanup_hook(Some(&account), &config);
 
         assert_eq!(hook.as_deref(), Some("account-hook"));
     }
@@ -2456,7 +2509,7 @@ mod tests {
         };
         std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
 
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("env-hook"));
     }
 
@@ -2482,7 +2535,7 @@ mod tests {
         assert_eq!(args.on_auth_failure, None);
 
         let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("top-hook"));
     }
 
@@ -2505,7 +2558,7 @@ mod tests {
         };
 
         let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("source-hook"));
     }
 
@@ -2537,7 +2590,7 @@ mod tests {
         assert_eq!(args.on_auth_failure.as_deref(), Some("explicit-hook"));
 
         let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("explicit-hook"));
     }
 
@@ -2564,7 +2617,7 @@ mod tests {
         };
 
         let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-        let job = build_reddit_job(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("env-hook"));
     }
 
@@ -2853,6 +2906,46 @@ mod tests {
             resolve_backup_dir(Some("/from-flag".into()), &config).unwrap(),
             PathBuf::from("/from-flag")
         );
+    }
+
+    /// Each source's name reaches its jobs' labels and backup file stems, which are part of
+    /// the snapshot an operator keeps: a renamed source would orphan its earlier files.
+    #[test]
+    fn backup_all_names_each_source_in_its_labels_and_stems() {
+        let config = Config {
+            reddit: vec![RedditAccount {
+                name: Some("main".into()),
+                username: Some("alice".into()),
+                cookie: Some("reddit_session=x".into()),
+                ..Default::default()
+            }],
+            github: vec![GitHubAccount {
+                name: Some("main".into()),
+                token: Some("token".into()),
+                ..Default::default()
+            }],
+            hackernews: vec![HackerNewsAccount {
+                name: Some("main".into()),
+                username: Some("bob".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let plan = backup_jobs(&parse_backup(&["--all"]), &config).expect("plans");
+        let named: Vec<(&str, &str)> = plan
+            .jobs
+            .iter()
+            .map(|job| (job.label.as_str(), job.stem.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("reddit[main]", "reddit-main"),
+                ("github[main]", "github-main"),
+                ("hackernews[main]", "hackernews-main"),
+            ]
+        );
+        assert_eq!(plan.skipped, ["pinboard"], "no Pinboard token in this test");
     }
 }
 

@@ -197,8 +197,12 @@ holding it still reads as not caught up, so it is retried). There is no `0`: it 
 mean "no cap", and since that now splits into `auto` and `all` it is rejected rather
 than guessed. A bad value's error names the field, never the value. `backup`, `doctor`
 and `cleanup github`'s `use_post_date` star dates call `fetch()`, so they keep the full
-traversal. To add a source, implement `Source` and wire it into `main.rs` +
-`config.rs`. The clients also sit behind the `BookmarkStore` port (Pinboard;
+traversal. To add a source, implement `Source`, add its account array to `config.rs`,
+and implement `main.rs`'s `SourceAccount` for the account type: its `SOURCE` name (the
+job labels, backup file stems and `doctor` lines), where its accounts and
+`[defaults.<source>]` live, how its client is built, and its auth-failure hook. `sync`,
+`backup` and `doctor` reach every source through that one trait (`build_job::<A>` and
+friends); only the `SourceClient` enum and the call lists name them. The clients also sit behind the `BookmarkStore` port (Pinboard;
 `add`/`update` both take a `&Bookmark`) so the loops are unit-tested with in-memory
 fakes ([`src/test_support.rs`](src/test_support.rs)); real clients are covered by `net_tests`
 against a wiremock server via test-only `with_base_url(s)` constructors.

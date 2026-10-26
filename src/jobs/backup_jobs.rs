@@ -10,6 +10,7 @@ use super::{build_job, pinboard_client, SourceAccount, SourceClient, SyncOverrid
 use crate::backup::{self, BackupSource};
 use crate::cli::{BackupCmd, BackupTarget};
 use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccount};
+use crate::hook::on_auth_failure_from_env;
 use crate::pinboard::PinboardClient;
 use crate::secrets::resolve_pinboard_token;
 use crate::source::SourceError;
@@ -54,10 +55,13 @@ pub struct BackupPlan {
 }
 
 pub fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
-    let ovr = SyncOverrides::default();
     match (cmd.all, &cmd.target) {
         (true, Some(_)) => bail!("--all cannot be combined with a target subcommand"),
         (true, None) => {
+            let ovr = SyncOverrides {
+                on_auth_failure: on_auth_failure_from_env(),
+                ..SyncOverrides::default()
+            };
             let mut jobs = Vec::new();
             let mut skipped = Vec::new();
             jobs.extend(every_backup_job::<RedditAccount>(&ovr, config)?);
@@ -206,4 +210,43 @@ fn pinboard_backup_job(flag: Option<String>, config: &Config) -> Result<Option<B
         label: "pinboard".to_string(),
         hook: None,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::OutFlag;
+    use crate::test_support::lock_on_auth_failure_env;
+
+    fn backup_all() -> BackupCmd {
+        BackupCmd {
+            all: true,
+            dry_run: false,
+            out: OutFlag::default(),
+            target: None,
+        }
+    }
+
+    fn reddit_account() -> RedditAccount {
+        RedditAccount {
+            username: Some("alice".into()),
+            cookie: Some("reddit_session=x".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn backup_all_takes_the_hook_from_on_auth_failure_env() {
+        let _env = lock_on_auth_failure_env();
+        let config = Config {
+            reddit: vec![reddit_account()],
+            ..Default::default()
+        };
+        std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
+        let plan = backup_jobs(&backup_all(), &config);
+        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
+
+        let plan = plan.expect("plans");
+        assert_eq!(plan.jobs[0].hook.as_deref(), Some("env-hook"));
+    }
 }

@@ -57,6 +57,7 @@ All notable changes to this project are documented here. The format is based on
   now keep them.
 - Reddit titles keep literal text like `&amp;`, which `raw_json=1` already returns
   unescaped, instead of decoding it.
+- `backup --all` fires the `PINBOARD_SYNC_ON_AUTH_FAILURE` hook, as `sync --all` does.
 
 ## [0.6.0] - 2026-10-25
 

@@ -36,7 +36,12 @@ plan every bookmark, group the plans by target URL, then diff each plan against 
 one, skip unchanged, render the dry-run lines, write via `apply_update` (deleting the old
 URL on a rewrite), and tally into a `PassOutcome`. Colliding rewrites — several bookmarks
 normalizing to one URL — are field-merged into a single record via `apply_merge` (which
-deletes the absorbed URLs) rather than clobbering each other.
+deletes the absorbed URLs) rather than clobbering each other. `run_pass` itself only
+sequences the phases, each its own function: `plan_all` (the `Plan`s, and the `untouchable`
+URLs it could not read), `group_by_target`, `residents_of`, `hold_back_visibility_mismatches`,
+then per group `refuse_group`, `write_single` or `write_merge`. The merge rules themselves
+(`merge_bookmarks`, `incumbent_of`) live in
+[`src/cleanup_pass/merge.rs`](src/cleanup_pass/merge.rs).
 
 **A failed lookup is not a failed run.** `PassOutcome` counts `plan_failed` (a link we
 couldn't read from the source) separately from `write_failed` (Pinboard refusing us, on
@@ -123,7 +128,8 @@ still marked occupied, though, so a third bookmark rewriting onto it is refused 
 Every refusal propagates — whatever didn't move keeps its own URL occupied — through
 `propagate_refusals`, a fixpoint because each refusal can occupy the URL that refuses the
 next. **Call it after any failure that leaves a record stranded at a URL another group could
-target** — not after every error: a *half-applied* write (the record landed, a delete failed)
+target** (`write_single`/`write_merge` return those URLs, and the write loop marks them and
+re-closes) — not after every error: a *half-applied* write (the record landed, a delete failed)
 strands nothing, because the record is at its new URL and the old one is gone or is a URL no
 plan may write. It runs once up front, which is what makes pre-write refusals
 order-independent (and why the visibility check runs before it), and again after a write that

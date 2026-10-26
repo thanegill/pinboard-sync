@@ -46,6 +46,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
   '';
   meta = {
     description = "Sync saved/favorited items from multiple services to a Pinboard account";
+    homepage = "https://github.com/thanegill/pinboard-sync";
+    license = lib.licenses.mit;
     mainProgram = finalAttrs.pname;
   };
 })

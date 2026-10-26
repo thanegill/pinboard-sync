@@ -12,6 +12,10 @@ All notable changes to this project are documented here. The format is based on
   each only when the bookmark has no tag of that kind yet.
 - `config check <file>` validates a config without contacting any service.
 
+### Changed
+
+- A config pairing `post_date_max_age_days = 0` with `cleanup_stale_to_now` is rejected.
+
 ### Removed
 
 - The flake no longer has `x86_64-darwin` outputs, which nixpkgs 26.11 dropped.
@@ -37,6 +41,8 @@ All notable changes to this project are documented here. The format is based on
   unauthorized SSO) instead of counting it as a failed lookup every run.
 - A config with two unnamed `[[github]]` accounts is rejected, rather than failing
   every `backup --all` on their shared `github-default` files.
+- `cleanup_stale_to_now` re-dates a stale bookmark at most once per cap period, not on
+  every run.
 
 ## [0.6.0] - 2026-10-25
 

@@ -77,8 +77,9 @@ impl DateOpts {
     /// The creation time a `cleanup` re-write should set. `candidate` is the source post
     /// time (if known) and `existing` the bookmark's current time. Returns the source time
     /// when dating is on and the post is within the cap; otherwise `now` when the post is
-    /// stale and `stale_to_now`; otherwise `existing` (unchanged). The age cap compares by
-    /// instant; the RFC3339 formatting happens at the write boundary.
+    /// stale, `stale_to_now` is set and `existing` is unknown or itself outside the cap;
+    /// otherwise `existing` (unchanged). The age cap compares by instant; the RFC3339
+    /// formatting happens at the write boundary.
     pub fn cleanup_date(
         self,
         candidate: Option<OffsetDateTime>,
@@ -88,15 +89,20 @@ impl DateOpts {
         if !self.use_post_date {
             return existing;
         }
+        let within_cap = |ts: OffsetDateTime| {
+            within_age_cap(now.unix_timestamp(), ts.unix_timestamp(), self.max_age_days)
+        };
         match candidate {
-            Some(ts)
-                if within_age_cap(now.unix_timestamp(), ts.unix_timestamp(), self.max_age_days) =>
-            {
-                Some(ts)
-            }
-            Some(_) if self.stale_to_now => Some(now),
+            Some(ts) if within_cap(ts) => Some(ts),
+            Some(_) if self.stale_to_now && !existing.is_some_and(within_cap) => Some(now),
             _ => existing,
         }
+    }
+
+    /// Whether [`Self::cleanup_date`] would re-date a stale bookmark on every run rather
+    /// than at most once per cap period: with a zero cap every stored date is outside it.
+    pub fn redates_every_run(self) -> bool {
+        self.stale_to_now && self.max_age_days == 0
     }
 }
 
@@ -186,10 +192,47 @@ mod tests {
             dates(true, true).cleanup_date(Some(old), now, existing),
             Some(now)
         );
+        // Stale + stale_to_now, but already dated within the cap (e.g. by the previous
+        // run's "now") → keep existing, so the pass settles.
+        assert_eq!(
+            dates(true, true).cleanup_date(Some(old), now, Some(recent)),
+            Some(recent)
+        );
+        // Stale + stale_to_now with no stored date → now.
+        assert_eq!(
+            dates(true, true).cleanup_date(Some(old), now, None),
+            Some(now)
+        );
         // No source date → keep existing.
         assert_eq!(
             dates(true, true).cleanup_date(None, now, existing),
             existing
+        );
+    }
+
+    #[test]
+    fn stale_to_now_redates_at_most_once_per_cap_period() {
+        let dates = DateOpts {
+            use_post_date: true,
+            max_age_days: 30,
+            stale_to_now: true,
+        };
+        let stale_source = from_unix(1_500_000_000);
+        let first_run = from_unix(1_700_000_000).unwrap();
+        let redate = |now: OffsetDateTime, stored| dates.cleanup_date(stale_source, now, stored);
+
+        let after_first = redate(first_run, from_unix(1_546_300_800));
+        assert_eq!(after_first, Some(first_run));
+        // A run soon after keeps that date.
+        let soon_after = first_run + time::Duration::hours(1);
+        assert_eq!(redate(soon_after, after_first), after_first);
+        // A run more than a cap later re-dates once more, then settles again.
+        let a_cap_later = first_run + time::Duration::days(31);
+        let after_cap = redate(a_cap_later, after_first);
+        assert_eq!(after_cap, Some(a_cap_later));
+        assert_eq!(
+            redate(a_cap_later + time::Duration::hours(1), after_cap),
+            after_cap
         );
     }
 }

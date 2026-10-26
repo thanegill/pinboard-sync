@@ -317,6 +317,46 @@ fn rejects_duplicate_account_names() {
 }
 
 #[test]
+fn rejects_a_zero_cap_with_stale_to_now_as_each_account_resolves_it() {
+    let rejected = |text: &str| Config::parse(text).unwrap_err().to_string();
+
+    // Both in one tier, and split across the account, per-source and global tiers.
+    assert_eq!(
+        rejected("[pinboard]\npost_date_max_age_days = 0\ncleanup_stale_to_now = true"),
+        "config: reddit (implicit CLI/env account) resolves `post_date_max_age_days` to 0 \
+         with `cleanup_stale_to_now` on, so cleanup would re-date its stale bookmarks on \
+         every run; raise the cap or turn `cleanup_stale_to_now` off"
+    );
+    assert!(rejected(
+        "[pinboard]\ncleanup_stale_to_now = true\n\
+         [defaults.github]\npost_date_max_age_days = 0\n[[github]]"
+    )
+    .starts_with("config: github[0] resolves "));
+    assert!(rejected(
+        "[defaults.hackernews]\ncleanup_stale_to_now = true\n\
+         [[hackernews]]\n[[hackernews]]\npost_date_max_age_days = 0"
+    )
+    .starts_with("config: hackernews[1] resolves "));
+
+    // An account overriding either half resolves to a combination that settles.
+    assert!(Config::parse(
+        "[pinboard]\npost_date_max_age_days = 0\ncleanup_stale_to_now = true\n\
+         [[reddit]]\npost_date_max_age_days = 1\n\
+         [[github]]\ncleanup_stale_to_now = false\n\
+         [[hackernews]]\npost_date_max_age_days = 7"
+    )
+    .is_ok());
+    assert!(Config::parse("[pinboard]\npost_date_max_age_days = 0").is_ok());
+
+    // A source with no accounts still has its implicit CLI/env account to check.
+    assert!(rejected(
+        "[pinboard]\npost_date_max_age_days = 0\ncleanup_stale_to_now = true\n\
+         [[reddit]]\npost_date_max_age_days = 1"
+    )
+    .starts_with("config: github (implicit CLI/env account) resolves "));
+}
+
+#[test]
 fn rejects_malformed_reddit_domain() {
     assert!(Config::parse("[[reddit]]\nreddit_domain = \"https://old.reddit.com\"").is_err());
     assert!(Config::parse("[[reddit]]\nreddit_domain = \"old.reddit.com/\"").is_err());

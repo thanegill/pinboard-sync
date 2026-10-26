@@ -168,6 +168,19 @@ pub struct BackupDump {
     pub truncated: Option<String>,
 }
 
+impl BackupDump {
+    /// The dump of a source that shapes its drafts as it paginates (GitHub, HackerNews):
+    /// everything `sink` captured, with `drafts` as the records.
+    pub fn from_drafts(sink: RawSink, drafts: &[BookmarkDraft]) -> Self {
+        let (raw, truncated) = sink.into_parts();
+        Self {
+            raw,
+            records: Ok(drafts.iter().map(ExportBookmark::from).collect()),
+            truncated,
+        }
+    }
+}
+
 /// A service that can dump what it holds. Implemented by the three `Source` clients and
 /// by the Pinboard client, so `backup` covers the destination as well as the sources.
 /// (Crate-internal, never spawned across threads, so the missing `Send` bound from
@@ -278,9 +291,11 @@ pub fn merge_json_pages(bodies: &[&str]) -> Result<(Value, Count)> {
 /// makes overwrite-without-pruning safe. HTML comments are inert, so each page's bytes
 /// are still verbatim.
 pub fn merge_html_pages(bodies: &[&str]) -> String {
+    use std::fmt::Write;
+
     let mut out = String::new();
     for (i, body) in bodies.iter().enumerate() {
-        out.push_str(&format!("<!-- pinboard-sync page {} -->\n", i + 1));
+        let _ = writeln!(out, "<!-- pinboard-sync page {} -->", i + 1);
         out.push_str(body);
         if !body.ends_with('\n') {
             out.push('\n');

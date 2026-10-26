@@ -12,7 +12,7 @@ use log::{debug, warn};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 
-use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
+use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, PassOutcome, Plan};
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
@@ -79,7 +79,7 @@ impl Default for HackernewsConfig {
 struct HackerNewsItem {
     id: u64,
     #[serde(rename = "type", default)]
-    kind: String,
+    kind: HackerNewsItemKind,
     #[serde(default)]
     by: String,
     #[serde(default)]
@@ -91,6 +91,35 @@ struct HackerNewsItem {
     /// Item creation time (unix epoch seconds), when known.
     #[serde(default)]
     created_at: Option<i64>,
+}
+
+/// What an HN item is. Algolia carries it in a hit's `_tags`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum HackerNewsItemKind {
+    #[default]
+    Story,
+    Comment,
+    Poll,
+    Job,
+}
+
+impl HackerNewsItemKind {
+    /// HN's own name for the kind, as `_tags` spells it.
+    fn as_str(self) -> &'static str {
+        match self {
+            HackerNewsItemKind::Story => "story",
+            HackerNewsItemKind::Comment => "comment",
+            HackerNewsItemKind::Poll => "poll",
+            HackerNewsItemKind::Job => "job",
+        }
+    }
+}
+
+impl std::fmt::Display for HackerNewsItemKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// An Algolia HN search response.
@@ -125,11 +154,15 @@ struct AlgoliaHit {
 impl From<AlgoliaHit> for HackerNewsItem {
     fn from(h: AlgoliaHit) -> Self {
         // The item type is carried in `_tags` (e.g. "story"/"comment"/"poll"/"job").
-        let kind = ["comment", "poll", "job", "story"]
-            .into_iter()
-            .find(|k| h.tags.iter().any(|t| t == k))
-            .unwrap_or("story")
-            .to_string();
+        let kind = [
+            HackerNewsItemKind::Comment,
+            HackerNewsItemKind::Poll,
+            HackerNewsItemKind::Job,
+            HackerNewsItemKind::Story,
+        ]
+        .into_iter()
+        .find(|kind| h.tags.iter().any(|tag| tag == kind.as_str()))
+        .unwrap_or_default();
         HackerNewsItem {
             id: h.object_id.parse().unwrap_or(0),
             kind,
@@ -150,7 +183,7 @@ impl HackerNewsItem {
         let item_id = HackerNewsItemId::from(self.id);
         // The HN discussion permalink (always valid — the id sits in the query string).
         let hn_url = Url::from(&item_id);
-        let is_comment = self.kind == "comment";
+        let is_comment = self.kind == HackerNewsItemKind::Comment;
 
         let mut tags = Vec::new();
         push_tags(&mut tags, &cfg.tags);
@@ -174,7 +207,7 @@ impl HackerNewsItem {
                     public: false,
                     read_later: false,
                 },
-                dedup_key: format!("hn:{item_id}"),
+                dedup_key: item_id.dedup_key(),
             });
         }
 
@@ -187,7 +220,7 @@ impl HackerNewsItem {
                     // back through `HackerNewsClient::dedup_key`; a generic host+path key
                     // would drop the id query and re-add the bookmark every sync.
                     let key = HackerNewsItemId::try_from(&parsed)
-                        .map(|id| format!("hn:{id}"))
+                        .map(|id| id.dedup_key())
                         .unwrap_or_else(|_| url_key(&parsed).unwrap_or_else(|| parsed.to_string()));
                     (parsed, key)
                 }
@@ -196,7 +229,7 @@ impl HackerNewsItem {
                     return None;
                 }
             },
-            None => (hn_url.clone(), format!("hn:{item_id}")),
+            None => (hn_url.clone(), item_id.dedup_key()),
         };
         let title = html_to_plain(
             &self
@@ -445,16 +478,7 @@ impl HackerNewsClient {
                 },
             )
             .await?;
-            let status = resp.status();
-            if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(crate::http::error_with_body(
-                    &format!("hn algolia returned {status}"),
-                    &body,
-                    &[],
-                )
-                .into());
-            }
+            let resp = algolia_success(resp, "hn algolia").await?;
             let body = resp.text().await.context("reading hn algolia response")?;
             sink.push("", RawKind::Json, &body);
             let search: AlgoliaSearchResponse =
@@ -469,7 +493,7 @@ impl HackerNewsClient {
 
     /// Find the HN story id discussing `url`, via the Algolia URL search. Returns
     /// the id only when a hit's URL matches `url` (so loose matches are ignored).
-    async fn search_by_url(&self, url: &Url) -> Result<Option<String>, SourceError> {
+    async fn search_by_url(&self, url: &Url) -> Result<Option<HackerNewsItemId>, SourceError> {
         let endpoint = format!("{}/api/v1/search", self.algolia);
         let resp = send_retrying(
             "hn algolia url",
@@ -485,16 +509,7 @@ impl HackerNewsClient {
             },
         )
         .await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(crate::http::error_with_body(
-                &format!("hn algolia url search returned {status}"),
-                &body,
-                &[],
-            )
-            .into());
-        }
+        let resp = algolia_success(resp, "hn algolia url search").await?;
         let search: AlgoliaSearchResponse =
             resp.json().await.context("parsing hn algolia response")?;
         let want = url_key(url);
@@ -504,7 +519,7 @@ impl HackerNewsClient {
                 .as_deref()
                 .and_then(|s| Url::parse(s).ok())
                 .and_then(|u| url_key(&u));
-            (want.is_some() && hit_key == want).then_some(h.object_id)
+            (want.is_some() && hit_key == want).then(|| HackerNewsItemId::from(h.object_id))
         }))
     }
 }
@@ -569,12 +584,7 @@ impl BackupSource for HackerNewsClient {
     async fn dump(&self) -> Result<BackupDump, SourceError> {
         let mut sink = RawSink::collecting();
         let drafts = self.fetch_capturing(None, &mut sink).await?;
-        let (raw, truncated) = sink.into_parts();
-        Ok(BackupDump {
-            raw,
-            records: Ok(drafts.iter().map(ExportBookmark::from).collect()),
-            truncated,
-        })
+        Ok(BackupDump::from_drafts(sink, &drafts))
     }
 }
 
@@ -584,7 +594,7 @@ impl UrlKey for HackerNewsClient {
     fn dedup_key(&self, url: &Url) -> Option<String> {
         HackerNewsItemId::try_from(url)
             .ok()
-            .map(|id| format!("hn:{id}"))
+            .map(|id| id.dedup_key())
             .or_else(|| url_key(url))
     }
 }
@@ -593,22 +603,8 @@ impl UrlKey for HackerNewsClient {
 pub struct HackerNewsCleanupOpts {
     /// Also link `link_tag`-tagged article bookmarks to their HN discussion.
     pub link_discussions: bool,
-    /// Re-date bookmarks to the source item's creation time (within the age cap).
-    pub use_post_date: bool,
-    /// Backdate age cap, in days.
-    pub max_age_days: u64,
-    /// Re-date items older than the cap to "now" instead of leaving them.
-    pub cleanup_stale_to_now: bool,
-}
-
-impl HackerNewsCleanupOpts {
-    fn date_opts(&self) -> DateOpts {
-        DateOpts {
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
-            stale_to_now: self.cleanup_stale_to_now,
-        }
-    }
+    /// Whether and how to re-date bookmarks by the source item's creation time.
+    pub dates: DateOpts,
 }
 
 impl HackerNewsClient {
@@ -651,7 +647,7 @@ impl HackerNewsClient {
             items,
             config: &self.config,
         };
-        let items = run_pass(store, &hackernews_bookmarks, "HN", opts.date_opts(), &pass).await;
+        let items = run_pass(store, &hackernews_bookmarks, "HN", opts.dates, &pass).await;
 
         // Each pass reaches its own verdict. Merging the tallies first would let this
         // pass's bookmarks — which are planned from prefetched items and so can never
@@ -703,11 +699,25 @@ impl HackerNewsClient {
             store,
             &candidates,
             "HN discussion",
-            opts.date_opts(),
+            opts.dates,
             &HackerNewsLinkPass { client: self },
         )
         .await
     }
+}
+
+/// `resp` when it succeeded, else an error naming the `what` request with its status and
+/// an excerpt of the body.
+async fn algolia_success(
+    resp: reqwest::Response,
+    what: &str,
+) -> Result<reqwest::Response, SourceError> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let body = resp.text().await.unwrap_or_default();
+    Err(crate::http::error_with_body(&format!("{what} returned {status}"), &body, &[]).into())
 }
 
 /// The HN item id referenced by a note's `HN Link: <url>` back-link marker, if the note
@@ -827,12 +837,11 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
         // Unlike the other passes' early exits, this one is an *answer* from Algolia —
         // the search ran and the article simply has no discussion — so it counts as
         // having reached the source.
-        let id = match self.client.search_by_url(&bookmark.url).await? {
-            Some(id) => id,
-            None => return Ok(Plan::Unchanged),
+        let Some(id) = self.client.search_by_url(&bookmark.url).await? else {
+            return Ok(Plan::Unchanged);
         };
 
-        let hn_link = format!("HN Link: https://news.ycombinator.com/item?id={id}");
+        let hn_link = format!("HN Link: {}", Url::from(&id));
         let note = ensure_hn_link_note(&bookmark.note, &hn_link);
 
         // Clean the title (arbitrary article bookmarks may carry HTML entities).
@@ -870,6 +879,14 @@ pub struct HackerNewsItemId(String);
 impl std::fmt::Display for HackerNewsItemId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+impl HackerNewsItemId {
+    /// The key `sync` dedups a favorited HN item on: `hn:<id>`, matching however the
+    /// bookmark is stored.
+    fn dedup_key(&self) -> String {
+        format!("hn:{self}")
     }
 }
 
@@ -961,12 +978,14 @@ fn parse_favorite_ids(html: &str) -> FavoritesPage {
 /// The slug for a `Show/Ask/Tell/Launch HN:` title prefix (e.g. `Show HN:` →
 /// `show-hn`), or `None` for ordinary titles.
 fn special_type(title: &str) -> Option<String> {
-    for kind in ["Show HN", "Ask HN", "Tell HN", "Launch HN"] {
-        if title.starts_with(kind) && title[kind.len()..].starts_with(':') {
-            return Some(kind.to_lowercase().replace(' ', "-"));
-        }
-    }
-    None
+    ["Show HN", "Ask HN", "Tell HN", "Launch HN"]
+        .into_iter()
+        .find(|kind| {
+            title
+                .strip_prefix(kind)
+                .is_some_and(|rest| rest.starts_with(':'))
+        })
+        .map(|kind| kind.to_lowercase().replace(' ', "-"))
 }
 
 #[cfg(test)]
@@ -1580,9 +1599,11 @@ mod net_tests {
                 &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
                 &HackerNewsCleanupOpts {
                     link_discussions: false,
-                    use_post_date: false,
-                    max_age_days: 30,
-                    cleanup_stale_to_now: false,
+                    dates: DateOpts {
+                        use_post_date: false,
+                        max_age_days: 30,
+                        stale_to_now: false,
+                    },
                 },
             )
             .await
@@ -1656,9 +1677,11 @@ mod net_tests {
                 &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
                 &HackerNewsCleanupOpts {
                     link_discussions: false,
-                    use_post_date: false,
-                    max_age_days: 30,
-                    cleanup_stale_to_now: false,
+                    dates: DateOpts {
+                        use_post_date: false,
+                        max_age_days: 30,
+                        stale_to_now: false,
+                    },
                 },
             )
             .await
@@ -1723,9 +1746,11 @@ mod net_tests {
                 &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
                 &HackerNewsCleanupOpts {
                     link_discussions: false,
-                    use_post_date: false,
-                    max_age_days: 30,
-                    cleanup_stale_to_now: false,
+                    dates: DateOpts {
+                        use_post_date: false,
+                        max_age_days: 30,
+                        stale_to_now: false,
+                    },
                 },
             )
             .await
@@ -1788,9 +1813,11 @@ mod net_tests {
                 &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
                 &HackerNewsCleanupOpts {
                     link_discussions: true,
-                    use_post_date: false,
-                    max_age_days: 30,
-                    cleanup_stale_to_now: false,
+                    dates: DateOpts {
+                        use_post_date: false,
+                        max_age_days: 30,
+                        stale_to_now: false,
+                    },
                 },
             )
             .await

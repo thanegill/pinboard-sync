@@ -7,8 +7,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use log::{debug, warn};
 use serde::Deserialize;
+use time::OffsetDateTime;
 
-use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
+use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, DateOpts, Plan};
 use crate::htmltext::{blockquote, html_to_plain};
@@ -264,6 +265,20 @@ impl GitHubClient {
         ))
     }
 
+    /// The error for an unsuccessful (non-401) response to the `what` request:
+    /// [`SourceError::RateLimited`] when [`rate_limit_message`] recognises one, else the
+    /// status with an excerpt of the body, the token redacted.
+    async fn refusal(&self, what: &str, resp: reqwest::Response) -> SourceError {
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let body = resp.text().await.unwrap_or_default();
+        if let Some(message) = rate_limit_message(status, &headers, &body) {
+            return SourceError::RateLimited(message);
+        }
+        crate::http::error_with_body(&format!("{what} returned {status}"), &body, &[&self.token])
+            .into()
+    }
+
     /// Look up a repo via `/repos/{owner}/{name}` (the API follows renames and
     /// transfers, returning the current name/URL). `None` if it is permanently
     /// inaccessible — deleted or private (404), or blocked under the DMCA (451).
@@ -293,17 +308,7 @@ impl GitHubClient {
             return Ok(None);
         }
         if !status.is_success() {
-            let headers = resp.headers().clone();
-            let body = resp.text().await.unwrap_or_default();
-            if let Some(message) = rate_limit_message(status, &headers, &body) {
-                return Err(SourceError::RateLimited(message));
-            }
-            return Err(crate::http::error_with_body(
-                &format!("github repo returned {status}"),
-                &body,
-                &[&self.token],
-            )
-            .into());
+            return Err(self.refusal("github repo", resp).await);
         }
         let repo: GitHubRepo = resp.json().await.context("parsing github repo response")?;
         Ok(Some(repo))
@@ -387,17 +392,7 @@ impl GitHubClient {
                 .and_then(|v| v.to_str().ok())
                 .and_then(parse_link_next);
             if !status.is_success() {
-                let headers = resp.headers().clone();
-                let body = resp.text().await.unwrap_or_default();
-                if let Some(message) = rate_limit_message(status, &headers, &body) {
-                    return Err(SourceError::RateLimited(message));
-                }
-                return Err(crate::http::error_with_body(
-                    &format!("github starred returned {status}"),
-                    &body,
-                    &[&self.token],
-                )
-                .into());
+                return Err(self.refusal("github starred", resp).await);
             }
 
             // Deserialize element-by-element so one malformed repo is skipped with a
@@ -444,12 +439,7 @@ impl BackupSource for GitHubClient {
     async fn dump(&self) -> Result<BackupDump, SourceError> {
         let mut sink = RawSink::collecting();
         let drafts = self.fetch_capturing(None, &mut sink).await?;
-        let (raw, truncated) = sink.into_parts();
-        Ok(BackupDump {
-            raw,
-            records: Ok(drafts.iter().map(ExportBookmark::from).collect()),
-            truncated,
-        })
+        Ok(BackupDump::from_drafts(sink, &drafts))
     }
 }
 
@@ -467,39 +457,19 @@ impl UrlKey for GitHubClient {
     }
 }
 
-/// Options for `cleanup github`.
-pub struct GitHubCleanupOpts {
-    /// Re-date bookmarks to when the repo was starred (within the age cap). Since the
-    /// per-repo lookup doesn't carry `starred_at`, this fetches the star list to map it.
-    pub use_post_date: bool,
-    /// Backdate age cap, in days.
-    pub max_age_days: u64,
-    /// Re-date repos starred longer ago than the cap to "now" instead of leaving them.
-    pub cleanup_stale_to_now: bool,
-}
-
-impl GitHubCleanupOpts {
-    fn date_opts(&self) -> DateOpts {
-        DateOpts {
-            use_post_date: self.use_post_date,
-            max_age_days: self.max_age_days,
-            stale_to_now: self.cleanup_stale_to_now,
-        }
-    }
-}
-
 /// Normalize existing GitHub repo bookmarks. Only genuine repo-root URLs on the bare
 /// `github.com` host (`owner/repo`) are touched; deep links (issues/PRs/blob/tree) and
 /// gist or other subdomains are left alone. For each repo root, look it up via the API
 /// (which follows renames/transfers), rewriting a moved repo's URL to the current one,
 /// setting the title to the current `owner/repo`, and refreshing the `lang:` tag. A
 /// URL change updates + deletes the old; notes are kept and creation time preserved.
-/// A repo that no longer exists (404) keeps just the URL canonicalization.
+/// A repo that no longer exists (404) keeps just the URL canonicalization. Under
+/// `use_post_date`, bookmarks are re-dated to when the repo was starred.
 pub async fn cleanup<S: BookmarkStore + AccountState>(
     store: &S,
     client: &GitHubClient,
     config: &GitHubConfig,
-    opts: &GitHubCleanupOpts,
+    dates: DateOpts,
 ) -> Result<(), SourceError> {
     // Taken from the run's live view, so an earlier source's writes are already reflected.
     let gh_bms: Vec<Bookmark> = store
@@ -509,17 +479,14 @@ pub async fn cleanup<S: BookmarkStore + AccountState>(
         .collect();
 
     // `starred_at` isn't on the per-repo lookup, so for use_post_date fetch the star
-    // list once and map url_key -> star epoch. A repo no longer starred won't be here
+    // list once and map url_key -> star time. A repo no longer starred won't be here
     // (it keeps its existing time).
-    let star_dates: HashMap<String, i64> = if opts.use_post_date {
+    let star_dates: HashMap<String, OffsetDateTime> = if dates.use_post_date {
         client
             .fetch()
             .await?
             .into_iter()
-            .filter_map(|d| {
-                let key = url_key(&d.bookmark.url)?;
-                Some((key, d.bookmark.timestamp?.unix_timestamp()))
-            })
+            .filter_map(|d| Some((url_key(&d.bookmark.url)?, d.bookmark.timestamp?)))
             .collect()
     } else {
         HashMap::new()
@@ -530,7 +497,7 @@ pub async fn cleanup<S: BookmarkStore + AccountState>(
         config,
         star_dates,
     };
-    run_pass(store, &gh_bms, "github", opts.date_opts(), &pass)
+    run_pass(store, &gh_bms, "github", dates, &pass)
         .await
         .into_result()
 }
@@ -542,7 +509,7 @@ pub async fn cleanup<S: BookmarkStore + AccountState>(
 struct GitHubCleanupPass<'a> {
     client: &'a GitHubClient,
     config: &'a GitHubConfig,
-    star_dates: HashMap<String, i64>,
+    star_dates: HashMap<String, OffsetDateTime>,
 }
 
 impl CleanupPass for GitHubCleanupPass<'_> {
@@ -562,28 +529,22 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         let mut title = html_to_plain(&bookmark.title);
         let mut note = bookmark.note.clone();
         let mut tags = bookmark.tags.clone();
-        match self.client.repo(&owner, &repo).await {
-            Ok(Some(info)) => {
-                title = html_to_plain(&info.full_name);
-                // Rebuild the notes from fresh data so old bookmarks retrofit to the
-                // <blockquote> shape (sync skips already-present bookmarks).
-                note = github_extended(
-                    info.description.as_deref(),
-                    info.homepage.as_deref(),
-                    &info.html_url,
-                );
-                tags = refresh_tags(bookmark.tags.clone(), &info, self.config);
-                url = Url::parse(&info.html_url).unwrap_or(url); // follows renames/transfers
-            }
-            Ok(None) => {}
-            // A failed lookup is surfaced to the driver, which logs and counts it
-            // (or, for a dead credential, aborts the pass).
-            Err(e) => return Err(e),
+        // A failed lookup is surfaced to the driver, which logs and counts it (or, for a
+        // dead credential, aborts the pass).
+        if let Some(info) = self.client.repo(&owner, &repo).await? {
+            title = html_to_plain(&info.full_name);
+            // Rebuild the notes from fresh data so old bookmarks retrofit to the
+            // <blockquote> shape (sync skips already-present bookmarks).
+            note = github_extended(
+                info.description.as_deref(),
+                info.homepage.as_deref(),
+                &info.html_url,
+            );
+            tags = refresh_tags(bookmark.tags.clone(), &info, self.config);
+            url = Url::parse(&info.html_url).unwrap_or(url); // follows renames/transfers
         }
 
-        let timestamp = url_key(&url)
-            .and_then(|k| self.star_dates.get(&k).copied())
-            .and_then(crate::timefmt::from_unix);
+        let timestamp = url_key(&url).and_then(|k| self.star_dates.get(&k).copied());
         Ok(Plan::Bookmark(Bookmark {
             url,
             title,
@@ -613,15 +574,11 @@ fn repo_root(url: &Url) -> Option<(String, String)> {
         return None;
     }
     let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
-    if segments.len() != 2 {
+    let [owner, repo] = segments[..] else {
         return None;
-    }
-    let owner = segments[0].to_string();
-    let repo = segments[1]
-        .strip_suffix(".git")
-        .unwrap_or(segments[1])
-        .to_string();
-    Some((owner, repo))
+    };
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    Some((owner.to_string(), repo.to_string()))
 }
 
 /// Refresh the language tag from the current repo, keeping existing tags and
@@ -642,16 +599,12 @@ fn refresh_tags(existing: Vec<String>, repo: &GitHubRepo, cfg: &GitHubConfig) ->
 /// Extract the `page` number of the `rel="next"` link from a GitHub `Link` header,
 /// or `None` when there is no next page.
 fn parse_link_next(link: &str) -> Option<u32> {
-    for part in link.split(',') {
-        if part.contains("rel=\"next\"") {
-            let url = part.split('<').nth(1)?.split('>').next()?;
-            let page = url
-                .split(['?', '&'])
-                .find_map(|kv| kv.strip_prefix("page="))?;
-            return page.parse().ok();
-        }
-    }
-    None
+    let next = link.split(',').find(|part| part.contains("rel=\"next\""))?;
+    let url = next.split('<').nth(1)?.split('>').next()?;
+    url.split(['?', '&'])
+        .find_map(|kv| kv.strip_prefix("page="))?
+        .parse()
+        .ok()
 }
 
 #[cfg(test)]
@@ -999,10 +952,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1082,10 +1035,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1512,10 +1465,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1566,10 +1519,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1633,10 +1586,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1684,10 +1637,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1741,10 +1694,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1798,10 +1751,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
             &client,
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: false,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await
@@ -1989,10 +1942,10 @@ mod net_tests {
             &CleanupStore::new(&pinboard, AccountView::new(bookmarks), false),
             &star_client(&server),
             &GitHubConfig::default(),
-            &GitHubCleanupOpts {
+            DateOpts {
                 use_post_date: true,
                 max_age_days: 30,
-                cleanup_stale_to_now: false,
+                stale_to_now: false,
             },
         )
         .await

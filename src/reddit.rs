@@ -666,11 +666,7 @@ fn edge_page(status: reqwest::StatusCode, content_type: &str, body: &str) -> Opt
     {
         return None;
     }
-    let body = body
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
+    let body = crate::htmltext::collapse_whitespace(body, " ").to_lowercase();
     if body.contains("blocked by network security") {
         Some(EdgePage::NetworkSecurity)
     } else if body.contains("blocked due to a network policy") {

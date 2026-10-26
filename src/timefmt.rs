@@ -43,35 +43,9 @@ pub fn now_unix() -> i64 {
 
 /// Whether a post created at `timestamp` (epoch) is at most `max_age_days` old relative
 /// to `now` (epoch) — the `use_post_date` backdate cap. Shared by `sync` (which clears
-/// out-of-cap dates) and `cleanup` ([`cleanup_date`]).
+/// out-of-cap dates) and `cleanup` ([`crate::cleanup_pass::DateOpts::cleanup_date`]).
 pub fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
     now as i128 - timestamp as i128 <= max_age_days as i128 * 86_400
-}
-
-/// The creation time a `cleanup` re-write should set, honoring `use_post_date`, the age
-/// cap (`max_age_days`), and the stale fallback (`stale_to_now`). `candidate` is the
-/// source post time (if known) and `existing` the bookmark's current time. Returns the
-/// source time when dating is on and the post is within the cap; otherwise `now` when
-/// the post is stale and `stale_to_now`; otherwise `existing` (unchanged). The age cap
-/// compares by instant; the RFC3339 formatting happens at the write boundary.
-pub fn cleanup_date(
-    use_post_date: bool,
-    max_age_days: u64,
-    stale_to_now: bool,
-    candidate: Option<OffsetDateTime>,
-    now: OffsetDateTime,
-    existing: Option<OffsetDateTime>,
-) -> Option<OffsetDateTime> {
-    if !use_post_date {
-        return existing;
-    }
-    match candidate {
-        Some(ts) if within_age_cap(now.unix_timestamp(), ts.unix_timestamp(), max_age_days) => {
-            Some(ts)
-        }
-        Some(_) if stale_to_now => Some(now),
-        _ => existing,
-    }
 }
 
 #[cfg(test)]
@@ -126,36 +100,5 @@ mod tests {
         // A zero cap admits only same-instant posts.
         assert!(within_age_cap(now, now, 0));
         assert!(!within_age_cap(now, now - 1, 0));
-    }
-
-    #[test]
-    fn cleanup_date_honors_flag_cap_and_stale_fallback() {
-        let now = from_unix(1_700_000_000).unwrap();
-        let recent = from_unix(1_700_000_000 - 5 * 86_400).unwrap(); // 5 days old
-        let old = from_unix(1_700_000_000 - 60 * 86_400).unwrap(); // 60 days old
-        let existing = from_unix(1_546_300_800); // Some(2019-01-01T00:00:00Z)
-
-        // Dating off → keep existing.
-        assert_eq!(
-            cleanup_date(false, 30, true, Some(recent), now, existing),
-            existing
-        );
-        // Within cap → source date.
-        assert_eq!(
-            cleanup_date(true, 30, false, Some(recent), now, existing),
-            Some(recent)
-        );
-        // Stale + default (no stale_to_now) → keep existing.
-        assert_eq!(
-            cleanup_date(true, 30, false, Some(old), now, existing),
-            existing
-        );
-        // Stale + stale_to_now → now.
-        assert_eq!(
-            cleanup_date(true, 30, true, Some(old), now, existing),
-            Some(now)
-        );
-        // No source date → keep existing.
-        assert_eq!(cleanup_date(true, 30, true, None, now, existing), existing);
     }
 }

@@ -2,7 +2,7 @@
 //! it yields [`BookmarkDraft`]s to write to Pinboard and maps an existing Pinboard
 //! URL back to a dedup key, so the sync loop stays service-agnostic.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use url::Url;
 
@@ -37,11 +37,12 @@ impl SourceError {
     /// Flatten into a plain `anyhow::Error`: the re-auth, rate-limit or block message on
     /// its own (without the variant's prefix) or the inner error unwrapped.
     ///
-    /// Only for the two paths that genuinely have no use for the variant: `doctor`, which
-    /// reports each credential rather than acting on it, and HackerNews, which is public
-    /// and cannot need re-authentication. Everywhere else the variant is what decides
-    /// whether the `--on-auth-failure` hook fires, so flattening early is how `cleanup`
-    /// silently lost that hook — don't reach for this to make a type mismatch go away.
+    /// Only once nothing needs the variant any more: `main`'s `handle_source_err`, after it
+    /// has decided on the hook; `doctor`, which reports each credential rather than acting
+    /// on it; and HackerNews, which is public and cannot need re-authentication. Everywhere
+    /// else the variant is what decides whether the `--on-auth-failure` hook fires, so
+    /// flattening early is how `cleanup` silently lost that hook — don't reach for this to
+    /// make a type mismatch go away.
     pub fn into_anyhow(self) -> anyhow::Error {
         match self {
             SourceError::ReauthRequired(m)
@@ -101,22 +102,26 @@ pub fn github_token_source(rung: SecretRung) -> &'static str {
     }
 }
 
-/// Every setting a Reddit cookie can come from, as "A, B or C" for a message to follow
-/// "set".
+/// Every setting a Reddit cookie can come from, as "A, B, C, or the config's `x` or
+/// `x_file`" for a message to follow "set".
 pub fn reddit_cookie_settings() -> String {
     settings_list(reddit_cookie_source)
 }
 
-/// Every setting a GitHub token can come from, as "A, B or C" for a message to follow
-/// "set".
+/// Every setting a GitHub token can come from, as "A, B, C, or the config's `x` or
+/// `x_file`" for a message to follow "set".
 pub fn github_token_settings() -> String {
     settings_list(github_token_source)
 }
 
-/// The setting each rung reads, in ladder order, as "A, B or C".
+/// The setting each rung reads, in ladder order. The two config rungs share one entry,
+/// "the config's `x` or `x_file`", rather than naming the config twice.
 fn settings_list(setting: fn(SecretRung) -> &'static str) -> String {
-    let [rest @ .., last] = SecretRung::ALL.map(setting);
-    format!("{} or {last}", rest.join(", "))
+    let [flag, env, env_file, config_inline, config_file] = SecretRung::ALL.map(setting);
+    let config_file_key = config_file
+        .strip_prefix("the config's ")
+        .unwrap_or(config_file);
+    format!("{flag}, {env}, {env_file}, or {config_inline} or {config_file_key}")
 }
 
 /// A bookmark ready to write to Pinboard, plus the key used to tell whether it is
@@ -207,7 +212,7 @@ pub fn push_tags(tags: &mut Vec<String>, keys: &[String]) {
 /// `-` (Pinboard tags can't contain spaces — the API splits on them). Skipped if
 /// `prefix` is empty or `value` is empty/all-whitespace.
 pub fn push_prefixed(tags: &mut Vec<String>, prefix: &str, value: &str) {
-    let value = value.split_whitespace().collect::<Vec<_>>().join("-");
+    let value = crate::htmltext::collapse_whitespace(value, "-");
     if !prefix.is_empty() && !value.is_empty() {
         tags.push(format!("{prefix}{value}"));
     }
@@ -225,15 +230,9 @@ pub fn extend_unique(tags: &mut Vec<String>, add: &[String]) {
     }
 }
 
-/// Whether two tag lists differ as sets (order- and duplicate-insensitive after sort).
+/// Whether two tag lists differ as sets (order- and duplicate-insensitive).
 pub fn tags_differ(a: &[String], b: &[String]) -> bool {
-    let mut a = a.to_vec();
-    let mut b = b.to_vec();
-    a.sort();
-    a.dedup();
-    b.sort();
-    b.dedup();
-    a != b
+    a.iter().collect::<BTreeSet<_>>() != b.iter().collect::<BTreeSet<_>>()
 }
 
 /// Whether `host` is `domain` or a subdomain of it (`*.domain`). `host` is assumed
@@ -313,13 +312,13 @@ mod tests {
     fn settings_lists_name_every_rung_in_ladder_order() {
         assert_eq!(
             reddit_cookie_settings(),
-            "--reddit-cookie, $REDDIT_COOKIE, $REDDIT_COOKIE_FILE, the config's `cookie` or \
-             the config's `cookie_file`"
+            "--reddit-cookie, $REDDIT_COOKIE, $REDDIT_COOKIE_FILE, or the config's `cookie` \
+             or `cookie_file`"
         );
         assert_eq!(
             github_token_settings(),
-            "--github-token, $GITHUB_TOKEN, $GITHUB_TOKEN_FILE, the config's `token` or the \
-             config's `token_file`"
+            "--github-token, $GITHUB_TOKEN, $GITHUB_TOKEN_FILE, or the config's `token` or \
+             `token_file`"
         );
     }
 

@@ -41,6 +41,17 @@ struct AddResponse {
     result_code: String,
 }
 
+impl AddResponse {
+    /// `Ok` when Pinboard reports the call `done`, else an error quoting its result code
+    /// as `what` failing, through [`redacted_error`].
+    fn into_result(self, what: &str, auth_token: &str) -> Result<()> {
+        if self.result_code == "done" {
+            return Ok(());
+        }
+        Err(redacted_error(what, &self.result_code, auth_token))
+    }
+}
+
 /// A bookmark exactly as `posts/all` returns it — the Pinboard wire shape, with its
 /// space-joined tag string, ISO-8601 `time`, and `"yes"/"no"` flags. Converted to the
 /// service-agnostic [`Bookmark`] on read (see the `From` impl below); nothing outside
@@ -228,14 +239,7 @@ impl BookmarkStore for PinboardClient {
             .json()
             .await
             .context("parsing Pinboard posts/delete response")?;
-        if parsed.result_code != "done" {
-            return Err(redacted_error(
-                "Pinboard posts/delete failed",
-                &parsed.result_code,
-                &self.auth_token,
-            ));
-        }
-        Ok(())
+        parsed.into_result("Pinboard posts/delete failed", &self.auth_token)
     }
 
     async fn add(&self, b: &Bookmark) -> Result<()> {
@@ -308,13 +312,7 @@ impl PinboardClient {
                 .json()
                 .await
                 .context("parsing Pinboard posts/add response")?;
-            if parsed.result_code != "done" {
-                return Err(redacted_error(
-                    "Pinboard posts/add failed",
-                    &parsed.result_code,
-                    &self.auth_token,
-                ));
-            }
+            parsed.into_result("Pinboard posts/add failed", &self.auth_token)?;
             // Warn once the trim is final, not inside the retry: a note Pinboard keeps
             // rejecting is re-trimmed at each halved budget, and warning per attempt reads
             // like several different notes were cut. Worth saying at all because the stored
@@ -374,19 +372,10 @@ impl PinboardClient {
             .map(|(i, _)| i)
             .chain(std::iter::once(extended.len()))
             .collect();
-        let fits = |cut: usize| url_len(&format!("{}{}", &extended[..cut], TRUNCATION_MARKER));
-        let (mut lo, mut hi, mut best) = (0usize, boundaries.len() - 1, 0usize);
-        while lo <= hi {
-            let mid = (lo + hi) / 2;
-            if fits(boundaries[mid]) <= budget {
-                best = boundaries[mid];
-                lo = mid + 1;
-            } else if mid == 0 {
-                break;
-            } else {
-                hi = mid - 1;
-            }
-        }
+        let fitting = boundaries.partition_point(|&cut| {
+            url_len(&format!("{}{}", &extended[..cut], TRUNCATION_MARKER)) <= budget
+        });
+        let best = fitting.checked_sub(1).map_or(0, |last| boundaries[last]);
 
         // Trim only when the marked result is actually shorter than the note, so a note
         // barely over budget isn't replaced by a longer, fabricated "[truncated]" note.

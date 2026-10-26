@@ -31,14 +31,47 @@ use time::OffsetDateTime;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::source::SourceError;
 
-/// The `use_post_date` policy applied uniformly across a pass: whether to re-date by
-/// the source date, the backdate age cap, and whether to push stale (older-than-cap)
-/// items to "now". Resolved once by the caller from its source's cleanup options.
-#[derive(Clone, Copy)]
+/// The `use_post_date` policy: whether to date bookmarks by the source date, the backdate
+/// age cap, and whether `cleanup` pushes stale (older-than-cap) items to "now". Resolved
+/// once per account in `main`; `sync` reads the first two, and a `cleanup` pass applies
+/// all three uniformly via [`DateOpts::cleanup_date`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DateOpts {
     pub use_post_date: bool,
+    /// Backdate age cap, in days.
     pub max_age_days: u64,
     pub stale_to_now: bool,
+}
+
+impl DateOpts {
+    /// The creation time a `cleanup` re-write should set. `candidate` is the source post
+    /// time (if known) and `existing` the bookmark's current time. Returns the source time
+    /// when dating is on and the post is within the cap; otherwise `now` when the post is
+    /// stale and `stale_to_now`; otherwise `existing` (unchanged). The age cap compares by
+    /// instant; the RFC3339 formatting happens at the write boundary.
+    pub fn cleanup_date(
+        self,
+        candidate: Option<OffsetDateTime>,
+        now: OffsetDateTime,
+        existing: Option<OffsetDateTime>,
+    ) -> Option<OffsetDateTime> {
+        if !self.use_post_date {
+            return existing;
+        }
+        match candidate {
+            Some(ts)
+                if crate::timefmt::within_age_cap(
+                    now.unix_timestamp(),
+                    ts.unix_timestamp(),
+                    self.max_age_days,
+                ) =>
+            {
+                Some(ts)
+            }
+            Some(_) if self.stale_to_now => Some(now),
+            _ => existing,
+        }
+    }
 }
 
 /// What a pass decided about one bookmark. [`Plan::Unchanged`] and [`Plan::Skipped`]
@@ -175,10 +208,11 @@ impl Refusal {
     }
 }
 
-impl Halt {
-    /// The halt `error` calls for, or `error` back when it is a per-item failure. Matched
-    /// exhaustively so a new [`SourceError`] variant has to choose a side here.
-    fn from_source_error(error: SourceError) -> Result<Halt, SourceError> {
+/// The halt an error calls for, or the error back when it is a per-item failure. Matched
+/// exhaustively so a new [`SourceError`] variant has to choose a side here.
+impl TryFrom<SourceError> for Halt {
+    type Error = SourceError;
+    fn try_from(error: SourceError) -> Result<Self, Self::Error> {
         match error {
             SourceError::ReauthRequired(message) => Ok(Halt::Reauth(message)),
             SourceError::RateLimited(message) => Ok(Halt::RateLimited(message)),
@@ -186,7 +220,9 @@ impl Halt {
             other @ SourceError::Other(_) => Err(other),
         }
     }
+}
 
+impl Halt {
     /// The operator-facing explanation, without a variant prefix.
     fn message(&self) -> &str {
         match self {
@@ -319,7 +355,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
                 continue;
             }
             Ok(Plan::Skipped) => continue,
-            Err(error) => match Halt::from_source_error(error) {
+            Err(error) => match Halt::try_from(error) {
                 // Every remaining lookup would fail the same way, so stop planning, but
                 // fall through to write the plans already made rather than discard them.
                 // This one and everything after it goes unplanned, so protect all of them:
@@ -348,14 +384,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // Resolve the final creation time here, at the write boundary: the candidate
         // source time when dating is on and within the cap, else "now"/preserve per the
         // policy. Comparable by instant to the stored `timestamp`.
-        planned.timestamp = crate::timefmt::cleanup_date(
-            dates.use_post_date,
-            dates.max_age_days,
-            dates.stale_to_now,
-            planned.timestamp,
-            now,
-            bookmark.timestamp,
-        );
+        planned.timestamp = dates.cleanup_date(planned.timestamp, now, bookmark.timestamp);
 
         // Privacy flags are never re-shaped by cleanup: take them from the stored
         // bookmark so a plan can't silently flip them.
@@ -371,10 +400,13 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     for pair in &planned_pairs {
         let (original, planned) = (pair.0, &pair.1);
         let key = &planned.url;
-        if !groups.contains_key(key) {
-            group_order.push(key);
-        }
-        groups.entry(key).or_default().push((original, planned));
+        groups
+            .entry(key)
+            .or_insert_with(|| {
+                group_order.push(key);
+                Vec::new()
+            })
+            .push((original, planned));
     }
 
     // The stored URLs of the bookmarks this pass actually planned. They are excluded from
@@ -923,6 +955,46 @@ mod tests {
         max_age_days: 0,
         stale_to_now: false,
     };
+
+    #[test]
+    fn cleanup_date_honors_flag_cap_and_stale_fallback() {
+        use crate::timefmt::from_unix;
+        let now = from_unix(1_700_000_000).unwrap();
+        let recent = from_unix(1_700_000_000 - 5 * 86_400).unwrap(); // 5 days old
+        let old = from_unix(1_700_000_000 - 60 * 86_400).unwrap(); // 60 days old
+        let existing = from_unix(1_546_300_800); // Some(2019-01-01T00:00:00Z)
+        let dates = |use_post_date, stale_to_now| DateOpts {
+            use_post_date,
+            max_age_days: 30,
+            stale_to_now,
+        };
+
+        // Dating off → keep existing.
+        assert_eq!(
+            dates(false, true).cleanup_date(Some(recent), now, existing),
+            existing
+        );
+        // Within cap → source date.
+        assert_eq!(
+            dates(true, false).cleanup_date(Some(recent), now, existing),
+            Some(recent)
+        );
+        // Stale + default (no stale_to_now) → keep existing.
+        assert_eq!(
+            dates(true, false).cleanup_date(Some(old), now, existing),
+            existing
+        );
+        // Stale + stale_to_now → now.
+        assert_eq!(
+            dates(true, true).cleanup_date(Some(old), now, existing),
+            Some(now)
+        );
+        // No source date → keep existing.
+        assert_eq!(
+            dates(true, true).cleanup_date(None, now, existing),
+            existing
+        );
+    }
 
     #[tokio::test]
     async fn err_plan_counts_failed_and_continues() {

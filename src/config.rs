@@ -397,24 +397,24 @@ fn check_domain(field: &str, value: &Option<String>) -> Result<()> {
     bail!("config: `{field}` {problem}; it must be a bare host like \"old.reddit.com\"")
 }
 
-impl RedditAccount {
-    /// Build the non-secret [`RedditConfig`] (bookmark domain + tag vocabulary),
-    /// each field falling back to its built-in default.
-    pub fn reddit_config(&self) -> RedditConfig {
+/// The account's non-secret [`RedditConfig`] (bookmark domain + tag vocabulary), each
+/// field falling back to its built-in default.
+impl From<&RedditAccount> for RedditConfig {
+    fn from(account: &RedditAccount) -> Self {
         let d = RedditConfig::default();
         RedditConfig {
-            domain: self.reddit_domain.clone().unwrap_or(d.domain),
-            tags: self.tags.clone().unwrap_or(d.tags),
-            subreddit_prefix: self
+            domain: account.reddit_domain.clone().unwrap_or(d.domain),
+            tags: account.tags.clone().unwrap_or(d.tags),
+            subreddit_prefix: account
                 .tag_subreddit_prefix
                 .clone()
                 .unwrap_or(d.subreddit_prefix),
-            comment: self.tag_comment.clone().unwrap_or(d.comment),
-            nsfw: self.tag_nsfw.clone().unwrap_or(d.nsfw),
-            author_prefix: self.tag_author_prefix.clone().unwrap_or(d.author_prefix),
-            flair_prefix: self.tag_flair_prefix.clone().unwrap_or(d.flair_prefix),
-            media_prefix: self.tag_media_prefix.clone().unwrap_or(d.media_prefix),
-            media_types: self.tag_media_types.clone().unwrap_or(d.media_types),
+            comment: account.tag_comment.clone().unwrap_or(d.comment),
+            nsfw: account.tag_nsfw.clone().unwrap_or(d.nsfw),
+            author_prefix: account.tag_author_prefix.clone().unwrap_or(d.author_prefix),
+            flair_prefix: account.tag_flair_prefix.clone().unwrap_or(d.flair_prefix),
+            media_prefix: account.tag_media_prefix.clone().unwrap_or(d.media_prefix),
+            media_types: account.tag_media_types.clone().unwrap_or(d.media_types),
         }
     }
 }
@@ -443,14 +443,14 @@ pub struct GitHubAccount {
     pub tags: Option<Vec<String>>,
 }
 
-impl GitHubAccount {
-    /// Build the non-secret [`GitHubConfig`] (tag vocabulary), each field falling
-    /// back to its built-in default.
-    pub fn github_config(&self) -> GitHubConfig {
+/// The account's non-secret [`GitHubConfig`] (tag vocabulary), each field falling back
+/// to its built-in default.
+impl From<&GitHubAccount> for GitHubConfig {
+    fn from(account: &GitHubAccount) -> Self {
         let d = GitHubConfig::default();
         GitHubConfig {
-            tags: self.tags.clone().unwrap_or(d.tags),
-            lang_prefix: self.tag_lang_prefix.clone().unwrap_or(d.lang_prefix),
+            tags: account.tags.clone().unwrap_or(d.tags),
+            lang_prefix: account.tag_lang_prefix.clone().unwrap_or(d.lang_prefix),
         }
     }
 }
@@ -480,17 +480,20 @@ pub struct HackernewsAccount {
     pub tags: Option<Vec<String>>,
 }
 
-impl HackernewsAccount {
-    /// Build the non-secret [`HackernewsConfig`] (tag vocabulary), each field
-    /// falling back to its built-in default.
-    pub fn hackernews_config(&self) -> HackernewsConfig {
+/// The account's non-secret [`HackernewsConfig`] (tag vocabulary), each field falling
+/// back to its built-in default.
+impl From<&HackernewsAccount> for HackernewsConfig {
+    fn from(account: &HackernewsAccount) -> Self {
         let d = HackernewsConfig::default();
         HackernewsConfig {
-            tags: self.tags.clone().unwrap_or(d.tags),
-            comment: self.tag_comment.clone().unwrap_or(d.comment),
-            author_prefix: self.tag_author_prefix.clone().unwrap_or(d.author_prefix),
-            special_prefix: self.tag_special_prefix.clone().unwrap_or(d.special_prefix),
-            link_tag: self.tag_link.clone().unwrap_or(d.link_tag),
+            tags: account.tags.clone().unwrap_or(d.tags),
+            comment: account.tag_comment.clone().unwrap_or(d.comment),
+            author_prefix: account.tag_author_prefix.clone().unwrap_or(d.author_prefix),
+            special_prefix: account
+                .tag_special_prefix
+                .clone()
+                .unwrap_or(d.special_prefix),
+            link_tag: account.tag_link.clone().unwrap_or(d.link_tag),
         }
     }
 }
@@ -640,8 +643,9 @@ impl_named!(RedditAccount => username, GitHubAccount, HackernewsAccount => usern
 /// The per-account settings shared across every source. Each returns the
 /// account-level override, or `None` to fall through to the per-source default and
 /// then the `[pinboard]` global — letting the job/cleanup builders resolve them
-/// generically (see `tier`/`DateSettings` in `main`). The method names normalize the
-/// two longer field names (`post_date_max_age_days`, `cleanup_stale_to_now`).
+/// generically (see `resolve_setting`/`resolve_dates` in `main`). The method names
+/// normalize the two longer field names (`post_date_max_age_days`,
+/// `cleanup_stale_to_now`).
 pub trait Account: Named {
     fn limit(&self) -> Option<SyncLimit>;
     fn toread(&self) -> Option<bool>;
@@ -937,13 +941,13 @@ mod tests {
 
         let main = &cfg.reddit[0];
         assert_eq!(main.username.as_deref(), Some("alice"));
-        let rc = main.reddit_config();
+        let rc = RedditConfig::from(main);
         assert_eq!(rc.domain, "www.reddit.com");
         assert_eq!(rc.tags, vec!["reddit", "account:main"]);
         assert_eq!(rc.media_types, vec!["image"]);
         // Unset tag fields keep their defaults; an unset `tags` defaults to ["reddit"].
         assert_eq!(rc.subreddit_prefix, "subreddit:");
-        assert_eq!(cfg.reddit[1].reddit_config().tags, vec!["reddit"]);
+        assert_eq!(RedditConfig::from(&cfg.reddit[1]).tags, vec!["reddit"]);
     }
 
     #[test]

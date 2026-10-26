@@ -15,8 +15,10 @@ use crate::reddit::model::{
     cased_subreddit, reddit_key, RedditConfig, RedditKind, RedditSavedItem,
 };
 use crate::reddit::PostInfo;
-use crate::source::{extend_unique, host_matches, push_prefixed, push_tags, SourceError, UrlExt};
+use crate::source::SourceError;
+use crate::tags::{extend_unique, push_prefixed, push_tags};
 use crate::timefmt::DateOpts;
+use crate::urls::{host_matches, UrlExt};
 use url::Url;
 
 pub struct RedditCleanupOpts {

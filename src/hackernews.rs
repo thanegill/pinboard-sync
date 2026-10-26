@@ -18,10 +18,9 @@ use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::{client_builder, retry_after_up_to, RetryingClient};
-use crate::source::{
-    page_is_caught_up, push_prefixed, push_tag, push_tags, url_key, BookmarkDraft, Source,
-    SourceError, UrlKey,
-};
+use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey};
+use crate::tags::{push_prefixed, push_tag, push_tags};
+use crate::urls::url_key;
 use url::Url;
 
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.

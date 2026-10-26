@@ -16,9 +16,10 @@ use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::{client_builder, RetryingClient, USER_AGENT};
 use crate::secrets::ConfiguredSecret;
 use crate::source::{
-    deserialize_lenient, page_is_caught_up, push_prefixed, push_tags, url_key, BookmarkDraft,
-    Source, SourceError, UrlExt, UrlKey,
+    deserialize_lenient, page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey,
 };
+use crate::tags::{push_prefixed, push_tags};
+use crate::urls::{url_key, UrlExt};
 use url::Url;
 
 const API_BASE: &str = "https://api.github.com";

@@ -4,7 +4,7 @@
 use url::Url;
 
 use crate::bookmark::Bookmark;
-use crate::source::extend_unique;
+use crate::tags::extend_unique;
 
 /// The index within `members` of the group's *incumbent*: the member whose stored URL is
 /// already the group's target. It is the record that stays at that URL, so it plays the

@@ -12,8 +12,10 @@ use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::html_to_plain;
-use crate::source::{extend_unique, push_prefixed, url_key, Source, SourceError, UrlExt};
+use crate::source::{Source, SourceError};
+use crate::tags::{extend_unique, push_prefixed};
 use crate::timefmt::DateOpts;
+use crate::urls::{url_key, UrlExt};
 
 /// Normalize existing GitHub repo bookmarks. Only genuine repo-root URLs on the bare
 /// `github.com` host (`owner/repo`) are touched; deep links (issues/PRs/blob/tree) and

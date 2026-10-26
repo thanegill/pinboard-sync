@@ -2,7 +2,7 @@
 //! it yields [`BookmarkDraft`]s to write to Pinboard and maps an existing Pinboard
 //! URL back to a dedup key, so the sync loop stays service-agnostic.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 
 use url::Url;
 
@@ -69,9 +69,10 @@ pub struct BookmarkDraft {
 
 /// Maps an existing Pinboard URL to a source's dedup key (matched against the
 /// `dedup_key` of fresh drafts), or `None` if the source doesn't manage that URL. Each
-/// source defines its own shape on top of the generic host+path [`url_key`]: GitHub
-/// gates it to github.com hosts, Reddit uses the host-agnostic permalink path, and
-/// HackerNews uses `hn:<id>` (else the host+path key for article bookmarks).
+/// source defines its own shape on top of the generic host+path
+/// [`url_key`](crate::urls::url_key): GitHub gates it to github.com hosts, Reddit uses the
+/// host-agnostic permalink path, and HackerNews uses `hn:<id>` (else the host+path key for
+/// article bookmarks).
 pub trait UrlKey {
     fn dedup_key(&self, url: &Url) -> Option<String>;
 
@@ -119,71 +120,6 @@ pub fn page_is_caught_up<'a>(
             .all(|draft| synced_keys.contains(&draft.dedup_key))
 }
 
-/// Append `key` to `tags` unless it is empty (empty = the tag is disabled).
-pub fn push_tag(tags: &mut Vec<String>, key: &str) {
-    if !key.is_empty() {
-        tags.push(key.to_string());
-    }
-}
-
-/// Append every non-empty key in `keys` to `tags` (via [`push_tag`]). Used to seed a
-/// draft's tags from a source's configurable base `tags` list.
-pub fn push_tags(tags: &mut Vec<String>, keys: &[String]) {
-    for key in keys {
-        push_tag(tags, key);
-    }
-}
-
-/// Append `prefix + value` to `tags`, collapsing internal whitespace in `value` to
-/// `-` (Pinboard tags can't contain spaces — the API splits on them). Skipped if
-/// `prefix` is empty or `value` is empty/all-whitespace.
-pub fn push_prefixed(tags: &mut Vec<String>, prefix: &str, value: &str) {
-    let value = crate::htmltext::collapse_whitespace(value, "-");
-    if !prefix.is_empty() && !value.is_empty() {
-        tags.push(format!("{prefix}{value}"));
-    }
-}
-
-/// Append each non-empty tag in `add` that isn't already in `tags` (order-preserving).
-/// Empty tags are skipped for parity with [`push_tag`] (empty = the tag is disabled):
-/// stored tags derive via `split_whitespace` and so can never contain `""`, so emitting
-/// one would make a cleanup plan diff against storage on every run and never converge.
-pub fn extend_unique(tags: &mut Vec<String>, add: &[String]) {
-    for tag in add {
-        if !tag.is_empty() && !tags.contains(tag) {
-            tags.push(tag.clone());
-        }
-    }
-}
-
-/// Whether two tag lists differ as sets (order- and duplicate-insensitive).
-pub fn tags_differ(a: &[String], b: &[String]) -> bool {
-    a.iter().collect::<BTreeSet<_>>() != b.iter().collect::<BTreeSet<_>>()
-}
-
-/// Whether `host` is `domain` or a subdomain of it (`*.domain`). `host` is assumed
-/// already lowercased (as [`Url::host_str`] returns it for http(s)); `domain` must be too.
-pub fn host_matches(host: &str, domain: &str) -> bool {
-    host == domain
-        || host
-            .strip_suffix(domain)
-            .is_some_and(|rest| rest.ends_with('.'))
-}
-
-/// Extension methods on [`Url`] shared across the sources.
-pub trait UrlExt {
-    /// Whether the URL's host is `domain` or a `*.domain` subdomain — the "is this URL
-    /// one I manage?" test used by the per-source bookmark filters.
-    fn host_is(&self, domain: &str) -> bool;
-}
-
-impl UrlExt for Url {
-    fn host_is(&self, domain: &str) -> bool {
-        self.host_str()
-            .is_some_and(|host| host_matches(host, domain))
-    }
-}
-
 /// Deserialize each element of `values` into `T`, skipping (with a warning naming `what`)
 /// any element that fails, so one malformed item can't discard a whole page. A non-empty
 /// input where *every* element fails is treated as an error (a schema break, e.g. a renamed
@@ -213,27 +149,9 @@ where
     Ok(parsed)
 }
 
-/// A host+path dedup key for a URL: scheme and query/fragment dropped, host lowercased
-/// (by the `url` crate), path lowercased with any trailing slash removed — e.g.
-/// `https://GitHub.com/Owner/Repo/?tab=x` → `github.com/owner/repo`. Dropping the query
-/// is deliberate canonicalization; the exception is a non-source domain whose identity
-/// lives in the query string (e.g. YouTube `watch?v=…`), for which
-/// [`crate::domains::dedup_key_suffix`] appends a query-derived suffix so distinct
-/// resources don't collapse to one key. Returns `None` for a URL without a host.
-pub fn url_key(url: &Url) -> Option<String> {
-    let host = url.host_str()?;
-    let path = url.path().trim_end_matches('/').to_ascii_lowercase();
-    let mut key = format!("{host}{path}");
-    if let Some(suffix) = crate::domains::dedup_key_suffix(host, &path, url) {
-        key.push_str(&suffix);
-    }
-    Some(key)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::url;
 
     #[test]
     fn a_page_is_caught_up_only_when_it_has_no_new_draft() {
@@ -260,78 +178,6 @@ mod tests {
         assert!(
             !page_is_caught_up(1, &[draft("a")], &HashSet::new()),
             "nothing synced"
-        );
-    }
-
-    #[test]
-    fn push_prefixed_slugs_internal_whitespace() {
-        let mut tags = Vec::new();
-        push_prefixed(&mut tags, "lang:", "Jupyter Notebook");
-        push_prefixed(&mut tags, "x:", "  spaced  out ");
-        push_prefixed(&mut tags, "y:", "   "); // all whitespace → skipped
-        push_prefixed(&mut tags, "", "v"); // empty prefix → skipped
-        assert_eq!(tags, vec!["lang:Jupyter-Notebook", "x:spaced-out"]);
-    }
-
-    #[test]
-    fn extend_unique_skips_empty_and_duplicate_tags() {
-        let tags = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let mut acc = tags(&["reddit"]);
-        // An empty base tag (config `tags = [""]`) must not add a literal "" — stored
-        // tags can never contain one, so it would diff against storage forever.
-        extend_unique(&mut acc, &tags(&["", "reddit", "rust"]));
-        assert_eq!(acc, tags(&["reddit", "rust"]));
-    }
-
-    #[test]
-    fn tags_differ_is_set_based() {
-        let tags = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        // A duplicate on one side must not read as a difference.
-        assert!(!tags_differ(
-            &tags(&["reddit"]),
-            &tags(&["reddit", "reddit"])
-        ));
-        // Order-insensitive.
-        assert!(!tags_differ(&tags(&["a", "b"]), &tags(&["b", "a"])));
-        // Genuinely different sets still differ.
-        assert!(tags_differ(&tags(&["reddit"]), &tags(&["reddit", "rust"])));
-        assert!(tags_differ(&tags(&["a", "a"]), &tags(&["a", "b"])));
-    }
-
-    #[test]
-    fn host_matches_domain_and_subdomains_only() {
-        assert!(host_matches("github.com", "github.com"));
-        assert!(host_matches("api.github.com", "github.com"));
-        assert!(host_matches("old.reddit.com", "reddit.com"));
-        // Lookalikes must not match.
-        assert!(!host_matches("evilgithub.com", "github.com"));
-        assert!(!host_matches("github.com.evil.com", "github.com"));
-        assert!(!host_matches("notreddit.com", "reddit.com"));
-    }
-
-    #[test]
-    fn url_key_normalizes_host_and_path() {
-        assert_eq!(
-            url_key(&url("https://GitHub.com/Owner/Repo/?tab=stars")).as_deref(),
-            Some("github.com/owner/repo")
-        );
-        assert_eq!(
-            url_key(&url("http://news.ycombinator.com/item?id=42")).as_deref(),
-            Some("news.ycombinator.com/item")
-        );
-    }
-
-    #[test]
-    fn url_key_delegates_to_domains_for_query_significant_hosts() {
-        // Two YouTube videos differing only in `?v=` must not collapse to one key
-        // (the domains rule appends the id); a GitHub `?tab=` still drops the query.
-        assert_ne!(
-            url_key(&url("https://www.youtube.com/watch?v=AAAAAAAAAAA")),
-            url_key(&url("https://www.youtube.com/watch?v=BBBBBBBBBBB"))
-        );
-        assert_eq!(
-            url_key(&url("https://github.com/owner/repo?tab=stars")),
-            url_key(&url("https://github.com/owner/repo?tab=issues"))
         );
     }
 }

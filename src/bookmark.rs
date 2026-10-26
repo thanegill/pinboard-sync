@@ -12,7 +12,7 @@ use log::warn;
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::source::tags_differ;
+use crate::tags::tags_differ;
 
 /// A bookmark in service-agnostic domain form. The field names are the domain's
 /// (`title`/`note`/`public`/`read_later`), not Pinboard's wire names

@@ -18,9 +18,11 @@ mod reddit;
 mod secrets;
 mod source;
 mod sync;
+mod tags;
 #[cfg(test)]
 mod test_support;
 mod timefmt;
+mod urls;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

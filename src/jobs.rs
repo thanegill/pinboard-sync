@@ -2,7 +2,10 @@
 //! hook and settings resolved through the flag → account → `[defaults.<source>]` →
 //! `[pinboard]` ladder. [`SourceAccount`] is what lets `sync`, `backup` and `doctor` treat
 //! the three sources through one generic path. The Pinboard client is built here too
-//! ([`open_pinboard`]), as is [`AllRun`], which tallies an `--all` run's failures.
+//! ([`open_pinboard`]), as is [`AllRun`], which tallies an `--all` run's failures, and
+//! [`backup_jobs`] builds `backup`'s targets on the same path.
+
+pub mod backup_jobs;
 
 use anyhow::{bail, Context, Result};
 use log::{debug, info};
@@ -432,7 +435,7 @@ fn build_pinboard(token_flag: Option<String>, config: &Config) -> Result<Pinboar
 }
 
 /// The client for an already-resolved token, at the configured write pacing.
-pub fn pinboard_client(token: String, config: &Config) -> Result<PinboardClient> {
+fn pinboard_client(token: String, config: &Config) -> Result<PinboardClient> {
     let rate_limit = config.pinboard.rate_limit_secs.unwrap_or(RATE_LIMIT_SECS);
     PinboardClient::new(token, rate_limit)
 }

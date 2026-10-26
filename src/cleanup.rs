@@ -10,7 +10,7 @@ use anyhow::Result;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::html_to_plain;
-use crate::model::{cased_subreddit, reddit_key, RedditConfig};
+use crate::reddit::model::{cased_subreddit, reddit_key, RedditConfig};
 use crate::reddit::PostInfo;
 use crate::source::{host_matches, SourceError, UrlExt};
 use crate::timefmt::DateOpts;
@@ -185,7 +185,7 @@ async fn fetch_post_info<R: PostInfo>(
             // post-shaped notes — selftext quoted, empty for an empty self-post, else the
             // external URL.
             let selftext = entry.fields.selftext.clone().unwrap_or_default();
-            let extended = crate::model::reddit_extended(
+            let extended = crate::reddit::model::reddit_extended(
                 false,
                 "",
                 &selftext,

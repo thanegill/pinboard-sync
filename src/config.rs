@@ -15,7 +15,7 @@ use serde::Deserialize;
 
 use crate::github::GitHubConfig;
 use crate::hackernews::HackerNewsConfig;
-use crate::model::RedditConfig;
+use crate::reddit::model::RedditConfig;
 
 /// The parsed config file.
 #[derive(Debug, Default, Deserialize)]

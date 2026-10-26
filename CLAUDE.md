@@ -251,7 +251,7 @@ keeps the full traversal with its batched lookup.
 bookmarks carrying the `link_tag` marker (default `find-hn`), it looks each up on HN
 by URL (one Algolia query each) and adds the discussion link. Reddit's bookmark/tag
 shaping lives in
-[`src/model.rs`](src/model.rs).
+[`src/reddit/model.rs`](src/reddit/model.rs).
 
 **The Reddit cookie is shaped in one place.** `RedditClient::build` passes the configured
 cookie through `reddit::session_cookie`, so every entry point sends the same header.
@@ -285,7 +285,7 @@ a domain rename must not silently change an operator's files.
 config struct (`RedditConfig`, `GitHubConfig`, `HackerNewsConfig`) of overridable
 fields with built-in defaults; the `tags` list (default e.g. `["reddit"]`) is the
 base tag plus any extras, and `push_tag`/`push_prefixed` in `source.rs` render them
-(empty string disables a tag). `model.rs`'s tag tests are the spec — keep them in
+(empty string disables a tag). `reddit/model.rs`'s tag tests are the spec — keep them in
 sync with rule changes. Pinboard tags can't contain spaces (the API splits the tag
 string on them), so `push_prefixed` slugs internal whitespace in the value (e.g. the
 GitHub language `Jupyter Notebook` → `lang:jupyter-notebook`) and `Config::parse`

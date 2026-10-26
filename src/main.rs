@@ -14,7 +14,6 @@ mod hook;
 mod htmltext;
 mod http;
 mod jobs;
-mod model;
 mod pinboard;
 mod reddit;
 mod secrets;
@@ -46,8 +45,8 @@ use jobs::{
     build_all_jobs, build_job, build_jobs, resolve_dates, DateOverrides, SourceAccount,
     SourceClient, SyncJob, SyncOverrides,
 };
-use model::RedditConfig;
 use pinboard::{PinboardClient, RATE_LIMIT_SECS};
+use reddit::model::RedditConfig;
 use reddit::RedditClient;
 use secrets::{
     first_nonempty, missing_github_token, missing_reddit_cookie, resolve_github_token,

@@ -13,7 +13,7 @@ use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccoun
 use crate::github::{GitHubClient, GitHubConfig};
 use crate::hackernews::{HackerNewsClient, HackerNewsConfig};
 use crate::hook::resolve_hook;
-use crate::model::RedditConfig;
+use crate::reddit::model::RedditConfig;
 use crate::reddit::RedditClient;
 use crate::secrets::{
     missing_github_token, resolve_github_token, resolve_reddit_cookie, resolve_secret,

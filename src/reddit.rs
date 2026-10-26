@@ -6,6 +6,8 @@
 //! The cookie authenticates the private saved listing; the username (non-secret)
 //! selects whose saves to read.
 
+pub mod model;
+
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -17,7 +19,7 @@ use url::Url;
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::http::{client_builder, RetryingClient};
-use crate::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
+use crate::reddit::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
 use crate::secrets::{reddit_cookie_settings, ConfiguredSecret};
 use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey};
 

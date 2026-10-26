@@ -238,14 +238,18 @@ mod tests {
             .collect()
     }
 
-    fn post(name: &str, permalink: &str) -> crate::model::RedditListingEntry {
+    fn post(name: &str, permalink: &str) -> crate::reddit::model::RedditListingEntry {
         listing_entry(
             "t3",
             json!({ "name": name, "subreddit": "rust", "permalink": permalink, "title": "T" }),
         )
     }
 
-    fn post_at(name: &str, permalink: &str, created_utc: i64) -> crate::model::RedditListingEntry {
+    fn post_at(
+        name: &str,
+        permalink: &str,
+        created_utc: i64,
+    ) -> crate::reddit::model::RedditListingEntry {
         listing_entry(
             "t3",
             json!({ "name": name, "subreddit": "rust", "permalink": permalink, "title": "T", "created_utc": created_utc }),

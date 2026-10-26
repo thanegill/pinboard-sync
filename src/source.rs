@@ -87,9 +87,6 @@ pub trait UrlKey {
 
 /// A service that yields saveable items as [`BookmarkDraft`]s. Abstracted from the
 /// concrete client so the `sync` loop can be exercised with an in-memory fake.
-/// (Crate-internal, never spawned across threads, so the missing `Send` bound from
-/// `async fn` in a trait is irrelevant here.)
-#[allow(async_fn_in_trait)]
 pub trait Source: UrlKey {
     /// All saveable items as drafts, newest first.
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError>;

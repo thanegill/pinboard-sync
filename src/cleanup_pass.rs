@@ -63,7 +63,6 @@ impl Plan {
 }
 
 /// How a source re-shapes one bookmark during `cleanup`.
-#[allow(async_fn_in_trait)]
 pub trait CleanupPass {
     /// The end-state for `bookmark` as a [`Plan`] — distinguishing an answer from the
     /// source ([`Plan::Bookmark`], [`Plan::Unchanged`]) from a bookmark this pass does

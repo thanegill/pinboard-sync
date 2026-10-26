@@ -183,9 +183,6 @@ impl BackupDump {
 
 /// A service that can dump what it holds. Implemented by the three `Source` clients and
 /// by the Pinboard client, so `backup` covers the destination as well as the sources.
-/// (Crate-internal, never spawned across threads, so the missing `Send` bound from
-/// `async fn` in a trait is irrelevant here.)
-#[allow(async_fn_in_trait)]
 pub trait BackupSource {
     async fn dump(&self) -> Result<BackupDump, SourceError>;
 }

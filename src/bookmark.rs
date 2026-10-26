@@ -114,9 +114,6 @@ impl Bookmark {
 /// concrete Pinboard client so those loops can be exercised with an in-memory fake. A
 /// write takes a whole [`Bookmark`]; the client maps it to the Pinboard `posts/add`
 /// parameters at the boundary (see `pinboard::post_add`).
-/// (Crate-internal, never spawned across threads, so the missing `Send` bound from
-/// `async fn` in a trait is irrelevant here.)
-#[allow(async_fn_in_trait)]
 pub trait BookmarkStore {
     /// Every bookmark in the account (`posts/all`).
     async fn all(&self) -> Result<Vec<Bookmark>>;

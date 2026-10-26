@@ -8,7 +8,7 @@ use anyhow::Context;
 use time::OffsetDateTime;
 use url::Url;
 
-use super::{github_extended, GitHubClient, GitHubConfig, GitHubRepo};
+use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::html_to_plain;
@@ -26,7 +26,6 @@ use crate::timefmt::DateOpts;
 pub async fn run<S: BookmarkStore + AccountState>(
     store: &S,
     client: &GitHubClient,
-    config: &GitHubConfig,
     dates: DateOpts,
 ) -> Result<(), SourceError> {
     // Taken from the run's live view, so an earlier source's writes are already reflected.
@@ -50,11 +49,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
         HashMap::new()
     };
 
-    let pass = GitHubCleanupPass {
-        client,
-        config,
-        star_dates,
-    };
+    let pass = GitHubCleanupPass { client, star_dates };
     run_pass(store, &gh_bms, "github", dates, &pass)
         .await
         .into_result()
@@ -66,7 +61,6 @@ pub async fn run<S: BookmarkStore + AccountState>(
 /// language tag. A 404 keeps just the canonicalization.
 struct GitHubCleanupPass<'a> {
     client: &'a GitHubClient,
-    config: &'a GitHubConfig,
     star_dates: HashMap<String, OffsetDateTime>,
 }
 
@@ -93,12 +87,12 @@ impl CleanupPass for GitHubCleanupPass<'_> {
             title = html_to_plain(&info.full_name);
             // Rebuild the notes from fresh data so old bookmarks retrofit to the
             // <blockquote> shape (sync skips already-present bookmarks).
-            note = github_extended(
+            note = github_note(
                 info.description.as_deref(),
                 info.homepage.as_deref(),
                 &info.html_url,
             );
-            tags = refresh_tags(bookmark.tags.clone(), &info, self.config);
+            tags = refresh_tags(bookmark.tags.clone(), &info, &self.client.config);
             url = Url::parse(&info.html_url).unwrap_or(url); // follows renames/transfers
         }
 
@@ -157,10 +151,7 @@ fn refresh_tags(existing: Vec<String>, repo: &GitHubRepo, cfg: &GitHubConfig) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
-    }
+    use crate::test_support::url;
 
     #[test]
     fn repo_root_only_matches_bare_github_repo_roots() {

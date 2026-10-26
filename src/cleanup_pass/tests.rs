@@ -1,12 +1,7 @@
 use super::*;
 use crate::bookmark::{AccountState, AccountView, CleanupStore};
-use crate::test_support::{FakePinboard, Op};
+use crate::test_support::{stored_at, url as u, FakePinboard, Op, NO_DATING};
 use anyhow::anyhow;
-use url::Url;
-
-fn u(s: &str) -> Url {
-    Url::parse(s).unwrap()
-}
 
 /// Wrap the fake in the production store so every test exercises the same view
 /// bookkeeping the real run does, rather than a stand-in that can drift from it.
@@ -16,6 +11,34 @@ fn store<'a>(
     dry_run: bool,
 ) -> CleanupStore<'a, FakePinboard> {
     CleanupStore::new(pinboard, AccountView::new(all.to_vec()), dry_run)
+}
+
+/// [`run_pass`] over `books`, with the account seeded from them and dating off.
+async fn run<C: CleanupPass>(pinboard: &FakePinboard, books: &[Bookmark], pass: &C) -> PassOutcome {
+    run_pass(
+        &store(pinboard, books, false),
+        books,
+        "test",
+        NO_DATING,
+        pass,
+    )
+    .await
+}
+
+/// [`run`] as a dry run.
+async fn run_dry<C: CleanupPass>(
+    pinboard: &FakePinboard,
+    books: &[Bookmark],
+    pass: &C,
+) -> PassOutcome {
+    run_pass(
+        &store(pinboard, books, true),
+        books,
+        "test",
+        NO_DATING,
+        pass,
+    )
+    .await
 }
 
 /// A `CleanupPass` whose `plan` is a closure, so each test scripts its own outcome.
@@ -33,13 +56,11 @@ fn item_error() -> SourceError {
 
 fn bookmark(url: &str) -> Bookmark {
     Bookmark {
-        url: u(url),
         title: "Title".into(),
         note: "notes".into(),
         tags: vec!["a".into(), "b".into()],
         timestamp: crate::timefmt::from_unix(1_577_836_800), // 2020-01-01T00:00:00Z
-        public: false,
-        read_later: false,
+        ..stored_at(url)
     }
 }
 
@@ -48,13 +69,6 @@ fn bookmark(url: &str) -> Bookmark {
 fn unchanged_plan(bookmark: &Bookmark) -> Bookmark {
     bookmark.clone()
 }
-
-/// Dating off: the driver preserves each bookmark's existing date.
-const NO_DATING: DateOpts = DateOpts {
-    use_post_date: false,
-    max_age_days: 0,
-    stale_to_now: false,
-};
 
 #[tokio::test]
 async fn err_plan_counts_failed_and_continues() {
@@ -72,14 +86,7 @@ async fn err_plan_counts_failed_and_continues() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed, 1);
     assert_eq!(outcome.write_failed, 0);
     let updated = pinboard.updated.borrow();
@@ -107,14 +114,7 @@ async fn one_unreachable_link_does_not_fail_the_run() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert!(outcome.into_result().is_ok());
 }
 
@@ -131,14 +131,7 @@ async fn a_failed_write_fails_the_run() {
     let mut pinboard = FakePinboard::default();
     pinboard.fail_update_urls.insert("https://x/".into());
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.write_failed, 1);
     assert!(pinboard.updated.borrow().is_empty());
     let err = outcome.into_result().unwrap_err();
@@ -153,14 +146,7 @@ async fn every_plan_failing_fails_the_run() {
     let pass = FakePass(|_: &Bookmark| Err(item_error()));
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed, 2);
     let err = outcome.into_result().unwrap_err();
     assert!(err.to_string().contains("2 of 2"), "{err}");
@@ -176,14 +162,7 @@ async fn a_lone_failed_lookup_never_fails_the_run() {
     let pass = FakePass(|_: &Bookmark| Err(item_error()));
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!((outcome.reached, outcome.plan_failed), (0, 1));
     assert!(outcome.into_result().is_ok());
 }
@@ -208,14 +187,7 @@ async fn a_majority_of_lookups_failing_fails_the_run() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!((outcome.reached, outcome.plan_failed), (1, 3));
     let err = outcome.into_result().unwrap_err();
     assert!(err.to_string().contains("3 of 4"), "{err}");
@@ -244,14 +216,7 @@ async fn a_rate_limit_stops_the_pass_like_a_dead_credential() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(planned.get(), 2, "should stop at the rate limit");
     assert_eq!(
         outcome.halted,
@@ -285,14 +250,7 @@ async fn an_edge_block_stops_the_pass_and_is_reported_as_a_block() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(planned.get(), 2, "should stop at the block");
     assert_eq!(outcome.halted, Some(Halt::Blocked("edge block".into())));
     assert_eq!(outcome.plan_failed, 0, "a block is not a per-item failure");
@@ -327,14 +285,7 @@ async fn reauth_stops_planning_but_still_writes_what_was_planned() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(planned.get(), 2, "should stop at the reauth failure");
     let updated = pinboard.updated.borrow();
     assert_eq!(
@@ -365,14 +316,7 @@ async fn a_reauth_alongside_failed_writes_reports_both() {
     let mut pinboard = FakePinboard::default();
     pinboard.fail_update_urls.insert("https://x/one".into());
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.write_failed, 1);
     let err = outcome.into_result().unwrap_err().to_string();
     assert!(err.contains("token expired"), "{err}");
@@ -396,14 +340,7 @@ async fn a_reauth_does_not_hide_lookups_that_already_failed() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed, 1);
     let err = outcome.into_result().unwrap_err().to_string();
     assert!(err.contains("token expired"), "{err}");
@@ -432,14 +369,7 @@ async fn bookmarks_a_pass_skipped_do_not_count_as_reaching_the_source() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.reached, 0);
     // "2 of 2", not "2 of 5": the three skipped bookmarks are not in the denominator,
     // which is what stops them padding it into a passing ratio.
@@ -461,14 +391,7 @@ async fn an_unchanged_plan_counts_as_reaching_the_source() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.reached, 1);
     assert!(outcome.into_result().is_ok());
 }
@@ -479,14 +402,7 @@ async fn none_plan_is_skipped() {
     let pass = FakePass(|_: &Bookmark| Ok(Plan::Skipped));
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
     assert!(pinboard.updated.borrow().is_empty());
     assert!(pinboard.deleted.borrow().is_empty());
@@ -498,14 +414,7 @@ async fn unchanged_plan_is_skipped() {
     let pass = FakePass(|bookmark: &Bookmark| Ok(Plan::Bookmark(unchanged_plan(bookmark))));
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
     assert!(pinboard.updated.borrow().is_empty());
 }
@@ -523,14 +432,7 @@ async fn url_change_updates_and_deletes_old_preserving_privacy() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -744,14 +646,7 @@ async fn colliding_rewrites_are_field_merged() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
     let updated = pinboard.updated.borrow();
@@ -788,14 +683,7 @@ async fn chained_rewrite_does_not_delete_another_writes_target() {
         });
         let pinboard = FakePinboard::default();
 
-        let outcome = run_pass(
-            &store(&pinboard, &books, false),
-            &books,
-            "test",
-            NO_DATING,
-            &pass,
-        )
-        .await;
+        let outcome = run(&pinboard, &books, &pass).await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
         let updated = pinboard.updated.borrow();
@@ -928,14 +816,7 @@ async fn a_converged_check_uses_the_incumbents_stored_record_not_its_plan() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.write_failed, 0);
     let updated = pinboard.updated.borrow();
     let merged = updated
@@ -972,14 +853,7 @@ async fn a_converged_incumbent_merge_is_not_rewritten_every_run() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.write_failed, 0);
     assert_eq!(
         outcome.refused, 0,
@@ -1178,14 +1052,7 @@ async fn refusals_propagate_through_a_chain_not_just_one_hop() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.refused, 3, "every hop of the chain must be refused");
     assert!(
         pinboard.updated.borrow().is_empty(),
@@ -1209,14 +1076,7 @@ async fn a_halt_protects_the_bookmark_whose_lookup_raised_it() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert!(outcome.halted.is_some());
     assert_eq!(outcome.refused, 1);
     assert!(
@@ -1246,14 +1106,7 @@ async fn an_unchanged_bookmark_is_merged_with_not_refused() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1329,14 +1182,7 @@ async fn a_plan_can_never_change_the_privacy_flags() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.changed, 1);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1368,14 +1214,7 @@ async fn a_rewrite_whose_delete_fails_still_counts_as_written() {
         ..FakePinboard::default()
     };
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(pinboard.updated.borrow().len(), 1, "the write did land");
     assert_eq!(outcome.changed, 1, "so it must be counted as a change");
     assert_eq!(outcome.write_failed, 1, "and still fail the run");
@@ -1408,14 +1247,7 @@ async fn a_failed_merge_protects_a_member_another_group_targets() {
         ..FakePinboard::default()
     };
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.write_failed, 1);
     assert!(
         !pinboard
@@ -1458,14 +1290,7 @@ async fn a_failed_write_refusal_propagates_like_any_other() {
         ..FakePinboard::default()
     };
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.write_failed, 1);
     let updated = pinboard.updated.borrow();
     for stranded in ["https://p1/", "https://p2/"] {
@@ -1502,14 +1327,7 @@ async fn a_failed_move_protects_the_record_it_left_behind() {
         ..FakePinboard::default()
     };
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.write_failed, 1);
     assert_eq!(
         outcome.refused, 1,
@@ -1547,14 +1365,7 @@ async fn a_visibility_mismatch_refuses_only_the_mover() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.refused, 1, "only the mover is refused");
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1796,14 +1607,7 @@ async fn a_bookmark_is_not_a_resident_of_its_own_plan() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1926,14 +1730,7 @@ async fn rewrite_onto_skipped_resident_merges_with_it() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
@@ -1972,14 +1769,7 @@ async fn rewrite_onto_a_bookmark_whose_lookup_failed_is_refused() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed, 1);
     assert!(
         pinboard.updated.borrow().is_empty(),
@@ -2010,14 +1800,7 @@ async fn rewrite_onto_a_bookmark_left_unplanned_by_reauth_is_refused() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert!(matches!(outcome.halted, Some(Halt::Reauth(_))));
     assert_eq!(
         outcome.refused, 1,
@@ -2160,14 +1943,7 @@ async fn a_collision_refuses_when_a_public_mover_lands_on_a_private_bookmark() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
     assert_eq!(outcome.refused, 1);
     let updated = pinboard.updated.borrow();
@@ -2208,14 +1984,7 @@ async fn an_emptied_group_is_not_counted_as_a_refusal_of_its_own() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, true),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_dry(&pinboard, &books, &pass).await;
     assert_eq!(outcome.refused, 4, "one per abandoned write, not per group");
     assert!(
         !outcome
@@ -2257,14 +2026,7 @@ async fn a_group_emptied_by_a_refusal_no_longer_protects_its_url() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.refused, 2, "the disagreeing peers stay put");
     assert_eq!(
         *pinboard.deleted.borrow(),
@@ -2295,14 +2057,7 @@ async fn colliding_peers_that_disagree_are_all_refused() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
     assert_eq!(outcome.refused, 2, "neither peer may write");
     assert!(pinboard.updated.borrow().is_empty());
@@ -2333,14 +2088,7 @@ async fn colliding_peers_that_agree_still_merge() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, false),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -2506,14 +2254,7 @@ async fn a_dry_run_previews_a_refused_target() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &books, true),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_dry(&pinboard, &books, &pass).await;
     assert_eq!(outcome.refused, 1);
     assert_eq!(
         outcome.preview,
@@ -2557,6 +2298,115 @@ async fn a_dry_run_previews_a_refusal() {
         vec![
             "[dry-run] https://mover/",
             "          (refused: would merge into https://target/, which is public)",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_dry_run_names_a_target_occupied_by_a_refused_rewrite() {
+    // A is refused (its target couldn't be read), so A stays put and B, heading for A's
+    // URL, is refused in turn. The two reasons send the operator to different places, so
+    // each refusal has to name its own.
+    let books = vec![
+        bookmark("https://unreadable/"),
+        bookmark("https://a/"),
+        bookmark("https://b/"),
+    ];
+    let pass = FakePass(|bookmark: &Bookmark| match bookmark.url.as_str() {
+        "https://unreadable/" => Err(item_error()),
+        "https://a/" => Ok(Plan::Bookmark(Bookmark {
+            url: u("https://unreadable/"),
+            ..unchanged_plan(bookmark)
+        })),
+        _ => Ok(Plan::Bookmark(Bookmark {
+            url: u("https://a/"),
+            ..unchanged_plan(bookmark)
+        })),
+    });
+    let pinboard = FakePinboard::default();
+
+    let outcome = run_dry(&pinboard, &books, &pass).await;
+    assert_eq!(outcome.refused, 2);
+    assert_eq!(
+        outcome.preview,
+        vec![
+            "[dry-run] https://unreadable/",
+            "          (refused: occupied by a bookmark this pass could not read)",
+            "[dry-run] https://a/",
+            "          (refused: occupied by a rewrite that was itself refused)",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_refusal_behind_a_failed_write_says_the_write_failed() {
+    // A's move fails, so A is still at its URL and B, heading there, must be refused.
+    // Only a real run can fail a write, so the reason shows in the log, not a preview.
+    let books = vec![bookmark("https://a/"), bookmark("https://b/")];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        let target = match bookmark.url.as_str() {
+            "https://a/" => "https://new/",
+            _ => "https://a/",
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(target),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let mut pinboard = FakePinboard::default();
+    pinboard.fail_update_urls.insert("https://new/".into());
+
+    let (outcome, logs) = crate::test_support::capturing_logs(run(&pinboard, &books, &pass)).await;
+    assert_eq!(outcome.refused, 1);
+    assert_eq!(outcome.write_failed, 1);
+    assert!(pinboard.ops.borrow().is_empty(), "nothing may land");
+    assert!(
+        logs.contains(
+            &"WARN skipping cleanup write to https://a/: occupied by a bookmark whose own \
+              rewrite failed"
+                .to_string()
+        ),
+        "{logs:#?}"
+    );
+}
+
+#[tokio::test]
+async fn a_dry_run_names_a_target_held_by_a_visibility_refusal() {
+    // A is held back for disagreeing with the public record staying at the target, so A
+    // stays put and B, heading for A's URL, is refused for the same reason as any other
+    // rewrite that was itself refused.
+    let mut resident = bookmark("https://target/");
+    resident.public = true;
+    let slice = vec![bookmark("https://a/"), bookmark("https://b/")];
+    let all = vec![slice[0].clone(), slice[1].clone(), resident];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        let target = match bookmark.url.as_str() {
+            "https://a/" => "https://target/",
+            _ => "https://a/",
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(target),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let pinboard = FakePinboard::default();
+
+    let outcome = run_pass(
+        &store(&pinboard, &all, true),
+        &slice,
+        "test",
+        NO_DATING,
+        &pass,
+    )
+    .await;
+    assert_eq!(outcome.refused, 2);
+    assert_eq!(
+        outcome.preview,
+        vec![
+            "[dry-run] https://a/",
+            "          (refused: would merge into https://target/, which is public)",
+            "[dry-run] https://a/",
+            "          (refused: occupied by a rewrite that was itself refused)",
         ]
     );
 }

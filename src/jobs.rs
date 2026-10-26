@@ -537,11 +537,7 @@ mod tests {
             limit,
             toread: false,
             shared: false,
-            dates: DateOpts {
-                use_post_date: false,
-                max_age_days: 30,
-                stale_to_now: false,
-            },
+            dates: crate::test_support::NO_DATING,
         }
     }
 
@@ -658,15 +654,9 @@ mod net_tests {
             hook: None,
             settings: fetch_only(limit),
         };
-        let existing = [Bookmark {
-            url: Url::parse("https://news.ycombinator.com/item?id=1").unwrap(),
-            title: String::new(),
-            note: String::new(),
-            tags: Vec::new(),
-            timestamp: None,
-            public: false,
-            read_later: false,
-        }];
+        let existing = [crate::test_support::stored_at(
+            "https://news.ycombinator.com/item?id=1",
+        )];
 
         crate::http::recording_waits(job.fetch(&existing))
             .await

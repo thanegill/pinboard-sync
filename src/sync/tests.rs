@@ -2,7 +2,7 @@ use std::num::NonZeroUsize;
 
 use super::*;
 use crate::source::{page_is_caught_up, Source, SourceError, UrlKey};
-use crate::test_support::{listing_entry, replay, FakePinboard, FakeReddit};
+use crate::test_support::{listing_entry, replay, stored_at as bookmark, FakePinboard, FakeReddit};
 use serde_json::json;
 use url::Url;
 
@@ -108,19 +108,6 @@ fn settings(use_post_date: bool, max_age_days: u64, limit: Option<NonZeroUsize>)
     }
 }
 
-/// An existing Pinboard bookmark at `url` (other fields irrelevant to dedup).
-fn bookmark(url: &str) -> Bookmark {
-    Bookmark {
-        url: Url::parse(url).unwrap(),
-        title: String::new(),
-        note: String::new(),
-        tags: Vec::new(),
-        timestamp: None,
-        public: false,
-        read_later: false,
-    }
-}
-
 #[tokio::test]
 async fn filter_new_skips_present_then_write_adds_the_rest() {
     let reddit = FakeReddit {
@@ -195,13 +182,10 @@ async fn dry_run_writes_nothing() {
 async fn write_drafts_passes_each_drafts_toread_and_shared() {
     let draft = |url: &str, toread: bool, shared: bool| BookmarkDraft {
         bookmark: Bookmark {
-            url: Url::parse(url).unwrap(),
             title: "T".into(),
-            note: String::new(),
-            tags: vec![],
-            timestamp: None,
             public: shared,
             read_later: toread,
+            ..bookmark(url)
         },
         dedup_key: url.into(),
     };
@@ -221,13 +205,9 @@ async fn write_drafts_passes_each_drafts_toread_and_shared() {
 async fn write_drafts_sends_post_date_as_dt_when_set() {
     let draft = |url: &str, post_date: Option<i64>| BookmarkDraft {
         bookmark: Bookmark {
-            url: Url::parse(url).unwrap(),
             title: "T".into(),
-            note: String::new(),
-            tags: vec![],
             timestamp: post_date.and_then(crate::timefmt::from_unix),
-            public: false,
-            read_later: false,
+            ..bookmark(url)
         },
         dedup_key: url.into(),
     };
@@ -360,13 +340,8 @@ async fn prepare_new_drafts_dedups_within_the_batch_before_applying_the_limit() 
     // drops when it collapses the pair across jobs).
     let draft = |url: &str, key: &str| BookmarkDraft {
         bookmark: Bookmark {
-            url: Url::parse(url).unwrap(),
             title: "T".into(),
-            note: String::new(),
-            tags: vec![],
-            timestamp: None,
-            public: false,
-            read_later: false,
+            ..bookmark(url)
         },
         dedup_key: key.into(),
     };
@@ -419,13 +394,8 @@ async fn merge_deduped_collapses_drafts_sharing_a_dedup_key_with_differing_urls(
     // check, so a first-time run doesn't create two bookmarks for one item.
     let draft = |url: &str, key: &str| BookmarkDraft {
         bookmark: Bookmark {
-            url: Url::parse(url).unwrap(),
             title: "T".into(),
-            note: String::new(),
-            tags: vec![],
-            timestamp: None,
-            public: false,
-            read_later: false,
+            ..bookmark(url)
         },
         dedup_key: key.into(),
     };
@@ -442,13 +412,8 @@ async fn merge_deduped_collapses_drafts_sharing_a_dedup_key_with_differing_urls(
 async fn merge_deduped_keeps_drafts_with_distinct_dedup_keys() {
     let draft = |url: &str, key: &str| BookmarkDraft {
         bookmark: Bookmark {
-            url: Url::parse(url).unwrap(),
             title: "T".into(),
-            note: String::new(),
-            tags: vec![],
-            timestamp: None,
-            public: false,
-            read_later: false,
+            ..bookmark(url)
         },
         dedup_key: key.into(),
     };
@@ -463,13 +428,8 @@ async fn merge_deduped_keeps_drafts_with_distinct_dedup_keys() {
 async fn write_drafts_logs_and_skips_a_failing_bookmark() {
     let draft = |url: &str| BookmarkDraft {
         bookmark: Bookmark {
-            url: Url::parse(url).unwrap(),
             title: "T".into(),
-            note: String::new(),
-            tags: vec![],
-            timestamp: None,
-            public: false,
-            read_later: false,
+            ..bookmark(url)
         },
         dedup_key: url.into(),
     };

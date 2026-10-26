@@ -357,6 +357,29 @@ async fn info_sends_cookie_and_returns_entries() {
     assert!(entries[0].fields.over_18);
 }
 
+#[tokio::test]
+async fn info_pauses_only_between_batches() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/info.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": null, "children": [] }
+        })))
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let client = RedditClient::for_test(Some("reddit_session=secret".into()), None, server.uri());
+    let fullnames: Vec<String> = (0..250).map(|n| format!("t3_{n}")).collect();
+    let (entries, waits) = crate::http::recording_waits(client.info(&fullnames)).await;
+    assert!(entries.unwrap().is_empty());
+    assert_eq!(
+        waits, [REQUEST_PAUSE; 2],
+        "one pause between each pair of batches"
+    );
+}
+
 /// Mounts a three-page saved listing, newest first, one post per page (`n`, `o`,
 /// then `p`), expecting each page `hits` times.
 async fn three_saved_pages(server: &MockServer, hits: [u64; 3]) {

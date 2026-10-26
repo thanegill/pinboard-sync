@@ -40,7 +40,7 @@ fn post_url_and_tags() {
         it.bookmark_url("old.reddit.com"),
         "https://old.reddit.com/r/rust/comments/abc/title/"
     );
-    assert_eq!(it.description, "A title");
+    assert_eq!(it.title, "A title");
     // A plain link post gets no `type:` tag (only image/video do).
     assert_eq!(
         it.tags(&RedditConfig::default()),
@@ -132,7 +132,7 @@ fn text_and_link_posts_get_no_type_tag_and_comment_links_its_parent_thread() {
         }),
     );
     assert_eq!(
-        comment.extended,
+        comment.note,
         "Thread: https://old.reddit.com/r/rust/comments/a/x/\n\n<blockquote>my reply</blockquote>"
     );
     // Comments get no `type:` tag.
@@ -154,7 +154,7 @@ fn empty_self_post_has_no_duplicated_permalink_in_notes() {
             "url": "https://www.reddit.com/r/rust/comments/a/x/"
         }),
     );
-    assert_eq!(post.extended, "");
+    assert_eq!(post.note, "");
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn empty_link_post_keeps_the_external_url_in_notes() {
             "url": "https://example.com/article"
         }),
     );
-    assert_eq!(post.extended, "https://example.com/article");
+    assert_eq!(post.note, "https://example.com/article");
 }
 
 #[test]
@@ -185,8 +185,8 @@ fn comment_gets_reddit_comment_tag_and_link_title() {
         }),
     );
     assert!(it.is_comment);
-    assert_eq!(it.description, "The story");
-    assert_eq!(it.extended, "<blockquote>my comment</blockquote>");
+    assert_eq!(it.title, "The story");
+    assert_eq!(it.note, "<blockquote>my comment</blockquote>");
     // All-caps subreddit lowercased.
     assert_eq!(
         it.tags(&RedditConfig::default()),
@@ -195,11 +195,11 @@ fn comment_gets_reddit_comment_tag_and_link_title() {
 }
 
 #[test]
-fn reddit_extended_wraps_quoted_body_and_keeps_links_outside() {
+fn reddit_note_wraps_quoted_body_and_keeps_links_outside() {
     let domain = "old.reddit.com";
     // Comment: thread link outside, body in a blockquote.
     assert_eq!(
-        reddit_extended(
+        reddit_note(
             true,
             "hi",
             "",
@@ -212,24 +212,24 @@ fn reddit_extended_wraps_quoted_body_and_keeps_links_outside() {
     );
     // Comment with no body: just the thread link, no empty blockquote.
     assert_eq!(
-        reddit_extended(true, "", "", "", false, Some("/r/x/comments/a/t/"), domain),
+        reddit_note(true, "", "", "", false, Some("/r/x/comments/a/t/"), domain),
         "Thread: https://old.reddit.com/r/x/comments/a/t/"
     );
     // Comment with body but no resolvable thread: just the wrapped body.
     assert_eq!(
-        reddit_extended(true, "hi", "", "", false, None, domain),
+        reddit_note(true, "hi", "", "", false, None, domain),
         "<blockquote>hi</blockquote>"
     );
     // Self-post: selftext wrapped.
     assert_eq!(
-        reddit_extended(false, "", "post body", "", true, None, domain),
+        reddit_note(false, "", "post body", "", true, None, domain),
         "<blockquote>post body</blockquote>"
     );
     // Empty self-post: no notes (its url is its own permalink).
-    assert_eq!(reddit_extended(false, "", "", "", true, None, domain), "");
+    assert_eq!(reddit_note(false, "", "", "", true, None, domain), "");
     // Link post: external URL is a bare fallback, not quoted.
     assert_eq!(
-        reddit_extended(false, "", "", "https://example.com", false, None, domain),
+        reddit_note(false, "", "", "https://example.com", false, None, domain),
         "https://example.com"
     );
 }

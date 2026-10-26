@@ -87,9 +87,6 @@ pub trait UrlKey {
 
 /// A service that yields saveable items as [`BookmarkDraft`]s. Abstracted from the
 /// concrete client so the `sync` loop can be exercised with an in-memory fake.
-/// (Crate-internal, never spawned across threads, so the missing `Send` bound from
-/// `async fn` in a trait is irrelevant here.)
-#[allow(async_fn_in_trait)]
 pub trait Source: UrlKey {
     /// All saveable items as drafts, newest first.
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError>;
@@ -236,19 +233,12 @@ pub fn url_key(url: &Url) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::url;
 
     #[test]
     fn a_page_is_caught_up_only_when_it_has_no_new_draft() {
         let draft = |key: &str| BookmarkDraft {
-            bookmark: Bookmark {
-                url: Url::parse("https://example.com/").unwrap(),
-                title: String::new(),
-                note: String::new(),
-                tags: Vec::new(),
-                timestamp: None,
-                public: false,
-                read_later: false,
-            },
+            bookmark: crate::test_support::stored_at("https://example.com/"),
             dedup_key: key.into(),
         };
         let synced_keys: HashSet<String> = ["a".into(), "b".into()].into();
@@ -291,10 +281,6 @@ mod tests {
         // tags can never contain one, so it would diff against storage forever.
         extend_unique(&mut acc, &tags(&["", "reddit", "rust"]));
         assert_eq!(acc, tags(&["reddit", "rust"]));
-    }
-
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
     }
 
     #[test]

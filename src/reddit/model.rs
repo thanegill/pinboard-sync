@@ -130,8 +130,8 @@ pub struct RedditSavedItem {
     /// Relative permalink, e.g. `/r/rust/comments/.../`.
     pub permalink: String,
     pub over_18: bool,
-    pub description: String,
-    pub extended: String,
+    pub title: String,
+    pub note: String,
     /// Post/comment creation time (unix epoch seconds), when present.
     pub created_utc: Option<f64>,
     /// Reddit author (`author:<name>` tag).
@@ -170,7 +170,7 @@ impl RedditListingEntry {
         };
         let fullname = fields.name.unwrap_or_default();
 
-        let description = if is_comment {
+        let title = if is_comment {
             fields
                 .link_title
                 .filter(|s| !s.is_empty())
@@ -188,7 +188,7 @@ impl RedditListingEntry {
             post_media_type(fields.is_video, fields.post_hint.as_deref())
         };
 
-        let extended = reddit_extended(
+        let note = reddit_note(
             is_comment,
             fields.body.as_deref().unwrap_or_default(),
             fields.selftext.as_deref().unwrap_or_default(),
@@ -204,8 +204,8 @@ impl RedditListingEntry {
             subreddit,
             permalink,
             over_18: fields.over_18,
-            description,
-            extended,
+            title,
+            note,
             created_utc: fields.created_utc,
             author: fields.author.filter(|s| !s.is_empty()),
             flair: fields.link_flair_text.filter(|s| !s.is_empty()),
@@ -221,7 +221,7 @@ impl RedditListingEntry {
 /// bookmark URL — not worth duplicating); a link post keeps its external URL as the bare
 /// fallback. Shared by sync and cleanup. Reddit text is already Markdown (`raw_json=1`),
 /// so it is wrapped as-is, never HTML-converted.
-pub(crate) fn reddit_extended(
+pub(crate) fn reddit_note(
     is_comment: bool,
     body: &str,
     selftext: &str,
@@ -372,8 +372,8 @@ impl RedditSavedItem {
         Some(BookmarkDraft {
             bookmark: Bookmark {
                 url,
-                title: html_to_plain(&self.description),
-                note: self.extended,
+                title: html_to_plain(&self.title),
+                note: self.note,
                 tags,
                 timestamp,
                 public: false,

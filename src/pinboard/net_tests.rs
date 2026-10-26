@@ -1,10 +1,19 @@
 use super::*;
 use crate::test_support::{
-    assert_quotes_capped_excerpt, capturing_logs, long_error_page, ERROR_PAGE_TAIL,
+    assert_quotes_capped_excerpt, capturing_logs, long_error_page, stored_at, ERROR_PAGE_TAIL,
 };
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// The reddit post the write tests add.
+fn post() -> Bookmark {
+    Bookmark {
+        title: "Title".into(),
+        tags: vec!["reddit".into()],
+        ..stored_at("https://old.reddit.com/r/x/")
+    }
+}
 
 fn client(server: &MockServer) -> PinboardClient {
     PinboardClient::with_base_url("user:tok".into(), server.uri()).unwrap()
@@ -54,18 +63,7 @@ async fn add_error_body_does_not_leak_the_token() {
         .mount(&server)
         .await;
 
-    let err = leak_client(&server)
-        .add(&Bookmark {
-            url: Url::parse("https://old.reddit.com/r/x/").unwrap(),
-            title: "Title".into(),
-            note: String::new(),
-            tags: vec!["reddit".into()],
-            timestamp: None,
-            public: false,
-            read_later: false,
-        })
-        .await
-        .unwrap_err();
+    let err = leak_client(&server).add(&post()).await.unwrap_err();
     assert_error_hides_secret(&err, "posts/add", "400 Bad Request");
 }
 
@@ -142,18 +140,7 @@ async fn add_succeeds_on_done() {
         .mount(&server)
         .await;
 
-    client(&server)
-        .add(&Bookmark {
-            url: Url::parse("https://old.reddit.com/r/x/").unwrap(),
-            title: "Title".into(),
-            note: String::new(),
-            tags: vec!["reddit".into()],
-            timestamp: None,
-            public: false,
-            read_later: false,
-        })
-        .await
-        .unwrap();
+    client(&server).add(&post()).await.unwrap();
 }
 
 #[tokio::test]
@@ -185,13 +172,8 @@ async fn add_retries_after_414_then_succeeds() {
 
     client(&server)
         .add(&Bookmark {
-            url: Url::parse("https://old.reddit.com/r/x/").unwrap(),
-            title: "Title".into(),
             note: "long notes ".repeat(2000),
-            tags: vec!["reddit".into()],
-            timestamp: None,
-            public: false,
-            read_later: false,
+            ..post()
         })
         .await
         .unwrap();
@@ -210,18 +192,7 @@ async fn add_errors_on_non_done_result() {
         .mount(&server)
         .await;
 
-    let err = leak_client(&server)
-        .add(&Bookmark {
-            url: Url::parse("https://old.reddit.com/r/x/").unwrap(),
-            title: "Title".into(),
-            note: String::new(),
-            tags: vec!["reddit".into()],
-            timestamp: None,
-            public: false,
-            read_later: false,
-        })
-        .await
-        .unwrap_err();
+    let err = leak_client(&server).add(&post()).await.unwrap_err();
     assert_eq!(
         err.to_string(),
         "Pinboard posts/add failed: missing url for [redacted]"

@@ -11,11 +11,10 @@ use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage};
 use crate::bookmark::{Bookmark, BookmarkStore};
-use crate::http::{client_builder, error_with_body, redact, RetryingClient, REDACTED};
+use crate::http::{client_builder, error_with_body, redact, RetryingClient, REDACTED, USER_AGENT};
 use crate::source::SourceError;
 
 const DEFAULT_BASE: &str = "https://api.pinboard.in/v1";
-const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
 /// Seconds to wait between successful `posts/add` calls (Pinboard asks for ~3s).
 pub const RATE_LIMIT_SECS: u64 = 3;
@@ -281,7 +280,8 @@ impl PinboardClient {
 
         // Trim the notes to the budget; if Pinboard still rejects the URL as too long
         // (its limit is undocumented), halve the budget and retry rather than dropping
-        // the bookmark. Transient errors (network/429/5xx) are handled by send_retrying.
+        // the bookmark. Transient errors (network/429/5xx) are handled by
+        // `RetryingClient::send`.
         let mut budget = MAX_URL_BYTES;
         loop {
             let extended = self.fit_extended(&endpoint, &fixed, &b.note, budget);

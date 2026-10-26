@@ -750,14 +750,11 @@ impl HackerNewsClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::url;
     use serde_json::json;
 
     fn item(value: serde_json::Value) -> HackerNewsItem {
         serde_json::from_value(value).unwrap()
-    }
-
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
     }
 
     fn ids(items: &[u64]) -> Vec<HackerNewsItemId> {

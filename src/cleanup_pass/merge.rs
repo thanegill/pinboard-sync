@@ -1,6 +1,8 @@
 //! How a collision group becomes one record: which member is the incumbent already
 //! stored at the target, and the field-merge rules [`run_pass`](super::run_pass) writes.
 
+use url::Url;
+
 use crate::bookmark::Bookmark;
 
 /// The index within `members` of the group's *incumbent*: the member whose stored URL is
@@ -9,7 +11,7 @@ use crate::bookmark::Bookmark;
 /// survive the merge's field rules. A resident is by definition unplanned, so a group has
 /// at most one of the two, and being inside the pass's slice is an implementation detail
 /// that must not decide whether a bookmark is protected.
-pub(super) fn incumbent_of(members: &[(&Bookmark, &Bookmark)], target: &url::Url) -> Option<usize> {
+pub(super) fn incumbent_of(members: &[(&Bookmark, &Bookmark)], target: &Url) -> Option<usize> {
     members
         .iter()
         .position(|(original, _)| original.url == *target)

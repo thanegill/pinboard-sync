@@ -1,14 +1,11 @@
 use super::*;
-use crate::bookmark::{AccountView, CleanupStore};
+use crate::test_support::{stored_at, FakePinboard, NO_DATING};
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
 async fn cleanup_merges_a_story_into_a_separately_saved_article() {
-    use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
-
     // The story's article is *also* saved on its own, with the user's own notes and
     // tags. Pinboard holds one record per URL, so the end state has to be a single
     // bookmark: merge rather than either overwriting the user's record or leaving the
@@ -25,18 +22,12 @@ async fn cleanup_merges_a_story_into_a_separately_saved_article() {
         .mount(&algolia)
         .await;
 
-    let stored = |url: &str, title: &str, extended: &str, tags: &str| {
-        PinboardBookmark {
-            url: url.into(),
-            description: title.into(),
-            extended: extended.into(),
-            tags: tags.into(),
-            time: "2020-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()
+    let stored = |url: &str, title: &str, extended: &str, tags: &str| Bookmark {
+        title: title.into(),
+        note: extended.into(),
+        tags: tags.split_whitespace().map(String::from).collect(),
+        timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
+        ..stored_at(url)
     };
     let pinboard = FakePinboard {
         all: vec![
@@ -62,21 +53,16 @@ async fn cleanup_merges_a_story_into_a_separately_saved_article() {
         "unused".into(),
         algolia.uri(),
     );
-    let bookmarks = pinboard.all.clone();
-    client
-        .cleanup(
-            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-            &HackerNewsCleanupOpts {
-                link_discussions: false,
-                dates: DateOpts {
-                    use_post_date: false,
-                    max_age_days: 30,
-                    stale_to_now: false,
-                },
-            },
-        )
-        .await
-        .unwrap();
+    run(
+        &pinboard.cleanup_store(false),
+        &client,
+        &HackerNewsCleanupOpts {
+            link_discussions: false,
+            dates: NO_DATING,
+        },
+    )
+    .await
+    .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -104,9 +90,6 @@ async fn cleanup_merges_a_story_into_a_separately_saved_article() {
 
 #[tokio::test]
 async fn cleanup_rewrites_story_url_and_deletes_old() {
-    use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
-
     let algolia = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/search"))
@@ -120,17 +103,12 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
         .await;
 
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://news.ycombinator.com/item?id=42".into(),
-            description: "old title".into(),
-            extended: String::new(),
-            tags: "hackernews mine".into(),
-            time: "2020-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "old title".into(),
+            tags: vec!["hackernews".into(), "mine".into()],
+            timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
+            ..stored_at("https://news.ycombinator.com/item?id=42")
+        }],
         ..Default::default()
     };
 
@@ -140,21 +118,16 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
         "unused".into(),
         algolia.uri(),
     );
-    let bookmarks = pinboard.all.clone();
-    client
-        .cleanup(
-            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-            &HackerNewsCleanupOpts {
-                link_discussions: false,
-                dates: DateOpts {
-                    use_post_date: false,
-                    max_age_days: 30,
-                    stale_to_now: false,
-                },
-            },
-        )
-        .await
-        .unwrap();
+    run(
+        &pinboard.cleanup_store(false),
+        &client,
+        &HackerNewsCleanupOpts {
+            link_discussions: false,
+            dates: NO_DATING,
+        },
+    )
+    .await
+    .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -171,9 +144,6 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
 
 #[tokio::test]
 async fn cleanup_preserves_existing_note_on_text_post() {
-    use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
-
     // A text post (no url): the bookmark URL already is the HN permalink.
     let algolia = MockServer::start().await;
     Mock::given(method("GET"))
@@ -189,17 +159,13 @@ async fn cleanup_preserves_existing_note_on_text_post() {
 
     let stored_note = "my own answer to this question";
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://news.ycombinator.com/item?id=7".into(),
-            description: "Ask HN: How?".into(),
-            extended: stored_note.into(),
-            tags: "hackernews".into(),
-            time: "2020-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "Ask HN: How?".into(),
+            note: stored_note.into(),
+            tags: vec!["hackernews".into()],
+            timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
+            ..stored_at("https://news.ycombinator.com/item?id=7")
+        }],
         ..Default::default()
     };
 
@@ -209,21 +175,16 @@ async fn cleanup_preserves_existing_note_on_text_post() {
         "unused".into(),
         algolia.uri(),
     );
-    let bookmarks = pinboard.all.clone();
-    client
-        .cleanup(
-            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-            &HackerNewsCleanupOpts {
-                link_discussions: false,
-                dates: DateOpts {
-                    use_post_date: false,
-                    max_age_days: 30,
-                    stale_to_now: false,
-                },
-            },
-        )
-        .await
-        .unwrap();
+    run(
+        &pinboard.cleanup_store(false),
+        &client,
+        &HackerNewsCleanupOpts {
+            link_discussions: false,
+            dates: NO_DATING,
+        },
+    )
+    .await
+    .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -237,9 +198,6 @@ async fn cleanup_preserves_existing_note_on_text_post() {
 
 #[tokio::test]
 async fn link_discussions_adds_hn_link_to_tagged_article() {
-    use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
-
     // The URL search returns a matching HN story id; the item batch (unused
     // here) would hit the same path, so the matcher keys on restrictSearch...
     let algolia = MockServer::start().await;
@@ -256,17 +214,13 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
         .await;
 
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://example.com/x".into(),
-            description: "An article".into(),
-            extended: "my notes".into(),
-            tags: "find-hn reading".into(),
-            time: "2020-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "An article".into(),
+            note: "my notes".into(),
+            tags: vec!["find-hn".into(), "reading".into()],
+            timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
+            ..stored_at("https://example.com/x")
+        }],
         ..Default::default()
     };
 
@@ -276,21 +230,16 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
         "unused".into(),
         algolia.uri(),
     );
-    let bookmarks = pinboard.all.clone();
-    client
-        .cleanup(
-            &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-            &HackerNewsCleanupOpts {
-                link_discussions: true,
-                dates: DateOpts {
-                    use_post_date: false,
-                    max_age_days: 30,
-                    stale_to_now: false,
-                },
-            },
-        )
-        .await
-        .unwrap();
+    run(
+        &pinboard.cleanup_store(false),
+        &client,
+        &HackerNewsCleanupOpts {
+            link_discussions: true,
+            dates: NO_DATING,
+        },
+    )
+    .await
+    .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);

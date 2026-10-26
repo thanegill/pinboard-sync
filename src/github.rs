@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_plain};
-use crate::http::{client_builder, RetryingClient};
+use crate::http::{client_builder, RetryingClient, USER_AGENT};
 use crate::secrets::ConfiguredSecret;
 use crate::source::{
     deserialize_lenient, page_is_caught_up, push_prefixed, push_tags, url_key, BookmarkDraft,
@@ -21,7 +21,6 @@ use crate::source::{
 };
 use url::Url;
 
-const UA: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 const API_BASE: &str = "https://api.github.com";
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -85,15 +84,15 @@ impl GitHubStarredRepo {
 /// (Pinboard renders HTML in the notes), with the project homepage appended outside the
 /// quote. Falls back to the repo URL when there's no description. Shared by sync and
 /// cleanup so both produce the same shape.
-fn github_extended(description: Option<&str>, homepage: Option<&str>, html_url: &str) -> String {
-    let mut extended = match description.filter(|s| !s.is_empty()) {
+fn github_note(description: Option<&str>, homepage: Option<&str>, html_url: &str) -> String {
+    let mut note = match description.filter(|s| !s.is_empty()) {
         Some(desc) => blockquote(desc),
         None => html_url.to_string(),
     };
     if let Some(home) = homepage.filter(|s| !s.is_empty()) {
-        extended = format!("{extended}\n\nProject homepage: {home}");
+        note = format!("{note}\n\nProject homepage: {home}");
     }
-    extended
+    note
 }
 
 impl GitHubRepo {
@@ -121,7 +120,7 @@ impl GitHubRepo {
             .ok()?;
         let dedup_key = url_key(&url).unwrap_or_else(|| url.to_string());
 
-        let note = github_extended(
+        let note = github_note(
             self.description.as_deref(),
             self.homepage.as_deref(),
             &self.html_url,
@@ -244,7 +243,7 @@ impl GitHubClient {
         );
 
         let http = client_builder()
-            .user_agent(UA)
+            .user_agent(USER_AGENT)
             .default_headers(headers)
             .build()
             .context("building HTTP client")?;
@@ -476,11 +475,12 @@ impl GitHubClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::url;
     use serde_json::json;
 
     /// Header-level cases for [`rate_limit_message`], kept off the network: a 429 through
-    /// `send_retrying` would spend the full retry budget (~12s) before the body is ever
-    /// read, which is too slow to pay on every `cargo test`.
+    /// `RetryingClient::send` would spend the full retry budget (~12s) before the body is
+    /// ever read, which is too slow to pay on every `cargo test`.
     fn headers(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
         let mut map = reqwest::header::HeaderMap::new();
         for (name, value) in pairs {
@@ -546,10 +546,6 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
-    }
-
     #[test]
     fn draft_maps_fields_and_language_tag() {
         let d = repo(json!({
@@ -581,18 +577,18 @@ mod tests {
     }
 
     #[test]
-    fn github_extended_wraps_description_and_keeps_homepage_outside() {
+    fn github_note_wraps_description_and_keeps_homepage_outside() {
         assert_eq!(
-            github_extended(Some("A thing"), Some("https://h"), "https://github.com/o/r"),
+            github_note(Some("A thing"), Some("https://h"), "https://github.com/o/r"),
             "<blockquote>A thing</blockquote>\n\nProject homepage: https://h"
         );
         // No description: fall back to the URL, no blockquote.
         assert_eq!(
-            github_extended(None, None, "https://github.com/o/r"),
+            github_note(None, None, "https://github.com/o/r"),
             "https://github.com/o/r"
         );
         assert_eq!(
-            github_extended(Some(""), None, "https://github.com/o/r"),
+            github_note(Some(""), None, "https://github.com/o/r"),
             "https://github.com/o/r"
         );
     }

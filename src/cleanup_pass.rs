@@ -27,6 +27,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
 use time::OffsetDateTime;
+use url::Url;
 
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::source::SourceError;
@@ -63,7 +64,6 @@ impl Plan {
 }
 
 /// How a source re-shapes one bookmark during `cleanup`.
-#[allow(async_fn_in_trait)]
 pub trait CleanupPass {
     /// The end-state for `bookmark` as a [`Plan`] — distinguishing an answer from the
     /// source ([`Plan::Bookmark`], [`Plan::Unchanged`]) from a bookmark this pass does
@@ -319,7 +319,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     // clobber it. Settled *after* the visibility partition: a group every member was held
     // back from owns nothing, and leaving its key here would strand a bookmark moving away
     // from that URL at both its old and new URL, silently and for good.
-    let targets: HashSet<&url::Url> = group_order
+    let targets: HashSet<&Url> = group_order
         .iter()
         .filter(|key| !groups[*key].is_empty())
         .copied()
@@ -375,7 +375,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // one of their URLs would overwrite it. Protect them and re-close the refusal set —
         // over the groups after this one only, which is why a failed write stays a failure
         // rather than becoming a refusal.
-        if let Some(stranded) = stranded {
+        if !stranded.is_empty() {
             for url in stranded {
                 untouchable.entry(url).or_insert(Refusal::WriteFailed);
             }
@@ -408,7 +408,7 @@ struct Planned<'b> {
     /// A lookup failed there, or a halt stopped the pass short of it. Nothing may be
     /// written there at all. Owned rather than borrowed because the fixpoint grows it from
     /// the group keys.
-    untouchable: HashMap<url::Url, Refusal>,
+    untouchable: HashMap<Url, Refusal>,
 }
 
 /// Plan every bookmark, tallying `reached`, `plan_failed` and `halted` into `outcome`, and
@@ -421,7 +421,7 @@ async fn plan_all<'b, C: CleanupPass>(
 ) -> Planned<'b> {
     let now = OffsetDateTime::now_utc();
     let mut pairs: Vec<(&Bookmark, Bookmark)> = Vec::new();
-    let mut untouchable: HashMap<url::Url, Refusal> = HashMap::new();
+    let mut untouchable: HashMap<Url, Refusal> = HashMap::new();
     for (index, bookmark) in bookmarks.iter().enumerate() {
         let mut planned = match pass.plan(bookmark).await {
             Ok(Plan::Bookmark(p)) => {
@@ -478,9 +478,9 @@ async fn plan_all<'b, C: CleanupPass>(
 /// order within each group).
 fn group_by_target<'p>(
     pairs: &'p [(&'p Bookmark, Bookmark)],
-) -> (Vec<&'p url::Url>, HashMap<&'p url::Url, Vec<Member<'p>>>) {
-    let mut group_order: Vec<&url::Url> = Vec::new();
-    let mut groups: HashMap<&url::Url, Vec<Member<'_>>> = HashMap::new();
+) -> (Vec<&'p Url>, HashMap<&'p Url, Vec<Member<'p>>>) {
+    let mut group_order: Vec<&Url> = Vec::new();
+    let mut groups: HashMap<&Url, Vec<Member<'_>>> = HashMap::new();
     for pair in pairs {
         let (original, planned) = (pair.0, &pair.1);
         let key = &planned.url;
@@ -504,20 +504,31 @@ fn group_by_target<'p>(
 fn residents_of<'p, S: AccountState>(
     store: &S,
     pairs: &[(&Bookmark, Bookmark)],
-    group_order: &[&'p url::Url],
-    untouchable: &HashMap<url::Url, Refusal>,
-) -> HashMap<&'p url::Url, Bookmark> {
+    group_order: &[&'p Url],
+    untouchable: &HashMap<Url, Refusal>,
+) -> HashMap<&'p Url, Bookmark> {
     // The stored URLs of the bookmarks this pass actually planned. They are excluded from
     // residency: a bookmark that plans to stay at (or move within) its own URL would
     // otherwise find itself sitting there and merge its stored record back into its own
     // plan, undoing the very changes the plan computed.
-    let planned_originals: HashSet<&url::Url> =
+    let planned_originals: HashSet<&Url> =
         pairs.iter().map(|(original, _)| &original.url).collect();
     group_order
         .iter()
         .filter(|key| !untouchable.contains_key(**key) && !planned_originals.contains(*key))
         .filter_map(|key| store.resident(key).map(|resident| (*key, resident)))
         .collect()
+}
+
+/// A plan [`hold_back_visibility_mismatches`] drops from its group.
+struct HeldBack<'p> {
+    /// The held-back bookmark's stored URL, which it keeps.
+    mover: Url,
+    target: &'p Url,
+    mover_public: bool,
+    /// Whether the record staying at `target` is public, or `None` when nothing stays
+    /// there and the plans heading for it disagreed with each other.
+    staying: Option<bool>,
 }
 
 /// Drop from each group the plans that disagree about visibility with what stays at its
@@ -535,14 +546,14 @@ fn residents_of<'p, S: AccountState>(
 /// Settled ahead of the fixpoint, because a refused mover keeps its own URL occupied
 /// exactly like a group refused for an unreadable target.
 fn hold_back_visibility_mismatches<'p>(
-    group_order: &[&'p url::Url],
-    groups: &mut HashMap<&'p url::Url, Vec<Member<'p>>>,
-    residents: &HashMap<&'p url::Url, Bookmark>,
-    untouchable: &mut HashMap<url::Url, Refusal>,
+    group_order: &[&'p Url],
+    groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
+    residents: &HashMap<&'p Url, Bookmark>,
+    untouchable: &mut HashMap<Url, Refusal>,
     dry_run: bool,
     outcome: &mut PassOutcome,
 ) {
-    let mut refused_movers: Vec<(url::Url, &url::Url, bool, Option<bool>)> = Vec::new();
+    let mut held_back: Vec<HeldBack> = Vec::new();
     for key in group_order {
         if untouchable.contains_key(*key) {
             continue;
@@ -575,14 +586,21 @@ fn hold_back_visibility_mismatches<'p>(
         if refused.is_empty() {
             continue;
         }
-        refused_movers.extend(
-            refused
-                .iter()
-                .map(|(original, planned)| (original.url.clone(), *key, planned.public, staying)),
-        );
+        held_back.extend(refused.iter().map(|(original, planned)| HeldBack {
+            mover: original.url.clone(),
+            target: key,
+            mover_public: planned.public,
+            staying,
+        }));
         *members = kept;
     }
-    for (mover, target, mover_public, staying) in refused_movers {
+    for HeldBack {
+        mover,
+        target,
+        mover_public,
+        staying,
+    } in held_back
+    {
         outcome.refused += 1;
         let describe = |public| if public { "public" } else { "private" };
         match staying {
@@ -621,7 +639,7 @@ fn hold_back_visibility_mismatches<'p>(
 }
 
 /// Count, log and preview a group whose target must not be written at all.
-fn refuse_group(key: &url::Url, reason: Refusal, dry_run: bool, outcome: &mut PassOutcome) {
+fn refuse_group(key: &Url, reason: Refusal, dry_run: bool, outcome: &mut PassOutcome) {
     outcome.refused += 1;
     warn!("skipping cleanup write to {key}: {reason}");
     // Also on stdout: a dry run is a preview, and work the real run would refuse is part
@@ -637,25 +655,24 @@ fn refuse_group(key: &url::Url, reason: Refusal, dry_run: bool, outcome: &mut Pa
 
 /// Write a lone plan with nothing stored at its target: skip it when nothing a write would
 /// change differs, else rewrite it (deleting the old URL when it moved and no other plan
-/// targets it) and tally the result. Returns the URLs a failed write left occupied, for the
-/// caller to protect.
+/// targets it) and tally the result. Returns the stored URLs a failed write left occupied,
+/// for the caller to protect: empty unless the write failed.
 async fn write_single<S: BookmarkStore>(
     store: &S,
     original: &Bookmark,
     planned: &Bookmark,
-    targets: &HashSet<&url::Url>,
+    targets: &HashSet<&Url>,
     dry_run: bool,
     outcome: &mut PassOutcome,
-) -> Option<Vec<url::Url>> {
+) -> Vec<Url> {
     // The written fields that differ; empty means nothing a write would change.
     let changes = original.diff(planned);
     if changes.is_empty() {
-        return None;
+        return Vec::new();
     }
     // Delete the old URL only when it changed and no other planned write targets it;
     // otherwise that write's record lives there and must not be removed.
-    let url_changed = planned.url != original.url;
-    let delete_old = url_changed && !targets.contains(&original.url);
+    let delete_old = planned.url != original.url && !targets.contains(&original.url);
 
     if dry_run {
         emit_preview(&mut outcome.preview, &original.url, &changes);
@@ -678,7 +695,7 @@ async fn write_single<S: BookmarkStore>(
                 planned.url,
                 planned.tags.join(" ")
             );
-            None
+            Vec::new()
         }
         // The rewrite can half-apply just as a merge can: the record landed at the new URL
         // and only the old-URL delete failed. Count the change that really happened, and
@@ -687,13 +704,13 @@ async fn write_single<S: BookmarkStore>(
             outcome.changed += 1;
             outcome.write_failed += 1;
             error!("rewrote {} to {} but: {e:#}", original.url, planned.url);
-            None
+            Vec::new()
         }
         // The move didn't happen, so the record is still at its old URL.
         Some(e) => {
             outcome.write_failed += 1;
             error!("rewriting bookmark {}: {e:#}", original.url);
-            url_changed.then(|| vec![original.url.clone()])
+            vec![original.url.clone()]
         }
     }
 }
@@ -701,17 +718,17 @@ async fn write_single<S: BookmarkStore>(
 /// Field-merge a group — with the record staying at its target, if any — into one record,
 /// write it, and delete the absorbed URLs, so a later run sees a single bookmark at the
 /// target and converges. Skipped when the merge reproduces what is stored there and there
-/// is nothing to absorb. Returns the URLs a failed write left occupied, for the caller to
-/// protect.
+/// is nothing to absorb. Returns the stored URLs a failed write left occupied, for the
+/// caller to protect: empty unless the write failed.
 async fn write_merge<S: BookmarkStore>(
     store: &S,
-    key: &url::Url,
+    key: &Url,
     group: &[Member<'_>],
     resident: Option<&Bookmark>,
-    targets: &HashSet<&url::Url>,
+    targets: &HashSet<&Url>,
     dry_run: bool,
     outcome: &mut PassOutcome,
-) -> Option<Vec<url::Url>> {
+) -> Vec<Url> {
     // The record that stays at this URL: an unplanned resident, else the member already
     // stored here. Whichever it is leads the merge, so its title and note are the base the
     // others extend. For an incumbent that is its *plan*, not its stored record — the plan
@@ -758,7 +775,7 @@ async fn write_merge<S: BookmarkStore>(
 
     // Absorbed URLs to delete: an original that is neither the target nor another planned
     // write's target (deleting the latter would clobber that write's record).
-    let mut old_urls: Vec<&url::Url> = Vec::new();
+    let mut old_urls: Vec<&Url> = Vec::new();
     for (original, _) in group {
         if original.url != *target
             && !targets.contains(&original.url)
@@ -775,7 +792,7 @@ async fn write_merge<S: BookmarkStore>(
     let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].0));
     if stored_at_target.is_some_and(|stored| stored.diff(&merged).is_empty()) && old_urls.is_empty()
     {
-        return None;
+        return Vec::new();
     }
 
     if dry_run {
@@ -804,7 +821,7 @@ async fn write_merge<S: BookmarkStore>(
             outcome.changed += 1;
             let absorbed: Vec<String> = write.deleted.iter().map(|u| u.to_string()).collect();
             debug!("merged {target} <- [{}]", absorbed.join(" "));
-            None
+            Vec::new()
         }
         // Half-applied: the merged record landed and an absorbed URL survived. Count the
         // change, exactly as the rewrite path does — the account did change — and name what
@@ -815,7 +832,7 @@ async fn write_merge<S: BookmarkStore>(
             outcome.write_failed += 1;
             let stranded = old_urls.len() - write.deleted.len();
             error!("merged {target} but {stranded} absorbed URL(s) remain: {e:#}");
-            None
+            Vec::new()
         }
         // Nothing was written and nothing absorbed, so every member is still at its own
         // URL. Every member, not `old_urls`: that list deliberately excludes URLs another
@@ -823,13 +840,10 @@ async fn write_merge<S: BookmarkStore>(
         Some(e) => {
             outcome.write_failed += 1;
             error!("merging into {target}: {e:#}");
-            Some(
-                group
-                    .iter()
-                    .filter(|(original, _)| original.url != *target)
-                    .map(|(original, _)| original.url.clone())
-                    .collect(),
-            )
+            group
+                .iter()
+                .map(|(original, _)| original.url.clone())
+                .collect()
         }
     }
 }
@@ -837,7 +851,7 @@ async fn write_merge<S: BookmarkStore>(
 /// Print one bookmark's dry-run preview and keep it in `preview`. A `(label, value)` pair
 /// renders as an aligned `label -> value`; an empty label renders the value alone, for the
 /// lines that are not field changes (`absorb <url>`, `(refused: ...)`).
-fn emit_preview(preview: &mut Vec<String>, url: &url::Url, detail: &[(&str, String)]) {
+fn emit_preview(preview: &mut Vec<String>, url: &Url, detail: &[(&str, String)]) {
     let mut push = |line: String| {
         println!("{line}");
         preview.push(line);
@@ -861,12 +875,12 @@ fn emit_preview(preview: &mut Vec<String>, url: &url::Url, detail: &[(&str, Stri
 /// protecting the stranded record at all: it refuses a group whose own members are then
 /// left unprotected in turn, trading one lost record for several.
 fn propagate_refusals(
-    group_order: &[&url::Url],
-    groups: &HashMap<&url::Url, Vec<Member<'_>>>,
-    untouchable: &mut HashMap<url::Url, Refusal>,
+    group_order: &[&Url],
+    groups: &HashMap<&Url, Vec<Member<'_>>>,
+    untouchable: &mut HashMap<Url, Refusal>,
 ) {
     loop {
-        let newly_occupied: Vec<url::Url> = group_order
+        let newly_occupied: Vec<Url> = group_order
             .iter()
             .filter(|key| untouchable.contains_key(**key))
             .filter_map(|key| groups.get(*key))

@@ -19,14 +19,10 @@ use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::Bookmark;
-use crate::http::{client_builder, RetryingClient};
+use crate::http::{client_builder, RetryingClient, USER_AGENT};
 use crate::reddit::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
 use crate::secrets::{reddit_cookie_settings, ConfiguredSecret};
 use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey};
-
-/// Descriptive User-Agent built from the crate name + version. Reddit rejects
-/// generic or missing User-Agents.
-const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
 /// Host serving both the saved listing and `/api/info.json`; old.reddit.com
 /// matches the bookmark URLs.
@@ -45,7 +41,6 @@ const MAX_SAVED_PAGES: u32 = 100;
 const REQUEST_PAUSE: Duration = Duration::from_millis(1000);
 
 /// Reddit `/api/info` lookups by fullname (used by `cleanup` for over_18/title).
-#[allow(async_fn_in_trait)]
 pub trait PostInfo {
     async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError>;
 }
@@ -222,9 +217,8 @@ impl RedditClient {
                 .await?;
             let body = reddit_body(resp, "saved listing", self.cookie.as_ref()).await?;
             sink.push("", RawKind::Json, &body);
-            let listing: RedditListing = serde_json::from_str(&body)
-                .context("parsing saved listing response")
-                .map_err(SourceError::Other)?;
+            let listing: RedditListing =
+                serde_json::from_str(&body).context("parsing saved listing response")?;
             let got = listing.data.children.len();
             if on_page(listing.data.children) {
                 debug!("reddit saved for '{username}': page {page} has nothing new; stopping");
@@ -255,9 +249,11 @@ impl PostInfo for RedditClient {
     /// Returns the entries that exist.
     async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError> {
         let mut out: Vec<RedditListingEntry> = Vec::new();
-        let chunks: Vec<&[String]> = fullnames.chunks(100).collect();
         let endpoint = format!("{}/api/info.json", self.base);
-        for (i, chunk) in chunks.iter().enumerate() {
+        for (i, chunk) in fullnames.chunks(100).enumerate() {
+            if i > 0 {
+                crate::http::sleep(REQUEST_PAUSE).await;
+            }
             let ids = chunk.join(",");
             let resp = self
                 .http
@@ -272,9 +268,6 @@ impl PostInfo for RedditClient {
             let listing: RedditListing =
                 decode_reddit_json(resp, "api/info", self.cookie.as_ref()).await?;
             out.extend(listing.data.children);
-            if i + 1 < chunks.len() {
-                crate::http::sleep(REQUEST_PAUSE).await;
-            }
         }
         Ok(out)
     }
@@ -674,9 +667,7 @@ async fn decode_reddit_json<T: DeserializeOwned>(
     cookie: Option<&SessionCookie>,
 ) -> Result<T, SourceError> {
     let body = reddit_body(resp, what, cookie).await?;
-    serde_json::from_str(&body)
-        .with_context(|| format!("parsing {what} response"))
-        .map_err(Into::into)
+    Ok(serde_json::from_str(&body).with_context(|| format!("parsing {what} response"))?)
 }
 
 #[cfg(test)]

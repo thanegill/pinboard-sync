@@ -44,10 +44,7 @@ fn youtube_video_id(url: &Url) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
-    }
+    use crate::test_support::url;
 
     fn suffix(s: &str) -> Option<String> {
         let u = url(s);

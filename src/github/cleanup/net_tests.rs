@@ -1,5 +1,5 @@
 use super::*;
-use crate::bookmark::{AccountView, CleanupStore};
+use crate::test_support::{stored_at, FakePinboard, NO_DATING};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -9,9 +9,6 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// never fires for `cleanup`.
 #[tokio::test]
 async fn cleanup_surfaces_an_expired_token_as_reauth() {
-    use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
-
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/o/r"))
@@ -20,34 +17,20 @@ async fn cleanup_surfaces_an_expired_token_as_reauth() {
         .await;
 
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://github.com/o/r".into(),
-            description: "o/r".into(),
-            extended: "notes".into(),
-            tags: "github-star".into(),
-            time: "2020-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "o/r".into(),
+            note: "notes".into(),
+            tags: vec!["github-star".into()],
+            timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
+            ..stored_at("https://github.com/o/r")
+        }],
         ..Default::default()
     };
-    let bookmarks = pinboard.all.clone();
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
 
-    let err = run(
-        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-        &client,
-        &GitHubConfig::default(),
-        DateOpts {
-            use_post_date: false,
-            max_age_days: 30,
-            stale_to_now: false,
-        },
-    )
-    .await
-    .unwrap_err();
+    let err = run(&pinboard.cleanup_store(false), &client, NO_DATING)
+        .await
+        .unwrap_err();
 
     assert!(
         matches!(err, SourceError::ReauthRequired(_)),
@@ -59,9 +42,6 @@ async fn cleanup_surfaces_an_expired_token_as_reauth() {
 /// doomed request on every remaining bookmark, while keeping the work already done.
 #[tokio::test]
 async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
-    use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
-
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/old/name"))
@@ -94,18 +74,12 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
         .mount(&server)
         .await;
 
-    let stored = |url: &str, title: &str| {
-        PinboardBookmark {
-            url: url.into(),
-            description: title.into(),
-            extended: "notes".into(),
-            tags: "github-star".into(),
-            time: "2020-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()
+    let stored = |url: &str, title: &str| Bookmark {
+        title: title.into(),
+        note: "notes".into(),
+        tags: vec!["github-star".into()],
+        timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
+        ..stored_at(url)
     };
     let pinboard = FakePinboard {
         all: vec![
@@ -115,21 +89,11 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
         ],
         ..Default::default()
     };
-    let bookmarks = pinboard.all.clone();
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
 
-    let err = run(
-        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-        &client,
-        &GitHubConfig::default(),
-        DateOpts {
-            use_post_date: false,
-            max_age_days: 30,
-            stale_to_now: false,
-        },
-    )
-    .await
-    .unwrap_err();
+    let err = run(&pinboard.cleanup_store(false), &client, NO_DATING)
+        .await
+        .unwrap_err();
 
     assert!(err.to_string().contains("rate limit"), "{err}");
     // The repo read before the limit is still rewritten — the work isn't thrown away.
@@ -140,9 +104,6 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
 
 #[tokio::test]
 async fn cleanup_survives_a_permanently_blocked_repo() {
-    use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
-
     // A DMCA-blocked repo answers 451 forever, so the run must still succeed on the
     // strength of the repos it *could* read.
     let server = MockServer::start().await;
@@ -164,18 +125,12 @@ async fn cleanup_survives_a_permanently_blocked_repo() {
         .mount(&server)
         .await;
 
-    let stored = |url: &str, title: &str| {
-        PinboardBookmark {
-            url: url.into(),
-            description: title.into(),
-            extended: "notes".into(),
-            tags: "github-star".into(),
-            time: "2020-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()
+    let stored = |url: &str, title: &str| Bookmark {
+        title: title.into(),
+        note: "notes".into(),
+        tags: vec!["github-star".into()],
+        timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
+        ..stored_at(url)
     };
     let pinboard = FakePinboard {
         all: vec![
@@ -184,21 +139,11 @@ async fn cleanup_survives_a_permanently_blocked_repo() {
         ],
         ..Default::default()
     };
-    let bookmarks = pinboard.all.clone();
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
 
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-        &client,
-        &GitHubConfig::default(),
-        DateOpts {
-            use_post_date: false,
-            max_age_days: 30,
-            stale_to_now: false,
-        },
-    )
-    .await
-    .expect("one dead repo must not fail the whole run");
+    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+        .await
+        .expect("one dead repo must not fail the whole run");
 
     // The readable repo was still cleaned up.
     let updated = pinboard.updated.borrow();
@@ -208,9 +153,6 @@ async fn cleanup_survives_a_permanently_blocked_repo() {
 
 #[tokio::test]
 async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
-    use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
-
     // The repo was renamed old/name -> new/name, and its language changed.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -225,33 +167,19 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
         .await;
 
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://github.com/old/name".into(),
-            description: "old/name".into(),
-            extended: "notes".into(),
-            tags: "github-star lang:python mine".into(),
-            time: "2020-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "old/name".into(),
+            note: "notes".into(),
+            tags: vec!["github-star".into(), "lang:python".into(), "mine".into()],
+            timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
+            ..stored_at("https://github.com/old/name")
+        }],
         ..Default::default()
     };
-    let bookmarks = pinboard.all.clone();
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-        &client,
-        &GitHubConfig::default(),
-        DateOpts {
-            use_post_date: false,
-            max_age_days: 30,
-            stale_to_now: false,
-        },
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+        .await
+        .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -276,21 +204,14 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
 
 #[tokio::test]
 async fn cleanup_leaves_deep_links_and_gists_untouched() {
-    use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
-
     fn stored(url: &str) -> Bookmark {
-        PinboardBookmark {
-            url: url.into(),
-            description: "title".into(),
-            extended: "notes".into(),
-            tags: "github-star".into(),
-            time: "2020-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
+        Bookmark {
+            title: "title".into(),
+            note: "notes".into(),
+            tags: vec!["github-star".into()],
+            timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
+            ..stored_at(url)
         }
-        .try_into()
-        .unwrap()
     }
 
     // No mocks: a lookup of any of these would 404 (and any rewrite would show up
@@ -304,20 +225,10 @@ async fn cleanup_leaves_deep_links_and_gists_untouched() {
         ],
         ..Default::default()
     };
-    let bookmarks = pinboard.all.clone();
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-        &client,
-        &GitHubConfig::default(),
-        DateOpts {
-            use_post_date: false,
-            max_age_days: 30,
-            stale_to_now: false,
-        },
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+        .await
+        .unwrap();
 
     assert!(pinboard.updated.borrow().is_empty());
     assert!(pinboard.deleted.borrow().is_empty());
@@ -325,9 +236,6 @@ async fn cleanup_leaves_deep_links_and_gists_untouched() {
 
 #[tokio::test]
 async fn cleanup_canonicalizes_non_canonical_repo_root() {
-    use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
-
     // A repo-root URL with a .git suffix and trailing slash canonicalizes to the
     // bare owner/repo root.
     let server = MockServer::start().await;
@@ -341,33 +249,19 @@ async fn cleanup_canonicalizes_non_canonical_repo_root() {
         .await;
 
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://github.com/Owner/Repo.git/".into(),
-            description: "Owner/Repo".into(),
-            extended: "https://github.com/Owner/Repo".into(),
-            tags: "github-star".into(),
-            time: "2020-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "Owner/Repo".into(),
+            note: "https://github.com/Owner/Repo".into(),
+            tags: vec!["github-star".into()],
+            timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
+            ..stored_at("https://github.com/Owner/Repo.git/")
+        }],
         ..Default::default()
     };
-    let bookmarks = pinboard.all.clone();
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-        &client,
-        &GitHubConfig::default(),
-        DateOpts {
-            use_post_date: false,
-            max_age_days: 30,
-            stale_to_now: false,
-        },
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+        .await
+        .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -381,9 +275,6 @@ async fn cleanup_canonicalizes_non_canonical_repo_root() {
 
 #[tokio::test]
 async fn cleanup_folds_www_host_onto_github_com() {
-    use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
-
     // A www.github.com repo root is the same site as github.com: it is looked up
     // (owner/repo) and rewritten to the bare host, the old www URL deleted.
     let server = MockServer::start().await;
@@ -397,33 +288,19 @@ async fn cleanup_folds_www_host_onto_github_com() {
         .await;
 
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://www.github.com/Owner/Repo".into(),
-            description: "Owner/Repo".into(),
-            extended: "https://github.com/Owner/Repo".into(),
-            tags: "github-star".into(),
-            time: "2020-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "Owner/Repo".into(),
+            note: "https://github.com/Owner/Repo".into(),
+            tags: vec!["github-star".into()],
+            timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
+            ..stored_at("https://www.github.com/Owner/Repo")
+        }],
         ..Default::default()
     };
-    let bookmarks = pinboard.all.clone();
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-        &client,
-        &GitHubConfig::default(),
-        DateOpts {
-            use_post_date: false,
-            max_age_days: 30,
-            stale_to_now: false,
-        },
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+        .await
+        .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -436,9 +313,6 @@ async fn cleanup_folds_www_host_onto_github_com() {
 
 #[tokio::test]
 async fn cleanup_rewrites_notes_only_to_retrofit_the_blockquote() {
-    use crate::pinboard::PinboardBookmark;
-    use crate::test_support::FakePinboard;
-
     // URL, title, and tags are already current; only the notes are stale (an old
     // unwrapped description). The extended_changed guard must still trigger a write.
     let server = MockServer::start().await;
@@ -453,33 +327,19 @@ async fn cleanup_rewrites_notes_only_to_retrofit_the_blockquote() {
         .await;
 
     let pinboard = FakePinboard {
-        all: vec![PinboardBookmark {
-            url: "https://github.com/o/r".into(),
-            description: "o/r".into(),
-            extended: "A thing".into(), // pre-blockquote notes
-            tags: "github-star".into(),
-            time: "2020-01-01T00:00:00Z".into(),
-            shared: "no".into(),
-            toread: "no".into(),
-        }
-        .try_into()
-        .unwrap()],
+        all: vec![Bookmark {
+            title: "o/r".into(),
+            note: "A thing".into(), // pre-blockquote notes
+            tags: vec!["github-star".into()],
+            timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
+            ..stored_at("https://github.com/o/r")
+        }],
         ..Default::default()
     };
-    let bookmarks = pinboard.all.clone();
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
-    run(
-        &CleanupStore::new(&pinboard, AccountView::new(bookmarks.clone()), false),
-        &client,
-        &GitHubConfig::default(),
-        DateOpts {
-            use_post_date: false,
-            max_age_days: 30,
-            stale_to_now: false,
-        },
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+        .await
+        .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);

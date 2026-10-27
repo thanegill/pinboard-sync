@@ -58,6 +58,9 @@ All notable changes to this project are documented here. The format is based on
 - The NixOS module passes a `%` in `onAuthFailure`, `backup.directory` or a secret path
   through to the service as written.
 - A `reddit_domain` outside reddit.com no longer makes every `sync` re-add every save.
+- `sync reddit` no longer re-adds a save after `cleanup reddit`, run as another account,
+  moved it onto that account's `reddit_domain`, nor writes a post twice when accounts on
+  different `reddit_domain`s both saved it.
 - A HackerNews favorite linking a Reddit or GitHub page is no longer re-added after
   `cleanup` moves it to its canonical URL, even on a `reddit_domain` outside reddit.com.
 - Commas, which Pinboard forbids in tags, are slugged like spaces in derived tags

@@ -58,6 +58,9 @@ pub struct RedditClient {
     base: String,
     /// Per-account config: bookmark domain + tag vocabulary for shaping drafts.
     config: RedditConfig,
+    /// Every configured account's `reddit_domain`, so a bookmark another account's
+    /// `cleanup reddit` moved onto its mirror still keys as this save.
+    reddit_domains: Vec<String>,
 }
 
 impl RedditClient {
@@ -102,7 +105,16 @@ impl RedditClient {
             username,
             base,
             config,
+            reddit_domains: Vec::new(),
         })
+    }
+
+    /// Key bookmarks on any of `domains` as Reddit too, besides this account's own.
+    pub fn with_reddit_domains(self, domains: Vec<String>) -> Self {
+        Self {
+            reddit_domains: domains,
+            ..self
+        }
     }
 
     /// Attach the session cookie to a request, if one is configured.
@@ -335,9 +347,11 @@ impl BackupSource for RedditClient {
 
 impl UrlKey for RedditClient {
     /// Reddit's dedup key is the host-agnostic permalink path, so the same post matches
-    /// across `old.`/`www.`/`m.` subdomains and the configured `reddit_domain`.
+    /// across `old.`/`www.`/`m.` subdomains and every configured `reddit_domain`.
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        reddit_key(url, &self.config.domain)
+        std::iter::once(&self.config.domain)
+            .chain(&self.reddit_domains)
+            .find_map(|domain| reddit_key(url, domain))
     }
 }
 

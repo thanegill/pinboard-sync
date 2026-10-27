@@ -302,7 +302,11 @@ impl SourceAccount for RedditAccount {
         ])
     }
 
-    fn client(account: Option<&Self>, ovr: &SyncOverrides, _: &Config) -> Result<SourceClient> {
+    fn client(
+        account: Option<&Self>,
+        ovr: &SyncOverrides,
+        config: &Config,
+    ) -> Result<SourceClient> {
         let username = resolve_secret(
             ovr.reddit_username.clone(),
             "REDDIT_USERNAME",
@@ -312,11 +316,10 @@ impl SourceAccount for RedditAccount {
         .context("missing Reddit username (set --reddit-username, REDDIT_USERNAME, or `username` in the config)")?;
         let cookie = resolve_reddit_cookie(ovr.reddit_cookie.clone(), account);
         let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
-        Ok(SourceClient::Reddit(RedditClient::for_user(
-            username,
-            cookie,
-            reddit_config,
-        )?))
+        Ok(SourceClient::Reddit(
+            RedditClient::for_user(username, cookie, reddit_config)?
+                .with_reddit_domains(config.reddit_domains()),
+        ))
     }
 }
 
@@ -560,6 +563,45 @@ mod tests {
                 .as_deref(),
             Some("/r/rust/comments/abc/title")
         );
+    }
+
+    /// Another account's sync, or a `cleanup reddit` run as it, leaves a save on that
+    /// account's mirror; this account's sync must still see it as the same save.
+    #[test]
+    fn a_save_on_another_reddit_accounts_mirror_is_not_re_added() {
+        use crate::test_support::stored_at;
+
+        let account = |name: &str, domain: &str| RedditAccount {
+            username: Some(name.into()),
+            cookie: Some("reddit_session=x".into()),
+            reddit_domain: Some(domain.into()),
+            ..Default::default()
+        };
+        let config = Config {
+            reddit: vec![
+                account("alice", "www.reddit.com"),
+                account("bob", "reddit.mirror.example"),
+            ],
+            ..Default::default()
+        };
+        let alices_save = BookmarkDraft {
+            bookmark: stored_at("https://www.reddit.com/r/rust/comments/abc/title/"),
+            dedup_key: "/r/rust/comments/abc/title".into(),
+        };
+        let stored = [stored_at(
+            "https://reddit.mirror.example/r/rust/comments/abc/title/",
+        )];
+
+        let alices =
+            build_job(Some(&config.reddit[0]), &SyncOverrides::default(), &config).expect("builds");
+        let new = crate::sync::prepare_new_drafts(
+            &alices.client,
+            vec![alices_save],
+            &stored,
+            &fetch_only(SyncLimit::All),
+            0,
+        );
+        assert!(new.is_empty(), "re-added: {:?}", new[0].bookmark.url);
     }
 
     /// `sync --all`'s build phase must isolate a per-account build failure so the

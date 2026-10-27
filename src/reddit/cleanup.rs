@@ -49,14 +49,41 @@ impl RedditCleanupOpts {
     /// domain, else that of the first configured account whose domain it is on, else the
     /// account's own. A bookmark stays on its owner's domain, so the host names its owner.
     fn config_for(&self, url: &Url) -> &RedditConfig {
-        let on_domain = |account: &&RedditConfig| {
-            url.host_str()
-                .is_some_and(|host| host.eq_ignore_ascii_case(&account.domain))
-        };
+        self.configs_on(url).next().unwrap_or(&self.config)
+    }
+
+    /// The account's own config, then every configured one, whose domain is `url`'s host:
+    /// the accounts that can shape a bookmark at `url`, depending on which one runs.
+    fn configs_on<'s: 'u, 'u>(
+        &'s self,
+        url: &'u Url,
+    ) -> impl Iterator<Item = &'s RedditConfig> + 'u {
         std::iter::once(&self.config)
             .chain(&self.accounts)
-            .find(on_domain)
-            .unwrap_or(&self.config)
+            .filter(move |account| {
+                url.host_str()
+                    .is_some_and(|host| host.eq_ignore_ascii_case(&account.domain))
+            })
+    }
+
+    /// The bare tags [`normalize_tags`] keeps at `url` even when named like the subreddit
+    /// or the subreddit prefix: `owner`'s NSFW marker, which nothing re-adds without an
+    /// `/api/info` answer, and every tag an account that can shape the bookmark adds to it
+    /// bare (its base tags, NSFW marker and, on a comment, comment tag), which cleanup run
+    /// as that account adds back (the NSFW marker only with an `/api/info` answer).
+    fn kept_tags<'s>(&'s self, url: &Url, owner: &'s RedditConfig) -> Vec<&'s str> {
+        let is_comment = is_comment_url(url);
+        let sharing = self.configs_on(url).flat_map(move |account| {
+            account
+                .tags
+                .iter()
+                .chain(std::iter::once(&account.nsfw))
+                .chain(is_comment.then_some(&account.comment))
+                .map(String::as_str)
+        });
+        std::iter::once(owner.nsfw.as_str())
+            .chain(sharing)
+            .collect()
     }
 
     /// Whether `url` is on the account's own or another configured `reddit_domain`.
@@ -171,7 +198,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
             &bookmark.tags,
             &owner.tags,
             &owner.subreddit_prefix,
-            &owner.nsfw,
+            &opts.kept_tags(&new_url, owner),
         );
         let post = post_fullname(&new_url).and_then(|f| self.info.posts.get(&f));
 
@@ -431,20 +458,24 @@ fn comment_fullname(url: &Url) -> Option<String> {
 
 /// Normalize a bookmark's tags: ensure the base tags, derive `subreddit:<sub>` from
 /// the URL (casing per [`cased_subreddit`]), and strip bare/legacy/duplicate
-/// subreddit forms. An empty base tag or prefix adds no tag, as in sync. Returns a
-/// sorted, de-duplicated list.
+/// subreddit forms, except a bare one in `kept`. An empty base tag or prefix adds no
+/// tag, as in sync. Returns a sorted, de-duplicated list.
 pub fn normalize_tags(
     url: &Url,
     existing: &[String],
     base_tags: &[String],
     prefix: &str,
-    nsfw_tag: &str,
+    kept: &[&str],
 ) -> Vec<String> {
     let mut set: BTreeSet<String> = existing.iter().cloned().collect();
     let mut ensured = Vec::new();
     push_tags(&mut ensured, base_tags);
-    set.remove(prefix); // bare "subreddit:"
-    set.remove(prefix.strip_suffix(':').unwrap_or(prefix)); // bare "subreddit"
+    let bare_prefixes = [prefix, prefix.strip_suffix(':').unwrap_or(prefix)];
+    for bare_prefix in bare_prefixes {
+        if !kept.contains(&bare_prefix) {
+            set.remove(bare_prefix);
+        }
+    }
 
     // With the subreddit tag disabled, a bare tag named like the subreddit is the user's.
     if let Some(raw) = extract_subreddit(url).filter(|_| !prefix.is_empty()) {
@@ -456,10 +487,10 @@ pub fn normalize_tags(
             raw.to_uppercase(),
         ];
         for form in &forms {
-            // Drop the bare subreddit tag in any case (but keep the NSFW marker, which
-            // nothing re-adds; a base tag named like the subreddit, e.g. r/reddit, comes
-            // back from `ensured`), and the legacy prefixed forms.
-            if form != nsfw_tag {
+            // Drop the bare subreddit tag in any case (but keep a `kept` one; a base tag
+            // named like the subreddit, e.g. r/reddit, comes back from `ensured`), and the
+            // legacy prefixed forms.
+            if !kept.contains(&form.as_str()) {
                 set.remove(form);
             }
             set.remove(&format!("{prefix}{form}"));
@@ -617,7 +648,7 @@ mod tests {
             &existing,
             &["reddit".to_string()],
             "subreddit:",
-            "nsfw",
+            &["nsfw"],
         );
         assert_eq!(
             tags,
@@ -632,7 +663,7 @@ mod tests {
             &["subreddit:NEWS".to_string(), "NEWS".to_string()],
             &["reddit".to_string()],
             "subreddit:",
-            "nsfw",
+            &["nsfw"],
         );
         assert_eq!(
             tags,
@@ -647,7 +678,7 @@ mod tests {
             &[],
             &["reddit".to_string()],
             "subreddit:",
-            "nsfw",
+            &["nsfw"],
         );
         assert_eq!(
             tags,
@@ -666,7 +697,7 @@ mod tests {
                 "saved".to_string(),
             ],
             "subreddit:",
-            "nsfw",
+            &["nsfw"],
         );
         assert_eq!(tags, vec!["reddit", "rust", "saved", "subreddit:rust"]);
     }
@@ -678,7 +709,7 @@ mod tests {
             &[],
             &[String::new()],
             "subreddit:",
-            "nsfw",
+            &["nsfw"],
         );
         assert_eq!(tags, vec!["subreddit:rust".to_string()]);
     }
@@ -690,7 +721,7 @@ mod tests {
             &[],
             &["reddit".to_string()],
             "",
-            "nsfw",
+            &["nsfw"],
         );
         assert_eq!(tags, vec!["reddit".to_string()]);
 
@@ -699,7 +730,7 @@ mod tests {
             &["rust".to_string()],
             &["reddit".to_string()],
             "",
-            "nsfw",
+            &["nsfw"],
         );
         assert_eq!(tags, vec!["reddit".to_string(), "rust".to_string()]);
 
@@ -708,7 +739,7 @@ mod tests {
             &["nsfw".to_string()],
             &["reddit".to_string()],
             "",
-            "nsfw",
+            &["nsfw"],
         );
         assert_eq!(tags, vec!["nsfw".to_string(), "reddit".to_string()]);
     }

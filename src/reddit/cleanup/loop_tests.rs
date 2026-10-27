@@ -637,26 +637,32 @@ async fn cleanup_as(
     domain: &str,
     seed: &[Bookmark],
 ) -> (Vec<Bookmark>, usize) {
+    let running = accounts
+        .iter()
+        .find(|account| account.domain == domain)
+        .expect("an account on the domain");
+    cleanup_running(accounts, running, &FakeReddit::default(), seed).await
+}
+
+/// [`cleanup_as`] for the `running` account, with `/api/info` answered by `reddit`.
+async fn cleanup_running(
+    accounts: &[RedditConfig],
+    running: &RedditConfig,
+    reddit: &FakeReddit,
+    seed: &[Bookmark],
+) -> (Vec<Bookmark>, usize) {
     let pinboard = FakePinboard {
         all: seed.to_vec(),
         ..Default::default()
     };
     let opts = RedditCleanupOpts {
-        config: accounts
-            .iter()
-            .find(|account| account.domain == domain)
-            .cloned()
-            .expect("an account on the domain"),
+        config: running.clone(),
         accounts: accounts.to_vec(),
         ..opts()
     };
-    run(
-        &pinboard.cleanup_store(false),
-        Some(&FakeReddit::default()),
-        &opts,
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(false), Some(reddit), &opts)
+        .await
+        .unwrap();
     let ops = pinboard.ops.borrow();
     (crate::test_support::replay(seed, &ops), ops.len())
 }
@@ -755,6 +761,155 @@ async fn a_bookmark_on_one_accounts_reddit_host_stays_whichever_account_runs() {
             "as {domain}"
         );
     }
+}
+
+/// Cleanup run as each of `accounts` in turn, for several rounds: the account it leaves
+/// `seed` as after the first round, asserting no later run writes anything.
+async fn settled_by_turns(
+    accounts: &[RedditConfig],
+    reddit: &FakeReddit,
+    seed: &[Bookmark],
+) -> Vec<Bookmark> {
+    let mut account = seed.to_vec();
+    for running in accounts {
+        account = cleanup_running(accounts, running, reddit, &account).await.0;
+    }
+    for round in 1..4 {
+        for (index, running) in accounts.iter().enumerate() {
+            let (after, writes) = cleanup_running(accounts, running, reddit, &account).await;
+            assert_eq!(writes, 0, "round {round}, account {index}: {after:?}");
+            account = after;
+        }
+    }
+    account
+}
+
+#[tokio::test]
+async fn a_base_tag_named_like_the_subreddit_settles_between_accounts_on_one_domain() {
+    let accounts = vec![
+        RedditConfig {
+            tags: vec!["reddit".into(), "rust".into()],
+            ..RedditConfig::default()
+        },
+        RedditConfig::default(),
+    ];
+    let seed = vec![bookmark(
+        "https://old.reddit.com/r/rust/comments/a/x/",
+        "T",
+        "reddit subreddit:rust",
+    )];
+    let account = settled_by_turns(&accounts, &FakeReddit::default(), &seed).await;
+    assert_eq!(account[0].tags, ["reddit", "rust", "subreddit:rust"]);
+}
+
+#[tokio::test]
+async fn a_bare_subreddit_tag_no_account_uses_as_a_base_tag_is_still_stripped() {
+    let accounts = vec![RedditConfig::default()];
+    let seed = vec![bookmark(
+        "https://old.reddit.com/r/rust/comments/a/x/",
+        "T",
+        "reddit rust subreddit:rust",
+    )];
+    let account = settled_by_turns(&accounts, &FakeReddit::default(), &seed).await;
+    assert_eq!(account[0].tags, ["reddit", "subreddit:rust"]);
+}
+
+#[tokio::test]
+async fn an_nsfw_marker_named_like_the_subreddit_settles_between_accounts_on_one_domain() {
+    let accounts = vec![
+        RedditConfig::default(),
+        RedditConfig {
+            nsfw: String::new(),
+            ..RedditConfig::default()
+        },
+    ];
+    let reddit = FakeReddit {
+        info: vec![listing_entry(
+            "t3",
+            json!({ "name": "t3_a", "subreddit": "nsfw",
+                    "permalink": "/r/nsfw/comments/a/x/", "title": "T",
+                    "over_18": true }),
+        )],
+        ..Default::default()
+    };
+    let seed = vec![bookmark(
+        "https://old.reddit.com/r/nsfw/comments/a/x/",
+        "T",
+        "reddit subreddit:nsfw",
+    )];
+    let account = settled_by_turns(&accounts, &reddit, &seed).await;
+    assert_eq!(account[0].tags, ["nsfw", "reddit", "subreddit:nsfw"]);
+}
+
+#[tokio::test]
+async fn a_base_tag_named_like_the_bare_prefix_settles_between_accounts_on_one_domain() {
+    let accounts = vec![
+        RedditConfig {
+            tags: vec!["reddit".into(), "subreddit".into()],
+            ..RedditConfig::default()
+        },
+        RedditConfig::default(),
+    ];
+    let seed = vec![bookmark(
+        "https://old.reddit.com/r/rust/comments/a/x/",
+        "T",
+        "reddit subreddit:rust",
+    )];
+    let account = settled_by_turns(&accounts, &FakeReddit::default(), &seed).await;
+    assert_eq!(account[0].tags, ["reddit", "subreddit", "subreddit:rust"]);
+}
+
+#[tokio::test]
+async fn a_comment_tag_named_like_the_subreddit_settles_between_accounts_on_one_domain() {
+    let accounts = vec![
+        RedditConfig {
+            comment: "rust".into(),
+            ..RedditConfig::default()
+        },
+        RedditConfig::default(),
+    ];
+    let seed = vec![
+        bookmark(
+            "https://old.reddit.com/r/rust/comments/a/x/c/",
+            "T",
+            "reddit reddit-comment subreddit:rust",
+        ),
+        bookmark(
+            "https://old.reddit.com/r/rust/comments/b/y/",
+            "U",
+            "reddit rust subreddit:rust",
+        ),
+    ];
+    let account = settled_by_turns(&accounts, &FakeReddit::default(), &seed).await;
+    let tags: Vec<&[String]> = account
+        .iter()
+        .map(|bookmark| bookmark.tags.as_slice())
+        .collect();
+    assert_eq!(
+        tags,
+        [
+            &["reddit", "reddit-comment", "rust", "subreddit:rust"].map(String::from)[..],
+            &["reddit", "subreddit:rust"].map(String::from)[..],
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_base_tag_of_an_account_on_another_domain_is_still_stripped() {
+    let accounts = vec![
+        account_on("first.example", "rust"),
+        RedditConfig {
+            domain: "second.example".into(),
+            ..RedditConfig::default()
+        },
+    ];
+    let seed = vec![bookmark(
+        "https://second.example/r/rust/comments/a/x/",
+        "T",
+        "reddit rust subreddit:rust",
+    )];
+    let account = settled_by_turns(&accounts, &FakeReddit::default(), &seed).await;
+    assert_eq!(account[0].tags, ["reddit", "subreddit:rust"]);
 }
 
 #[tokio::test]

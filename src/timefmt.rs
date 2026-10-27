@@ -5,7 +5,7 @@
 //! cleanup pass apply.
 
 use time::format_description::well_known::Rfc3339;
-use time::OffsetDateTime;
+use time::{OffsetDateTime, UtcOffset};
 
 /// Parse an RFC 3339 timestamp (e.g. GitHub's `starred_at`) to unix epoch seconds.
 pub fn rfc3339_to_unix(s: &str) -> Option<i64> {
@@ -21,11 +21,20 @@ pub fn parse_rfc3339(s: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(s, &Rfc3339).ok()
 }
 
-/// Format an [`OffsetDateTime`] as RFC 3339 for Pinboard's `dt`. `None` if formatting
+/// Format an [`OffsetDateTime`] as RFC 3339, keeping its offset and any fractional
+/// seconds; Pinboard's `dt` goes through [`to_pinboard_dt`] instead. `None` if formatting
 /// fails. (Can't be a `From`/`Into` impl: `String` and `OffsetDateTime` are both foreign
 /// to this crate, so the orphan rule forbids it — and it's fallible.)
 pub fn to_rfc3339(dt: OffsetDateTime) -> Option<String> {
     dt.format(&Rfc3339).ok()
+}
+
+/// Format an [`OffsetDateTime`] as Pinboard's `dt`, which its API documents as
+/// `CCYY-MM-DDThh:mm:ssZ`: UTC, at whole seconds. `None` if it can't be represented.
+pub fn to_pinboard_dt(dt: OffsetDateTime) -> Option<String> {
+    dt.checked_to_offset(UtcOffset::UTC)
+        .map(OffsetDateTime::truncate_to_second)
+        .and_then(to_rfc3339)
 }
 
 /// An [`OffsetDateTime`] from unix epoch seconds — used to lift a source's epoch post
@@ -77,8 +86,9 @@ impl DateOpts {
     /// The creation time a `cleanup` re-write should set. `candidate` is the source post
     /// time (if known) and `existing` the bookmark's current time. Returns the source time
     /// when dating is on and the post is within the cap; otherwise `now` when the post is
-    /// stale and `stale_to_now`; otherwise `existing` (unchanged). The age cap compares by
-    /// instant; the RFC3339 formatting happens at the write boundary.
+    /// stale, `stale_to_now` is set and `existing` is unknown or itself outside the cap;
+    /// otherwise `existing` (unchanged). The age cap compares by instant; the RFC3339
+    /// formatting happens at the write boundary.
     pub fn cleanup_date(
         self,
         candidate: Option<OffsetDateTime>,
@@ -88,15 +98,20 @@ impl DateOpts {
         if !self.use_post_date {
             return existing;
         }
+        let within_cap = |ts: OffsetDateTime| {
+            within_age_cap(now.unix_timestamp(), ts.unix_timestamp(), self.max_age_days)
+        };
         match candidate {
-            Some(ts)
-                if within_age_cap(now.unix_timestamp(), ts.unix_timestamp(), self.max_age_days) =>
-            {
-                Some(ts)
-            }
-            Some(_) if self.stale_to_now => Some(now),
+            Some(ts) if within_cap(ts) => Some(ts),
+            Some(_) if self.stale_to_now && !existing.is_some_and(within_cap) => Some(now),
             _ => existing,
         }
+    }
+
+    /// Whether [`Self::cleanup_date`] would re-date a stale bookmark on every run rather
+    /// than at most once per cap period: with a zero cap every stored date is outside it.
+    pub fn redates_every_run(self) -> bool {
+        self.stale_to_now && self.max_age_days == 0
     }
 }
 
@@ -113,6 +128,16 @@ mod tests {
             "2010-12-11T19:48:02Z"
         );
         assert_eq!(rfc3339_to_unix("2010-12-11T19:48:02Z"), Some(secs));
+    }
+
+    #[test]
+    fn pinboard_dt_is_utc_at_whole_seconds() {
+        let instant = from_unix(1_292_096_882).unwrap() + time::Duration::milliseconds(661);
+        let offset = UtcOffset::from_hms(1, 0, 0).unwrap();
+        assert_eq!(
+            to_pinboard_dt(instant.to_offset(offset)).unwrap(),
+            "2010-12-11T19:48:02Z"
+        );
     }
 
     #[test]
@@ -186,10 +211,47 @@ mod tests {
             dates(true, true).cleanup_date(Some(old), now, existing),
             Some(now)
         );
+        // Stale + stale_to_now, but already dated within the cap (e.g. by the previous
+        // run's "now") → keep existing, so the pass settles.
+        assert_eq!(
+            dates(true, true).cleanup_date(Some(old), now, Some(recent)),
+            Some(recent)
+        );
+        // Stale + stale_to_now with no stored date → now.
+        assert_eq!(
+            dates(true, true).cleanup_date(Some(old), now, None),
+            Some(now)
+        );
         // No source date → keep existing.
         assert_eq!(
             dates(true, true).cleanup_date(None, now, existing),
             existing
+        );
+    }
+
+    #[test]
+    fn stale_to_now_redates_at_most_once_per_cap_period() {
+        let dates = DateOpts {
+            use_post_date: true,
+            max_age_days: 30,
+            stale_to_now: true,
+        };
+        let stale_source = from_unix(1_500_000_000);
+        let first_run = from_unix(1_700_000_000).unwrap();
+        let redate = |now: OffsetDateTime, stored| dates.cleanup_date(stale_source, now, stored);
+
+        let after_first = redate(first_run, from_unix(1_546_300_800));
+        assert_eq!(after_first, Some(first_run));
+        // A run soon after keeps that date.
+        let soon_after = first_run + time::Duration::hours(1);
+        assert_eq!(redate(soon_after, after_first), after_first);
+        // A run more than a cap later re-dates once more, then settles again.
+        let a_cap_later = first_run + time::Duration::days(31);
+        let after_cap = redate(a_cap_later, after_first);
+        assert_eq!(after_cap, Some(a_cap_later));
+        assert_eq!(
+            redate(a_cap_later + time::Duration::hours(1), after_cap),
+            after_cap
         );
     }
 }

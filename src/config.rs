@@ -265,6 +265,9 @@ impl Config {
         check_unique_names("github", &self.github)?;
         check_one_unnamed("github", &self.github)?;
         check_unique_names("hackernews", &self.hackernews)?;
+        self.check_stale_to_now_cap("reddit", &self.reddit, &self.defaults.reddit)?;
+        self.check_stale_to_now_cap("github", &self.github, &self.defaults.github)?;
+        self.check_stale_to_now_cap("hackernews", &self.hackernews, &self.defaults.hackernews)?;
 
         for (index, account) in self.reddit.iter().enumerate() {
             let at = |field: &str| format!("reddit[{index}].{field}");
@@ -291,6 +294,42 @@ impl Config {
             check_tag(&at("tag_link"), &account.tag_link)?;
         }
         Ok(())
+    }
+
+    /// Error if an account's dating settings, resolved through the config tiers, pair a
+    /// zero age cap with `cleanup_stale_to_now`: every date is then outside the cap, so
+    /// cleanup would re-date each stale bookmark on every run. With no accounts the
+    /// source's implicit CLI/env account is checked instead.
+    fn check_stale_to_now_cap<T: Account>(
+        &self,
+        source: &str,
+        accounts: &[T],
+        defaults: &SourceDefaults,
+    ) -> Result<()> {
+        let redates_every_run = |account: Option<&T>| {
+            crate::jobs::resolve_dates(
+                &crate::jobs::DateOverrides::default(),
+                account,
+                defaults,
+                self,
+            )
+            .redates_every_run()
+        };
+        let offender = match accounts {
+            [] => redates_every_run(None).then(|| format!("{source} (implicit CLI/env account)")),
+            _ => accounts
+                .iter()
+                .position(|account| redates_every_run(Some(account)))
+                .map(|index| format!("{source}[{index}]")),
+        };
+        match offender {
+            Some(scope) => bail!(
+                "config: {scope} resolves `post_date_max_age_days` to 0 with \
+                 `cleanup_stale_to_now` on, so cleanup would re-date its stale bookmarks on \
+                 every run; raise the cap or turn `cleanup_stale_to_now` off"
+            ),
+            None => Ok(()),
+        }
     }
 }
 

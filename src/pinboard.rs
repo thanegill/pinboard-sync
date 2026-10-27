@@ -290,7 +290,7 @@ impl PinboardClient {
         let tags = b.tags.join(" ");
         let dt = b
             .timestamp
-            .and_then(crate::timefmt::to_rfc3339)
+            .and_then(crate::timefmt::to_pinboard_dt)
             .unwrap_or_default();
         let endpoint = self.url("posts/add");
 

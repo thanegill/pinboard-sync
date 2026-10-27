@@ -3,6 +3,7 @@ self:
   config,
   lib,
   pkgs,
+  utils,
   ...
 }:
 let
@@ -45,6 +46,8 @@ let
     }
   ];
   setCredentialFiles = lib.filter (c: cfg.${c.option} != null) credentialFiles;
+
+  escapeSpecifiers = lib.replaceStrings [ "%" ] [ "%%" ];
 
   # Honor a per-account `enable` (default true) in each source's account array: drop
   # the disabled accounts and strip the `enable` key — the binary's config rejects
@@ -104,7 +107,9 @@ let
   #
   # `%d` in the `<VAR>_FILE` values expands to the unit's credentials directory
   # ($CREDENTIALS_DIRECTORY), a private tmpfs the DynamicUser can read even though it
-  # can't read the root-owned source path directly.
+  # can't read the root-owned source path directly. systemd expands specifiers in
+  # `EnvironmentFile=` and `LoadCredential=` too, so every user-supplied value doubles its
+  # `%` to reach the service literally.
   #
   # `extraServiceConfig` is merged over the hardening last, so a unit that needs more
   # (the backup timer's `StateDirectory`) adds it without reaching around the factory.
@@ -124,12 +129,12 @@ let
         PINBOARD_SYNC_CONFIG = toString configFile;
       }
       // lib.optionalAttrs (cfg.onAuthFailure != null) {
-        PINBOARD_SYNC_ON_AUTH_FAILURE = cfg.onAuthFailure;
+        PINBOARD_SYNC_ON_AUTH_FAILURE = escapeSpecifiers cfg.onAuthFailure;
       }
       // lib.listToAttrs (map (c: lib.nameValuePair c.variable "%d/${c.credential}") setCredentialFiles);
       serviceConfig = {
         Type = "oneshot";
-        ExecStart = "${lib.getExe cfg.package} ${lib.escapeShellArgs args}";
+        ExecStart = utils.escapeSystemdExecArgs ([ (lib.getExe cfg.package) ] ++ args);
         DynamicUser = true;
         NoNewPrivileges = true;
         ProtectSystem = "strict";
@@ -147,10 +152,12 @@ let
         LockPersonality = true;
       }
       // lib.optionalAttrs (cfg.environmentFile != null) {
-        EnvironmentFile = cfg.environmentFile;
+        EnvironmentFile = escapeSpecifiers (toString cfg.environmentFile);
       }
       // lib.optionalAttrs (setCredentialFiles != [ ]) {
-        LoadCredential = map (c: "${c.credential}:${toString cfg.${c.option}}") setCredentialFiles;
+        LoadCredential = map (
+          c: "${c.credential}:${escapeSpecifiers (toString cfg.${c.option})}"
+        ) setCredentialFiles;
       }
       // extraServiceConfig;
     };

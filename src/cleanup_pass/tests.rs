@@ -2423,3 +2423,73 @@ async fn a_dry_run_names_a_target_held_by_a_visibility_refusal() {
         ]
     );
 }
+
+#[tokio::test]
+async fn stale_to_now_settles_after_one_run() {
+    // The source date is past the cap, so the first run re-dates the bookmark to now. That
+    // stored "now" is within the cap, so the second run must leave it alone rather than
+    // re-dating it to its own "now" forever.
+    let books = vec![bookmark("https://stale/")];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            timestamp: crate::timefmt::from_unix(1_500_000_000),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let dates = DateOpts {
+        use_post_date: true,
+        max_age_days: 30,
+        stale_to_now: true,
+    };
+
+    let first = FakePinboard::default();
+    let outcome = run_pass(&store(&first, &books, false), &books, "test", dates, &pass).await;
+    assert_eq!(outcome.changed, 1);
+    let after_first = crate::test_support::replay(&books, &first.ops.borrow());
+
+    let second = FakePinboard::default();
+    let outcome = run_pass(
+        &store(&second, &after_first, false),
+        &after_first,
+        "test",
+        dates,
+        &pass,
+    )
+    .await;
+    assert_eq!(outcome.changed, 0);
+    assert!(second.updated.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn stale_to_now_dates_at_whole_seconds() {
+    // Pinboard keeps whole seconds, so a fractional "now" could never equal the date it
+    // stores back.
+    let books = vec![bookmark("https://stale/")];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            timestamp: crate::timefmt::from_unix(1_500_000_000),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let dates = DateOpts {
+        use_post_date: true,
+        max_age_days: 30,
+        stale_to_now: true,
+    };
+    let pinboard = FakePinboard::default();
+    let outcome = run_pass(
+        &store(&pinboard, &books, false),
+        &books,
+        "test",
+        dates,
+        &pass,
+    )
+    .await;
+    assert_eq!(outcome.changed, 1);
+
+    let ops = pinboard.ops.borrow();
+    let [Op::Write(written)] = ops.as_slice() else {
+        panic!("expected one write, got {ops:?}");
+    };
+    assert_eq!(written.timestamp.map(|ts| ts.nanosecond()), Some(0));
+}

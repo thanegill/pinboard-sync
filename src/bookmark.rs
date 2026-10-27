@@ -70,7 +70,7 @@ impl Bookmark {
         if new.timestamp != self.timestamp {
             let value = new
                 .timestamp
-                .and_then(crate::timefmt::to_rfc3339)
+                .and_then(crate::timefmt::to_pinboard_dt)
                 .unwrap_or_default();
             changes.push(("date", value));
         }

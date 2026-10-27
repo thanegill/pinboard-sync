@@ -141,7 +141,7 @@ pub struct RedditSavedItem {
     /// Post flair text (`flair:<slug>` tag).
     pub flair: Option<String>,
     /// Media type for posts (`image`/`video` only; `type:<x>` tag).
-    pub media_type: Option<String>,
+    pub media_type: Option<&'static str>,
 }
 
 impl RedditListingEntry {
@@ -262,13 +262,13 @@ fn parent_thread_url(link_permalink: Option<&str>, domain: &str) -> Option<Strin
 
 /// The media type of a post — `image` or `video` — or `None` for text/link
 /// posts, which don't get a `type:` tag.
-fn post_media_type(is_video: bool, post_hint: Option<&str>) -> Option<String> {
+fn post_media_type(is_video: bool, post_hint: Option<&str>) -> Option<&'static str> {
     if is_video {
-        return Some("video".to_string());
+        return Some("video");
     }
     match post_hint {
-        Some("image") => Some("image".to_string()),
-        Some("hosted:video") | Some("rich:video") => Some("video".to_string()),
+        Some("image") => Some("image"),
+        Some("hosted:video") | Some("rich:video") => Some("video"),
         _ => None,
     }
 }
@@ -348,7 +348,7 @@ impl RedditSavedItem {
         if let Some(flair) = &self.flair {
             push(&cfg.flair_prefix, &flair.to_lowercase());
         }
-        if let Some(media_type) = &self.media_type {
+        if let Some(media_type) = self.media_type {
             if cfg.media_types.iter().any(|t| t == media_type) {
                 push(&cfg.media_prefix, media_type);
             }

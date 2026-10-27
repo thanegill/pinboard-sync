@@ -105,11 +105,9 @@ fn slugs_are_filename_safe_and_default_when_absent() {
 
 #[test]
 fn collisions_are_caught_before_any_write() {
-    let ok = vec!["reddit-a".to_string(), "reddit-b".to_string()];
-    assert!(check_stem_collisions(&ok).is_ok());
+    assert!(check_stem_collisions(["reddit-a", "reddit-b"]).is_ok());
 
-    let clash = vec!["reddit-a-b".to_string(), "reddit-a-b".to_string()];
-    let err = check_stem_collisions(&clash).unwrap_err();
+    let err = check_stem_collisions(["reddit-a-b", "reddit-a-b"]).unwrap_err();
     assert!(format!("{err:#}").contains("reddit-a-b"), "{err:#}");
 }
 

@@ -346,7 +346,7 @@ async fn back_up(
     dir: &Path,
     dry_run: bool,
 ) -> Result<()> {
-    backup::check_stem_collisions(&jobs.iter().map(|j| j.stem.clone()).collect::<Vec<_>>())?;
+    backup::check_stem_collisions(jobs.iter().map(|job| job.stem.as_str()))?;
     backup::check_backup_dir(dir)?;
 
     let mut run = AllRun::default();

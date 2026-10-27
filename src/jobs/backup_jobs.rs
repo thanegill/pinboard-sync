@@ -15,7 +15,7 @@ use crate::cli::{BackupCmd, BackupTarget, OutFlag};
 use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccount};
 use crate::hook::on_auth_failure_from_env;
 use crate::pinboard::PinboardClient;
-use crate::secrets::resolve_pinboard_token;
+use crate::secrets::{resolve_pinboard_token, SecretSpec};
 use crate::source::SourceError;
 
 /// One backup target: which client to dump and what to name its files.
@@ -128,10 +128,8 @@ pub fn build_backup_plan(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan>
             )
         }
         (false, Some(BackupTarget::Pinboard(args))) => {
-            let job = build_pinboard_backup_job(args.pinboard_token.clone(), config)?.context(
-                "missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or \
-                 [pinboard] in the config)",
-            )?;
+            let job = build_pinboard_backup_job(args.pinboard_token.clone(), config)?
+                .with_context(|| SecretSpec::PINBOARD_TOKEN.missing())?;
             Ok(BackupPlan {
                 jobs: vec![job],
                 skipped: Vec::new(),

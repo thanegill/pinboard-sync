@@ -366,6 +366,18 @@ fn backup_all_conflicts_with_a_target_and_a_bare_backup_is_rejected() {
 }
 
 #[test]
+fn backup_pinboard_without_a_token_names_every_setting_it_can_come_from() {
+    let error = build_backup_plan(&parse_backup(&["pinboard"]), &Config::default())
+        .err()
+        .expect("no token is set");
+    assert_eq!(
+        format!("{error:#}"),
+        "missing Pinboard token (set --pinboard-token, $PINBOARD_TOKEN, $PINBOARD_TOKEN_FILE, \
+         or `[pinboard]`'s `token` or `token_file`)"
+    );
+}
+
+#[test]
 fn backup_dir_prefers_the_flag_then_the_config_then_errors() {
     let mut config = Config::default();
     assert!(resolve_backup_dir([None, None], &config).is_err());

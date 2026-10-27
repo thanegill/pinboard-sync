@@ -293,7 +293,7 @@ impl SourceAccount for RedditAccount {
                 None,
             )
             .map(|username| username.value)
-            .context("missing Reddit username (set --reddit-username, REDDIT_USERNAME, or `username` in the config)")?;
+            .with_context(|| SecretSpec::REDDIT_USERNAME.missing())?;
         let cookie = resolve_reddit_cookie(overrides.reddit_cookie.clone(), account);
         let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
         Ok(SourceClient::Reddit(
@@ -368,9 +368,7 @@ impl SourceAccount for HackerNewsAccount {
                 None,
             )
             .map(|username| username.value)
-            .context(
-            "missing HackerNews username (set --username, HN_USERNAME, or `username` in the config)",
-        )?;
+            .with_context(|| SecretSpec::HN_USERNAME.missing())?;
         let hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
         Ok(SourceClient::HackerNews(
             HackerNewsClient::new(username, hn_config)?
@@ -402,7 +400,7 @@ pub fn build_job<A: SourceAccount>(
 /// Resolve the Pinboard token and build the client (no fetch).
 fn build_pinboard_client(token_flag: Option<String>, config: &Config) -> Result<PinboardClient> {
     let token = resolve_pinboard_token(token_flag, &config.pinboard)
-        .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or [pinboard] in the config)")?;
+        .with_context(|| SecretSpec::PINBOARD_TOKEN.missing())?;
     pinboard_client_for_token(token, config)
 }
 

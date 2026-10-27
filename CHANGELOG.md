@@ -33,6 +33,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- A missing Reddit or HackerNews username or Pinboard token names every setting it can come
+  from, `$REDDIT_USERNAME_FILE`, `$HN_USERNAME_FILE` and `$PINBOARD_TOKEN_FILE` included,
+  as the cookie and GitHub token messages already did.
 - A `--link-tag` with whitespace or a comma is refused as `--link-tag`'s own error, no
   longer one that starts `config:` as if the config had set it.
 - A Reddit cookie with a stray `;` (`abc;`, `a=1;;`) is sent without it, so a bare value

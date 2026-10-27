@@ -272,19 +272,19 @@ shaping lives in
 [`src/reddit/model.rs`](src/reddit/model.rs).
 
 **The Reddit cookie is shaped in one place**,
-[`src/reddit/cookie.rs`](src/reddit/cookie.rs). `RedditClient::build` passes the configured
-cookie through `reddit::cookie::session_cookie`, so every entry point sends the same header.
-`reddit_session` is the only name Reddit knows the session by, so a bare value (which may
-end in base64 `=` padding) is sent as `reddit_session=<value>`. A value counts as already
-named only when `reddit_session=` starts it or follows a `;`, never by substring, and of
-several `reddit_session` pairs only the first non-empty one is sent. Only a matched pair
-of surrounding quotes is stripped, and a value of nothing but whitespace, quotes and the
-`;`/`=` separators counts as empty. Pairs that are empty by that rule are dropped from
-every cookie before it is shaped, so a stray `;` leaves `abc;` a bare value and `a=1;;`
-just `a=1`. A value that sets no session — blank, or only empty `reddit_session=`
-pairs — is no cookie, and `secrets`'s `resolve_reddit_cookie` skips it through
-`reddit::cookie::is_configured_cookie` so the secret ladder falls through it exactly as it does
-a blank value.
+[`src/reddit/cookie.rs`](src/reddit/cookie.rs). `RedditClient::build` turns the configured
+cookie into a `SessionCookie` (via `reddit::cookie::session_cookie`), so every entry point
+sends the same header. `reddit_session` is the only name Reddit knows the session by, so a
+bare value (which may end in base64 `=` padding) is sent as `reddit_session=<value>`. A
+value counts as already named only when `reddit_session=` starts it or follows a `;`, never
+by substring, and of several `reddit_session` pairs only the first non-empty one is sent.
+Only a matched pair of surrounding quotes is stripped, and a value of nothing but
+whitespace, quotes and the `;`/`=` separators counts as empty. Pairs that are empty by that
+rule are dropped from every cookie before it is shaped, so a stray `;` leaves `abc;` a bare
+value and `a=1;;` just `a=1`. A value that sets no session — blank, or only empty
+`reddit_session=` pairs — is no cookie, and `secrets`'s `resolve_reddit_cookie` skips it
+through `reddit::cookie::is_configured_cookie` so the secret ladder falls through it exactly
+as it does a blank value.
 
 **`backup` has one port and one driver, and captures raw bodies in the same traversal.**
 [`src/backup.rs`](src/backup.rs) is `cleanup_pass.rs`'s sibling: a service implements
@@ -344,18 +344,17 @@ Whether an env rung applies is read off the ladder itself (`secrets::EnvSecret`)
 same acceptance check the resolver uses, so an empty `_FILE` or a cookie naming no session
 is not warned about.
 
-**`sync <source> [account]` / `cleanup <source> [account]` select one account**
-(by name, else the first, else an implicit CLI/env account). `--all` (per-source or
-top-level) runs every configured account, aggregating failures via `AllRun` and
-exiting non-zero if any fail. `cleanup --all` runs once per source (reddit, github,
-hackernews), since it normalizes the shared bookmark set. `cleanup github`
-canonicalizes repo-root URLs and looks each repo up via the API to rewrite
-renamed/moved repos. It refreshes only what the tool wrote: notes in `github_note`'s
-shape, the base/language tags of bookmarks carrying any configured account's base tag
-(refreshed with that account's tag config), their title only
-while it is still `owner/repo`, and their star date only while the notes are the tool's
-too. A repo root is often another source's bookmark (an HN story linking it, or one a
-rename merged a star into), so never widen that.
+**`sync <source> [account]` / `cleanup <source> [account]` select one account** (by name,
+else the first, else an implicit CLI/env account). `--all` (per-source or top-level) runs
+every configured account, aggregating failures via `AllRun` and exiting non-zero if any
+fail. `cleanup --all` runs once per source (github, reddit, hackernews), since it normalizes
+the shared bookmark set. `cleanup github` canonicalizes repo-root URLs and looks each repo
+up via the API to rewrite renamed/moved repos. It refreshes only what the tool wrote: notes
+in `github_note`'s shape, the base/language tags of bookmarks carrying any configured
+account's base tag (refreshed with that account's tag config), their title only while it is
+still `owner/repo`, and their star date only while the notes are the tool's too. A repo root
+is often another source's bookmark (an HN story linking it, or one a rename merged a star
+into), so never widen that.
 
 **`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
 `SyncJob { client: SourceClient, hook, settings }`, `settings` a `sync::JobSettings` holding the

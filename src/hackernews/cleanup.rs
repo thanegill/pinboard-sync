@@ -217,9 +217,9 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
     }
 }
 
-/// Links one `link_tag`-tagged article bookmark to its HN discussion: look it up by
-/// URL, add an `HN Link:` line to the notes, and swap the marker tag for the base HN
-/// tags. Always in-place — the URL is unchanged and `src_date` is `None`, so the
+/// Links one `link_tag`-tagged article bookmark to its HN discussion: look it up by URL,
+/// add an `HN Link:` line to the notes, and swap the marker tag for the base HN tags.
+/// Always in-place — the URL is unchanged and the planned `timestamp` is `None`, so the
 /// driver preserves the stored date regardless of the dating policy.
 struct HackerNewsLinkPass<'a> {
     client: &'a HackerNewsClient,

@@ -106,10 +106,8 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         let Some((owner, repo)) = repo_root(&bookmark.url) else {
             return Ok(Plan::Skipped);
         };
-        // Default to the canonicalization, then refresh from the API when the repo
-        // still exists (a 404 keeps just the canonical URL). We already hold the
-        // parsed `(owner, repo)`, so build the canonical URL from them directly
-        // rather than re-validating the host/path through `canonical_repo_url`.
+        // Default to the canonicalization, then refresh from the API when the repo still
+        // exists (a 404 keeps just the canonical URL).
         let mut url = Url::parse(&format!("https://github.com/{owner}/{repo}"))
             .context("building the canonical github URL")?;
         let mut title = collapse_whitespace(&bookmark.title, " ");

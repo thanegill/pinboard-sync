@@ -128,9 +128,8 @@ impl RedditClient {
 }
 
 impl RedditClient {
-    /// Fetch all saved items, newest first, following `after` pagination (Reddit
-    /// caps any listing at ~1000). Inherent (no longer a port): only `sync`'s
-    /// `Source::fetch` and the net tests call it, both within this crate.
+    /// Fetch all saved items, newest first, following `after` pagination (Reddit caps any
+    /// listing at ~1000).
     async fn fetch_saved(&self) -> Result<Vec<RedditListingEntry>, SourceError> {
         self.fetch_saved_capturing(&mut RawSink::disabled()).await
     }

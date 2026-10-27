@@ -219,10 +219,10 @@ impl UrlKey for SourceClient {
     }
 }
 
-/// The per-account settings every `build_*_job` resolves the same way: the
-/// `limit`/`read_later`/`public` trio through [`resolve_setting`] plus the dates through
-/// [`resolve_dates`], each on the flag → account → per-source default → `[pinboard]` global
-/// ladder. Leaves client/secret/hook construction to each source builder.
+/// The per-account settings [`build_job`] resolves: the `limit`/`read_later`/`public` trio
+/// through [`resolve_setting`] plus the dates through [`resolve_dates`], each on the flag →
+/// account → per-source default → `[pinboard]` global ladder. The client, its secrets and
+/// the hook come from [`SourceAccount`] instead.
 fn resolve_job_settings(
     account: Option<&impl config::Account>,
     overrides: &SyncOverrides,

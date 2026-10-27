@@ -26,8 +26,7 @@ use crate::reddit::cleanup::RedditCleanupOverrides;
 use crate::reddit::model::RedditConfig;
 use crate::reddit::RedditClient;
 use crate::secrets::{
-    first_nonempty, missing_github_token, missing_reddit_cookie, resolve_github_token,
-    resolve_reddit_cookie,
+    first_nonempty, missing_reddit_cookie, resolve_github_token, resolve_reddit_cookie, SecretSpec,
 };
 use crate::settings::resolve_cleanup_dates;
 use crate::source::{BookmarkDraft, SourceError};
@@ -384,7 +383,8 @@ async fn cleanup_github_account<S: BookmarkStore + AccountState>(
     dates: DateOpts,
     config: &Config,
 ) -> Result<()> {
-    let token = resolve_github_token(token_flag, account).with_context(missing_github_token)?;
+    let token = resolve_github_token(token_flag, account)
+        .with_context(|| SecretSpec::GITHUB_TOKEN.missing())?;
     let client = GitHubClient::new(token, account.map(GitHubConfig::from).unwrap_or_default())?;
     cleanup_github_with_client(store, &client, account, dates, config).await
 }

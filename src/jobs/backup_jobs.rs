@@ -78,9 +78,9 @@ pub fn build_backup_plan(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan>
             match build_pinboard_backup_job(None, config)? {
                 Some(job) => plan.jobs.push(job),
                 // Silence here would be the worst outcome: a nightly `--all` that quietly
-                // stops covering Pinboard (an unprovisioned sops secret makes
-                // `resolve_secret` warn and yield `None`) while still exiting 0. Recorded
-                // as a failed target so the manifest says `complete: false`.
+                // stops covering Pinboard (an unprovisioned sops secret makes the ladder
+                // warn and yield `None`) while still exiting 0. Recorded as a failed
+                // target so the manifest says `complete: false`.
                 None if has_source_targets => {
                     warn!(
                         "backup --all: no Pinboard token resolved — the Pinboard account \

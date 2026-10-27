@@ -323,27 +323,27 @@ account's (so passes run as different accounts never move it back and forth), sh
 the tags of the account that domain belongs to, and collapses a post on several onto the one
 configured first.
 
-**Config + secret resolution.** [`src/config.rs`](src/config.rs) parses the
-`--config` TOML: one `[pinboard]` destination, `[hooks]`, and per-source account
-arrays (`[[reddit]]`/`[[github]]`/`[[hackernews]]`), each mapping to its tag config.
-Secrets resolve through one ladder in [`src/secrets.rs`](src/secrets.rs) (`resolve_secret`): CLI flag → `$VAR`
-→ `$VAR_FILE` (a path whose trimmed contents are the value) → config inline → config
-`*_file`. The `--config` path is the exception: it resolves flag → `$PINBOARD_SYNC_CONFIG`
-only (a direct file path, no `_FILE` form — it is already a file). **The `_FILE` form is
-load-bearing** — it's how the
-NixOS service feeds sops-nix secret *paths* without putting values in the unit
-environment. Don't add a secret that only reads `$VAR`. `secret_ladder` tags each value
-with its `SecretRung`, so `resolve_reddit_cookie` and `resolve_github_token` return a
-`secrets::ConfiguredSecret` naming the setting it came from, and every Reddit cookie
-warning and re-auth message and every GitHub token error names that setting, never the
-value. A message listing every setting a secret can come from builds that list from the
-same rung labels (`secrets::reddit_cookie_settings`/`github_token_settings`), never by
-hand. The env rungs sit above every account's own value, so when one would apply to
-several configured accounts of a source, each multi-account builder warns once for that
-source (`jobs::warn_shared_env_secrets`, from each source's `SourceAccount::env_secrets`).
-Whether an env rung applies is read off the ladder itself (`secrets::EnvSecret`), with the
-same acceptance check the resolver uses, so an empty `_FILE` or a cookie naming no session
-is not warned about.
+**Config + secret resolution.** [`src/config.rs`](src/config.rs) parses the `--config` TOML:
+one `[pinboard]` destination, `[hooks]`, and per-source account arrays
+(`[[reddit]]`/`[[github]]`/`[[hackernews]]`), each mapping to its tag config. Secrets
+resolve through one ladder in [`src/secrets.rs`](src/secrets.rs) (`SecretSpec::resolve`):
+CLI flag → `$VAR` → `$VAR_FILE` (a path whose trimmed contents are the value) → config
+inline → config `*_file`. The `--config` path is the exception: it resolves flag →
+`$PINBOARD_SYNC_CONFIG` only (a direct file path, no `_FILE` form — it is already a file).
+**The `_FILE` form is load-bearing** — it's how the NixOS service feeds sops-nix secret
+*paths* without putting values in the unit environment. Don't add a secret that only reads
+`$VAR`. Each secret is one `SecretSpec` (the Pinboard token, the Reddit username and cookie,
+the GitHub token and the HackerNews username): its setting on every rung, as messages name
+it, and the check a candidate must pass. `secret_ladder` tags each value with its
+`SecretRung`, so `SecretSpec::resolve` returns a `secrets::ConfiguredSecret` naming the
+setting it came from, and every Reddit cookie warning and re-auth message and every GitHub
+token error names that setting, never the value. A message listing every setting a secret
+can come from builds that list with `SecretSpec::settings`, never by hand. The env rungs sit
+above every account's own value, so when one would apply to several configured accounts of a
+source, each multi-account builder warns once for that source
+(`jobs::warn_shared_env_secrets`, from each source's `SourceAccount::env_secrets`). Whether
+an env rung applies is read off the ladder itself (`SecretSpec`), with the same acceptance
+check the resolver uses, so an empty `_FILE` or a cookie with no session draws no warning.
 
 **`sync <source> [account]` / `cleanup <source> [account]` select one account** (by name,
 else the first, else an implicit CLI/env account). `--all` (per-source or top-level) runs

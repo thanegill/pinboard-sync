@@ -4,7 +4,7 @@
 
 use log::warn;
 
-use crate::secrets::{reddit_cookie_settings, ConfiguredSecret};
+use crate::secrets::{ConfiguredSecret, SecretSpec};
 
 /// The `Cookie` header sent for a configured cookie, as [`session_cookie`] shapes it.
 pub(super) struct SessionCookie {
@@ -80,7 +80,7 @@ pub(super) fn refused_cookie_advice(cookie_source: Option<&str>) -> String {
         None => format!(
             "No Reddit cookie is configured; set {} to reddit_session from a logged-in \
              browser.",
-            reddit_cookie_settings()
+            SecretSpec::REDDIT_COOKIE.settings()
         ),
     }
 }

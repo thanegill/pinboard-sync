@@ -21,8 +21,7 @@ use crate::pinboard::{PinboardClient, RATE_LIMIT_SECS};
 use crate::reddit::model::RedditConfig;
 use crate::reddit::RedditClient;
 use crate::secrets::{
-    self, missing_github_token, resolve_github_token, resolve_pinboard_token,
-    resolve_reddit_cookie, resolve_secret, EnvSecret,
+    self, resolve_github_token, resolve_pinboard_token, resolve_reddit_cookie, SecretSpec,
 };
 use crate::settings::{resolve_hook, resolve_job_settings};
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
@@ -83,7 +82,7 @@ pub fn warn_shared_env_secrets<A: SourceAccount>(overrides: &SyncOverrides, conf
 
 /// The secrets among `flagged` whose CLI flag holds no value the ladder would take, so
 /// that the environment rung is the highest one that can apply.
-fn unflagged(flagged: &[(EnvSecret, &Option<String>)]) -> Vec<EnvSecret> {
+fn unflagged(flagged: &[(SecretSpec, &Option<String>)]) -> Vec<SecretSpec> {
     flagged
         .iter()
         .filter(|(secret, flag)| !flag.as_deref().is_some_and(|value| secret.accepts(value)))
@@ -235,7 +234,7 @@ pub trait SourceAccount: config::Account + Sized {
 
     /// The secrets [`Self::client`] resolves whose CLI flag in `overrides` holds no usable
     /// value, so that the environment outranks each account's own value.
-    fn env_secrets(overrides: &SyncOverrides) -> Vec<EnvSecret>;
+    fn env_secrets(overrides: &SyncOverrides) -> Vec<SecretSpec>;
 
     /// The client for `account`, or for the implicit CLI/env account when `None`, with
     /// its credentials resolved through the secret ladder. `config` is the whole config,
@@ -275,10 +274,10 @@ impl SourceAccount for RedditAccount {
         self.on_auth_failure.as_deref()
     }
 
-    fn env_secrets(overrides: &SyncOverrides) -> Vec<EnvSecret> {
+    fn env_secrets(overrides: &SyncOverrides) -> Vec<SecretSpec> {
         unflagged(&[
-            (EnvSecret::REDDIT_USERNAME, &overrides.reddit_username),
-            (EnvSecret::REDDIT_COOKIE, &overrides.reddit_cookie),
+            (SecretSpec::REDDIT_USERNAME, &overrides.reddit_username),
+            (SecretSpec::REDDIT_COOKIE, &overrides.reddit_cookie),
         ])
     }
 
@@ -287,13 +286,14 @@ impl SourceAccount for RedditAccount {
         overrides: &SyncOverrides,
         config: &Config,
     ) -> Result<SourceClient> {
-        let username = resolve_secret(
-            overrides.reddit_username.clone(),
-            "REDDIT_USERNAME",
-            account.and_then(|a| a.username.clone()),
-            None,
-        )
-        .context("missing Reddit username (set --reddit-username, REDDIT_USERNAME, or `username` in the config)")?;
+        let username = SecretSpec::REDDIT_USERNAME
+            .resolve(
+                overrides.reddit_username.clone(),
+                account.and_then(|a| a.username.clone()),
+                None,
+            )
+            .map(|username| username.value)
+            .context("missing Reddit username (set --reddit-username, REDDIT_USERNAME, or `username` in the config)")?;
         let cookie = resolve_reddit_cookie(overrides.reddit_cookie.clone(), account);
         let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
         Ok(SourceClient::Reddit(
@@ -318,8 +318,8 @@ impl SourceAccount for GitHubAccount {
         self.on_auth_failure.as_deref()
     }
 
-    fn env_secrets(overrides: &SyncOverrides) -> Vec<EnvSecret> {
-        unflagged(&[(EnvSecret::GITHUB_TOKEN, &overrides.github_token)])
+    fn env_secrets(overrides: &SyncOverrides) -> Vec<SecretSpec> {
+        unflagged(&[(SecretSpec::GITHUB_TOKEN, &overrides.github_token)])
     }
 
     fn client(
@@ -328,7 +328,7 @@ impl SourceAccount for GitHubAccount {
         _: &Config,
     ) -> Result<SourceClient> {
         let token = resolve_github_token(overrides.github_token.clone(), account)
-            .with_context(missing_github_token)?;
+            .with_context(|| SecretSpec::GITHUB_TOKEN.missing())?;
         let github_config = account.map(GitHubConfig::from).unwrap_or_default();
         Ok(SourceClient::GitHub(GitHubClient::new(
             token,
@@ -352,8 +352,8 @@ impl SourceAccount for HackerNewsAccount {
         None
     }
 
-    fn env_secrets(overrides: &SyncOverrides) -> Vec<EnvSecret> {
-        unflagged(&[(EnvSecret::HN_USERNAME, &overrides.hackernews_username)])
+    fn env_secrets(overrides: &SyncOverrides) -> Vec<SecretSpec> {
+        unflagged(&[(SecretSpec::HN_USERNAME, &overrides.hackernews_username)])
     }
 
     fn client(
@@ -361,13 +361,14 @@ impl SourceAccount for HackerNewsAccount {
         overrides: &SyncOverrides,
         config: &Config,
     ) -> Result<SourceClient> {
-        let username = resolve_secret(
-            overrides.hackernews_username.clone(),
-            "HN_USERNAME",
-            account.and_then(|a| a.username.clone()),
-            None,
-        )
-        .context(
+        let username = SecretSpec::HN_USERNAME
+            .resolve(
+                overrides.hackernews_username.clone(),
+                account.and_then(|a| a.username.clone()),
+                None,
+            )
+            .map(|username| username.value)
+            .context(
             "missing HackerNews username (set --username, HN_USERNAME, or `username` in the config)",
         )?;
         let hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();

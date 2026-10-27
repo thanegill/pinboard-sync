@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::titles;
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -147,8 +148,7 @@ async fn info_maps_a_login_redirect_to_reauth_without_following_it() {
         .await;
     mount_login_page(&server).await;
 
-    let client =
-        RedditClient::with_base_url(Some("reddit_session=stale".into()), None, server.uri());
+    let client = info_client(&server, "reddit_session=stale");
     let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
     assert_refused_at_login(err);
 }
@@ -171,7 +171,7 @@ async fn fetch_saved_terminates_when_after_cursor_loops() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::with_base_url(None, Some("psophis".into()), server.uri());
+    let client = reddit_client(&server);
     // Page 1 (no cursor) records the cursor; page 2 (after=t3_loop) re-sees it and
     // breaks, so exactly two pages are fetched.
     let (entries, waits) = crate::http::recording_waits(client.fetch_saved()).await;
@@ -197,7 +197,7 @@ async fn fetch_errors_when_a_non_empty_listing_yields_no_drafts() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::with_base_url(None, Some("psophis".into()), server.uri());
+    let client = reddit_client(&server);
     assert!(matches!(client.fetch().await, Err(SourceError::Other(_))));
 }
 
@@ -219,7 +219,7 @@ async fn fetch_keeps_a_good_entry_and_drops_a_schema_broken_sibling() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::with_base_url(None, Some("psophis".into()), server.uri());
+    let client = reddit_client(&server);
     let drafts = client.fetch().await.unwrap();
     assert_eq!(drafts.len(), 1);
     assert_eq!(
@@ -241,7 +241,7 @@ async fn fetch_empty_listing_is_ok() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::with_base_url(None, Some("psophis".into()), server.uri());
+    let client = reddit_client(&server);
     assert!(client.fetch().await.unwrap().is_empty());
 }
 
@@ -252,7 +252,7 @@ async fn fetch_saved_maps_403_to_reauth() {
         .respond_with(ResponseTemplate::new(403).set_body_string("blocked"))
         .mount(&server)
         .await;
-    let client = RedditClient::with_base_url(None, Some("psophis".into()), server.uri());
+    let client = reddit_client(&server);
     assert!(matches!(
         client.fetch_saved().await,
         Err(SourceError::ReauthRequired(_))
@@ -266,8 +266,7 @@ async fn info_names_the_cookie_setting_in_a_403_but_never_the_cookie() {
         .respond_with(ResponseTemplate::new(403).set_body_string("denied"))
         .mount(&server)
         .await;
-    let client =
-        RedditClient::with_base_url(Some("reddit_session=SECRET403".into()), None, server.uri());
+    let client = info_client(&server, "reddit_session=SECRET403");
     let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
     let SourceError::ReauthRequired(message) = &err else {
         panic!("a 403 must ask for a new cookie: {err:?}");
@@ -311,8 +310,7 @@ async fn info_maps_a_block_page_to_blocked() {
         .expect(1)
         .mount(&server)
         .await;
-    let client =
-        RedditClient::with_base_url(Some("reddit_session=secret".into()), None, server.uri());
+    let client = info_client(&server, "reddit_session=secret");
     let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
     assert!(matches!(err, SourceError::Blocked(_)), "got {err:?}");
 }
@@ -331,7 +329,7 @@ async fn info_sends_a_bare_cookie_value_as_reddit_session() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::with_base_url(Some("bare-value".into()), None, server.uri());
+    let client = info_client(&server, "bare-value");
     assert!(client.info(&["t3_a".to_string()]).await.unwrap().is_empty());
 }
 
@@ -353,8 +351,7 @@ async fn info_sends_cookie_and_returns_entries() {
         .mount(&server)
         .await;
 
-    let client =
-        RedditClient::with_base_url(Some("reddit_session=secret".into()), None, server.uri());
+    let client = info_client(&server, "reddit_session=secret");
     let entries = client.info(&["t3_a".to_string()]).await.unwrap();
     assert_eq!(entries.len(), 1);
     assert!(entries[0].fields.over_18);
@@ -373,8 +370,7 @@ async fn info_pauses_only_between_batches() {
         .mount(&server)
         .await;
 
-    let client =
-        RedditClient::with_base_url(Some("reddit_session=secret".into()), None, server.uri());
+    let client = info_client(&server, "reddit_session=secret");
     let fullnames: Vec<String> = (0..250).map(|n| format!("t3_{n}")).collect();
     let (entries, waits) = crate::http::recording_waits(client.info(&fullnames)).await;
     assert!(entries.unwrap().is_empty());
@@ -412,8 +408,14 @@ async fn three_saved_pages(server: &MockServer, hits: [u64; 3]) {
     }
 }
 
+/// A client reading `psophis`'s saved listing from `server`, with no cookie.
 fn reddit_client(server: &MockServer) -> RedditClient {
     RedditClient::with_base_url(None, Some("psophis".into()), server.uri())
+}
+
+/// A client for `/api/info` lookups on `server`, sending `cookie`.
+fn info_client(server: &MockServer, cookie: &str) -> RedditClient {
+    RedditClient::with_base_url(Some(cookie.into()), None, server.uri())
 }
 
 /// Pinboard already holds the second page's save, so that page has nothing new.
@@ -421,10 +423,6 @@ fn second_page_synced() -> [Bookmark; 1] {
     [crate::test_support::stored_at(
         "https://www.reddit.com/r/rust/comments/o/x/",
     )]
-}
-
-fn titles(drafts: &[BookmarkDraft]) -> Vec<&str> {
-    drafts.iter().map(|d| d.bookmark.title.as_str()).collect()
 }
 
 #[tokio::test]
@@ -539,8 +537,7 @@ async fn cleanup_looks_up_comments_by_their_own_fullname_in_the_post_batch() {
         ],
         ..Default::default()
     };
-    let client =
-        RedditClient::with_base_url(Some("reddit_session=secret".into()), None, server.uri());
+    let client = info_client(&server, "reddit_session=secret");
     let opts = RedditCleanupOpts {
         mark_nsfw: true,
         fix_titles: false,

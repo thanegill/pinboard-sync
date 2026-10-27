@@ -46,12 +46,7 @@ async fn fetch_scrapes_favorites_then_reads_items() {
         .mount(&algolia)
         .await;
 
-    let client = HackerNewsClient::with_base_urls(
-        "psophis".into(),
-        HackerNewsConfig::default(),
-        hn.uri(),
-        algolia.uri(),
-    );
+    let client = hackernews_client(hn.uri(), algolia.uri());
     let drafts = crate::http::recording_waits(client.fetch())
         .await
         .0
@@ -91,12 +86,7 @@ async fn fetch_errors_when_favorites_markup_breaks() {
         .mount(&hn)
         .await;
 
-    let client = HackerNewsClient::with_base_urls(
-        "psophis".into(),
-        HackerNewsConfig::default(),
-        hn.uri(),
-        "http://unused.invalid".into(),
-    );
+    let client = hackernews_client(hn.uri(), UNUSED.into());
     let err = crate::http::recording_waits(client.fetch())
         .await
         .0
@@ -124,12 +114,7 @@ async fn fetch_succeeds_on_genuinely_empty_favorites() {
         .mount(&hn)
         .await;
 
-    let client = HackerNewsClient::with_base_urls(
-        "psophis".into(),
-        HackerNewsConfig::default(),
-        hn.uri(),
-        "http://unused.invalid".into(),
-    );
+    let client = hackernews_client(hn.uri(), UNUSED.into());
     let drafts = crate::http::recording_waits(client.fetch())
         .await
         .0
@@ -137,14 +122,13 @@ async fn fetch_succeeds_on_genuinely_empty_favorites() {
     assert!(drafts.is_empty());
 }
 
-fn hackernews_client(hn: &MockServer) -> HackerNewsClient {
-    HackerNewsClient::with_base_urls(
-        "psophis".into(),
-        HackerNewsConfig::default(),
-        hn.uri(),
-        "http://unused.invalid".into(),
-    )
+/// A client reading favorites from `hn` and items from `algolia`, as `psophis`.
+fn hackernews_client(hn: String, algolia: String) -> HackerNewsClient {
+    HackerNewsClient::with_base_urls("psophis".into(), HackerNewsConfig::default(), hn, algolia)
 }
+
+/// A base URL for the half of a client a test never reaches.
+const UNUSED: &str = "http://unused.invalid";
 
 fn favorites_page(ids: &[u64], more: Option<&str>) -> ResponseTemplate {
     let rows: String = ids
@@ -222,12 +206,7 @@ async fn two_page_favorites(hn: &MockServer, algolia: &MockServer, hits: [u64; 4
 async fn incremental_fetch_stops_each_stream_at_a_synced_page() {
     let (hn, algolia) = (MockServer::start().await, MockServer::start().await);
     two_page_favorites(&hn, &algolia, [1, 0, 1, 1]).await;
-    let client = HackerNewsClient::with_base_urls(
-        "psophis".into(),
-        HackerNewsConfig::default(),
-        hn.uri(),
-        algolia.uri(),
-    );
+    let client = hackernews_client(hn.uri(), algolia.uri());
     let existing: Vec<Bookmark> = [
         ("https://news.ycombinator.com/item?id=1", ""),
         ("https://example.com/two", ""),
@@ -266,12 +245,7 @@ async fn incremental_fetch_stops_each_stream_at_a_synced_page() {
 async fn incremental_fetch_reads_every_page_when_nothing_is_synced() {
     let (hn, algolia) = (MockServer::start().await, MockServer::start().await);
     two_page_favorites(&hn, &algolia, [1, 1, 1, 1]).await;
-    let client = HackerNewsClient::with_base_urls(
-        "psophis".into(),
-        HackerNewsConfig::default(),
-        hn.uri(),
-        algolia.uri(),
-    );
+    let client = hackernews_client(hn.uri(), algolia.uri());
 
     let (drafts, waits) = crate::http::recording_waits(client.fetch_incremental(&[])).await;
 
@@ -286,12 +260,7 @@ async fn incremental_fetch_reads_every_page_when_nothing_is_synced() {
 async fn backup_reads_every_favorites_page() {
     let (hn, algolia) = (MockServer::start().await, MockServer::start().await);
     two_page_favorites(&hn, &algolia, [1, 1, 1, 1]).await;
-    let client = HackerNewsClient::with_base_urls(
-        "psophis".into(),
-        HackerNewsConfig::default(),
-        hn.uri(),
-        algolia.uri(),
-    );
+    let client = hackernews_client(hn.uri(), algolia.uri());
 
     let dump = crate::http::recording_waits(client.dump()).await.0.unwrap();
 
@@ -311,7 +280,10 @@ async fn a_favorites_429_without_retry_after_is_not_retried() {
         .mount(&hn)
         .await;
 
-    let err = hackernews_client(&hn).fetch().await.unwrap_err();
+    let err = hackernews_client(hn.uri(), UNUSED.into())
+        .fetch()
+        .await
+        .unwrap_err();
 
     let SourceError::RateLimited(message) = err else {
         panic!("expected RateLimited, got {err:?}");
@@ -330,7 +302,10 @@ async fn a_favorites_429_with_a_long_retry_after_is_not_retried() {
         .mount(&hn)
         .await;
 
-    let err = hackernews_client(&hn).fetch().await.unwrap_err();
+    let err = hackernews_client(hn.uri(), UNUSED.into())
+        .fetch()
+        .await
+        .unwrap_err();
 
     let SourceError::RateLimited(message) = err else {
         panic!("expected RateLimited, got {err:?}");
@@ -358,7 +333,8 @@ async fn a_favorites_429_with_a_short_retry_after_is_retried_once() {
         .mount(&hn)
         .await;
 
-    let (drafts, waits) = crate::http::recording_waits(hackernews_client(&hn).fetch()).await;
+    let (drafts, waits) =
+        crate::http::recording_waits(hackernews_client(hn.uri(), UNUSED.into()).fetch()).await;
 
     assert!(drafts.unwrap().is_empty());
     assert_eq!(
@@ -379,7 +355,8 @@ async fn a_second_favorites_429_stops_the_fetch() {
         .mount(&hn)
         .await;
 
-    let (result, waits) = crate::http::recording_waits(hackernews_client(&hn).fetch()).await;
+    let (result, waits) =
+        crate::http::recording_waits(hackernews_client(hn.uri(), UNUSED.into()).fetch()).await;
 
     let err = result.unwrap_err();
     assert!(matches!(err, SourceError::RateLimited(_)), "got {err:?}");
@@ -423,7 +400,7 @@ async fn collect_ids_stops_at_the_page_cap() {
         "u".into(),
         HackerNewsConfig::default(),
         hn.uri(),
-        "http://unused.invalid".into(),
+        UNUSED.into(),
     );
     let mut ids = Vec::new();
     crate::http::recording_waits(client.collect_ids(
@@ -452,7 +429,7 @@ async fn fetch_items_pauses_only_between_algolia_chunks() {
     let client = HackerNewsClient::with_base_urls(
         "u".into(),
         HackerNewsConfig::default(),
-        "http://unused.invalid".into(),
+        UNUSED.into(),
         algolia.uri(),
     );
     let ids: Vec<HackerNewsItemId> = (0..=ITEM_BATCH as u64)
@@ -504,12 +481,7 @@ async fn dump_captures_both_scraped_pages_and_the_algolia_response() {
         .mount(&algolia)
         .await;
 
-    let client = HackerNewsClient::with_base_urls(
-        "psophis".into(),
-        HackerNewsConfig::default(),
-        hn.uri(),
-        algolia.uri(),
-    );
+    let client = hackernews_client(hn.uri(), algolia.uri());
     let dump = crate::http::recording_waits(client.dump()).await.0.unwrap();
 
     // Three streams' worth of pages: two scraped HTML pages and one Algolia response.
@@ -579,12 +551,7 @@ async fn algolia_answering_with_a_long_error_page() -> (MockServer, HackerNewsCl
         )
         .mount(&algolia)
         .await;
-    let client = HackerNewsClient::with_base_urls(
-        "psophis".into(),
-        HackerNewsConfig::default(),
-        "http://unused.invalid".into(),
-        algolia.uri(),
-    );
+    let client = hackernews_client(UNUSED.into(), algolia.uri());
     (algolia, client)
 }
 

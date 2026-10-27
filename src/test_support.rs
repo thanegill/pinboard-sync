@@ -139,6 +139,11 @@ pub fn stored_at(url: &str) -> Bookmark {
     }
 }
 
+/// The titles of `drafts`, in order.
+pub fn titles(drafts: &[BookmarkDraft]) -> Vec<&str> {
+    drafts.iter().map(|d| d.bookmark.title.as_str()).collect()
+}
+
 /// Build a `RedditListingEntry` from `kind` (`t3`/`t1`) and a `data` JSON object.
 pub fn listing_entry(kind: &str, data: Value) -> RedditListingEntry {
     serde_json::from_value(serde_json::json!({ "kind": kind, "data": data })).unwrap()

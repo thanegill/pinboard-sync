@@ -47,12 +47,7 @@ async fn cleanup_merges_a_story_into_a_separately_saved_article() {
         ..Default::default()
     };
 
-    let client = HackerNewsClient::with_base_urls(
-        String::new(),
-        HackerNewsConfig::default(),
-        "unused".into(),
-        algolia.uri(),
-    );
+    let client = algolia_client(&algolia);
     run(
         &pinboard.cleanup_store(false),
         &client,
@@ -112,12 +107,7 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
         ..Default::default()
     };
 
-    let client = HackerNewsClient::with_base_urls(
-        String::new(),
-        HackerNewsConfig::default(),
-        "unused".into(),
-        algolia.uri(),
-    );
+    let client = algolia_client(&algolia);
     run(
         &pinboard.cleanup_store(false),
         &client,
@@ -169,12 +159,7 @@ async fn cleanup_preserves_existing_note_on_text_post() {
         ..Default::default()
     };
 
-    let client = HackerNewsClient::with_base_urls(
-        String::new(),
-        HackerNewsConfig::default(),
-        "unused".into(),
-        algolia.uri(),
-    );
+    let client = algolia_client(&algolia);
     run(
         &pinboard.cleanup_store(false),
         &client,
@@ -224,12 +209,7 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
         ..Default::default()
     };
 
-    let client = HackerNewsClient::with_base_urls(
-        String::new(),
-        HackerNewsConfig::default(),
-        "unused".into(),
-        algolia.uri(),
-    );
+    let client = algolia_client(&algolia);
     run(
         &pinboard.cleanup_store(false),
         &client,
@@ -272,12 +252,7 @@ async fn link_discussions_keeps_entity_text_in_the_stored_title() {
         }],
         ..Default::default()
     };
-    let client = HackerNewsClient::with_base_urls(
-        String::new(),
-        HackerNewsConfig::default(),
-        "unused".into(),
-        algolia.uri(),
-    );
+    let client = algolia_client(&algolia);
     let opts = HackerNewsCleanupOpts {
         link_discussions: true,
         dates: NO_DATING,
@@ -289,4 +264,14 @@ async fn link_discussions_keeps_entity_text_in_the_stored_title() {
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].description, "Use &amp;amp; to escape");
+}
+
+/// A cleanup client that reads items from `algolia` (cleanup never scrapes favorites).
+fn algolia_client(algolia: &MockServer) -> HackerNewsClient {
+    HackerNewsClient::with_base_urls(
+        String::new(),
+        HackerNewsConfig::default(),
+        "unused".into(),
+        algolia.uri(),
+    )
 }

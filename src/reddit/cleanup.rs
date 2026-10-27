@@ -115,7 +115,7 @@ impl RedditCleanupOpts {
 
 /// The `cleanup reddit` choices that are not account settings: the cookie flag, and which
 /// `/api/info`-backed fixes to make.
-pub struct RedditCleanupFlags {
+pub struct RedditCleanupOverrides {
     pub cookie: Option<String>,
     pub mark_nsfw: bool,
     pub fix_titles: bool,

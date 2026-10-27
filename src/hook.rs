@@ -68,7 +68,7 @@ fn hook_shell(system_shell: &Path) -> &Path {
     }
 }
 
-/// The auth-failure hook: resolved flag/env (`ovr.on_auth_failure`) → per-account
+/// The auth-failure hook: resolved flag/env (`overrides.on_auth_failure`) → per-account
 /// override → per-source default → `[hooks]` global.
 pub fn resolve_hook(
     flag: Option<String>,
@@ -123,12 +123,12 @@ mod tests {
         config.hooks.on_auth_failure = Some("global-hook".into());
         let cleanup = cleanup_hook::<HackerNewsAccount>(None, &config);
         std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
-        let ovr = SyncOverrides {
+        let overrides = SyncOverrides {
             hackernews_username: Some("bob".into()),
             on_auth_failure: Some("flag-hook".into()),
             ..SyncOverrides::default()
         };
-        let job = build_job::<HackerNewsAccount>(None, &ovr, &config).expect("builds");
+        let job = build_job::<HackerNewsAccount>(None, &overrides, &config).expect("builds");
 
         assert_eq!(cleanup, None);
         assert_eq!(job.hook, None);

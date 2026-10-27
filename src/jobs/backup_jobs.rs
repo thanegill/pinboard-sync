@@ -67,7 +67,7 @@ pub fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
     match (cmd.all, &cmd.target) {
         (true, Some(_)) => bail!("--all cannot be combined with a target subcommand"),
         (true, None) => {
-            let ovr = SyncOverrides {
+            let overrides = SyncOverrides {
                 on_auth_failure: on_auth_failure_from_env(),
                 ..SyncOverrides::default()
             };
@@ -77,9 +77,9 @@ pub fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
                 out: None,
                 dry_run: false,
             };
-            every_backup_job::<RedditAccount>(&ovr, config, &mut plan);
-            every_backup_job::<GitHubAccount>(&ovr, config, &mut plan);
-            every_backup_job::<HackerNewsAccount>(&ovr, config, &mut plan);
+            every_backup_job::<RedditAccount>(&overrides, config, &mut plan);
+            every_backup_job::<GitHubAccount>(&overrides, config, &mut plan);
+            every_backup_job::<HackerNewsAccount>(&overrides, config, &mut plan);
             let has_source_targets = !plan.jobs.is_empty() || !plan.skipped.is_empty();
             match pinboard_backup_job(None, config)? {
                 Some(job) => plan.jobs.push(job),
@@ -152,7 +152,7 @@ pub fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
 fn source_backup_plan<A: SourceAccount>(
     name: Option<&str>,
     all: bool,
-    ovr: &SyncOverrides,
+    overrides: &SyncOverrides,
     out: &OutFlag,
     dry_run: bool,
     config: &Config,
@@ -170,20 +170,25 @@ fn source_backup_plan<A: SourceAccount>(
                 A::SOURCE
             );
         }
-        every_backup_job::<A>(ovr, config, &mut plan);
+        every_backup_job::<A>(overrides, config, &mut plan);
     } else {
         let account = config::select_account(A::configured(config), name)?;
-        plan.jobs.push(source_backup_job(account, ovr, config)?);
+        plan.jobs
+            .push(source_backup_job(account, overrides, config)?);
     }
     Ok(plan)
 }
 
 /// A backup job for every configured account of one source, with each account that fails
 /// to build recorded in `plan.skipped` instead, so the healthy ones are still backed up.
-fn every_backup_job<A: SourceAccount>(ovr: &SyncOverrides, config: &Config, plan: &mut BackupPlan) {
-    warn_shared_env_secrets::<A>(ovr, config);
+fn every_backup_job<A: SourceAccount>(
+    overrides: &SyncOverrides,
+    config: &Config,
+    plan: &mut BackupPlan,
+) {
+    warn_shared_env_secrets::<A>(overrides, config);
     for account in A::configured(config) {
-        match source_backup_job(Some(account), ovr, config) {
+        match source_backup_job(Some(account), overrides, config) {
             Ok(job) => plan.jobs.push(job),
             Err(reason) => plan.skipped.push(SkippedTarget {
                 label: job_label(Some(account)),
@@ -197,10 +202,10 @@ fn every_backup_job<A: SourceAccount>(ovr: &SyncOverrides, config: &Config, plan
 /// discarding the write-only settings (`limit`, `toread`, dates) backup has no use for.
 fn source_backup_job<A: SourceAccount>(
     account: Option<&A>,
-    ovr: &SyncOverrides,
+    overrides: &SyncOverrides,
     config: &Config,
 ) -> Result<BackupJob> {
-    let job = build_job(account, ovr, config)?;
+    let job = build_job(account, overrides, config)?;
     Ok(BackupJob {
         stem: format!(
             "{}-{}",

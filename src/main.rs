@@ -47,7 +47,7 @@ use jobs::{
     build_all_jobs, build_jobs, open_pinboard, AllRun, SourceAccount, SyncJob, SyncOverrides,
 };
 use pinboard::PinboardClient;
-use reddit::cleanup::RedditCleanupFlags;
+use reddit::cleanup::RedditCleanupOverrides;
 use reddit::model::RedditConfig;
 use reddit::RedditClient;
 use secrets::{
@@ -202,8 +202,9 @@ fn check_config(path: &Path) -> Result<String> {
 
 async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     let top_dry_run = cmd.dry_run;
-    let (jobs, ovr, prebuilt_failures) = sync_jobs(cmd, config)?;
-    let (pinboard, bookmarks) = open_pinboard(ovr.flags.pinboard_token.clone(), config).await?;
+    let (jobs, overrides, prebuilt_failures) = sync_jobs(cmd, config)?;
+    let (pinboard, bookmarks) =
+        open_pinboard(overrides.flags.pinboard_token.clone(), config).await?;
     // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
     // after it (per-source); honor either placement. (`--verbose` is global.)
     run_sync_jobs(
@@ -211,7 +212,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
         prebuilt_failures,
         &pinboard,
         &bookmarks,
-        ovr.dry_run || top_dry_run,
+        overrides.dry_run || top_dry_run,
     )
     .await
 }
@@ -225,7 +226,7 @@ fn sync_jobs(cmd: SyncCmd, config: &Config) -> Result<(Vec<SyncJob>, SyncOverrid
             if !config.has_accounts() {
                 bail!("--all requires a --config with at least one configured account");
             }
-            let ovr = SyncOverrides {
+            let overrides = SyncOverrides {
                 dry_run: cmd.dry_run,
                 on_auth_failure: cmd
                     .on_auth_failure
@@ -233,29 +234,32 @@ fn sync_jobs(cmd: SyncCmd, config: &Config) -> Result<(Vec<SyncJob>, SyncOverrid
                     .or_else(on_auth_failure_from_env),
                 ..SyncOverrides::default()
             };
-            let (jobs, prebuilt_failures) = build_all_jobs(config, &ovr);
-            (jobs, ovr, prebuilt_failures)
+            let (jobs, prebuilt_failures) = build_all_jobs(config, &overrides);
+            (jobs, overrides, prebuilt_failures)
         }
         (false, Some(SyncSource::Reddit(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+            let overrides =
+                SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
             let (jobs, prebuilt_failures) =
-                build_jobs::<RedditAccount>(account.as_deref(), all, &ovr, config)?;
-            (jobs, ovr, prebuilt_failures)
+                build_jobs::<RedditAccount>(account.as_deref(), all, &overrides, config)?;
+            (jobs, overrides, prebuilt_failures)
         }
         (false, Some(SyncSource::Github(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+            let overrides =
+                SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
             let (jobs, prebuilt_failures) =
-                build_jobs::<GitHubAccount>(account.as_deref(), all, &ovr, config)?;
-            (jobs, ovr, prebuilt_failures)
+                build_jobs::<GitHubAccount>(account.as_deref(), all, &overrides, config)?;
+            (jobs, overrides, prebuilt_failures)
         }
         (false, Some(SyncSource::Hackernews(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+            let overrides =
+                SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
             let (jobs, prebuilt_failures) =
-                build_jobs::<HackerNewsAccount>(account.as_deref(), all, &ovr, config)?;
-            (jobs, ovr, prebuilt_failures)
+                build_jobs::<HackerNewsAccount>(account.as_deref(), all, &overrides, config)?;
+            (jobs, overrides, prebuilt_failures)
         }
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
     })
@@ -414,7 +418,7 @@ fn resolve_backup_dir(flag: Option<String>, config: &Config) -> Result<PathBuf> 
 // --- cleanup -----------------------------------------------------------------
 
 async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
-    let over = DateOverrides::from(&cmd.dates);
+    let overrides = DateOverrides::from(&cmd.dates);
     match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
@@ -424,9 +428,9 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             if !config.has_accounts() {
                 bail!("cleanup --all requires a --config with at least one configured account");
             }
-            let github = cleanup_all_pass::<GitHubAccount>(&over, config)?;
-            let reddit = cleanup_all_pass::<RedditAccount>(&over, config)?;
-            let hackernews = cleanup_all_pass::<HackerNewsAccount>(&over, config)?;
+            let github = cleanup_all_pass::<GitHubAccount>(&overrides, config)?;
+            let reddit = cleanup_all_pass::<RedditAccount>(&overrides, config)?;
+            let hackernews = cleanup_all_pass::<HackerNewsAccount>(&overrides, config)?;
             let (pinboard, bookmarks) = open_pinboard(None, config).await?;
             // One view across all three sources: each writes, and the next must plan
             // against what it left rather than the pre-run snapshot.
@@ -436,12 +440,14 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                 run.record(cleanup_one_github(&store, Some(acct), None, dates, config).await);
             }
             if let Some((acct, dates)) = reddit {
-                let flags = RedditCleanupFlags {
+                let reddit_overrides = RedditCleanupOverrides {
                     cookie: None,
                     mark_nsfw: true,
                     fix_titles: true,
                 };
-                run.record(cleanup_one_reddit(Some(acct), flags, dates, &store, config).await);
+                run.record(
+                    cleanup_one_reddit(Some(acct), reddit_overrides, dates, &store, config).await,
+                );
             }
             if let Some((acct, dates)) = hackernews {
                 run.record(
@@ -458,13 +464,13 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             run.finish()
         }
         (false, Some(CleanupSource::Reddit(args))) => {
-            run_cleanup_reddit(args, cmd.dry_run, &over, config).await
+            run_cleanup_reddit(args, cmd.dry_run, &overrides, config).await
         }
         (false, Some(CleanupSource::Github(args))) => {
-            run_cleanup_github(args, cmd.dry_run, &over, config).await
+            run_cleanup_github(args, cmd.dry_run, &overrides, config).await
         }
         (false, Some(CleanupSource::Hackernews(args))) => {
-            run_cleanup_hackernews(args, cmd.dry_run, &over, config).await
+            run_cleanup_hackernews(args, cmd.dry_run, &overrides, config).await
         }
         (false, None) => bail!("specify a source (e.g. `cleanup reddit`) or pass --all"),
     }
@@ -474,14 +480,15 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
 /// `None` for a source with no accounts. Resolved before `posts/all` is read, so a
 /// refused run does not spend that rate-limited call.
 fn cleanup_all_pass<'a, A: SourceAccount>(
-    over: &DateOverrides,
+    overrides: &DateOverrides,
     config: &'a Config,
 ) -> Result<Option<(&'a A, DateOpts)>> {
     let Some(account) = A::configured(config).first() else {
         return Ok(None);
     };
     let pass = format!("`cleanup --all` ({} pass)", A::SOURCE);
-    let dates = resolve_cleanup_dates(&pass, over, Some(account), A::defaults(config), config)?;
+    let dates =
+        resolve_cleanup_dates(&pass, overrides, Some(account), A::defaults(config), config)?;
     Ok(Some((account, dates)))
 }
 
@@ -495,14 +502,14 @@ fn cleanup_dry_run(top_dry_run: bool, source_dry_run: bool) -> bool {
 async fn run_cleanup_github(
     args: GitHubCleanupArgs,
     top_dry_run: bool,
-    top: &DateOverrides,
+    top_overrides: &DateOverrides,
     config: &Config,
 ) -> Result<()> {
-    let over = DateOverrides::from(&args.dates).with_top_level(top);
+    let overrides = DateOverrides::from(&args.dates).with_top_level(top_overrides);
     let account = config::select_account(&config.github, args.account.as_deref())?;
     let dates = resolve_cleanup_dates(
         "`cleanup github`",
-        &over,
+        &overrides,
         account,
         &config.defaults.github,
         config,
@@ -545,7 +552,7 @@ async fn cleanup_github_with<S: BookmarkStore + AccountState>(
 async fn run_cleanup_reddit(
     args: RedditCleanupArgs,
     top_dry_run: bool,
-    top: &DateOverrides,
+    top_overrides: &DateOverrides,
     config: &Config,
 ) -> Result<()> {
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
@@ -554,7 +561,7 @@ async fn run_cleanup_reddit(
     let account = config::select_account(&config.reddit, args.account.as_deref())?;
     let dates = resolve_cleanup_dates(
         "`cleanup reddit`",
-        &DateOverrides::from(&args.dates).with_top_level(top),
+        &DateOverrides::from(&args.dates).with_top_level(top_overrides),
         account,
         &config.defaults.reddit,
         config,
@@ -563,7 +570,7 @@ async fn run_cleanup_reddit(
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
     cleanup_one_reddit(
         account,
-        RedditCleanupFlags::from(&args),
+        RedditCleanupOverrides::from(&args),
         dates,
         &store,
         config,
@@ -573,14 +580,14 @@ async fn run_cleanup_reddit(
 
 async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     account: Option<&RedditAccount>,
-    flags: RedditCleanupFlags,
+    overrides: RedditCleanupOverrides,
     dates: DateOpts,
     store: &S,
     config: &Config,
 ) -> Result<()> {
     let opts = reddit::cleanup::RedditCleanupOpts {
-        mark_nsfw: flags.mark_nsfw,
-        fix_titles: flags.fix_titles,
+        mark_nsfw: overrides.mark_nsfw,
+        fix_titles: overrides.fix_titles,
         config: account.map(RedditConfig::from).unwrap_or_default(),
         dates,
         accounts: config.reddit.iter().map(RedditConfig::from).collect(),
@@ -590,7 +597,7 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     // the source post (the post's created_utc comes from /api/info too).
     let reddit = if opts.mark_nsfw || opts.fix_titles || opts.dates.use_post_date {
         let cookie =
-            resolve_reddit_cookie(flags.cookie, account).with_context(missing_reddit_cookie)?;
+            resolve_reddit_cookie(overrides.cookie, account).with_context(missing_reddit_cookie)?;
         Some(RedditClient::for_info(Some(cookie))?)
     } else {
         None
@@ -605,7 +612,7 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
 async fn run_cleanup_hackernews(
     args: HackerNewsCleanupArgs,
     top_dry_run: bool,
-    top: &DateOverrides,
+    top_overrides: &DateOverrides,
     config: &Config,
 ) -> Result<()> {
     // One pass over the Pinboard account's HN bookmarks, using the selected (or
@@ -613,7 +620,7 @@ async fn run_cleanup_hackernews(
     let account = config::select_account(&config.hackernews, args.account.as_deref())?;
     let dates = resolve_cleanup_dates(
         "`cleanup hackernews`",
-        &DateOverrides::from(&args.dates).with_top_level(top),
+        &DateOverrides::from(&args.dates).with_top_level(top_overrides),
         account,
         &config.defaults.hackernews,
         config,
@@ -814,14 +821,14 @@ mod tests {
         let cmd = parse_sync(&["--all", "--on-auth-failure", "refresh-cookie"]);
         assert_eq!(cmd.on_auth_failure.as_deref(), Some("refresh-cookie"));
 
-        let ovr = SyncOverrides {
+        let overrides = SyncOverrides {
             dry_run: cmd.dry_run,
             on_auth_failure: cmd.on_auth_failure.clone(),
             reddit_username: Some("alice".into()),
             reddit_cookie: Some("reddit_session=x".into()),
             ..SyncOverrides::default()
         };
-        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("refresh-cookie"));
     }
 
@@ -838,7 +845,7 @@ mod tests {
             "top-level flag must not bind the env"
         );
 
-        let ovr = SyncOverrides {
+        let overrides = SyncOverrides {
             dry_run: cmd.dry_run,
             on_auth_failure: cmd
                 .on_auth_failure
@@ -850,7 +857,7 @@ mod tests {
         };
         std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
 
-        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("env-hook"));
     }
 
@@ -875,8 +882,8 @@ mod tests {
         };
         assert_eq!(args.on_auth_failure, None);
 
-        let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
+        let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+        let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("top-hook"));
     }
 
@@ -898,8 +905,8 @@ mod tests {
             _ => panic!("expected `sync reddit` args"),
         };
 
-        let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
+        let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+        let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("source-hook"));
     }
 
@@ -930,8 +937,8 @@ mod tests {
         };
         assert_eq!(args.on_auth_failure.as_deref(), Some("explicit-hook"));
 
-        let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
+        let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+        let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("explicit-hook"));
     }
 
@@ -957,8 +964,8 @@ mod tests {
             _ => panic!("expected `sync reddit` args"),
         };
 
-        let ovr = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
+        let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+        let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("env-hook"));
     }
 
@@ -985,9 +992,9 @@ mod tests {
         };
         assert_eq!(args.dates.use_post_date, None);
 
-        let over =
+        let overrides =
             DateOverrides::from(&args.dates).with_top_level(&DateOverrides::from(&cmd.dates));
-        assert_eq!(over.use_post_date, Some(true));
+        assert_eq!(overrides.use_post_date, Some(true));
     }
 
     #[test]
@@ -1002,9 +1009,9 @@ mod tests {
         };
         assert_eq!(args.dates.use_post_date, Some(false));
 
-        let over =
+        let overrides =
             DateOverrides::from(&args.dates).with_top_level(&DateOverrides::from(&cmd.dates));
-        assert_eq!(over.use_post_date, Some(false));
+        assert_eq!(overrides.use_post_date, Some(false));
     }
 
     /// The `dry_run` field of a parsed per-source cleanup args struct.

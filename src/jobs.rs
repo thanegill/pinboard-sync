@@ -36,12 +36,12 @@ use crate::timefmt::{resolve_dates, DateOverrides};
 /// reported and counted rather than aborting the whole run, so the healthy
 /// accounts still sync. Returns the buildable jobs and the count of accounts
 /// that failed to build, which the caller threads into the run's exit code.
-pub fn build_all_jobs(config: &Config, ovr: &SyncOverrides) -> (Vec<SyncJob>, usize) {
+pub fn build_all_jobs(config: &Config, overrides: &SyncOverrides) -> (Vec<SyncJob>, usize) {
     let mut jobs = Vec::new();
     let mut run = AllRun::default();
-    build_every_job::<RedditAccount>(config, ovr, &mut jobs, &mut run);
-    build_every_job::<GitHubAccount>(config, ovr, &mut jobs, &mut run);
-    build_every_job::<HackerNewsAccount>(config, ovr, &mut jobs, &mut run);
+    build_every_job::<RedditAccount>(config, overrides, &mut jobs, &mut run);
+    build_every_job::<GitHubAccount>(config, overrides, &mut jobs, &mut run);
+    build_every_job::<HackerNewsAccount>(config, overrides, &mut jobs, &mut run);
     (jobs, run.failed)
 }
 
@@ -49,13 +49,13 @@ pub fn build_all_jobs(config: &Config, ovr: &SyncOverrides) -> (Vec<SyncJob>, us
 /// account that fails to build recorded in `run` instead.
 fn build_every_job<A: SourceAccount>(
     config: &Config,
-    ovr: &SyncOverrides,
+    overrides: &SyncOverrides,
     jobs: &mut Vec<SyncJob>,
     run: &mut AllRun,
 ) {
-    warn_shared_env_secrets::<A>(ovr, config);
+    warn_shared_env_secrets::<A>(overrides, config);
     for account in A::configured(config) {
-        match build_job(Some(account), ovr, config) {
+        match build_job(Some(account), overrides, config) {
             Ok(job) => jobs.push(job),
             Err(e) => run.record(Err(
                 e.context(format!("{} could not be built", job_label(Some(account))))
@@ -66,8 +66,12 @@ fn build_every_job<A: SourceAccount>(
 
 /// Warn when an environment secret would stand in for the own value of every configured
 /// account of `A`, through [`secrets::warn_if_env_shared`].
-pub fn warn_shared_env_secrets<A: SourceAccount>(ovr: &SyncOverrides, config: &Config) {
-    secrets::warn_if_env_shared(A::SOURCE, &A::env_secrets(ovr), A::configured(config).len());
+pub fn warn_shared_env_secrets<A: SourceAccount>(overrides: &SyncOverrides, config: &Config) {
+    secrets::warn_if_env_shared(
+        A::SOURCE,
+        &A::env_secrets(overrides),
+        A::configured(config).len(),
+    );
 }
 
 /// The secrets among `flagged` whose CLI flag holds no value the ladder would take, so
@@ -87,7 +91,7 @@ fn unflagged(flagged: &[(EnvSecret, &Option<String>)]) -> Vec<EnvSecret> {
 pub fn build_jobs<A: SourceAccount>(
     name: Option<&str>,
     all: bool,
-    ovr: &SyncOverrides,
+    overrides: &SyncOverrides,
     config: &Config,
 ) -> Result<(Vec<SyncJob>, usize)> {
     let accounts = A::configured(config);
@@ -97,11 +101,11 @@ pub fn build_jobs<A: SourceAccount>(
         }
         let mut jobs = Vec::new();
         let mut run = AllRun::default();
-        build_every_job::<A>(config, ovr, &mut jobs, &mut run);
+        build_every_job::<A>(config, overrides, &mut jobs, &mut run);
         Ok((jobs, run.failed))
     } else {
         let account = config::select_account(accounts, name)?;
-        Ok((vec![build_job(account, ovr, config)?], 0))
+        Ok((vec![build_job(account, overrides, config)?], 0))
     }
 }
 
@@ -212,30 +216,30 @@ impl UrlKey for SourceClient {
 /// global ladder. Leaves client/secret/hook construction to each source builder.
 fn resolve_job_settings(
     account: Option<&impl config::Account>,
-    ovr: &SyncOverrides,
+    overrides: &SyncOverrides,
     src: &config::SourceDefaults,
     config: &Config,
 ) -> JobSettings {
     JobSettings {
         limit: resolve_setting(
-            ovr.flags.limit,
+            overrides.flags.limit,
             account.and_then(|a| a.limit()),
             src.limit,
             config.pinboard.limit.unwrap_or_default(),
         ),
         toread: resolve_setting(
-            ovr.flags.toread,
+            overrides.flags.toread,
             account.and_then(|a| a.toread()),
             src.toread,
             config.pinboard.toread,
         ),
         shared: resolve_setting(
-            ovr.flags.public,
+            overrides.flags.public,
             account.and_then(|a| a.public()),
             src.public,
             config.pinboard.public,
         ),
-        dates: resolve_dates(&DateOverrides::from(&ovr.flags), account, src, config),
+        dates: resolve_dates(&DateOverrides::from(&overrides.flags), account, src, config),
     }
 }
 
@@ -256,23 +260,26 @@ pub trait SourceAccount: config::Account + Sized {
     /// The account's own `on_auth_failure` override.
     fn on_auth_failure(&self) -> Option<&str>;
 
-    /// The secrets [`Self::client`] resolves whose CLI flag in `ovr` holds no usable value,
-    /// so that the environment outranks each account's own value.
-    fn env_secrets(ovr: &SyncOverrides) -> Vec<EnvSecret>;
+    /// The secrets [`Self::client`] resolves whose CLI flag in `overrides` holds no usable
+    /// value, so that the environment outranks each account's own value.
+    fn env_secrets(overrides: &SyncOverrides) -> Vec<EnvSecret>;
 
     /// The client for `account`, or for the implicit CLI/env account when `None`, with
     /// its credentials resolved through the secret ladder. `config` is the whole config,
     /// for what one source needs to know of another's accounts.
-    fn client(account: Option<&Self>, ovr: &SyncOverrides, config: &Config)
-        -> Result<SourceClient>;
+    fn client(
+        account: Option<&Self>,
+        overrides: &SyncOverrides,
+        config: &Config,
+    ) -> Result<SourceClient>;
 
-    /// The auth-failure hook for `account`: `top` (the flag or env value the command
+    /// The auth-failure hook for `account`: `top_hook` (the flag or env value the command
     /// resolved), else the account's, else the per-source default, else `[hooks]`. Both
     /// `sync` jobs and `cleanup` resolve it here, so a source that never re-authenticates
     /// can rule a hook out for every command at once.
-    fn hook(account: Option<&Self>, top: Option<String>, config: &Config) -> Option<String> {
+    fn hook(account: Option<&Self>, top_hook: Option<String>, config: &Config) -> Option<String> {
         resolve_hook(
-            top,
+            top_hook,
             account.and_then(Self::on_auth_failure),
             Self::defaults(config).on_auth_failure.as_deref(),
             config,
@@ -295,26 +302,26 @@ impl SourceAccount for RedditAccount {
         self.on_auth_failure.as_deref()
     }
 
-    fn env_secrets(ovr: &SyncOverrides) -> Vec<EnvSecret> {
+    fn env_secrets(overrides: &SyncOverrides) -> Vec<EnvSecret> {
         unflagged(&[
-            (EnvSecret::REDDIT_USERNAME, &ovr.reddit_username),
-            (EnvSecret::REDDIT_COOKIE, &ovr.reddit_cookie),
+            (EnvSecret::REDDIT_USERNAME, &overrides.reddit_username),
+            (EnvSecret::REDDIT_COOKIE, &overrides.reddit_cookie),
         ])
     }
 
     fn client(
         account: Option<&Self>,
-        ovr: &SyncOverrides,
+        overrides: &SyncOverrides,
         config: &Config,
     ) -> Result<SourceClient> {
         let username = resolve_secret(
-            ovr.reddit_username.clone(),
+            overrides.reddit_username.clone(),
             "REDDIT_USERNAME",
             account.and_then(|a| a.username.clone()),
             None,
         )
         .context("missing Reddit username (set --reddit-username, REDDIT_USERNAME, or `username` in the config)")?;
-        let cookie = resolve_reddit_cookie(ovr.reddit_cookie.clone(), account);
+        let cookie = resolve_reddit_cookie(overrides.reddit_cookie.clone(), account);
         let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
         Ok(SourceClient::Reddit(
             RedditClient::for_user(username, cookie, reddit_config)?
@@ -338,12 +345,16 @@ impl SourceAccount for GitHubAccount {
         self.on_auth_failure.as_deref()
     }
 
-    fn env_secrets(ovr: &SyncOverrides) -> Vec<EnvSecret> {
-        unflagged(&[(EnvSecret::GITHUB_TOKEN, &ovr.github_token)])
+    fn env_secrets(overrides: &SyncOverrides) -> Vec<EnvSecret> {
+        unflagged(&[(EnvSecret::GITHUB_TOKEN, &overrides.github_token)])
     }
 
-    fn client(account: Option<&Self>, ovr: &SyncOverrides, _: &Config) -> Result<SourceClient> {
-        let token = resolve_github_token(ovr.github_token.clone(), account)
+    fn client(
+        account: Option<&Self>,
+        overrides: &SyncOverrides,
+        _: &Config,
+    ) -> Result<SourceClient> {
+        let token = resolve_github_token(overrides.github_token.clone(), account)
             .with_context(missing_github_token)?;
         let github_config = account.map(GitHubConfig::from).unwrap_or_default();
         Ok(SourceClient::GitHub(GitHubClient::new(
@@ -368,17 +379,17 @@ impl SourceAccount for HackerNewsAccount {
         None
     }
 
-    fn env_secrets(ovr: &SyncOverrides) -> Vec<EnvSecret> {
-        unflagged(&[(EnvSecret::HN_USERNAME, &ovr.hackernews_username)])
+    fn env_secrets(overrides: &SyncOverrides) -> Vec<EnvSecret> {
+        unflagged(&[(EnvSecret::HN_USERNAME, &overrides.hackernews_username)])
     }
 
     fn client(
         account: Option<&Self>,
-        ovr: &SyncOverrides,
+        overrides: &SyncOverrides,
         config: &Config,
     ) -> Result<SourceClient> {
         let username = resolve_secret(
-            ovr.hackernews_username.clone(),
+            overrides.hackernews_username.clone(),
             "HN_USERNAME",
             account.and_then(|a| a.username.clone()),
             None,
@@ -403,14 +414,14 @@ impl SourceAccount for HackerNewsAccount {
 /// hook, and its settings resolved through [`resolve_job_settings`].
 pub fn build_job<A: SourceAccount>(
     account: Option<&A>,
-    ovr: &SyncOverrides,
+    overrides: &SyncOverrides,
     config: &Config,
 ) -> Result<SyncJob> {
     Ok(SyncJob {
-        client: A::client(account, ovr, config)?,
+        client: A::client(account, overrides, config)?,
         label: job_label(account),
-        hook: A::hook(account, ovr.on_auth_failure.clone(), config),
-        settings: resolve_job_settings(account, ovr, A::defaults(config), config),
+        hook: A::hook(account, overrides.on_auth_failure.clone(), config),
+        settings: resolve_job_settings(account, overrides, A::defaults(config), config),
     })
 }
 
@@ -512,32 +523,33 @@ mod tests {
 
     #[test]
     fn build_job_wires_reddit_overrides_to_job_fields() {
-        let ovr = SyncOverrides {
+        let overrides = SyncOverrides {
             reddit_username: Some("alice".into()),
             reddit_cookie: Some("reddit_session=x".into()),
             ..wiring_overrides()
         };
-        let job = build_job::<RedditAccount>(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
         assert_wired(&job);
     }
 
     #[test]
     fn build_job_wires_github_overrides_to_job_fields() {
-        let ovr = SyncOverrides {
+        let overrides = SyncOverrides {
             github_token: Some("ghp_test".into()),
             ..wiring_overrides()
         };
-        let job = build_job::<GitHubAccount>(None, &ovr, &Config::default()).expect("builds");
+        let job = build_job::<GitHubAccount>(None, &overrides, &Config::default()).expect("builds");
         assert_wired(&job);
     }
 
     #[test]
     fn build_job_wires_hackernews_overrides_to_job_fields() {
-        let ovr = SyncOverrides {
+        let overrides = SyncOverrides {
             hackernews_username: Some("alice".into()),
             ..wiring_overrides()
         };
-        let job = build_job::<HackerNewsAccount>(None, &ovr, &Config::default()).expect("builds");
+        let job =
+            build_job::<HackerNewsAccount>(None, &overrides, &Config::default()).expect("builds");
         assert_wired(&job);
     }
 
@@ -550,11 +562,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        let ovr = SyncOverrides {
+        let overrides = SyncOverrides {
             hackernews_username: Some("alice".into()),
             ..Default::default()
         };
-        let job = build_job::<HackerNewsAccount>(None, &ovr, &config).expect("builds");
+        let job = build_job::<HackerNewsAccount>(None, &overrides, &config).expect("builds");
         assert_eq!(
             job.client
                 .dedup_key(&crate::test_support::url(

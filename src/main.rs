@@ -201,7 +201,25 @@ fn check_config(path: &Path) -> Result<String> {
 // --- sync --------------------------------------------------------------------
 
 async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
-    let (jobs, ovr, prebuilt_failures) = match (cmd.all, cmd.source) {
+    let top_dry_run = cmd.dry_run;
+    let (jobs, ovr, prebuilt_failures) = sync_jobs(cmd, config)?;
+    let (pinboard, bookmarks) = open_pinboard(ovr.flags.pinboard_token.clone(), config).await?;
+    // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
+    // after it (per-source); honor either placement. (`--verbose` is global.)
+    run_sync_jobs(
+        jobs,
+        prebuilt_failures,
+        &pinboard,
+        &bookmarks,
+        ovr.dry_run || top_dry_run,
+    )
+    .await
+}
+
+/// The jobs a `sync` invocation runs, the overrides they were built from, and how many
+/// of its accounts could not be built, for [`run_sync_jobs`] to count as failed.
+fn sync_jobs(cmd: SyncCmd, config: &Config) -> Result<(Vec<SyncJob>, SyncOverrides, usize)> {
+    Ok(match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
             if !config.has_accounts() {
@@ -240,19 +258,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
             (jobs, ovr, prebuilt_failures)
         }
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
-    };
-
-    let (pinboard, bookmarks) = open_pinboard(ovr.flags.pinboard_token.clone(), config).await?;
-    // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
-    // after it (per-source); honor either placement. (`--verbose` is global.)
-    run_sync_jobs(
-        jobs,
-        prebuilt_failures,
-        &pinboard,
-        &bookmarks,
-        ovr.dry_run || cmd.dry_run,
-    )
-    .await
+    })
 }
 
 /// Fetch every job's source concurrently (reads only, on one task), then write the
@@ -752,6 +758,40 @@ mod tests {
             Command::Sync(cmd) => cmd,
             _ => panic!("expected `sync` command"),
         }
+    }
+
+    /// Both `--all` forms must hand `run_sync_jobs` the accounts they could not build, or
+    /// a run that synced only the healthy ones exits 0.
+    #[test]
+    fn sync_all_counts_the_accounts_it_could_not_build() {
+        let _env = lock_on_auth_failure_env();
+        let config = Config {
+            github: vec![
+                GitHubAccount {
+                    name: Some("main".into()),
+                    token: Some("ghp_test".into()),
+                    ..Default::default()
+                },
+                GitHubAccount {
+                    name: Some("tokenless".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        for argv in [&["github", "--all"][..], &["--all"]] {
+            let (jobs, _, prebuilt_failures) = sync_jobs(parse_sync(argv), &config).expect("plans");
+            assert_eq!((jobs.len(), prebuilt_failures), (1, 1), "sync {argv:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn run_sync_jobs_fails_the_run_for_accounts_it_could_not_build() {
+        let pinboard = PinboardClient::new("user:token".into(), 0).unwrap();
+        let error = run_sync_jobs(Vec::new(), 1, &pinboard, &[], false)
+            .await
+            .expect_err("an unbuilt account fails the run");
+        assert_eq!(error.to_string(), "1 account(s) failed");
     }
 
     #[test]

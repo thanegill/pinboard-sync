@@ -967,6 +967,17 @@ mod tests {
     }
 
     #[test]
+    fn an_algolia_title_is_entity_decoded_exactly_once() {
+        let d = item(json!({
+            "id": 12, "type": "story", "by": "dave",
+            "title": "Tom &amp;amp; Jerry&#x27;s &lt;3", "url": "https://example.com/a"
+        }))
+        .into_draft(&HackerNewsConfig::default(), &[])
+        .unwrap();
+        assert_eq!(d.bookmark.title, "Tom &amp; Jerry's <3");
+    }
+
+    #[test]
     fn comment_bookmarks_permalink_with_comment_tag() {
         let d = item(json!({
             "id": 9, "type": "comment", "by": "carol", "text": "my reply"

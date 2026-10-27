@@ -1,9 +1,10 @@
 name: CI
 
-# Runs the same gate as the local dev shell on every branch push and PR:
-# fmt + clippy + the full test suite (incl. net_tests), plus `nix flake check`
-# (the flake's checks: the sandboxed package build and an evaluation of a NixOS
-# system with the module enabled).
+# Runs the same gate as the local dev shell on every branch push and PR, as two
+# parallel jobs: `gate` runs fmt + clippy + the full test suite (incl. net_tests),
+# and `flake` runs `nix flake check` (the sandboxed package build and its tests,
+# the Nix lint, and the NixOS module evaluated with `config check` run on its
+# rendered TOML).
 
 on:
   push:
@@ -34,6 +35,14 @@ jobs:
 
       - name: cargo test
         run: nix develop --command cargo test
+
+  flake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - name: nix flake check
         run: nix flake check --print-build-logs

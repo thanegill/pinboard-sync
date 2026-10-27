@@ -978,8 +978,8 @@ async fn an_expired_cookie_surfaces_as_reauth_not_a_flattened_error() {
 
 #[tokio::test]
 async fn an_api_info_block_stays_a_block() {
-    // The variant must survive so `main` withholds the hook, which no cookie change
-    // would make useful for a block.
+    // The variant must survive so the `cleanup` command withholds the hook, which no
+    // cookie change would make useful for a block.
     let pinboard = FakePinboard {
         all: vec![bookmark(
             "https://www.reddit.com/r/rust/comments/abc/x/",

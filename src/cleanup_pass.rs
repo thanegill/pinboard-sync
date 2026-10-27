@@ -112,8 +112,8 @@ pub struct PassOutcome {
 ///
 /// Variants rather than one message because only one of them is an auth problem:
 /// [`PassOutcome::into_result`] maps each to its own [`SourceError`], which is what lets
-/// `main` fire the `--on-auth-failure` hook for [`Halt::Reauth`] and withhold it for the
-/// others, since no credential change clears a quota or an edge block.
+/// the `cleanup` command fire the auth-failure hook for [`Halt::Reauth`] and withhold it
+/// for the others, since no credential change clears a quota or an edge block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Halt {
     /// A credential needs refreshing.
@@ -183,8 +183,8 @@ impl PassOutcome {
     /// [`Plan`]s, leaving `plan_failed` to post-retry 5xx, network trouble and unlabelled
     /// throttling. The `max(1)` floor keeps one failed lookup survivable for a pass that
     /// looks up only one or two bookmarks, like the discussion-link pass. Returns
-    /// [`SourceError`] so `main` fires the auth-failure hook for a halted credential, and
-    /// only for that.
+    /// [`SourceError`] so the `cleanup` command fires the auth-failure hook for a halted
+    /// credential, and only for that.
     pub fn into_result(self) -> Result<(), SourceError> {
         if let Some(halt) = &self.halted {
             // Why we stopped is the headline, but it must not bury what else went wrong

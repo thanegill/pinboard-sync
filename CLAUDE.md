@@ -39,8 +39,9 @@ gate green.
 ## Architecture
 
 The flow is one pass: a source yields drafts → skip those already on Pinboard → write the
-rest. `main.rs` loads the config and dispatches each subcommand (`run_sync`, `run_cleanup`,
-`run_backup`); the clap types are in [`src/cli.rs`](src/cli.rs), secret resolution in
+rest. `main.rs` loads the config and dispatches each subcommand to its driver in
+[`src/commands.rs`](src/commands.rs) (`run_sync`, `run_cleanup`, `run_backup`); the clap
+types are in [`src/cli.rs`](src/cli.rs), secret resolution in
 [`src/secrets.rs`](src/secrets.rs), the settings ladder (`resolve_setting`, `resolve_dates`,
 `resolve_job_settings`, `resolve_hook`) in [`src/settings.rs`](src/settings.rs), job
 building, the Pinboard client setup (`open_pinboard`) and the `--all` failure tally
@@ -81,8 +82,8 @@ failed state forever. `SourceError::ReauthRequired`, `SourceError::RateLimited` 
 block all fail every remaining lookup too) but the plans already made are still written —
 which is why `plan` returns `SourceError` rather than a flattened `anyhow::Error`.
 `PassOutcome::halted` records *which* it was as a `Halt`, and `into_result` maps each back
-to its own `SourceError` so `main` fires the auth-failure hook for `Halt::Reauth` only — no
-credential change clears a rate limit or an edge block.
+to its own `SourceError` so the `cleanup` command fires the auth-failure hook for
+`Halt::Reauth` only — no credential change clears a rate limit or an edge block.
 
 **The run has one live view of the account, not a snapshot.** `posts/all` is read once into
 an `AccountView` ([`src/bookmark.rs`](src/bookmark.rs)), and `CleanupStore` wraps the real
@@ -201,7 +202,7 @@ boundary.
 **Every source is a `Source`, and one sync loop drives them all.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `Vec<BookmarkDraft>` (a
 `Bookmark` plus the `dedup_key`), and the `UrlKey::dedup_key()` supertrait method maps an
-existing Pinboard URL to that source's dedup key. `run_sync_jobs` (`main.rs`) fetches
+existing Pinboard URL to that source's dedup key. `run_sync_jobs` (`commands.rs`) fetches
 drafts, and `sync::prepare_new_drafts`, bounded by `UrlKey` alone since that is all it uses,
 builds the set of existing keys by mapping the account's bookmarks through
 `source.dedup_key` (`UrlKey::synced_keys`) and keeps the drafts whose `dedup_key` isn't

@@ -4,9 +4,9 @@ use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// An expired token during the pass has to reach the caller as `ReauthRequired`, or
-/// `main` cannot tell it apart from any other failure and the auth-failure hook
-/// never fires for `cleanup`.
+/// An expired token during the pass has to reach the caller as `ReauthRequired`, or the
+/// `cleanup` command cannot tell it apart from any other failure and the auth-failure
+/// hook never fires.
 #[tokio::test]
 async fn cleanup_surfaces_an_expired_token_as_reauth() {
     let server = MockServer::start().await;

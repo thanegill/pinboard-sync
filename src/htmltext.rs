@@ -4,8 +4,9 @@
 //! `<blockquote>`, which Pinboard renders in the notes field.
 
 /// Clean a title (`description`): decode HTML entities and collapse all internal
-/// whitespace to single spaces (trimmed). Source titles (GitHub descriptions, HN
-/// titles) are plain text, not markup, so literal angle brackets (`Vec<String>`,
+/// whitespace to single spaces (trimmed). HN titles are documented as HTML (HN's item
+/// API, which Algolia indexes verbatim), so their entities need decoding, but neither
+/// they nor GitHub's descriptions carry markup, so literal angle brackets (`Vec<String>`,
 /// `vector<T>`) are preserved verbatim rather than dropped as HTML tags. Literal `<`/`>`
 /// are escaped before parsing so scraper decodes entities without treating a `<...>`
 /// span as an element to strip. Not for Reddit titles, which `raw_json=1` already returns

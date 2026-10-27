@@ -54,7 +54,7 @@ All notable changes to this project are documented here. The format is based on
   through to the service as written.
 - A `reddit_domain` outside reddit.com no longer makes every `sync` re-add every save.
 - A HackerNews favorite linking a Reddit or GitHub page is no longer re-added after
-  `cleanup` moves it to its canonical URL, unless `reddit_domain` is outside reddit.com.
+  `cleanup` moves it to its canonical URL, even on a `reddit_domain` outside reddit.com.
 - Commas, which Pinboard forbids in tags, are slugged like spaces in derived tags
   (`reddit-flair:help-question`) and rejected in configured ones; tags already written
   with a comma stay until removed by hand.
@@ -69,6 +69,9 @@ All notable changes to this project are documented here. The format is based on
 - `sync <source> --all` syncs the other accounts when one can't be built, as `sync --all`
   does.
 - A Pinboard delete retried after a lost response no longer fails on `item not found`.
+- A `reddit_domain` with a port or another form that isn't a bare host is rejected.
+- A HackerNews favorite linking a Reddit `over18` page or the bare Reddit root is no longer
+  re-added after `cleanup reddit` rewrites it.
 
 ## [0.6.0] - 2026-10-25
 

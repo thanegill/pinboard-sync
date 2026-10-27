@@ -12,7 +12,7 @@ use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::collapse_whitespace;
 use crate::reddit::model::{
-    cased_subreddit, reddit_key, RedditConfig, RedditKind, RedditSavedItem,
+    cased_subreddit, over18_dest, reddit_key, RedditConfig, RedditKind, RedditSavedItem,
 };
 use crate::reddit::PostInfo;
 use crate::source::SourceError;
@@ -258,12 +258,12 @@ async fn fetch_post_info<R: PostInfo>(
 
 // --- pure transforms ---------------------------------------------------------
 
-/// Normalize a Reddit bookmark URL: unwrap an `over18/?dest=` redirect, then rewrite
+/// Normalize a Reddit bookmark URL: unwrap `over18/?dest=` redirects, then rewrite
 /// any reddit host to the configured `domain`. Returns `Some(new)` only if it changed.
 pub fn normalize_url(url: &Url, domain: &str) -> Option<Url> {
     let mut current = url.clone();
     let mut changed = false;
-    if let Some(dest) = over18_dest(&current) {
+    while let Some(dest) = over18_dest(&current) {
         current = dest;
         changed = true;
     }
@@ -272,18 +272,6 @@ pub fn normalize_url(url: &Url, domain: &str) -> Option<Url> {
         changed = true;
     }
     changed.then_some(current)
-}
-
-/// If `url` is a reddit `over18` interstitial, return its `dest` target (the `url`
-/// crate percent-decodes the query value).
-fn over18_dest(url: &Url) -> Option<Url> {
-    if !host_matches(url.host_str()?, "reddit.com")
-        || !url.path().trim_start_matches('/').starts_with("over18")
-    {
-        return None;
-    }
-    let dest = url.query_pairs().find(|(key, _)| key == "dest")?.1;
-    Url::parse(&dest).ok()
 }
 
 /// Rewrite any reddit host (`reddit.com` or a `*.reddit.com` subdomain) to the

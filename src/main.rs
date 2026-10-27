@@ -686,6 +686,10 @@ mod tests {
                 "`reddit[0].tags[0]` must not contain whitespace",
             ),
             (
+                "[[reddit]]\nreddit_domain = \"SECRET.example:8080\"\n",
+                "`reddit[0].reddit_domain` contains a `:`",
+            ),
+            (
                 "[[github]]\nlimit = \"ghp_SECRET\"\n",
                 "line 2, column 9: `limit` must be",
             ),

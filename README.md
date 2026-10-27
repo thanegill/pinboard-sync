@@ -455,7 +455,7 @@ or a comma is rejected at parse time; values interpolated into a prefix are slug
 | Key | Source | Default | Produces |
 | --- | --- | --- | --- |
 | `tags` | reddit | `["reddit"]` | On every bookmark. |
-| `reddit_domain` | reddit | `"old.reddit.com"` | Host for bookmark and thread URLs. Also what `cleanup reddit` normalizes to. |
+| `reddit_domain` | reddit | `"old.reddit.com"` | Host for bookmark and thread URLs: a bare host, with no scheme, path or port. Also what `cleanup reddit` normalizes to. |
 | `tag_subreddit_prefix` | reddit | `"subreddit:"` | `subreddit:<sub>` |
 | `tag_comment` | reddit | `"reddit-comment"` | On saved comments. |
 | `tag_nsfw` | reddit | `"nsfw"` | When the post is `over_18`. |

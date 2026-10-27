@@ -187,7 +187,11 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         };
         // Re-derive the bookmark from the fresh item (url/title/note/date), then preserve
         // the stored bookmark's existing tags and privacy on the re-write.
-        let Some(mut new) = item.clone().into_draft(self.config).map(|d| d.bookmark) else {
+        let Some(mut new) = item
+            .clone()
+            .into_draft(self.config, &[])
+            .map(|d| d.bookmark)
+        else {
             return Ok(Plan::Skipped);
         };
         let mut tags = bookmark.tags.clone();
@@ -334,6 +338,30 @@ mod tests {
         assert_eq!(planned.title, "Cool thing");
         assert!(planned.tags.contains(&"mine".to_string()));
         assert!(planned.tags.contains(&"hackernews".to_string()));
+    }
+
+    #[tokio::test]
+    async fn plan_decodes_the_fresh_algolia_title_once_not_the_stored_one() {
+        let stored = Bookmark {
+            title: "Tom &amp; Jerry".into(),
+            ..stored_at("https://news.ycombinator.com/item?id=42")
+        };
+        let mut items = HashMap::new();
+        items.insert(
+            HackerNewsItemId::from(42u64),
+            item(json!({
+                "id": 42, "type": "story", "by": "alice",
+                "title": "Tom &amp;amp; Jerry", "url": "https://example.com/x"
+            })),
+        );
+        let config = HackerNewsConfig::default();
+        let pass = HackerNewsCleanupPass {
+            items,
+            config: &config,
+        };
+
+        let planned = pass.plan(&stored).await.unwrap().bookmark().unwrap();
+        assert_eq!(planned.title, stored.title);
     }
 
     #[tokio::test]

@@ -13,7 +13,7 @@ use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::collapse_whitespace;
 use crate::reddit::model::{
-    cased_subreddit, over18_dest, reddit_key, RedditConfig, RedditKind, RedditSavedItem,
+    cased_subreddit, created_at, over18_dest, reddit_key, RedditConfig, RedditKind, RedditSavedItem,
 };
 use crate::reddit::PostInfo;
 use crate::source::SourceError;
@@ -257,8 +257,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
         let timestamp = if is_comment_url(&new_url) {
             None
         } else {
-            post.and_then(|p| p.created_utc)
-                .and_then(|s| crate::timefmt::from_unix(s as i64))
+            created_at(post.and_then(|p| p.created_utc))
         };
 
         Ok(Plan::Bookmark(Bookmark {

@@ -2,6 +2,7 @@
 //! (URL form, subreddit casing, tag construction).
 
 use serde::{Deserialize, Deserializer};
+use time::OffsetDateTime;
 use url::Url;
 
 use crate::bookmark::Bookmark;
@@ -366,9 +367,7 @@ impl RedditSavedItem {
         };
         // The host-agnostic dedup key, derived from the same URL.
         let dedup_key = reddit_key(&url, &cfg.domain).unwrap_or_else(|| url.to_string());
-        let timestamp = self
-            .created_utc
-            .and_then(|s| crate::timefmt::from_unix(s as i64));
+        let timestamp = created_at(self.created_utc);
         let tags = self.tags(cfg);
         Some(BookmarkDraft {
             bookmark: Bookmark {
@@ -383,6 +382,12 @@ impl RedditSavedItem {
             dedup_key,
         })
     }
+}
+
+/// The instant a Reddit `created_utc` (epoch seconds, as a float) names, at whole
+/// seconds, as both sync and cleanup date a post by it.
+pub(crate) fn created_at(created_utc: Option<f64>) -> Option<OffsetDateTime> {
+    created_utc.and_then(|secs| crate::timefmt::from_unix(secs as i64))
 }
 
 /// Normalize a subreddit name for tagging: lowercase it, keeping the original

@@ -315,7 +315,12 @@ host-agnostic so dedup matches across subdomains, and takes that domain too, so 
 mirror outside reddit.com still counts as a Reddit host. Each Reddit account's client,
 and HackerNews keying an article on Reddit, match against every configured account's
 domain (`Config::reddit_domains`, which is why `SourceAccount::client` takes the whole
-`Config`), so a save another account's `cleanup reddit` moved onto its mirror still keys.
+`Config`), so a save on another account's mirror still keys. `cleanup reddit` takes
+every account's config (`RedditCleanupOpts::accounts`): it leaves a bookmark on
+whichever configured domain it is on rather than moving it to the running account's (so
+passes run as different accounts never move it back and forth), shapes it with the tags
+of the account that domain belongs to, and collapses a post stored on several onto the
+first in config order.
 
 **Config + secret resolution.** [`src/config.rs`](src/config.rs) parses the
 `--config` TOML: one `[pinboard]` destination, `[hooks]`, and per-source account

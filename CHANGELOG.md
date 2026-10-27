@@ -63,6 +63,9 @@ All notable changes to this project are documented here. The format is based on
 - `sync reddit` no longer re-adds a save after `cleanup reddit`, run as another account,
   moved it onto that account's `reddit_domain`, nor writes a post twice when accounts on
   different `reddit_domain`s both saved it.
+- `cleanup reddit` also cleans bookmarks on another `[[reddit]]` account's
+  `reddit_domain`, by that account's tags and leaving them there, and merges a post
+  stored on two such domains.
 - A HackerNews favorite linking a Reddit or GitHub page is no longer re-added after
   `cleanup` moves it to its canonical URL, even on a `reddit_domain` outside reddit.com.
 - Commas, which Pinboard forbids in tags, are slugged like spaces in derived tags

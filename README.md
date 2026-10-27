@@ -239,10 +239,12 @@ grows. Rare, but if you see a note accumulating `… [truncated]` markers, short
 
 - **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your
   configured `reddit_domain` (default `old.reddit.com`), unwrapping `over18`
-  interstitial redirects to the real post. It normalizes tags (ensures every entry
-  of `tags` and a correctly-cased `subreddit:<sub>` tag, dropping bare/legacy
-  duplicates), adds `reddit-comment` to comment bookmarks, and — using Reddit's
-  `/api/info` — marks `over_18` posts `nsfw`, replaces generic placeholder titles with
+  interstitial redirects to the real post. A bookmark already on any `[[reddit]]`
+  account's `reddit_domain` stays there and is shaped with that account's tag settings,
+  and a post stored on several of them collapses onto the one listed first. It
+  normalizes tags (ensures every entry of `tags` and a correctly-cased
+  `subreddit:<sub>` tag, dropping bare/legacy duplicates), adds `reddit-comment` to
+  comment bookmarks, and — using Reddit's `/api/info` — marks `over_18` posts `nsfw`, replaces generic placeholder titles with
   the real ones, and adds the author, flair and media-type tags `sync` writes. Each of
   those three is added only when the bookmark has no tag with its prefix yet, so a
   stored author or flair is never replaced. A comment is looked up by its own id and
@@ -460,7 +462,7 @@ or a comma is rejected at parse time; values interpolated into a prefix are slug
 | Key | Source | Default | Produces |
 | --- | --- | --- | --- |
 | `tags` | reddit | `["reddit"]` | On every bookmark. |
-| `reddit_domain` | reddit | `"old.reddit.com"` | Host for bookmark and thread URLs: a bare host, with no scheme, path or port. Also what `cleanup reddit` normalizes to. |
+| `reddit_domain` | reddit | `"old.reddit.com"` | Host for bookmark and thread URLs: a bare host, with no scheme, path or port. Also where `cleanup reddit` moves a reddit.com bookmark that is on no account's `reddit_domain`. |
 | `tag_subreddit_prefix` | reddit | `"subreddit:"` | `subreddit:<sub>` |
 | `tag_comment` | reddit | `"reddit-comment"` | On saved comments. |
 | `tag_nsfw` | reddit | `"nsfw"` | When the post is `over_18`. |

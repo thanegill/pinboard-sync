@@ -583,6 +583,7 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
         fix_titles: flags.fix_titles,
         config: account.map(RedditConfig::from).unwrap_or_default(),
         dates,
+        accounts: config.reddit.iter().map(RedditConfig::from).collect(),
     };
 
     // Reddit (for /api/info) is needed when marking NSFW, fixing titles, or dating by

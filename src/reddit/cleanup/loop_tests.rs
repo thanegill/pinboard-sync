@@ -8,6 +8,7 @@ fn opts() -> RedditCleanupOpts {
         fix_titles: true,
         config: RedditConfig::default(),
         dates: NO_DATING,
+        accounts: Vec::new(),
     }
 }
 
@@ -613,6 +614,163 @@ async fn bookmarks_moved_to_a_mirror_domain_still_dedup_for_sync() {
     );
 }
 
+/// A `[[reddit]]` account on `domain` whose base tags are `reddit` and `tag`.
+fn account_on(domain: &str, tag: &str) -> RedditConfig {
+    RedditConfig {
+        domain: domain.into(),
+        tags: vec!["reddit".into(), tag.into()],
+        ..RedditConfig::default()
+    }
+}
+
+fn two_mirrors() -> Vec<RedditConfig> {
+    vec![
+        account_on("first.example", "first"),
+        account_on("second.example", "second"),
+    ]
+}
+
+/// Cleanup run as the one of `accounts` on `domain`, with all of them configured: the
+/// account it leaves `seed` as, and how many writes that took.
+async fn cleanup_as(
+    accounts: &[RedditConfig],
+    domain: &str,
+    seed: &[Bookmark],
+) -> (Vec<Bookmark>, usize) {
+    let pinboard = FakePinboard {
+        all: seed.to_vec(),
+        ..Default::default()
+    };
+    let opts = RedditCleanupOpts {
+        config: accounts
+            .iter()
+            .find(|account| account.domain == domain)
+            .cloned()
+            .expect("an account on the domain"),
+        accounts: accounts.to_vec(),
+        ..opts()
+    };
+    run(
+        &pinboard.cleanup_store(false),
+        Some(&FakeReddit::default()),
+        &opts,
+    )
+    .await
+    .unwrap();
+    let ops = pinboard.ops.borrow();
+    (crate::test_support::replay(seed, &ops), ops.len())
+}
+
+#[tokio::test]
+async fn a_post_stored_on_two_mirrors_collapses_onto_the_first_configured_one() {
+    let accounts = two_mirrors();
+    let seed = vec![
+        bookmark(
+            "https://second.example/r/rust/comments/a/x/",
+            "T",
+            "reddit second subreddit:rust",
+        ),
+        bookmark(
+            "https://first.example/r/rust/comments/a/x/",
+            "T",
+            "reddit first subreddit:rust",
+        ),
+    ];
+    for domain in ["first.example", "second.example"] {
+        let (account, _) = cleanup_as(&accounts, domain, &seed).await;
+        let urls: Vec<&str> = account
+            .iter()
+            .map(|bookmark| bookmark.url.as_str())
+            .collect();
+        assert_eq!(
+            urls,
+            ["https://first.example/r/rust/comments/a/x/"],
+            "run as {domain}"
+        );
+        for again in ["first.example", "second.example"] {
+            assert_eq!(
+                cleanup_as(&accounts, again, &account).await.1,
+                0,
+                "{domain} then {again}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn cleanup_shapes_a_bookmark_on_another_accounts_mirror_by_its_tags_and_leaves_it_there() {
+    let accounts = two_mirrors();
+    let seed = vec![
+        bookmark("https://second.example/r/Rust/comments/a/x/", "T", ""),
+        bookmark("https://www.reddit.com/r/rust/comments/b/y/", "U", ""),
+    ];
+    let (account, writes) = cleanup_as(&accounts, "first.example", &seed).await;
+    assert!(writes > 0);
+    let shaped: Vec<(&str, Vec<&str>)> = account
+        .iter()
+        .map(|bookmark| {
+            let tags = bookmark.tags.iter().map(String::as_str).collect();
+            (bookmark.url.as_str(), tags)
+        })
+        .collect();
+    assert_eq!(
+        shaped,
+        [
+            (
+                "https://second.example/r/Rust/comments/a/x/",
+                vec!["reddit", "second", "subreddit:rust"]
+            ),
+            (
+                "https://first.example/r/rust/comments/b/y/",
+                vec!["first", "reddit", "subreddit:rust"]
+            ),
+        ]
+    );
+    for again in ["first.example", "second.example"] {
+        assert_eq!(
+            cleanup_as(&accounts, again, &account).await.1,
+            0,
+            "then as {again}"
+        );
+    }
+}
+
+/// Moving a bookmark onto the running account's domain would carry it back and forth
+/// between two accounts on reddit.com hosts, one move per run.
+#[tokio::test]
+async fn a_bookmark_on_one_accounts_reddit_host_stays_whichever_account_runs() {
+    let accounts = vec![
+        account_on("old.reddit.com", "old"),
+        account_on("www.reddit.com", "www"),
+    ];
+    let seed = vec![bookmark(
+        "https://www.reddit.com/r/rust/comments/a/x/",
+        "T",
+        "reddit subreddit:rust www",
+    )];
+    for domain in ["old.reddit.com", "www.reddit.com", "old.reddit.com"] {
+        assert_eq!(
+            cleanup_as(&accounts, domain, &seed).await.1,
+            0,
+            "as {domain}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_self_link_to_the_post_on_another_mirror_is_dropped() {
+    let seed = vec![Bookmark {
+        note: "https://first.example/r/rust/comments/a/x/".into(),
+        ..bookmark(
+            "https://second.example/r/rust/comments/a/x/",
+            "T",
+            "reddit second subreddit:rust",
+        )
+    }];
+    let (account, _) = cleanup_as(&two_mirrors(), "first.example", &seed).await;
+    assert_eq!(account[0].note, "");
+}
+
 #[tokio::test]
 async fn dry_run_writes_nothing() {
     let pinboard = FakePinboard {
@@ -784,6 +942,7 @@ async fn plans_the_tags_sync_writes_for_each_tag_config() {
                     .await
                     .unwrap(),
                 opts: &opts,
+                collapse_hosts: HashMap::new(),
             };
             let mut want = synced.tags.clone();
             want.sort();

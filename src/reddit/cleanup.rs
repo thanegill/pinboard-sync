@@ -1,5 +1,6 @@
 //! `cleanup` subcommand: normalize existing Reddit bookmarks in a Pinboard
-//! account. Rewrites URLs to `old.reddit.com` (unwrapping `over18` redirects),
+//! account. Rewrites URLs to the account's `reddit_domain` (unwrapping `over18`
+//! redirects) unless they are on another configured account's,
 //! normalizes tags, and — using Reddit's `/api/info` for authoritative data —
 //! marks NSFW posts, replaces generic placeholder titles, and backfills the author,
 //! flair and media-type tags sync writes.
@@ -24,11 +25,65 @@ use url::Url;
 pub struct RedditCleanupOpts {
     pub mark_nsfw: bool,
     pub fix_titles: bool,
-    /// The account's tag vocabulary and domain, the same ones `sync` writes with: URLs are
-    /// rewritten to `domain`, and `nsfw` is the NSFW marker tag (empty disables it).
+    /// The account's tag vocabulary and domain, the same ones `sync` writes with: a
+    /// reddit.com URL on no configured account's domain is moved to `domain`, and `nsfw`
+    /// is the NSFW marker tag (empty disables it).
     pub config: RedditConfig,
     /// Whether and how to re-date bookmarks by the source post date.
     pub dates: DateOpts,
+    /// Every configured account's config, in config order. A bookmark already on one of
+    /// their domains is left there (see [`RedditCleanupOpts::natural_url`]) and shaped with
+    /// that account's tags ([`RedditCleanupOpts::config_for`]).
+    pub accounts: Vec<RedditConfig>,
+}
+
+impl RedditCleanupOpts {
+    /// The account's own domain, then every configured one.
+    fn domains(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(&self.config)
+            .chain(&self.accounts)
+            .map(|account| account.domain.as_str())
+    }
+
+    /// The config to shape a bookmark at `url` with: the account's own when `url` is on its
+    /// domain, else that of the first configured account whose domain it is on, else the
+    /// account's own. A bookmark stays on its owner's domain, so the host names its owner.
+    fn config_for(&self, url: &Url) -> &RedditConfig {
+        let on_domain = |account: &&RedditConfig| {
+            url.host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case(&account.domain))
+        };
+        std::iter::once(&self.config)
+            .chain(&self.accounts)
+            .find(on_domain)
+            .unwrap_or(&self.config)
+    }
+
+    /// Whether `url` is on the account's own or another configured `reddit_domain`.
+    fn is_configured_host(&self, url: &Url) -> bool {
+        url.host_str().is_some_and(|host| {
+            self.domains()
+                .any(|domain| host.eq_ignore_ascii_case(domain))
+        })
+    }
+
+    /// [`reddit_key`] on any configured domain, as every account's sync keys a save.
+    fn key(&self, url: &Url) -> Option<String> {
+        self.domains().find_map(|domain| reddit_key(url, domain))
+    }
+
+    /// Where this pass moves `url` before collapsing copies: `over18` unwrapped, and a
+    /// reddit.com host rewritten to the account's domain unless it is already some
+    /// account's `reddit_domain`. A bookmark on another account's mirror stays put, so
+    /// that `cleanup` run as either account leaves it where it is instead of moving it
+    /// back and forth.
+    fn natural_url(&self, url: &Url) -> Url {
+        let unwrapped = unwrap_over18(url);
+        if self.is_configured_host(&unwrapped) {
+            return unwrapped;
+        }
+        normalize_url(&unwrapped, &self.config.domain).unwrap_or(unwrapped)
+    }
 }
 
 /// The `cleanup reddit` choices that are not account settings: the cookie flag, and which
@@ -73,11 +128,17 @@ pub async fn run<S: BookmarkStore + AccountState, R: PostInfo>(
     let reddit_bms: Vec<Bookmark> = store
         .snapshot()
         .into_iter()
-        .filter(|bookmark| bookmark.url.host_is("reddit.com"))
+        .filter(|bookmark| {
+            bookmark.url.host_is("reddit.com") || opts.is_configured_host(&bookmark.url)
+        })
         .collect();
 
     let info = fetch_post_info(reddit, opts, &reddit_bms).await?;
-    let pass = RedditCleanupPass { info, opts };
+    let pass = RedditCleanupPass {
+        info,
+        opts,
+        collapse_hosts: collapse_hosts(&reddit_bms, opts),
+    };
     run_pass(store, &reddit_bms, "reddit", opts.dates, &pass)
         .await
         .into_result()
@@ -89,41 +150,47 @@ pub async fn run<S: BookmarkStore + AccountState, R: PostInfo>(
 struct RedditCleanupPass<'a> {
     info: RedditInfo,
     opts: &'a RedditCleanupOpts,
+    /// From [`collapse_hosts`].
+    collapse_hosts: HashMap<String, String>,
 }
 
 impl CleanupPass for RedditCleanupPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
         let opts = self.opts;
-        // The stored URL is already a parsed `Url` (and a reddit one — the pass is filtered
-        // to those); normalize it, falling back to the original when nothing changed.
-        let new_url = normalize_url(&bookmark.url, &opts.config.domain)
-            .unwrap_or_else(|| bookmark.url.clone());
+        let mut new_url = opts.natural_url(&bookmark.url);
+        if let Some(host) = opts
+            .key(&new_url)
+            .and_then(|key| self.collapse_hosts.get(&key))
+        {
+            new_url = with_host(&new_url, host).unwrap_or(new_url);
+        }
 
+        let owner = opts.config_for(&new_url);
         let mut tags = normalize_tags(
             &new_url,
             &bookmark.tags,
-            &opts.config.tags,
-            &opts.config.subreddit_prefix,
-            &opts.config.nsfw,
+            &owner.tags,
+            &owner.subreddit_prefix,
+            &owner.nsfw,
         );
         let post = post_fullname(&new_url).and_then(|f| self.info.posts.get(&f));
 
         if opts.mark_nsfw
-            && !opts.config.nsfw.is_empty()
+            && !owner.nsfw.is_empty()
             && post.is_some_and(|p| p.over_18)
-            && !tags.iter().any(|t| t == &opts.config.nsfw)
+            && !tags.iter().any(|t| t == &owner.nsfw)
         {
-            tags.push(opts.config.nsfw.clone());
+            tags.push(owner.nsfw.clone());
         }
 
         let own_fullname = if is_comment_url(&new_url) {
-            extend_unique(&mut tags, std::slice::from_ref(&opts.config.comment));
+            extend_unique(&mut tags, std::slice::from_ref(&owner.comment));
             comment_fullname(&new_url)
         } else {
             post_fullname(&new_url)
         };
         if let Some(item) = own_fullname.and_then(|f| self.info.items.get(&f)) {
-            for (prefix, tag) in item.detail_tags(&opts.config) {
+            for (prefix, tag) in item.detail_tags(owner) {
                 if !tags.iter().any(|t| t.starts_with(prefix)) {
                     tags.push(tag);
                 }
@@ -149,18 +216,12 @@ impl CleanupPass for RedditCleanupPass<'_> {
         let note = if is_comment_url(&new_url) {
             bookmark.note.clone()
         } else if let Some(post) = post {
-            if note_is_tool_generated(
-                &bookmark.note,
-                &post.note,
-                &post.selftext,
-                &new_url,
-                &opts.config.domain,
-            ) {
+            if note_is_tool_generated(&bookmark.note, &post.note, &post.selftext, &new_url, opts) {
                 post.note.clone()
             } else {
                 bookmark.note.clone()
             }
-        } else if is_self_link_notes(&bookmark.note, &new_url, &opts.config.domain) {
+        } else if is_self_link_notes(&bookmark.note, &new_url, opts) {
             String::new()
         } else {
             bookmark.note.clone()
@@ -256,22 +317,53 @@ async fn fetch_post_info<R: PostInfo>(
     Ok(info)
 }
 
+/// For each post or comment stored on more than one host once each copy has its
+/// [`RedditCleanupOpts::natural_url`], the host the copies collapse onto, keyed by
+/// [`RedditCleanupOpts::key`]: the earliest account domain in config order, so the copies
+/// meet on the same URL whichever account cleanup runs as, and the driver merges them.
+fn collapse_hosts(bookmarks: &[Bookmark], opts: &RedditCleanupOpts) -> HashMap<String, String> {
+    let mut hosts_by_key: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for bookmark in bookmarks {
+        let url = opts.natural_url(&bookmark.url);
+        let (Some(key), Some(host)) = (opts.key(&url), url.host_str()) else {
+            continue;
+        };
+        hosts_by_key
+            .entry(key)
+            .or_default()
+            .insert(host.to_ascii_lowercase());
+    }
+    let rank = |host: &String| {
+        let position = opts
+            .accounts
+            .iter()
+            .position(|account| account.domain.eq_ignore_ascii_case(host));
+        (position.unwrap_or(usize::MAX), host.clone())
+    };
+    hosts_by_key
+        .into_iter()
+        .filter(|(_, hosts)| hosts.len() > 1)
+        .filter_map(|(key, hosts)| Some((key, hosts.into_iter().min_by_key(rank)?)))
+        .collect()
+}
+
 // --- pure transforms ---------------------------------------------------------
 
 /// Normalize a Reddit bookmark URL: unwrap `over18/?dest=` redirects, then rewrite
 /// any reddit host to the configured `domain`. Returns `Some(new)` only if it changed.
 pub fn normalize_url(url: &Url, domain: &str) -> Option<Url> {
+    let unwrapped = unwrap_over18(url);
+    let normalized = to_reddit_domain(&unwrapped, domain).unwrap_or(unwrapped);
+    (normalized != *url).then_some(normalized)
+}
+
+/// `url` with every `over18/?dest=` redirect unwrapped.
+fn unwrap_over18(url: &Url) -> Url {
     let mut current = url.clone();
-    let mut changed = false;
     while let Some(dest) = over18_dest(&current) {
         current = dest;
-        changed = true;
     }
-    if let Some(rewritten) = to_reddit_domain(&current, domain) {
-        current = rewritten;
-        changed = true;
-    }
-    changed.then_some(current)
+    current
 }
 
 /// Rewrite any reddit host (`reddit.com` or a `*.reddit.com` subdomain) to the
@@ -282,9 +374,17 @@ fn to_reddit_domain(url: &Url, domain: &str) -> Option<Url> {
     if !(host_matches(host, "reddit.com") && host != domain) {
         return None;
     }
+    with_host(url, domain)
+}
+
+/// `url` over https on `host`, or `None` when it is already there.
+fn with_host(url: &Url, host: &str) -> Option<Url> {
+    if url.scheme() == "https" && url.host_str() == Some(host) {
+        return None;
+    }
     let mut rewritten = url.clone();
     rewritten.set_scheme("https").ok()?;
-    rewritten.set_host(Some(domain)).ok()?;
+    rewritten.set_host(Some(host)).ok()?;
     Some(rewritten)
 }
 
@@ -380,26 +480,24 @@ fn note_is_tool_generated(
     rebuilt: &str,
     selftext: &str,
     url: &Url,
-    domain: &str,
+    opts: &RedditCleanupOpts,
 ) -> bool {
     let trimmed = note.trim();
     trimmed.is_empty()
         || note == rebuilt
         || (!selftext.trim().is_empty() && trimmed == selftext.trim())
-        || is_self_link_notes(note, url, domain)
+        || is_self_link_notes(note, url, opts)
 }
 
 /// Whether `notes` is nothing but a Reddit link to the same post as `url` — the
 /// duplicated self-link older syncs wrote into empty self-posts' notes. Compared by
-/// [`reddit_key`] (with `domain`, the account's `reddit_domain`), so it matches across
+/// [`RedditCleanupOpts::key`] (on any configured `reddit_domain`), so it matches across
 /// hosts/casing; non-Reddit notes (e.g. a link post's external URL) and free-text notes
 /// don't match and are left untouched.
-fn is_self_link_notes(notes: &str, url: &Url, domain: &str) -> bool {
+fn is_self_link_notes(notes: &str, url: &Url, opts: &RedditCleanupOpts) -> bool {
     let notes_key = Url::parse(notes.trim()).ok();
-    let notes_key = notes_key
-        .as_ref()
-        .and_then(|notes_url| reddit_key(notes_url, domain));
-    notes_key.is_some() && notes_key == reddit_key(url, domain)
+    let notes_key = notes_key.as_ref().and_then(|notes_url| opts.key(notes_url));
+    notes_key.is_some() && notes_key == opts.key(url)
 }
 
 /// The generic placeholder titles Reddit bookmarks often get from a browser.

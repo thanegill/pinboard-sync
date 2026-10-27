@@ -232,6 +232,28 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
     assert!(pinboard.deleted.borrow().is_empty());
 }
 
+/// An article with no HN discussion is still an answer from Algolia, so the link pass
+/// reports it as `Unchanged` (counted in `PassOutcome::reached`), not `Skipped`.
+#[tokio::test]
+async fn link_pass_counts_an_article_without_a_discussion_as_an_answer() {
+    let algolia = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .and(query_param("restrictSearchableAttributes", "url"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "hits": [] })))
+        .expect(1)
+        .mount(&algolia)
+        .await;
+    let client = algolia_client(&algolia);
+    let pass = HackerNewsLinkPass { client: &client };
+
+    let article = Bookmark {
+        tags: strings(&["find-hn"]),
+        ..stored_at("https://example.com/x")
+    };
+    assert!(matches!(pass.plan(&article).await, Ok(Plan::Unchanged)));
+}
+
 #[tokio::test]
 async fn link_discussions_keeps_entity_text_in_the_stored_title() {
     let algolia = MockServer::start().await;

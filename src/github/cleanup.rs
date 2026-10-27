@@ -314,7 +314,33 @@ fn refresh_tags(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::url;
+    use crate::test_support::{stored_at, url};
+
+    /// A deep link, a gist or a bare owner is not this pass's bookmark: it is skipped
+    /// before any lookup, so it says nothing about whether GitHub is reachable and must
+    /// not count toward `PassOutcome::reached`.
+    #[tokio::test]
+    async fn a_bookmark_that_is_no_repo_root_is_skipped_without_a_lookup() {
+        let client = GitHubClient::with_base_url(
+            "tok".into(),
+            GitHubConfig::default(),
+            "http://unused.invalid".into(),
+        );
+        let pass = GitHubCleanupPass {
+            client: &client,
+            star_dates: HashMap::new(),
+            star_configs: Vec::new(),
+        };
+        for stored in [
+            "https://github.com/o/r/issues/5",
+            "https://gist.github.com/user/abcd1234",
+            "https://github.com/o",
+        ] {
+            let (plan, waits) = crate::http::recording_waits(pass.plan(&stored_at(stored))).await;
+            assert!(matches!(plan, Ok(Plan::Skipped)), "{stored}");
+            assert!(waits.is_empty(), "{stored} made a request");
+        }
+    }
 
     #[test]
     fn repo_root_only_matches_bare_github_repo_roots() {

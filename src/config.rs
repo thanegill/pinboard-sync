@@ -451,8 +451,12 @@ fn check_unique_names<T: Named>(source: &str, accounts: &[T]) -> Result<()> {
     Ok(())
 }
 
-/// Error if `value` isn't a bare host (it's interpolated as `https://<domain>…`, so
-/// a scheme, slash, or whitespace would corrupt the bookmark URLs).
+/// Error if `value` isn't a bare host written as the `url` crate spells it: it's
+/// interpolated as `https://<domain>…` and set as `cleanup reddit`'s host, and `reddit_key`
+/// compares it to a parsed URL's host, so a scheme, slash, whitespace, port, or any form
+/// the parser rewrites (percent-escapes, non-ASCII) would corrupt the URLs or never match.
+/// A trailing `.` would be set as the host, which `cleanup reddit`'s reddit.com filter
+/// then no longer recognizes.
 fn check_domain(field: &str, value: &Option<String>) -> Result<()> {
     let Some(domain) = value else {
         return Ok(());
@@ -463,6 +467,16 @@ fn check_domain(field: &str, value: &Option<String>) -> Result<()> {
         "contains a `/`"
     } else if domain.chars().any(char::is_whitespace) {
         "contains whitespace"
+    } else if domain.contains(':') && !domain.starts_with('[') {
+        "contains a `:` (a port is not allowed)"
+    } else if domain.ends_with('.') {
+        "ends with a `.`"
+    } else if !domain.is_ascii() {
+        "is not ASCII (write a non-ASCII name in its punycode `xn--` form)"
+    } else if !url::Host::parse(domain)
+        .is_ok_and(|host| host.to_string().eq_ignore_ascii_case(domain))
+    {
+        "is not a valid host"
     } else {
         return Ok(());
     };

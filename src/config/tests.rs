@@ -128,6 +128,32 @@ fn validation_error_names_the_field_not_the_value() {
         "`reddit[0].reddit_domain` contains whitespace",
     );
     assert_error_hides(
+        "[[reddit]]\n[[reddit]]\nreddit_domain = \"SECRET7.example:8080\"\n",
+        "SECRET7",
+        "`reddit[1].reddit_domain` contains a `:` (a port is not allowed)",
+    );
+    for not_a_host in [
+        "user@SECRET8.example",
+        "SECRET8%2Eexample",
+        "[::SECRET8]:8080",
+    ] {
+        assert_error_hides(
+            &format!("[[reddit]]\nreddit_domain = \"{not_a_host}\"\n"),
+            "SECRET8",
+            "`reddit[0].reddit_domain` is not a valid host",
+        );
+    }
+    assert_error_hides(
+        "[[reddit]]\nreddit_domain = \"SECRET9.example.\"\n",
+        "SECRET9",
+        "`reddit[0].reddit_domain` ends with a `.`",
+    );
+    assert_error_hides(
+        "[[reddit]]\nreddit_domain = \"SECRET10.b\u{fc}cher.example\"\n",
+        "SECRET10",
+        "`reddit[0].reddit_domain` is not ASCII",
+    );
+    assert_error_hides(
         "[[reddit]]\nreddit_domain = \"\"\n",
         "SECRET",
         "`reddit[0].reddit_domain` is empty",
@@ -386,6 +412,30 @@ fn rejects_malformed_reddit_domain() {
     assert!(Config::parse("[[reddit]]\nreddit_domain = \"old.reddit.com/\"").is_err());
     assert!(Config::parse("[[reddit]]\nreddit_domain = \"\"").is_err());
     assert!(Config::parse("[[reddit]]\nreddit_domain = \"www.reddit.com\"").is_ok());
+}
+
+#[test]
+fn accepts_any_host_cleanup_can_set_and_reddit_key_matches() {
+    for domain in [
+        "Old.Reddit.com",
+        "Reddit.Mirror.Example",
+        "xn--bcher-kva.example",
+        "127.0.0.1",
+        "[::1]",
+    ] {
+        let config = Config::parse(&format!("[[reddit]]\nreddit_domain = \"{domain}\""))
+            .unwrap_or_else(|e| panic!("{domain}: {e:#}"));
+        let moved = crate::reddit::cleanup::normalize_url(
+            &crate::test_support::url("https://www.reddit.com/r/rust/comments/abc/x/"),
+            &config.reddit_domains()[0],
+        )
+        .unwrap_or_else(|| panic!("{domain}: cleanup could not set the host"));
+        assert_eq!(
+            crate::reddit::model::reddit_key(&moved, domain).as_deref(),
+            Some("/r/rust/comments/abc/x"),
+            "{domain}"
+        );
+    }
 }
 
 #[test]

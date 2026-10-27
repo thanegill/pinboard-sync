@@ -149,7 +149,7 @@ pub struct HackerNewsBackupArgs {
     #[arg(long)]
     pub all: bool,
     /// HackerNews username whose favorites to back up (env HN_USERNAME, or *_FILE).
-    #[arg(long)]
+    #[arg(long, alias = "hn-username")]
     pub username: Option<String>,
     #[command(flatten)]
     pub out: OutFlag,
@@ -256,7 +256,7 @@ pub struct HackerNewsSyncArgs {
     #[arg(long)]
     pub all: bool,
     /// HackerNews username whose favorites to sync (env HN_USERNAME, or *_FILE).
-    #[arg(long)]
+    #[arg(long, alias = "hn-username")]
     pub username: Option<String>,
     #[command(flatten)]
     pub flags: SyncFlags,
@@ -278,7 +278,7 @@ pub struct SyncFlags {
     #[arg(long)]
     pub limit: Option<SyncLimit>,
     /// Only backdate posts newer than N days; older use "now" (overrides config).
-    #[arg(long)]
+    #[arg(long, alias = "post-date-max-age-days")]
     pub max_age_days: Option<u64>,
     /// Mark new bookmarks to-read: `--toread` or `--toread=false` (overrides config).
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
@@ -322,13 +322,19 @@ pub enum CleanupSource {
 #[derive(Args, Clone, Copy, Default)]
 pub struct DateFlags {
     /// Only backdate posts newer than N days; older use "now" (overrides config).
-    #[arg(long)]
+    #[arg(long, alias = "post-date-max-age-days")]
     pub max_age_days: Option<u64>,
     /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pub use_post_date: Option<bool>,
     /// Re-date too-old posts to now: `--stale-to-now[=BOOL]` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    #[arg(
+        long,
+        alias = "cleanup-stale-to-now",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true"
+    )]
     pub stale_to_now: Option<bool>,
 }
 
@@ -374,7 +380,7 @@ pub struct HackerNewsCleanupArgs {
     #[arg(long)]
     pub link_discussions: bool,
     /// Override the marker tag used by --link-discussions (config: `tag_link`).
-    #[arg(long)]
+    #[arg(long, alias = "tag-link")]
     pub link_tag: Option<String>,
     #[command(flatten)]
     pub dates: DateFlags,
@@ -578,5 +584,61 @@ mod tests {
         let args = parse_reddit_sync(&["--public=false", "alice"]);
         assert_eq!(args.account.as_deref(), Some("alice"));
         assert_eq!(args.flags.public, Some(false));
+    }
+
+    /// A flag also answers to the spelling of the config key it overrides.
+    #[test]
+    fn each_flag_takes_its_config_spelling_too() {
+        use clap::Parser;
+        let command = |argv: &[&str]| {
+            Cli::try_parse_from([&["pinboard-sync"][..], argv].concat())
+                .expect("parses")
+                .command
+        };
+
+        let Command::Sync(SyncCmd {
+            source: Some(SyncSource::Hackernews(args)),
+            ..
+        }) = command(&[
+            "sync",
+            "hackernews",
+            "--post-date-max-age-days",
+            "5",
+            "--hn-username",
+            "u",
+        ])
+        else {
+            panic!("expected `sync hackernews`");
+        };
+        assert_eq!(args.flags.max_age_days, Some(5));
+        assert_eq!(args.username.as_deref(), Some("u"));
+
+        let Command::Cleanup(CleanupCmd {
+            source: Some(CleanupSource::Hackernews(args)),
+            ..
+        }) = command(&[
+            "cleanup",
+            "hackernews",
+            "--post-date-max-age-days",
+            "5",
+            "--cleanup-stale-to-now",
+            "--tag-link",
+            "t",
+        ])
+        else {
+            panic!("expected `cleanup hackernews`");
+        };
+        assert_eq!(args.dates.max_age_days, Some(5));
+        assert_eq!(args.dates.stale_to_now, Some(true));
+        assert_eq!(args.link_tag.as_deref(), Some("t"));
+
+        let Command::Backup(BackupCmd {
+            target: Some(BackupTarget::Hackernews(args)),
+            ..
+        }) = command(&["backup", "hackernews", "--hn-username", "u"])
+        else {
+            panic!("expected `backup hackernews`");
+        };
+        assert_eq!(args.username.as_deref(), Some("u"));
     }
 }

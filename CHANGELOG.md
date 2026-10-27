@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- Flags also take the spelling of the config key they override: `--post-date-max-age-days`,
+  `--cleanup-stale-to-now`, `--tag-link` and `--hn-username`.
 - `cleanup reddit` now adds the author, flair, media and comment tags `sync` writes,
   each only when the bookmark has no tag of that kind yet.
 - `config check <file>` validates a config without contacting any service.

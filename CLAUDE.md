@@ -38,28 +38,29 @@ gate green.
 
 ## Architecture
 
-The flow is one pass: a source yields drafts → skip those already on Pinboard →
-write the rest. `main.rs` loads the config and dispatches each subcommand (`run_sync`,
-`run_cleanup`, `run_backup`); the clap types are in [`src/cli.rs`](src/cli.rs), secret
-resolution in [`src/secrets.rs`](src/secrets.rs), job building, the settings ladder, the
-Pinboard client setup (`open_pinboard`) and the `--all` failure tally (`AllRun`) in
-[`src/jobs.rs`](src/jobs.rs), with `backup`'s targets in
+The flow is one pass: a source yields drafts → skip those already on Pinboard → write the
+rest. `main.rs` loads the config and dispatches each subcommand (`run_sync`, `run_cleanup`,
+`run_backup`); the clap types are in [`src/cli.rs`](src/cli.rs), secret resolution in
+[`src/secrets.rs`](src/secrets.rs), the settings ladder (`resolve_setting`, `resolve_dates`,
+`resolve_job_settings`, `resolve_hook`) in [`src/settings.rs`](src/settings.rs), job
+building, the Pinboard client setup (`open_pinboard`) and the `--all` failure tally
+(`AllRun`) in [`src/jobs.rs`](src/jobs.rs), with `backup`'s targets in
 [`src/jobs/backup_jobs.rs`](src/jobs/backup_jobs.rs), the auth-failure hook in
-[`src/hook.rs`](src/hook.rs), and `doctor` in [`src/doctor.rs`](src/doctor.rs). The sync write loop is in
-[`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one
-driver** ([`src/cleanup_pass.rs`](src/cleanup_pass.rs)): a source implements
-`CleanupPass::plan` (the desired end-state for one bookmark, as a `Plan` — see below —
-with `Err` for a per-item failure), and `run_pass` owns the loop common to all of them:
-plan every bookmark, group the plans by target URL, then diff each plan against the stored
-one, skip unchanged, render the dry-run lines, write via `apply_update` (deleting the old
-URL on a rewrite), and tally into a `PassOutcome`. Colliding rewrites — several bookmarks
-normalizing to one URL — are field-merged into a single record via `apply_merge` (which
-deletes the absorbed URLs) rather than clobbering each other. `run_pass` itself only
-sequences the phases, each its own function: `plan_all` (the `Plan`s, and the `untouchable`
-URLs it could not read), `group_by_target`, `residents_of`, `hold_back_visibility_mismatches`,
-then per group `refuse_group`, `write_single` or `write_merge`. The merge rules themselves
-(`merge_bookmarks`, `incumbent_of`) live in
-[`src/cleanup_pass/merge.rs`](src/cleanup_pass/merge.rs).
+[`src/hook.rs`](src/hook.rs), and `doctor` in [`src/doctor.rs`](src/doctor.rs). The sync
+write loop is in [`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one driver**
+([`src/cleanup_pass.rs`](src/cleanup_pass.rs)): a source implements `CleanupPass::plan` (the
+desired end-state for one bookmark, as a `Plan` — see below — with `Err` for a per-item
+failure), and `run_pass` owns the loop common to all of them: plan every bookmark, group the
+plans by target URL, then diff each plan against the stored one, skip unchanged, render the
+dry-run lines, write via `apply_update` (deleting the old URL on a rewrite), and tally into
+a `PassOutcome`. Colliding rewrites — several bookmarks normalizing to one URL — are
+field-merged into a single record via `apply_merge` (which deletes the absorbed URLs) rather
+than clobbering each other. `run_pass` itself only sequences the phases, each its own
+function: `plan_all` (the `Plan`s, and the `untouchable` URLs it could not read),
+`group_by_target`, `residents_of`, `hold_back_visibility_mismatches`, then per group
+`refuse_group`, `write_single` or `write_merge`;
+[`src/cleanup_pass/merge.rs`](src/cleanup_pass/merge.rs) holds the merge rules
+(`merge_bookmarks`, `incumbent_of`).
 
 **A failed lookup is not a failed run.** `PassOutcome` counts `plan_failed` (a link we
 couldn't read from the source) separately from `write_failed` (Pinboard refusing us, on

@@ -318,7 +318,7 @@ impl Config {
         defaults: &SourceDefaults,
     ) -> Result<()> {
         let redates_every_run = |account: Option<&T>| {
-            crate::timefmt::resolve_dates(
+            crate::settings::resolve_dates(
                 &crate::cli::DateFlags::default(),
                 account,
                 defaults,
@@ -334,7 +334,7 @@ impl Config {
                 .map(|index| format!("{source}[{index}]")),
         };
         match offender {
-            Some(scope) => Err(crate::timefmt::redates_every_run_error(&format!(
+            Some(scope) => Err(crate::settings::redates_every_run_error(&format!(
                 "config: {scope}"
             ))),
             None => Ok(()),
@@ -738,12 +738,12 @@ macro_rules! impl_named {
 }
 impl_named!(RedditAccount => username, GitHubAccount, HackerNewsAccount => username);
 
-/// The per-account settings shared across every source. Each returns the
-/// account-level override, or `None` to fall through to the per-source default and
-/// then the `[pinboard]` global — letting the job/cleanup builders resolve them
-/// generically (see [`resolve_setting`] and `timefmt::resolve_dates`). The method names
-/// normalize the two longer field names (`post_date_max_age_days`,
-/// `cleanup_stale_to_now`).
+/// The per-account settings shared across every source. Each returns the account-level
+/// override, or `None` to fall through to the per-source default and then the
+/// `[pinboard]` global — letting the job/cleanup builders resolve them generically (see
+/// [`resolve_setting`](crate::settings::resolve_setting) and
+/// [`resolve_dates`](crate::settings::resolve_dates)). The method names normalize the two
+/// longer field names (`post_date_max_age_days`, `cleanup_stale_to_now`).
 pub trait Account: Named {
     fn limit(&self) -> Option<SyncLimit>;
     fn toread(&self) -> Option<bool>;
@@ -776,13 +776,6 @@ pub fn own_then_configured<'a, C>(
     configured: &'a [C],
 ) -> impl Iterator<Item = &'a C> + 'a {
     std::iter::once(own).chain(configured)
-}
-
-/// Resolve a setting through its precedence tiers, highest first: the CLI flag, else
-/// the account override, else the per-source default, else the resolved `[pinboard]`
-/// global. The first present (`Some`) value wins; the global is the guaranteed fallback.
-pub fn resolve_setting<T>(flag: Option<T>, account: Option<T>, source: Option<T>, global: T) -> T {
-    flag.or(account).or(source).unwrap_or(global)
 }
 
 /// Pick the account named `name`, or the first account when `name` is `None`.

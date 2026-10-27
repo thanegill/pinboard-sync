@@ -16,6 +16,7 @@ mod jobs;
 mod pinboard;
 mod reddit;
 mod secrets;
+mod settings;
 mod source;
 mod sync;
 mod tags;
@@ -55,8 +56,9 @@ use secrets::{
     first_nonempty, missing_github_token, missing_reddit_cookie, resolve_github_token,
     resolve_reddit_cookie,
 };
+use settings::resolve_cleanup_dates;
 use source::{BookmarkDraft, SourceError};
-use timefmt::{resolve_cleanup_dates, DateOpts};
+use timefmt::DateOpts;
 
 #[tokio::main]
 async fn main() -> ExitCode {

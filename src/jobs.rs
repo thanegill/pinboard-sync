@@ -13,13 +13,10 @@ use url::Url;
 
 use crate::backup::{self, BackupSource};
 use crate::bookmark::Bookmark;
-use crate::cli::{DateFlags, SyncFlags};
-use crate::config::{
-    self, resolve_setting, Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit,
-};
+use crate::cli::SyncFlags;
+use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit};
 use crate::github::{GitHubClient, GitHubConfig};
 use crate::hackernews::{HackerNewsClient, HackerNewsConfig};
-use crate::hook::resolve_hook;
 use crate::pinboard::{PinboardClient, RATE_LIMIT_SECS};
 use crate::reddit::model::RedditConfig;
 use crate::reddit::RedditClient;
@@ -27,9 +24,9 @@ use crate::secrets::{
     self, missing_github_token, resolve_github_token, resolve_pinboard_token,
     resolve_reddit_cookie, resolve_secret, EnvSecret,
 };
+use crate::settings::{resolve_hook, resolve_job_settings};
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 use crate::sync::JobSettings;
-use crate::timefmt::resolve_dates;
 
 /// A target an `--all` run could not build, and why. `sync` and `backup` both carry these
 /// out of their build phase so the run can count each one as failed, and still run the
@@ -216,39 +213,6 @@ impl UrlKey for SourceClient {
             SourceClient::GitHub(c) => c.dedup_key(url),
             SourceClient::HackerNews(c) => c.dedup_key(url),
         }
-    }
-}
-
-/// The per-account settings [`build_job`] resolves: the `limit`/`read_later`/`public` trio
-/// through [`resolve_setting`] plus the dates through [`resolve_dates`], each on the flag →
-/// account → per-source default → `[pinboard]` global ladder. The client, its secrets and
-/// the hook come from [`SourceAccount`] instead.
-fn resolve_job_settings(
-    account: Option<&impl config::Account>,
-    overrides: &SyncOverrides,
-    src: &config::SourceDefaults,
-    config: &Config,
-) -> JobSettings {
-    JobSettings {
-        limit: resolve_setting(
-            overrides.flags.limit,
-            account.and_then(|a| a.limit()),
-            src.limit,
-            config.pinboard.limit.unwrap_or_default(),
-        ),
-        read_later: resolve_setting(
-            overrides.flags.toread,
-            account.and_then(|a| a.toread()),
-            src.toread,
-            config.pinboard.toread,
-        ),
-        public: resolve_setting(
-            overrides.flags.public,
-            account.and_then(|a| a.public()),
-            src.public,
-            config.pinboard.public,
-        ),
-        dates: resolve_dates(&DateFlags::from(&overrides.flags), account, src, config),
     }
 }
 

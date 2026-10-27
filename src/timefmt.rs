@@ -1,14 +1,11 @@
 //! Date conversions for the `use_post_date` option: between unix epoch seconds (how
-//! source post dates are carried internally, so the age cap is a plain integer
-//! compare) and the RFC 3339 string Pinboard's `dt` expects (e.g.
-//! `2010-12-11T19:48:02Z`) — plus the option itself, [`DateOpts`], which sync and every
-//! cleanup pass apply, and its resolution through the config tiers ([`resolve_dates`]).
+//! source post dates are carried internally, so the age cap is a plain integer compare)
+//! and the RFC 3339 string Pinboard's `dt` expects (e.g. `2010-12-11T19:48:02Z`) — plus
+//! the option itself, [`DateOpts`], which sync and every cleanup pass apply (resolved
+//! through the config tiers by [`resolve_dates`](crate::settings::resolve_dates)).
 
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
-
-use crate::cli::DateFlags;
-use crate::config::{self, resolve_setting, Config};
 
 /// Parse an RFC 3339 timestamp (e.g. GitHub's `starred_at`) to unix epoch seconds.
 pub fn rfc3339_to_unix(s: &str) -> Option<i64> {
@@ -52,9 +49,9 @@ fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
 
 /// The `use_post_date` policy: whether to date bookmarks by the source date, the backdate
 /// age cap, and whether `cleanup` pushes stale (older-than-cap) items to "now". Resolved
-/// once per account in [`resolve_dates`]; `sync` applies the first two via
-/// [`DateOpts::sync_date`], and a `cleanup` pass applies all three uniformly via
-/// [`DateOpts::cleanup_date`].
+/// once per account in [`resolve_dates`](crate::settings::resolve_dates); `sync` applies
+/// the first two via [`DateOpts::sync_date`], and a `cleanup` pass applies all three
+/// uniformly via [`DateOpts::cleanup_date`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DateOpts {
     pub use_post_date: bool,
@@ -113,122 +110,9 @@ impl DateOpts {
     }
 }
 
-/// The `use_post_date` trio for an account, each resolved through [`resolve_setting`]
-/// (flag → account → per-source default → `[pinboard]` global, with `max_age_days`
-/// defaulting to [`config::DEFAULT_MAX_AGE_DAYS`]). Shared by every `sync`/`cleanup`
-/// builder.
-pub fn resolve_dates(
-    overrides: &DateFlags,
-    account: Option<&impl config::Account>,
-    src: &config::SourceDefaults,
-    config: &Config,
-) -> DateOpts {
-    DateOpts {
-        use_post_date: resolve_setting(
-            overrides.use_post_date,
-            account.and_then(|a| a.use_post_date()),
-            src.use_post_date,
-            config.pinboard.use_post_date,
-        ),
-        max_age_days: resolve_setting(
-            overrides.max_age_days,
-            account.and_then(|a| a.max_age_days()),
-            src.post_date_max_age_days,
-            config
-                .pinboard
-                .post_date_max_age_days
-                .unwrap_or(config::DEFAULT_MAX_AGE_DAYS),
-        ),
-        stale_to_now: resolve_setting(
-            overrides.stale_to_now,
-            account.and_then(|a| a.stale_to_now()),
-            src.cleanup_stale_to_now,
-            config.pinboard.cleanup_stale_to_now,
-        ),
-    }
-}
-
-/// [`resolve_dates`] for a cleanup pass, refusing a resolution that
-/// [`DateOpts::redates_every_run`]. Config validation rules that out for the config tiers
-/// alone; this catches the same pairing when a flag supplies either half. `pass` names
-/// the pass in the error, e.g. "`cleanup github`".
-pub fn resolve_cleanup_dates(
-    pass: &str,
-    overrides: &DateFlags,
-    account: Option<&impl config::Account>,
-    src: &config::SourceDefaults,
-    config: &Config,
-) -> anyhow::Result<DateOpts> {
-    let dates = resolve_dates(overrides, account, src, config);
-    if dates.redates_every_run() {
-        return Err(redates_every_run_error(&format!("{pass} with its flags")));
-    }
-    Ok(dates)
-}
-
-/// Why `scope`'s dating settings are refused. It names the settings, never a value.
-pub fn redates_every_run_error(scope: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "{scope} resolves `post_date_max_age_days` to 0 with `cleanup_stale_to_now` on, so \
-         cleanup would re-date its stale bookmarks on every run; raise the cap or turn \
-         `cleanup_stale_to_now` off"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::RedditAccount;
-
-    #[test]
-    fn date_settings_stale_to_now_flag_tops_the_tier() {
-        let config = Config::default(); // global cleanup_stale_to_now = false
-        let src = &config.defaults.reddit;
-
-        // flag forces it on against a false global
-        let overrides = DateFlags {
-            stale_to_now: Some(true),
-            ..Default::default()
-        };
-        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config);
-        assert!(d.stale_to_now);
-
-        // flag forces it off against a true global
-        let mut config = Config::default();
-        config.pinboard.cleanup_stale_to_now = true;
-        let src = &config.defaults.reddit;
-        let overrides = DateFlags {
-            stale_to_now: Some(false),
-            ..Default::default()
-        };
-        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config);
-        assert!(!d.stale_to_now);
-    }
-
-    #[test]
-    fn date_settings_max_age_days_flag_tops_the_tier() {
-        let mut config = Config::default();
-        config.pinboard.post_date_max_age_days = Some(10); // global
-        let src = &config.defaults.reddit; // per-source default None
-
-        // flag wins
-        let overrides = DateFlags {
-            max_age_days: Some(99),
-            ..Default::default()
-        };
-        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config);
-        assert_eq!(d.max_age_days, 99);
-
-        // no flag → global
-        let d = resolve_dates(&DateFlags::default(), None::<&RedditAccount>, src, &config);
-        assert_eq!(d.max_age_days, 10);
-
-        // global unset → built-in default
-        let config = Config::default();
-        let src = &config.defaults.reddit;
-        let d = resolve_dates(&DateFlags::default(), None::<&RedditAccount>, src, &config);
-        assert_eq!(d.max_age_days, config::DEFAULT_MAX_AGE_DAYS);
-    }
 
     #[test]
     fn round_trips_a_known_instant_with_trailing_z() {

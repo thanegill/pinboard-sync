@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_support::{stored_at, strings, FakePinboard, NO_DATING};
 use serde_json::json;
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
@@ -230,6 +230,75 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
     assert!(!updated[0].tags.contains(&"find-hn".to_string()));
     assert!(updated[0].tags.contains(&"reading".to_string()));
     assert!(pinboard.deleted.borrow().is_empty());
+}
+
+/// Two `find-hn` articles and, unless `with_item` is false, one HN story bookmark whose
+/// rewrite to its article Pinboard refuses. Algolia answers the item batch but fails
+/// every URL search, so the link pass fails its lookups in the majority. Returns what
+/// `run` reports, with `--link-discussions` on.
+async fn run_with_failing_lookups(with_item: bool) -> String {
+    let algolia = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .and(query_param_is_missing("restrictSearchableAttributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": [
+                { "objectID": "42", "title": "Cool", "url": "https://example.com/story",
+                  "author": "alice", "_tags": ["story", "author_alice", "story_42"] }
+            ]
+        })))
+        .mount(&algolia)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .and(query_param("restrictSearchableAttributes", "url"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&algolia)
+        .await;
+    let article = |url: &str| Bookmark {
+        tags: strings(&["find-hn"]),
+        ..stored_at(url)
+    };
+    let mut all = vec![
+        article("https://example.com/a"),
+        article("https://example.com/b"),
+    ];
+    if with_item {
+        all.push(stored_at("https://news.ycombinator.com/item?id=42"));
+    }
+    let pinboard = FakePinboard {
+        all,
+        fail_update_urls: ["https://example.com/story".to_string()].into(),
+        ..Default::default()
+    };
+    let client = algolia_client(&algolia);
+    let opts = HackerNewsCleanupOpts {
+        link_discussions: true,
+        dates: NO_DATING,
+    };
+    let (result, _) =
+        crate::http::recording_waits(run(&pinboard.cleanup_store(false), &client, &opts)).await;
+    format!("{:#}", result.expect_err("the run fails"))
+}
+
+/// The item pass, which plans from a prefetched batch and so cannot fail a lookup, must
+/// not vouch for the discussion-link pass: its lookups failing in the majority fail the
+/// run on their own.
+#[tokio::test]
+async fn cleanup_fails_when_only_the_link_pass_fails() {
+    let error = run_with_failing_lookups(false).await;
+    assert!(error.contains("2 of 2 lookup(s) failed"), "{error}");
+}
+
+/// When both passes fail, the run reports both, so the first can't hide the second.
+#[tokio::test]
+async fn cleanup_reports_both_passes_when_both_fail() {
+    let error = run_with_failing_lookups(true).await;
+    assert!(error.contains("1 bookmark(s) failed to write"), "{error}");
+    assert!(
+        error.contains("; and for discussion links: 2 of 2 lookup(s) failed"),
+        "{error}"
+    );
 }
 
 /// An article with no HN discussion is still an answer from Algolia, so the link pass

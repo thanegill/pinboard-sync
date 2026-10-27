@@ -238,10 +238,7 @@ fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<SyncPlan> {
             }
             let overrides = SyncOverrides {
                 dry_run: cmd.dry_run,
-                on_auth_failure: cmd
-                    .on_auth_failure
-                    .clone()
-                    .or_else(on_auth_failure_from_env),
+                on_auth_failure: cmd.on_auth_failure.or_else(on_auth_failure_from_env),
                 ..SyncOverrides::default()
             };
             let (jobs, skipped) = build_all_jobs(config, &overrides);
@@ -249,24 +246,21 @@ fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<SyncPlan> {
         }
         (false, Some(SyncSource::Reddit(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let overrides =
-                SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+            let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
             let (jobs, skipped) =
                 build_jobs::<RedditAccount>(account.as_deref(), all, &overrides, config)?;
             (jobs, overrides, skipped)
         }
         (false, Some(SyncSource::Github(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let overrides =
-                SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+            let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
             let (jobs, skipped) =
                 build_jobs::<GitHubAccount>(account.as_deref(), all, &overrides, config)?;
             (jobs, overrides, skipped)
         }
         (false, Some(SyncSource::Hackernews(args))) => {
             let (account, all) = (args.account.clone(), args.all);
-            let overrides =
-                SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+            let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
             let (jobs, skipped) =
                 build_jobs::<HackerNewsAccount>(account.as_deref(), all, &overrides, config)?;
             (jobs, overrides, skipped)

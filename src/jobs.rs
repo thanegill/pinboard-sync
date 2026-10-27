@@ -31,35 +31,45 @@ use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 use crate::sync::JobSettings;
 use crate::timefmt::{resolve_dates, DateOverrides};
 
-/// Build one job per configured account across every source for `sync --all`,
-/// isolating build failures: an account whose required secret won't resolve is
-/// reported and counted rather than aborting the whole run, so the healthy
-/// accounts still sync. Returns the buildable jobs and the count of accounts
-/// that failed to build, which the caller threads into the run's exit code.
-pub fn build_all_jobs(config: &Config, overrides: &SyncOverrides) -> (Vec<SyncJob>, usize) {
+/// A target an `--all` run could not build, and why. `sync` and `backup` both carry these
+/// out of their build phase so the run can count each one as failed, and still run the
+/// targets that did build.
+pub struct SkippedTarget {
+    pub label: String,
+    pub reason: anyhow::Error,
+}
+
+/// Build one job per configured account across every source for `sync --all`, isolating
+/// build failures: an account whose required secret won't resolve is returned as a
+/// [`SkippedTarget`] rather than aborting the run, so the healthy accounts still sync.
+pub fn build_all_jobs(
+    config: &Config,
+    overrides: &SyncOverrides,
+) -> (Vec<SyncJob>, Vec<SkippedTarget>) {
     let mut jobs = Vec::new();
-    let mut run = AllRun::default();
-    build_every_job::<RedditAccount>(config, overrides, &mut jobs, &mut run);
-    build_every_job::<GitHubAccount>(config, overrides, &mut jobs, &mut run);
-    build_every_job::<HackerNewsAccount>(config, overrides, &mut jobs, &mut run);
-    (jobs, run.failed)
+    let mut skipped = Vec::new();
+    build_every_job::<RedditAccount>(config, overrides, &mut jobs, &mut skipped);
+    build_every_job::<GitHubAccount>(config, overrides, &mut jobs, &mut skipped);
+    build_every_job::<HackerNewsAccount>(config, overrides, &mut jobs, &mut skipped);
+    (jobs, skipped)
 }
 
 /// [`build_all_jobs`] for one source: a job for each of its configured accounts, with each
-/// account that fails to build recorded in `run` instead.
+/// account that fails to build added to `skipped` instead.
 fn build_every_job<A: SourceAccount>(
     config: &Config,
     overrides: &SyncOverrides,
     jobs: &mut Vec<SyncJob>,
-    run: &mut AllRun,
+    skipped: &mut Vec<SkippedTarget>,
 ) {
     warn_shared_env_secrets::<A>(overrides, config);
     for account in A::configured(config) {
         match build_job(Some(account), overrides, config) {
             Ok(job) => jobs.push(job),
-            Err(e) => run.record(Err(
-                e.context(format!("{} could not be built", job_label(Some(account))))
-            )),
+            Err(reason) => skipped.push(SkippedTarget {
+                label: job_label(Some(account)),
+                reason,
+            }),
         }
     }
 }
@@ -84,28 +94,27 @@ fn unflagged(flagged: &[(EnvSecret, &Option<String>)]) -> Vec<EnvSecret> {
         .collect()
 }
 
-/// Build one job per account: every account when `all`, else the named (or first,
-/// or implicit CLI/env) account. Under `all`, as in [`build_all_jobs`], an account that
-/// fails to build is reported and counted rather than aborting the rest; the count is
-/// returned alongside the jobs.
+/// Build one job per account: every account when `all`, else the named (or first, or
+/// implicit CLI/env) account. Under `all`, as in [`build_all_jobs`], an account that fails
+/// to build is returned as a [`SkippedTarget`] rather than aborting the rest.
 pub fn build_jobs<A: SourceAccount>(
     name: Option<&str>,
     all: bool,
     overrides: &SyncOverrides,
     config: &Config,
-) -> Result<(Vec<SyncJob>, usize)> {
+) -> Result<(Vec<SyncJob>, Vec<SkippedTarget>)> {
     let accounts = A::configured(config);
     if all {
         if accounts.is_empty() {
             bail!("--all requires a --config with at least one configured account");
         }
         let mut jobs = Vec::new();
-        let mut run = AllRun::default();
-        build_every_job::<A>(config, overrides, &mut jobs, &mut run);
-        Ok((jobs, run.failed))
+        let mut skipped = Vec::new();
+        build_every_job::<A>(config, overrides, &mut jobs, &mut skipped);
+        Ok((jobs, skipped))
     } else {
         let account = config::select_account(accounts, name)?;
-        Ok((vec![build_job(account, overrides, config)?], 0))
+        Ok((vec![build_job(account, overrides, config)?], Vec::new()))
     }
 }
 
@@ -467,6 +476,20 @@ impl AllRun {
         }
     }
 
+    /// Count each skipped target as failed, reporting it as `<label> <what>: <reason>`, and
+    /// return their labels.
+    pub fn record_skipped(&mut self, skipped: Vec<SkippedTarget>, what: &str) -> Vec<String> {
+        skipped
+            .into_iter()
+            .map(|target| {
+                self.record(Err(target
+                    .reason
+                    .context(format!("{} {what}", target.label))));
+                target.label
+            })
+            .collect()
+    }
+
     pub fn finish(self) -> Result<()> {
         if self.failed > 0 {
             bail!("{} account(s) failed", self.failed);
@@ -631,12 +654,14 @@ mod tests {
             github: vec![GitHubAccount::default()],
             ..Default::default()
         };
-        let (jobs, prebuilt_failures) = build_all_jobs(&config, &SyncOverrides::default());
+        let (jobs, skipped) = build_all_jobs(&config, &SyncOverrides::default());
         assert_eq!(jobs.len(), 1, "healthy reddit account still builds");
         assert_eq!(jobs[0].label, "reddit[alice]");
-        assert!(
-            prebuilt_failures >= 1,
-            "the tokenless github account is counted, not aborted"
+        let skipped: Vec<&str> = skipped.iter().map(|target| target.label.as_str()).collect();
+        assert_eq!(
+            skipped,
+            ["github[default]"],
+            "the tokenless github account is skipped, not aborted"
         );
     }
 
@@ -656,12 +681,13 @@ mod tests {
             ],
             ..Default::default()
         };
-        let (jobs, prebuilt_failures) =
+        let (jobs, skipped) =
             build_jobs::<GitHubAccount>(None, true, &SyncOverrides::default(), &config)
                 .expect("a failing account does not abort the source");
         let labels: Vec<&str> = jobs.iter().map(|job| job.label.as_str()).collect();
         assert_eq!(labels, ["github[main]"]);
-        assert_eq!(prebuilt_failures, 1);
+        let skipped: Vec<&str> = skipped.iter().map(|target| target.label.as_str()).collect();
+        assert_eq!(skipped, ["github[tokenless]"]);
     }
 
     fn reddit_account(name: &str) -> RedditAccount {
@@ -794,6 +820,22 @@ mod tests {
                  accounts use it, whatever their own config sets",
             ]
         );
+    }
+
+    #[test]
+    fn each_skipped_target_counts_as_a_failed_account() {
+        let skipped = |label: &str| SkippedTarget {
+            label: label.into(),
+            reason: anyhow::anyhow!("no token"),
+        };
+        let mut run = AllRun::default();
+        let labels = run.record_skipped(
+            vec![skipped("github[a]"), skipped("reddit[b]")],
+            "could not be built",
+        );
+        assert_eq!(labels, ["github[a]", "reddit[b]"]);
+        let error = run.finish().expect_err("a skipped target fails the run");
+        assert_eq!(error.to_string(), "2 account(s) failed");
     }
 }
 

@@ -7,8 +7,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use log::warn;
 
 use super::{
-    build_job, job_label, pinboard_client_for_token, warn_shared_env_secrets, SourceAccount,
-    SourceClient, SyncOverrides,
+    build_job, job_label, pinboard_client_for_token, warn_shared_env_secrets, SkippedTarget,
+    SourceAccount, SourceClient, SyncOverrides,
 };
 use crate::backup::{self, BackupSource};
 use crate::cli::{BackupCmd, BackupTarget, OutFlag};
@@ -55,12 +55,6 @@ pub struct BackupPlan {
     pub skipped: Vec<SkippedTarget>,
     pub out: Option<String>,
     pub dry_run: bool,
-}
-
-/// A target an `--all` plan could not build, and why.
-pub struct SkippedTarget {
-    pub label: String,
-    pub reason: anyhow::Error,
 }
 
 pub fn build_backup_plan(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {

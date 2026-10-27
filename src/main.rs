@@ -42,9 +42,10 @@ use github::{GitHubClient, GitHubConfig};
 use hackernews::cleanup::HackerNewsCleanupOpts;
 use hackernews::{HackerNewsClient, HackerNewsConfig};
 use hook::{cleanup_hook, handle_source_err, on_auth_failure_from_env};
-use jobs::backup_jobs::{build_backup_plan, BackupJob, SkippedTarget};
+use jobs::backup_jobs::{build_backup_plan, BackupJob};
 use jobs::{
-    build_all_jobs, build_jobs, open_pinboard, AllRun, SourceAccount, SyncJob, SyncOverrides,
+    build_all_jobs, build_jobs, open_pinboard, AllRun, SkippedTarget, SourceAccount, SyncJob,
+    SyncOverrides,
 };
 use pinboard::PinboardClient;
 use reddit::cleanup::RedditCleanupOverrides;
@@ -202,25 +203,34 @@ fn check_config(path: &Path) -> Result<String> {
 
 async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     let top_dry_run = cmd.dry_run;
-    let (jobs, overrides, prebuilt_failures) = build_sync_plan(cmd, config)?;
+    let plan = build_sync_plan(cmd, config)?;
+    let mut run = AllRun::default();
+    run.record_skipped(plan.skipped, "could not be built");
     let (pinboard, bookmarks) =
-        open_pinboard(overrides.flags.pinboard_token.clone(), config).await?;
+        open_pinboard(plan.overrides.flags.pinboard_token.clone(), config).await?;
     // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
     // after it (per-source); honor either placement. (`--verbose` is global.)
     run_sync_jobs(
-        jobs,
-        prebuilt_failures,
+        plan.jobs,
+        run,
         &pinboard,
         &bookmarks,
-        overrides.dry_run || top_dry_run,
+        plan.overrides.dry_run || top_dry_run,
     )
     .await
 }
 
-/// The jobs a `sync` invocation runs, the overrides they were built from, and how many
-/// of its accounts could not be built, for [`run_sync_jobs`] to count as failed.
-fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<(Vec<SyncJob>, SyncOverrides, usize)> {
-    Ok(match (cmd.all, cmd.source) {
+/// What a `sync` invocation resolves to: the jobs, the overrides they were built from,
+/// and the accounts that could not be built, for the run to count as failed. Mirrors
+/// `backup`'s `BackupPlan`.
+struct SyncPlan {
+    jobs: Vec<SyncJob>,
+    overrides: SyncOverrides,
+    skipped: Vec<SkippedTarget>,
+}
+
+fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<SyncPlan> {
+    let (jobs, overrides, skipped) = match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
             if !config.has_accounts() {
@@ -234,34 +244,39 @@ fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<(Vec<SyncJob>, SyncO
                     .or_else(on_auth_failure_from_env),
                 ..SyncOverrides::default()
             };
-            let (jobs, prebuilt_failures) = build_all_jobs(config, &overrides);
-            (jobs, overrides, prebuilt_failures)
+            let (jobs, skipped) = build_all_jobs(config, &overrides);
+            (jobs, overrides, skipped)
         }
         (false, Some(SyncSource::Reddit(args))) => {
             let (account, all) = (args.account.clone(), args.all);
             let overrides =
                 SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-            let (jobs, prebuilt_failures) =
+            let (jobs, skipped) =
                 build_jobs::<RedditAccount>(account.as_deref(), all, &overrides, config)?;
-            (jobs, overrides, prebuilt_failures)
+            (jobs, overrides, skipped)
         }
         (false, Some(SyncSource::Github(args))) => {
             let (account, all) = (args.account.clone(), args.all);
             let overrides =
                 SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-            let (jobs, prebuilt_failures) =
+            let (jobs, skipped) =
                 build_jobs::<GitHubAccount>(account.as_deref(), all, &overrides, config)?;
-            (jobs, overrides, prebuilt_failures)
+            (jobs, overrides, skipped)
         }
         (false, Some(SyncSource::Hackernews(args))) => {
             let (account, all) = (args.account.clone(), args.all);
             let overrides =
                 SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
-            let (jobs, prebuilt_failures) =
+            let (jobs, skipped) =
                 build_jobs::<HackerNewsAccount>(account.as_deref(), all, &overrides, config)?;
-            (jobs, overrides, prebuilt_failures)
+            (jobs, overrides, skipped)
         }
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
+    };
+    Ok(SyncPlan {
+        jobs,
+        overrides,
+        skipped,
     })
 }
 
@@ -269,7 +284,7 @@ fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<(Vec<SyncJob>, SyncO
 /// merged, de-duplicated drafts to Pinboard sequentially (writes are rate-limited).
 async fn run_sync_jobs(
     jobs: Vec<SyncJob>,
-    prebuilt_failures: usize,
+    mut run: AllRun,
     pinboard: &PinboardClient,
     bookmarks: &[Bookmark],
     dry_run: bool,
@@ -293,9 +308,6 @@ async fn run_sync_jobs(
     }))
     .await;
 
-    let mut run = AllRun {
-        failed: prebuilt_failures,
-    };
     let mut per_job: Vec<Vec<BookmarkDraft>> = Vec::new();
     for (job, result) in jobs.iter().zip(fetched) {
         match result {
@@ -352,13 +364,7 @@ async fn back_up(
     let mut run = AllRun::default();
     let mut entries = Vec::new();
     let mut removed = Vec::new();
-    let mut failed = Vec::new();
-    for target in skipped {
-        run.record(Err(target
-            .reason
-            .context(format!("{} was skipped", target.label))));
-        failed.push(target.label);
-    }
+    let mut failed = run.record_skipped(skipped, "was skipped");
     // Sequential, unlike `sync`: backup writes are local, so concurrency would only
     // multiply simultaneous API pressure and interleave the dry-run output.
     for job in &jobs {
@@ -780,8 +786,8 @@ mod tests {
         }
     }
 
-    /// Both `--all` forms must hand `run_sync_jobs` the accounts they could not build, or
-    /// a run that synced only the healthy ones exits 0.
+    /// Both `--all` forms must carry the accounts they could not build out in
+    /// `SyncPlan::skipped`, or a run that synced only the healthy ones exits 0.
     #[test]
     fn sync_all_counts_the_accounts_it_could_not_build() {
         let _env = lock_on_auth_failure_env();
@@ -800,16 +806,19 @@ mod tests {
             ..Default::default()
         };
         for argv in [&["github", "--all"][..], &["--all"]] {
-            let (jobs, _, prebuilt_failures) =
-                build_sync_plan(parse_sync(argv), &config).expect("plans");
-            assert_eq!((jobs.len(), prebuilt_failures), (1, 1), "sync {argv:?}");
+            let plan = build_sync_plan(parse_sync(argv), &config).expect("plans");
+            assert_eq!(
+                (plan.jobs.len(), plan.skipped.len()),
+                (1, 1),
+                "sync {argv:?}"
+            );
         }
     }
 
     #[tokio::test]
     async fn run_sync_jobs_fails_the_run_for_accounts_it_could_not_build() {
         let pinboard = PinboardClient::new("user:token".into(), 0).unwrap();
-        let error = run_sync_jobs(Vec::new(), 1, &pinboard, &[], false)
+        let error = run_sync_jobs(Vec::new(), AllRun { failed: 1 }, &pinboard, &[], false)
             .await
             .expect_err("an unbuilt account fails the run");
         assert_eq!(error.to_string(), "1 account(s) failed");

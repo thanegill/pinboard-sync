@@ -1,8 +1,8 @@
 //! The sync write path: pick the drafts not already on Pinboard, and write them
-//! sequentially (Pinboard rate-limits `posts/add`). Source reads happen in the
-//! caller (so an `--all` run can fetch services concurrently); only the writes are
-//! serialized here. Generic over the [`Source`]/[`BookmarkStore`] ports so it can
-//! be unit-tested with in-memory fakes.
+//! sequentially (Pinboard rate-limits `posts/add`). Source reads happen in the caller (so
+//! an `--all` run can fetch services concurrently); only the writes are serialized here.
+//! Generic over the [`UrlKey`]/[`BookmarkStore`] ports so it can be unit-tested with
+//! in-memory fakes.
 
 use std::collections::HashSet;
 
@@ -11,12 +11,12 @@ use time::OffsetDateTime;
 
 use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::config::SyncLimit;
-use crate::source::{BookmarkDraft, Source};
+use crate::source::{BookmarkDraft, UrlKey};
 use crate::timefmt::DateOpts;
 
 /// The drafts not already present on Pinboard, matching each existing bookmark URL
-/// through this source's [`UrlKey::dedup_key`](crate::source::UrlKey::dedup_key).
-pub fn filter_new<S: Source>(
+/// through this source's [`UrlKey::dedup_key`].
+pub fn filter_new<S: UrlKey>(
     source: &S,
     drafts: Vec<BookmarkDraft>,
     existing: &[Bookmark],
@@ -55,7 +55,7 @@ pub struct JobSettings {
 /// Newest first, an interrupted backfill would leave page 1 fully written, and the next
 /// run would stop there and never reach the older items. `now` is a parameter so tests
 /// are deterministic.
-pub fn prepare_new_drafts<S: Source>(
+pub fn prepare_new_drafts<S: UrlKey>(
     source: &S,
     drafts: Vec<BookmarkDraft>,
     existing: &[Bookmark],

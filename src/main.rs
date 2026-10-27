@@ -44,8 +44,7 @@ use hackernews::{HackerNewsClient, HackerNewsConfig};
 use hook::{cleanup_hook, handle_source_err, on_auth_failure_from_env};
 use jobs::backup_jobs::{backup_jobs, BackupJob, SkippedTarget};
 use jobs::{
-    build_all_jobs, build_jobs, open_pinboard, resolve_dates, AllRun, DateOverrides, SyncJob,
-    SyncOverrides,
+    build_all_jobs, build_jobs, open_pinboard, AllRun, SourceAccount, SyncJob, SyncOverrides,
 };
 use pinboard::PinboardClient;
 use reddit::cleanup::RedditCleanupFlags;
@@ -56,7 +55,7 @@ use secrets::{
     resolve_reddit_cookie,
 };
 use source::{BookmarkDraft, SourceError};
-use timefmt::DateOpts;
+use timefmt::{resolve_cleanup_dates, DateOpts, DateOverrides};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -202,7 +201,25 @@ fn check_config(path: &Path) -> Result<String> {
 // --- sync --------------------------------------------------------------------
 
 async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
-    let (jobs, ovr, prebuilt_failures) = match (cmd.all, cmd.source) {
+    let top_dry_run = cmd.dry_run;
+    let (jobs, ovr, prebuilt_failures) = sync_jobs(cmd, config)?;
+    let (pinboard, bookmarks) = open_pinboard(ovr.flags.pinboard_token.clone(), config).await?;
+    // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
+    // after it (per-source); honor either placement. (`--verbose` is global.)
+    run_sync_jobs(
+        jobs,
+        prebuilt_failures,
+        &pinboard,
+        &bookmarks,
+        ovr.dry_run || top_dry_run,
+    )
+    .await
+}
+
+/// The jobs a `sync` invocation runs, the overrides they were built from, and how many
+/// of its accounts could not be built, for [`run_sync_jobs`] to count as failed.
+fn sync_jobs(cmd: SyncCmd, config: &Config) -> Result<(Vec<SyncJob>, SyncOverrides, usize)> {
+    Ok(match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
             if !config.has_accounts() {
@@ -241,19 +258,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
             (jobs, ovr, prebuilt_failures)
         }
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
-    };
-
-    let (pinboard, bookmarks) = open_pinboard(ovr.flags.pinboard_token.clone(), config).await?;
-    // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
-    // after it (per-source); honor either placement. (`--verbose` is global.)
-    run_sync_jobs(
-        jobs,
-        prebuilt_failures,
-        &pinboard,
-        &bookmarks,
-        ovr.dry_run || cmd.dry_run,
-    )
-    .await
+    })
 }
 
 /// Fetch every job's source concurrently (reads only, on one task), then write the
@@ -419,32 +424,33 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             if !config.has_accounts() {
                 bail!("cleanup --all requires a --config with at least one configured account");
             }
+            let github = cleanup_all_pass::<GitHubAccount>(&over, config)?;
+            let reddit = cleanup_all_pass::<RedditAccount>(&over, config)?;
+            let hackernews = cleanup_all_pass::<HackerNewsAccount>(&over, config)?;
             let (pinboard, bookmarks) = open_pinboard(None, config).await?;
             // One view across all three sources: each writes, and the next must plan
             // against what it left rather than the pre-run snapshot.
             let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), cmd.dry_run);
             let mut run = AllRun::default();
-            if let Some(acct) = config.github.first() {
-                let dates = resolve_dates(&over, Some(acct), &config.defaults.github, config);
+            if let Some((acct, dates)) = github {
                 run.record(cleanup_one_github(&store, Some(acct), None, dates, config).await);
             }
-            if let Some(acct) = config.reddit.first() {
+            if let Some((acct, dates)) = reddit {
                 let flags = RedditCleanupFlags {
                     cookie: None,
                     mark_nsfw: true,
                     fix_titles: true,
                 };
-                run.record(cleanup_one_reddit(Some(acct), flags, &over, &store, config).await);
+                run.record(cleanup_one_reddit(Some(acct), flags, dates, &store, config).await);
             }
-            if let Some(acct) = config.hackernews.first() {
+            if let Some((acct, dates)) = hackernews {
                 run.record(
                     cleanup_one_hackernews(
                         Some(acct),
                         false, // linking is opt-in via `cleanup hackernews --link-discussions`
                         None,
-                        &over,
+                        dates,
                         &store,
-                        config,
                     )
                     .await,
                 );
@@ -464,6 +470,21 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
     }
 }
 
+/// The account a `cleanup --all` pass runs as (the source's first) and its dates, or
+/// `None` for a source with no accounts. Resolved before `posts/all` is read, so a
+/// refused run does not spend that rate-limited call.
+fn cleanup_all_pass<'a, A: SourceAccount>(
+    over: &DateOverrides,
+    config: &'a Config,
+) -> Result<Option<(&'a A, DateOpts)>> {
+    let Some(account) = A::configured(config).first() else {
+        return Ok(None);
+    };
+    let pass = format!("`cleanup --all` ({} pass)", A::SOURCE);
+    let dates = resolve_cleanup_dates(&pass, over, Some(account), A::defaults(config), config)?;
+    Ok(Some((account, dates)))
+}
+
 /// A cleanup pass runs dry when `--dry-run` is given either before the source
 /// subcommand (top-level `CleanupCmd::dry_run`) or after it (the per-source args),
 /// mirroring how `run_sync` honors the flag on both sides of the subcommand.
@@ -478,9 +499,15 @@ async fn run_cleanup_github(
     config: &Config,
 ) -> Result<()> {
     let over = DateOverrides::from(&args.dates).with_top_level(top);
-    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let account = config::select_account(&config.github, args.account.as_deref())?;
-    let dates = resolve_dates(&over, account, &config.defaults.github, config);
+    let dates = resolve_cleanup_dates(
+        "`cleanup github`",
+        &over,
+        account,
+        &config.defaults.github,
+        config,
+    )?;
+    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
     cleanup_one_github(&store, account, args.github_token, dates, config).await
@@ -496,9 +523,21 @@ async fn cleanup_one_github<S: BookmarkStore + AccountState>(
     config: &Config,
 ) -> Result<()> {
     let token = resolve_github_token(token_flag, account).with_context(missing_github_token)?;
-    let hook = cleanup_hook(account, config);
     let client = GitHubClient::new(token, account.map(GitHubConfig::from).unwrap_or_default())?;
-    github::cleanup::run(store, &client, dates)
+    cleanup_github_with(store, &client, account, dates, config).await
+}
+
+/// [`cleanup_one_github`] past building its client, which a test points at a fake API.
+async fn cleanup_github_with<S: BookmarkStore + AccountState>(
+    store: &S,
+    client: &GitHubClient,
+    account: Option<&GitHubAccount>,
+    dates: DateOpts,
+    config: &Config,
+) -> Result<()> {
+    let hook = cleanup_hook(account, config);
+    let accounts: Vec<GitHubConfig> = config.github.iter().map(GitHubConfig::from).collect();
+    github::cleanup::run(store, client, dates, &accounts)
         .await
         .map_err(|e| handle_source_err(e, hook.as_deref()))
 }
@@ -512,13 +551,20 @@ async fn run_cleanup_reddit(
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     // One pass over the Pinboard account's reddit bookmarks, using the selected (or
     // first, or implicit CLI/env) account's cookie + domain/tags.
-    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let account = config::select_account(&config.reddit, args.account.as_deref())?;
+    let dates = resolve_cleanup_dates(
+        "`cleanup reddit`",
+        &DateOverrides::from(&args.dates).with_top_level(top),
+        account,
+        &config.defaults.reddit,
+        config,
+    )?;
+    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
     cleanup_one_reddit(
         account,
         RedditCleanupFlags::from(&args),
-        &DateOverrides::from(&args.dates).with_top_level(top),
+        dates,
         &store,
         config,
     )
@@ -528,7 +574,7 @@ async fn run_cleanup_reddit(
 async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
     account: Option<&RedditAccount>,
     flags: RedditCleanupFlags,
-    over: &DateOverrides,
+    dates: DateOpts,
     store: &S,
     config: &Config,
 ) -> Result<()> {
@@ -536,7 +582,8 @@ async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
         mark_nsfw: flags.mark_nsfw,
         fix_titles: flags.fix_titles,
         config: account.map(RedditConfig::from).unwrap_or_default(),
-        dates: resolve_dates(over, account, &config.defaults.reddit, config),
+        dates,
+        accounts: config.reddit.iter().map(RedditConfig::from).collect(),
     };
 
     // Reddit (for /api/info) is needed when marking NSFW, fixing titles, or dating by
@@ -563,20 +610,18 @@ async fn run_cleanup_hackernews(
 ) -> Result<()> {
     // One pass over the Pinboard account's HN bookmarks, using the selected (or
     // first, or implicit) account's tag config.
-    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let account = config::select_account(&config.hackernews, args.account.as_deref())?;
-    let over = DateOverrides::from(&args.dates).with_top_level(top);
+    let dates = resolve_cleanup_dates(
+        "`cleanup hackernews`",
+        &DateOverrides::from(&args.dates).with_top_level(top),
+        account,
+        &config.defaults.hackernews,
+        config,
+    )?;
+    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
-    cleanup_one_hackernews(
-        account,
-        args.link_discussions,
-        args.link_tag,
-        &over,
-        &store,
-        config,
-    )
-    .await
+    cleanup_one_hackernews(account, args.link_discussions, args.link_tag, dates, &store).await
 }
 
 /// Build the HackerNews tag config for a cleanup run, letting `--link-tag` override the
@@ -598,9 +643,8 @@ async fn cleanup_one_hackernews<S: BookmarkStore + AccountState>(
     account: Option<&HackerNewsAccount>,
     link_discussions: bool,
     link_tag: Option<String>,
-    over: &DateOverrides,
+    dates: DateOpts,
     store: &S,
-    config: &Config,
 ) -> Result<()> {
     let hn_config = resolve_hackernews_cleanup_config(account, link_tag)?;
     let hn = HackerNewsClient::for_cleanup(hn_config)?;
@@ -609,7 +653,7 @@ async fn cleanup_one_hackernews<S: BookmarkStore + AccountState>(
         &hn,
         &HackerNewsCleanupOpts {
             link_discussions,
-            dates: resolve_dates(over, account, &config.defaults.hackernews, config),
+            dates,
         },
     )
     .await
@@ -697,6 +741,10 @@ mod tests {
                 "[[github]]\ntoken = \"ghp_SECRET\"\n[[github]]\ntoken = \"ghp_SECRET2\"\n",
                 "github[0] and github[1] would both back up as `github-default`",
             ),
+            (
+                "[[reddit]]\ncookie = \"reddit_session=SECRET\"\n[[reddit]]\n",
+                "reddit[0] and reddit[1] would both back up as `reddit-default`",
+            ),
         ] {
             let error = format!("{:#}", check_config_text(text).unwrap_err());
             assert!(error.contains(field), "{error}");
@@ -722,6 +770,40 @@ mod tests {
             Command::Sync(cmd) => cmd,
             _ => panic!("expected `sync` command"),
         }
+    }
+
+    /// Both `--all` forms must hand `run_sync_jobs` the accounts they could not build, or
+    /// a run that synced only the healthy ones exits 0.
+    #[test]
+    fn sync_all_counts_the_accounts_it_could_not_build() {
+        let _env = lock_on_auth_failure_env();
+        let config = Config {
+            github: vec![
+                GitHubAccount {
+                    name: Some("main".into()),
+                    token: Some("ghp_test".into()),
+                    ..Default::default()
+                },
+                GitHubAccount {
+                    name: Some("tokenless".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        for argv in [&["github", "--all"][..], &["--all"]] {
+            let (jobs, _, prebuilt_failures) = sync_jobs(parse_sync(argv), &config).expect("plans");
+            assert_eq!((jobs.len(), prebuilt_failures), (1, 1), "sync {argv:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn run_sync_jobs_fails_the_run_for_accounts_it_could_not_build() {
+        let pinboard = PinboardClient::new("user:token".into(), 0).unwrap();
+        let error = run_sync_jobs(Vec::new(), 1, &pinboard, &[], false)
+            .await
+            .expect_err("an unbuilt account fails the run");
+        assert_eq!(error.to_string(), "1 account(s) failed");
     }
 
     #[test]
@@ -1148,5 +1230,126 @@ mod tests {
         let labels: Vec<&str> = plan.jobs.iter().map(|job| job.label.as_str()).collect();
         assert_eq!(labels, ["github[main]"]);
         assert_eq!(skipped_labels(&plan.skipped), ["github[tokenless]"]);
+    }
+
+    /// `cleanup <argv>`'s error against `config_text`, with no Pinboard token: the date
+    /// refusal if it fires, else the missing token `posts/all` would need.
+    async fn cleanup_error(config_text: &str, argv: &[&str]) -> String {
+        let config = Config::parse(config_text).expect("valid config");
+        let error = run_cleanup(parse_cleanup(argv), &config)
+            .await
+            .expect_err("no Pinboard token");
+        format!("{error:#}")
+    }
+
+    #[tokio::test]
+    async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() {
+        let refused = |pass: &str| {
+            format!(
+                "{pass} with its flags resolves `post_date_max_age_days` to 0 with \
+                 `cleanup_stale_to_now` on, so cleanup would re-date its stale bookmarks on \
+                 every run; raise the cap or turn `cleanup_stale_to_now` off"
+            )
+        };
+        let both = ["--max-age-days", "0", "--stale-to-now"];
+        for source in ["github", "reddit", "hackernews"] {
+            let pass = refused(&format!("`cleanup {source}`"));
+            assert_eq!(
+                cleanup_error("", &[&[source][..], &both].concat()).await,
+                pass
+            );
+            assert_eq!(
+                cleanup_error("", &[&both[..], &[source]].concat()).await,
+                pass
+            );
+            assert_eq!(
+                cleanup_error(
+                    "[pinboard]\ncleanup_stale_to_now = true\n",
+                    &[source, "--max-age-days", "0"]
+                )
+                .await,
+                pass
+            );
+        }
+
+        let every_source = "[[github]]\nname = \"a\"\n[[reddit]]\nusername = \"u\"\n\
+                            [[hackernews]]\nusername = \"u\"\n";
+        assert_eq!(
+            cleanup_error(every_source, &[&["--all"][..], &both].concat()).await,
+            refused("`cleanup --all` (github pass)")
+        );
+        assert_eq!(
+            cleanup_error(
+                &format!("[defaults.reddit]\npost_date_max_age_days = 0\n{every_source}"),
+                &["--all", "--stale-to-now"]
+            )
+            .await,
+            refused("`cleanup --all` (reddit pass)")
+        );
+
+        for argv in [
+            &["github", "--max-age-days", "0"][..],
+            &["--all", "--stale-to-now"],
+        ] {
+            let error = cleanup_error(every_source, argv).await;
+            assert!(
+                error.starts_with("missing Pinboard token"),
+                "{argv:?}: {error}"
+            );
+        }
+    }
+
+    mod net_tests {
+        use super::*;
+        use crate::test_support::{stored_at, FakePinboard, NO_DATING};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        /// `cleanup github` runs as one account but must refresh the stars of every
+        /// `[[github]]` account, so all of their tag configs have to reach the pass.
+        #[tokio::test]
+        async fn cleanup_github_refreshes_another_accounts_star_by_its_tags() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/repos/o/r"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "full_name": "o/r",
+                    "html_url": "https://github.com/o/r",
+                    "language": "Rust"
+                })))
+                .mount(&server)
+                .await;
+            let config = Config::parse(
+                "[[github]]\nname = \"home\"\n\
+                 [[github]]\nname = \"work\"\ntags = [\"work-star\"]\n\
+                 tag_lang_prefix = \"language:\"\n",
+            )
+            .unwrap();
+            let pinboard = FakePinboard {
+                all: vec![Bookmark {
+                    tags: vec!["work-star".into()],
+                    ..stored_at("https://github.com/o/r")
+                }],
+                ..Default::default()
+            };
+            let home = &config.github[0];
+            let client =
+                GitHubClient::with_base_url("tok".into(), GitHubConfig::from(home), server.uri());
+
+            cleanup_github_with(
+                &pinboard.cleanup_store(false),
+                &client,
+                Some(home),
+                NO_DATING,
+                &config,
+            )
+            .await
+            .unwrap();
+
+            let updated = pinboard.updated.borrow();
+            assert_eq!(updated.len(), 1, "{updated:?}");
+            assert_eq!(updated[0].description, "o/r");
+            assert_eq!(updated[0].tags, ["work-star", "language:rust"]);
+        }
     }
 }

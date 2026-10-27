@@ -239,10 +239,12 @@ grows. Rare, but if you see a note accumulating `… [truncated]` markers, short
 
 - **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your
   configured `reddit_domain` (default `old.reddit.com`), unwrapping `over18`
-  interstitial redirects to the real post. It normalizes tags (ensures every entry
-  of `tags` and a correctly-cased `subreddit:<sub>` tag, dropping bare/legacy
-  duplicates), adds `reddit-comment` to comment bookmarks, and — using Reddit's
-  `/api/info` — marks `over_18` posts `nsfw`, replaces generic placeholder titles with
+  interstitial redirects to the real post. A bookmark already on any `[[reddit]]`
+  account's `reddit_domain` stays there and is shaped with that account's tag settings,
+  and a post stored on several of them collapses onto the one listed first. It
+  normalizes tags (ensures every entry of `tags` and a correctly-cased
+  `subreddit:<sub>` tag, dropping bare/legacy duplicates), adds `reddit-comment` to
+  comment bookmarks, and — using Reddit's `/api/info` — marks `over_18` posts `nsfw`, replaces generic placeholder titles with
   the real ones, and adds the author, flair and media-type tags `sync` writes. Each of
   those three is added only when the bookmark has no tag with its prefix yet, so a
   stored author or flair is never replaced. A comment is looked up by its own id and
@@ -260,9 +262,11 @@ grows. Rare, but if you see a note accumulating `… [truncated]` markers, short
   current location. It refreshes only what `sync github` wrote. Notes are rebuilt from
   the repo's description only when they are empty or in the shape sync writes; any
   other notes are kept. The base tags and the `lang:` tag are refreshed only on
-  bookmarks carrying the first non-empty entry of `tags` (`github-star` by default), and
-  their title only while it is still `owner/repo`. Under `use_post_date` they are
-  re-dated to the star time only while both title and notes are still the tool's. So a
+  bookmarks carrying the first non-empty entry of some `[[github]]` account's `tags`
+  (`github-star` by default), with that account's tag settings (the running account's
+  where two share a base tag), and their title only while it is still `owner/repo`.
+  Under `use_post_date` they are re-dated to the star time only while both title and
+  notes are still the tool's, and only from the running account's stars. So a
   repo saved by hand or bookmarked by `sync hackernews` keeps its title, tags and date.
   A repo that no longer exists (404), is blocked (a DMCA 451 or a Terms of Service 403),
   or sits behind organization SSO the token isn't authorized for keeps just the URL
@@ -374,8 +378,11 @@ pinboard-sync --config ./config.toml cleanup --all          # reddit + github + 
 The selector is an account's `name`, falling back to its `username` for Reddit and
 HackerNews — so an account with `username = "alice"` and no `name` is reachable as
 `sync reddit alice`. GitHub has no username, so its accounts are selected by `name`
-only, and at most one `[[github]]` account may leave it out (or use one like `default`
-that makes the same backup filename). With no selector, a command uses the first
+only. At most one account per source may have no selector (or one like `default` that
+makes the same backup filename), and no two may have selectors that make the same
+backup filename (`a.b` and `a/b`, or `Alice` and `alice`); a username from a flag or the
+environment (`$REDDIT_USERNAME`, `$HN_USERNAME`, or their `_FILE` forms) doesn't count,
+since it applies to every account alike. With no selector, a command uses the first
 account of that source. All tag settings (prefixes, the base `tags` list, the Reddit
 media-type allowlist, the HN special-type prefix) live in the config only — there are
 no tag CLI flags.
@@ -455,7 +462,7 @@ or a comma is rejected at parse time; values interpolated into a prefix are slug
 | Key | Source | Default | Produces |
 | --- | --- | --- | --- |
 | `tags` | reddit | `["reddit"]` | On every bookmark. |
-| `reddit_domain` | reddit | `"old.reddit.com"` | Host for bookmark and thread URLs: a bare host, with no scheme, path or port. Also what `cleanup reddit` normalizes to. |
+| `reddit_domain` | reddit | `"old.reddit.com"` | Host for bookmark and thread URLs: a bare host, with no scheme, path or port. Also where `cleanup reddit` moves a reddit.com bookmark that is on no account's `reddit_domain`. |
 | `tag_subreddit_prefix` | reddit | `"subreddit:"` | `subreddit:<sub>` |
 | `tag_comment` | reddit | `"reddit-comment"` | On saved comments. |
 | `tag_nsfw` | reddit | `"nsfw"` | When the post is `over_18`. |
@@ -515,7 +522,8 @@ With `use_post_date`, a bookmark's creation date (Pinboard's `dt`) is set to the
     true`, which re-dates stale items to now. A bookmark already dated within the cap
     keeps its date, so a stale item is re-dated at most once per cap period (monthly by
     default). The config rejects a cap of `0` with `cleanup_stale_to_now`, since every
-    date would then be outside the cap.
+    date would then be outside the cap, and `cleanup` refuses the same pairing when
+    `--max-age-days` or `--stale-to-now` supplies either half.
 - **When the date is unknown** (the source exposes none), the date is left untouched.
 - **`cleanup` compares by instant.** A re-write only happens when a field a write would
   change actually differs. The date is compared as a moment in time, not as a string, so

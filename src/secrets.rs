@@ -169,15 +169,26 @@ fn secret_ladder(
     cfg_inline: Option<String>,
     cfg_file: Option<&str>,
 ) -> [(SecretRung, Option<String>); 5] {
+    secret_ladder_reading(read_file_secret, flag, var, cfg_inline, cfg_file)
+}
+
+/// [`secret_ladder`], reading each `*_FILE` path with `read_file`.
+fn secret_ladder_reading(
+    read_file: fn(&str) -> Option<String>,
+    flag: Option<String>,
+    var: &str,
+    cfg_inline: Option<String>,
+    cfg_file: Option<&str>,
+) -> [(SecretRung, Option<String>); 5] {
     [
         (SecretRung::Flag, flag),
         (SecretRung::Env, secret_env(var)),
         (
             SecretRung::EnvFile,
-            secret_env(&format!("{var}_FILE")).and_then(|p| read_file_secret(&p)),
+            secret_env(&format!("{var}_FILE")).and_then(|p| read_file(&p)),
         ),
         (SecretRung::ConfigInline, cfg_inline),
-        (SecretRung::ConfigFile, cfg_file.and_then(read_file_secret)),
+        (SecretRung::ConfigFile, cfg_file.and_then(read_file)),
     ]
 }
 
@@ -186,41 +197,44 @@ fn secret_ladder(
 #[derive(Clone, Copy)]
 pub struct EnvSecret {
     var: &'static str,
-    accepts: fn(&str) -> bool,
+    is_configured: fn(&str) -> bool,
 }
 
 impl EnvSecret {
     pub const REDDIT_USERNAME: EnvSecret = EnvSecret {
         var: "REDDIT_USERNAME",
-        accepts: is_nonblank,
+        is_configured: is_nonblank,
     };
     pub const REDDIT_COOKIE: EnvSecret = EnvSecret {
         var: "REDDIT_COOKIE",
-        accepts: reddit::cookie::is_configured_cookie,
+        is_configured: reddit::cookie::is_configured_cookie,
     };
     pub const GITHUB_TOKEN: EnvSecret = EnvSecret {
         var: "GITHUB_TOKEN",
-        accepts: is_nonblank,
+        is_configured: is_nonblank,
     };
     pub const HN_USERNAME: EnvSecret = EnvSecret {
         var: "HN_USERNAME",
-        accepts: is_nonblank,
+        is_configured: is_nonblank,
     };
 
     /// Whether the ladder would take `value` for this secret rather than skip it.
     pub fn accepts(self, value: &str) -> bool {
-        (self.accepts)(value)
+        (self.is_configured)(value)
     }
 
     /// `$VAR` or `$VAR_FILE`, whichever the ladder would take this secret from, if either.
+    /// An unreadable `$VAR_FILE` is left for each account's own resolution to warn about.
     fn env_setting(self) -> Option<String> {
-        let (rung, _) = secret_ladder(None, self.var, None, None)
+        let read_quietly = |path: &str| try_read_file_secret(path).ok().flatten();
+        let (rung, _) = secret_ladder_reading(read_quietly, None, self.var, None, None)
             .into_iter()
-            .find(|(_, value)| value.as_deref().is_some_and(self.accepts))?;
-        Some(match rung {
-            SecretRung::EnvFile => format!("${}_FILE", self.var),
-            _ => format!("${}", self.var),
-        })
+            .find(|(_, value)| value.as_deref().is_some_and(|value| self.accepts(value)))?;
+        match rung {
+            SecretRung::Env => Some(format!("${}", self.var)),
+            SecretRung::EnvFile => Some(format!("${}_FILE", self.var)),
+            SecretRung::Flag | SecretRung::ConfigInline | SecretRung::ConfigFile => None,
+        }
     }
 }
 
@@ -275,18 +289,19 @@ fn is_nonblank(value: &str) -> bool {
 
 /// Read a file's trimmed contents, or `None` if missing or empty.
 fn read_file_secret(path: &str) -> Option<String> {
-    match std::fs::read_to_string(path) {
-        Ok(s) => {
-            let s = s.trim().to_string();
-            (!s.is_empty()).then_some(s)
-        }
-        // A `*_FILE` path was given but can't be read — surface it rather than
-        // silently falling through to a confusing "missing X" downstream.
-        Err(e) => {
-            eprintln!("warning: could not read secret file {path}: {e}");
-            None
-        }
-    }
+    // A `*_FILE` path was given but can't be read — surface it rather than
+    // silently falling through to a confusing "missing X" downstream.
+    try_read_file_secret(path).unwrap_or_else(|e| {
+        warn!("could not read secret file {path}: {e}");
+        None
+    })
+}
+
+/// A file's trimmed contents, `None` if empty.
+fn try_read_file_secret(path: &str) -> std::io::Result<Option<String>> {
+    let contents = std::fs::read_to_string(path)?;
+    let trimmed = contents.trim();
+    Ok((!trimmed.is_empty()).then(|| trimmed.to_string()))
 }
 
 pub fn resolve_pinboard_token(flag: Option<String>, pb: &PinboardConfig) -> Option<String> {
@@ -436,6 +451,35 @@ mod tests {
         assert_eq!(
             (token.value.as_str(), token.source),
             ("from-env-file", "$GITHUB_TOKEN_FILE")
+        );
+    }
+
+    /// The shared-setting check reads `$VAR_FILE` too, but only each account's resolution
+    /// may warn that it can't, or a multi-account run reports the same path once extra.
+    #[tokio::test]
+    async fn an_unreadable_env_file_is_warned_about_once_per_resolution() {
+        let dir = scratch_dir("unreadable-env-file");
+        let absent = dir.path().join("absent");
+        let _env = FakeSecretEnv::set(&[("GITHUB_TOKEN_FILE", absent.to_str().unwrap())]);
+        let account = GitHubAccount {
+            token: Some("inline".into()),
+            ..Default::default()
+        };
+
+        let (_, logs) = crate::test_support::capturing_logs(async {
+            warn_if_env_shared("github", &[EnvSecret::GITHUB_TOKEN], 2);
+            for _ in 0..2 {
+                assert!(resolve_github_token(None, Some(&account)).is_some());
+            }
+        })
+        .await;
+
+        let unreadable = format!("WARN could not read secret file {}", absent.display());
+        let warned: Vec<&str> = crate::test_support::warnings(&logs);
+        assert_eq!(warned.len(), 2, "{warned:?}");
+        assert!(
+            warned.iter().all(|line| line.starts_with(&unreadable)),
+            "{warned:?}"
         );
     }
 

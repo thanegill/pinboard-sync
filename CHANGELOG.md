@@ -18,6 +18,7 @@ All notable changes to this project are documented here. The format is based on
 ### Changed
 
 - A config pairing `post_date_max_age_days = 0` with `cleanup_stale_to_now` is rejected.
+- `cleanup` refuses the same pairing when `--max-age-days` or `--stale-to-now` sets it.
 - The flake is built with flake-parts. Its `flake-utils` input is now `flake-parts`, and
   its `nixosModules` are module attrsets tagged `_class = "nixos"` rather than bare
   functions: importing them works as before, calling one as a function does not.
@@ -43,16 +44,28 @@ All notable changes to this project are documented here. The format is based on
   `author:reddit:[deleted]` tag.
 - `cleanup github` keeps hand-written notes, and the title, tags and date of repo
   bookmarks `sync github` didn't write.
+- `cleanup github` refreshes the stars of every `[[github]]` account, each by its own
+  tags, not only the selected account's.
 - `cleanup github` skips a repo GitHub refuses with a lasting 403 (a ToS block or
   unauthorized SSO) instead of counting it as a failed lookup every run.
 - A config with two unnamed `[[github]]` accounts is rejected, rather than failing
   every `backup --all` on their shared `github-default` files.
+- So is one with two `[[reddit]]` or `[[hackernews]]` accounts that set neither `name`
+  nor `username`.
+- So is one with two accounts of a source whose names or usernames make the same backup
+  file name (`a.b` and `a/b`, or `Alice` and `alice`).
 - `cleanup_stale_to_now` re-dates a stale bookmark at most once per cap period, not on
   every run.
 - Dates are sent to Pinboard in UTC at whole seconds, the format its API documents.
 - The NixOS module passes a `%` in `onAuthFailure`, `backup.directory` or a secret path
   through to the service as written.
 - A `reddit_domain` outside reddit.com no longer makes every `sync` re-add every save.
+- `sync reddit` no longer re-adds a save after `cleanup reddit`, run as another account,
+  moved it onto that account's `reddit_domain`, nor writes a post twice when accounts on
+  different `reddit_domain`s both saved it.
+- `cleanup reddit` also cleans bookmarks on another `[[reddit]]` account's
+  `reddit_domain`, by that account's tags and leaving them there, and merges a post
+  stored on two such domains.
 - A HackerNews favorite linking a Reddit or GitHub page is no longer re-added after
   `cleanup` moves it to its canonical URL, even on a `reddit_domain` outside reddit.com.
 - Commas, which Pinboard forbids in tags, are slugged like spaces in derived tags

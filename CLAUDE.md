@@ -312,9 +312,15 @@ whitespace and commas in the value (e.g. the GitHub language `Jupyter Notebook` 
 tags/prefixes. Reddit's URL host is the configurable `reddit_domain` (used
 by both sync `bookmark_url` and cleanup's `normalize_url`); `reddit_key` stays
 host-agnostic so dedup matches across subdomains, and takes that domain too, so a
-mirror outside reddit.com still counts as a Reddit host. HackerNews keys an article on
-Reddit the same way, against every configured account's domain (`Config::reddit_domains`,
-which is why `SourceAccount::client` takes the whole `Config`).
+mirror outside reddit.com still counts as a Reddit host. Each Reddit account's client,
+and HackerNews keying an article on Reddit, match against every configured account's
+domain (`Config::reddit_domains`, which is why `SourceAccount::client` takes the whole
+`Config`), so a save on another account's mirror still keys. `cleanup reddit` takes
+every account's config (`RedditCleanupOpts::accounts`): it leaves a bookmark on
+whichever configured domain it is on rather than moving it to the running account's (so
+passes run as different accounts never move it back and forth), shapes it with the tags
+of the account that domain belongs to, and collapses a post stored on several onto the
+first in config order.
 
 **Config + secret resolution.** [`src/config.rs`](src/config.rs) parses the
 `--config` TOML: one `[pinboard]` destination, `[hooks]`, and per-source account
@@ -345,7 +351,8 @@ exiting non-zero if any fail. `cleanup --all` runs once per source (reddit, gith
 hackernews), since it normalizes the shared bookmark set. `cleanup github`
 canonicalizes repo-root URLs and looks each repo up via the API to rewrite
 renamed/moved repos. It refreshes only what the tool wrote: notes in `github_note`'s
-shape, the base/language tags of bookmarks carrying the base tag, their title only
+shape, the base/language tags of bookmarks carrying any configured account's base tag
+(refreshed with that account's tag config), their title only
 while it is still `owner/repo`, and their star date only while the notes are the tool's
 too. A repo root is often another source's bookmark (an HN story linking it, or one a
 rename merged a star into), so never widen that.

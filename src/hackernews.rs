@@ -1137,14 +1137,16 @@ mod tests {
             all: synced.clone(),
             ..Default::default()
         };
+        let config = RedditConfig {
+            domain: domain.into(),
+            ..Default::default()
+        };
         let opts = RedditCleanupOpts {
             mark_nsfw: false,
             fix_titles: false,
-            config: RedditConfig {
-                domain: domain.into(),
-                ..Default::default()
-            },
+            config: config.clone(),
             dates: NO_DATING,
+            accounts: vec![config],
         };
         run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts)
             .await

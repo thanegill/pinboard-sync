@@ -1,7 +1,7 @@
 //! `cleanup github`: canonicalize GitHub repo-root bookmarks and refresh each one from the
 //! API (which follows renames and transfers), rewriting a moved repo's URL. Only what the
 //! tool wrote is refreshed: notes in the shape `sync github` writes, and the title and tags
-//! of bookmarks carrying the base tag.
+//! of bookmarks carrying any configured account's base tag.
 
 use std::collections::HashMap;
 
@@ -29,10 +29,16 @@ use crate::urls::{url_key, UrlExt};
 /// it, one saved by hand -- keeps its title, notes, tags and date. A URL change updates
 /// and deletes the old, preserving the creation time. A repo that no longer exists (404)
 /// keeps just the URL canonicalization.
+///
+/// `accounts` holds the tag config of every configured GitHub account. A star carrying
+/// any of their base tags counts as synced, and its tags are refreshed by the config of
+/// each account whose base tag it carries, the client's own first, so a star of a second
+/// account doesn't gain the first's base tag.
 pub async fn run<S: BookmarkStore + AccountState>(
     store: &S,
     client: &GitHubClient,
     dates: DateOpts,
+    accounts: &[GitHubConfig],
 ) -> Result<(), SourceError> {
     // Taken from the run's live view, so an earlier source's writes are already reflected.
     let gh_bms: Vec<Bookmark> = store
@@ -55,10 +61,29 @@ pub async fn run<S: BookmarkStore + AccountState>(
         HashMap::new()
     };
 
-    let pass = GitHubCleanupPass { client, star_dates };
+    let pass = GitHubCleanupPass {
+        client,
+        star_dates,
+        star_configs: star_configs(&client.config, accounts),
+    };
     run_pass(store, &gh_bms, "github", dates, &pass)
         .await
         .into_result()
+}
+
+/// `own` followed by each of `accounts` with a base tag no earlier config has, so every
+/// base tag is refreshed by one config: the client's own where they share it.
+fn star_configs(own: &GitHubConfig, accounts: &[GitHubConfig]) -> Vec<GitHubConfig> {
+    let mut configs: Vec<GitHubConfig> = Vec::new();
+    for cfg in std::iter::once(own).chain(accounts) {
+        let Some(tag) = base_tag(cfg) else {
+            continue;
+        };
+        if !configs.iter().any(|seen| base_tag(seen) == Some(tag)) {
+            configs.push(cfg.clone());
+        }
+    }
+    configs
 }
 
 /// Re-shapes one GitHub repo-root bookmark: skip anything that isn't a bare
@@ -68,6 +93,8 @@ pub async fn run<S: BookmarkStore + AccountState>(
 struct GitHubCleanupPass<'a> {
     client: &'a GitHubClient,
     star_dates: HashMap<String, OffsetDateTime>,
+    /// One per distinct base tag, from [`star_configs`].
+    star_configs: Vec<GitHubConfig>,
 }
 
 impl CleanupPass for GitHubCleanupPass<'_> {
@@ -87,7 +114,12 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         let mut title = collapse_whitespace(&bookmark.title, " ");
         let mut note = bookmark.note.clone();
         let mut tags = bookmark.tags.clone();
-        let synced = is_synced_star(bookmark, &self.client.config);
+        let syncing: Vec<&GitHubConfig> = self
+            .star_configs
+            .iter()
+            .filter(|cfg| is_synced_star(bookmark, cfg))
+            .collect();
+        let synced = !syncing.is_empty();
         // A failed lookup is surfaced to the driver, which logs and counts it (or, for a
         // dead credential, aborts the pass).
         let lookup = self.client.repo(&owner, &repo).await?;
@@ -112,7 +144,7 @@ impl CleanupPass for GitHubCleanupPass<'_> {
                 title = html_to_plain(&info.full_name);
             }
             if synced {
-                tags = refresh_tags(bookmark.tags.clone(), &info, &self.client.config);
+                tags = refresh_tags(tags, &info, &syncing);
             }
             url = Url::parse(&info.html_url).unwrap_or(url); // follows renames/transfers
         }
@@ -156,15 +188,21 @@ fn repo_root(url: &Url) -> Option<(String, String)> {
     Some((owner.to_string(), repo.to_string()))
 }
 
-/// Whether `sync github` wrote this bookmark: it carries the base tag, the first non-empty
-/// entry of `tags`. That makes its tags the tool's to refresh, and its title and star date
+/// Whether `sync github` wrote this bookmark under `cfg`: it carries that config's
+/// [`base_tag`]. That makes its tags the tool's to refresh, and its title and star date
 /// too while they still look the tool's (see [`run`]). With every base tag disabled
 /// nothing marks a star, so no bookmark qualifies.
 fn is_synced_star(bookmark: &Bookmark, cfg: &GitHubConfig) -> bool {
+    base_tag(cfg).is_some_and(|base| bookmark.tags.iter().any(|tag| tag == base))
+}
+
+/// The tag marking a star `sync github` wrote under `cfg`: the first non-empty entry of
+/// its `tags`.
+fn base_tag(cfg: &GitHubConfig) -> Option<&str> {
     cfg.tags
         .iter()
+        .map(String::as_str)
         .find(|tag| !tag.is_empty())
-        .is_some_and(|base| bookmark.tags.contains(base))
 }
 
 /// Whether a repo bookmark's stored `note` is one the tool wrote, so a rebuild from fresh
@@ -243,17 +281,33 @@ fn links_to_repo(text: &str, names: &[(String, String)]) -> bool {
         .is_some_and(|(owner, name)| is_one_of(&owner, &name, names))
 }
 
-/// Refresh the language tag from the current repo, keeping existing tags and
-/// ensuring the base tags: drop any old `lang_prefix` tag, then re-add the base
-/// tags and the current `lang:` tag.
-fn refresh_tags(existing: Vec<String>, repo: &GitHubRepo, cfg: &GitHubConfig) -> Vec<String> {
+/// Refresh the language tags from the current repo under each of `configs`, keeping other
+/// existing tags and ensuring the base tags: drop every old tag under any of their
+/// `lang_prefix`es, then re-add each config's base tags and current `lang:` tag. Dropping
+/// all before adding any keeps the result the same whatever order `configs` come in, even
+/// when one prefix starts another (`lang:` and `lang:work:`).
+fn refresh_tags(
+    existing: Vec<String>,
+    repo: &GitHubRepo,
+    configs: &[&GitHubConfig],
+) -> Vec<String> {
+    let under_a_lang_prefix = |tag: &str| {
+        configs
+            .iter()
+            .any(|cfg| !cfg.lang_prefix.is_empty() && tag.starts_with(&cfg.lang_prefix))
+    };
     let mut tags: Vec<String> = existing
         .into_iter()
-        .filter(|t| cfg.lang_prefix.is_empty() || !t.starts_with(&cfg.lang_prefix))
+        .filter(|tag| !under_a_lang_prefix(tag))
         .collect();
-    extend_unique(&mut tags, &cfg.tags);
-    if let Some(lang) = repo.language.clone().filter(|s| !s.is_empty()) {
-        push_prefixed(&mut tags, &cfg.lang_prefix, &lang.to_lowercase());
+    let lang = repo.language.as_deref().filter(|lang| !lang.is_empty());
+    for cfg in configs {
+        extend_unique(&mut tags, &cfg.tags);
+        let mut lang_tag = Vec::new();
+        if let Some(lang) = lang {
+            push_prefixed(&mut lang_tag, &cfg.lang_prefix, &lang.to_lowercase());
+        }
+        extend_unique(&mut tags, &lang_tag);
     }
     tags
 }
@@ -400,6 +454,62 @@ mod tests {
         ));
         assert!(!is_synced_star(&tagged(&["github-star"]), &cfg(&[])));
         assert!(!is_synced_star(&tagged(&["github-star"]), &cfg(&[""])));
+    }
+
+    #[test]
+    fn refreshed_tags_are_the_same_whichever_account_runs() {
+        let cfg = |base: &str, lang_prefix: &str| GitHubConfig {
+            tags: vec![base.into()],
+            lang_prefix: lang_prefix.into(),
+        };
+        let (home, work) = (cfg("github-star", "lang:"), cfg("work-star", "lang:work:"));
+        let rust = GitHubRepo {
+            language: Some("Rust".into()),
+            ..repo(None)
+        };
+        let existing: Vec<String> = ["github-star", "work-star", "lang:go", "lang:work:go", "x"]
+            .map(String::from)
+            .to_vec();
+        let refreshed = |configs: &[&GitHubConfig]| {
+            let mut tags = refresh_tags(existing.clone(), &rust, configs);
+            tags.sort();
+            tags
+        };
+        let expected = [
+            "github-star",
+            "lang:rust",
+            "lang:work:rust",
+            "work-star",
+            "x",
+        ];
+        assert_eq!(refreshed(&[&home, &work]), expected);
+        assert_eq!(refreshed(&[&work, &home]), expected);
+    }
+
+    #[test]
+    fn star_configs_keep_one_config_per_base_tag_the_clients_first() {
+        let cfg = |tags: &[&str], lang_prefix: &str| GitHubConfig {
+            tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            lang_prefix: lang_prefix.into(),
+        };
+        let own = cfg(&["github-star"], "own:");
+        let configs = star_configs(
+            &own,
+            &[
+                cfg(&["github-star"], "other:"),
+                cfg(&[""], "off:"),
+                cfg(&["", "work-star"], "work:"),
+                cfg(&["work-star", "x"], "dup:"),
+            ],
+        );
+        let kept: Vec<(Option<&str>, &str)> = configs
+            .iter()
+            .map(|cfg| (base_tag(cfg), cfg.lang_prefix.as_str()))
+            .collect();
+        assert_eq!(
+            kept,
+            [(Some("github-star"), "own:"), (Some("work-star"), "work:")]
+        );
     }
 }
 

@@ -541,6 +541,7 @@ async fn cleanup_looks_up_comments_by_their_own_fullname_in_the_post_batch() {
         fix_titles: false,
         config: RedditConfig::default(),
         dates: NO_DATING,
+        accounts: Vec::new(),
     };
 
     run(&pinboard.cleanup_store(false), Some(&client), &opts)

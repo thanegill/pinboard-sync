@@ -269,10 +269,13 @@ impl Config {
         if self.backup.directory.as_deref().is_some_and(str::is_empty) {
             bail!("backup.directory must not be empty");
         }
+        const NAME_OR_USERNAME: &str = "`name` (or, with no `name`, `username`)";
         check_unique_names("reddit", &self.reddit)?;
+        check_distinct_slugs("reddit", &self.reddit, NAME_OR_USERNAME)?;
         check_unique_names("github", &self.github)?;
-        check_one_unnamed("github", &self.github)?;
+        check_distinct_slugs("github", &self.github, "`name`")?;
         check_unique_names("hackernews", &self.hackernews)?;
+        check_distinct_slugs("hackernews", &self.hackernews, NAME_OR_USERNAME)?;
         self.check_stale_to_now_cap("reddit", &self.reddit, &self.defaults.reddit)?;
         self.check_stale_to_now_cap("github", &self.github, &self.defaults.github)?;
         self.check_stale_to_now_cap("hackernews", &self.hackernews, &self.defaults.hackernews)?;
@@ -315,8 +318,8 @@ impl Config {
         defaults: &SourceDefaults,
     ) -> Result<()> {
         let redates_every_run = |account: Option<&T>| {
-            crate::jobs::resolve_dates(
-                &crate::jobs::DateOverrides::default(),
+            crate::timefmt::resolve_dates(
+                &crate::timefmt::DateOverrides::default(),
                 account,
                 defaults,
                 self,
@@ -331,11 +334,9 @@ impl Config {
                 .map(|index| format!("{source}[{index}]")),
         };
         match offender {
-            Some(scope) => bail!(
-                "config: {scope} resolves `post_date_max_age_days` to 0 with \
-                 `cleanup_stale_to_now` on, so cleanup would re-date its stale bookmarks on \
-                 every run; raise the cap or turn `cleanup_stale_to_now` off"
-            ),
+            Some(scope) => Err(crate::timefmt::redates_every_run_error(&format!(
+                "config: {scope}"
+            ))),
             None => Ok(()),
         }
     }
@@ -416,21 +417,32 @@ fn check_tags(field: &str, values: &Option<Vec<String>>) -> Result<()> {
     Ok(())
 }
 
-/// Error if two accounts of a source would both write the `source-default` backup files,
-/// so that every `backup --all` fails: each has no `name`, or one that [`slug`]s to
-/// `default` (empty, `default` itself, or only punctuation).
+/// Error if two accounts of a source would write the same backup files, so that every
+/// `backup --all` fails in `check_stem_collisions`: their [`Named::account_name`]s (a
+/// `name`, or for Reddit and HackerNews a `username`) [`slug`] alike. Slugging lowercases
+/// and folds punctuation, so `a.b` and `a/b`, or `Alice` and `alice`, collide; no name,
+/// an empty one and `default` all slug to `default`. `remedy` names the fields that
+/// would set a distinct one. The error names positions, never the names.
 ///
 /// [`slug`]: crate::backup::slug
-fn check_one_unnamed<T: Named>(source: &str, accounts: &[T]) -> Result<()> {
-    let mut unnamed = accounts
-        .iter()
-        .enumerate()
-        .filter(|(_, account)| crate::backup::slug(account.account_name()) == "default")
-        .map(|(index, _)| index);
-    if let (Some(first), Some(second)) = (unnamed.next(), unnamed.next()) {
+fn check_distinct_slugs<T: Named>(source: &str, accounts: &[T], remedy: &str) -> Result<()> {
+    let mut first_with_slug = HashMap::new();
+    for (index, account) in accounts.iter().enumerate() {
+        let slug = crate::backup::slug(account.account_name());
+        let Some(first) = first_with_slug.get(&slug) else {
+            first_with_slug.insert(slug, index);
+            continue;
+        };
+        if slug == "default" {
+            bail!(
+                "config: {source}[{first}] and {source}[{index}] would both back up as \
+                 `{source}-default`; give one of them a distinct {remedy}"
+            );
+        }
         bail!(
-            "config: {source}[{first}] and {source}[{second}] would both back up as \
-             `{source}-default`; give one of them a distinct `name`"
+            "config: {source}[{first}] and {source}[{index}] would back up to the same \
+             files, since their account names make the same file name; give one of them \
+             a distinct {remedy}"
         );
     }
     Ok(())
@@ -729,7 +741,7 @@ impl_named!(RedditAccount => username, GitHubAccount, HackerNewsAccount => usern
 /// The per-account settings shared across every source. Each returns the
 /// account-level override, or `None` to fall through to the per-source default and
 /// then the `[pinboard]` global — letting the job/cleanup builders resolve them
-/// generically (see `resolve_setting`/`resolve_dates` in `jobs`). The method names
+/// generically (see [`resolve_setting`] and `timefmt::resolve_dates`). The method names
 /// normalize the two longer field names (`post_date_max_age_days`,
 /// `cleanup_stale_to_now`).
 pub trait Account: Named {
@@ -756,6 +768,13 @@ macro_rules! impl_account {
     };
 }
 impl_account!(RedditAccount, GitHubAccount, HackerNewsAccount);
+
+/// Resolve a setting through its precedence tiers, highest first: the CLI flag, else
+/// the account override, else the per-source default, else the resolved `[pinboard]`
+/// global. The first present (`Some`) value wins; the global is the guaranteed fallback.
+pub fn resolve_setting<T>(flag: Option<T>, account: Option<T>, source: Option<T>, global: T) -> T {
+    flag.or(account).or(source).unwrap_or(global)
+}
 
 /// Pick the account named `name`, or the first account when `name` is `None`.
 /// Returns `Ok(None)` only when there are no configured accounts and no name was

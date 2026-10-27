@@ -16,11 +16,12 @@ use crate::http::{
 };
 use crate::source::SourceError;
 
-const DEFAULT_BASE: &str = "https://api.pinboard.in/v1";
+const PINBOARD_BASE: &str = "https://api.pinboard.in/v1";
 
 /// Seconds to wait between successful `posts/add` calls (Pinboard asks for ~3s).
 pub const RATE_LIMIT_SECS: u64 = 3;
 const MAX_RETRIES: u32 = 5;
+const RETRY_DELAY: Duration = Duration::from_secs(3);
 
 /// `posts/add` is a GET, so every field — notably `extended` (the notes) — rides in
 /// the request URL. Servers cap the request line (Pinboard answers a long one with
@@ -132,7 +133,7 @@ impl PinboardClient {
         Self::build(
             auth_token,
             rate_limit_secs,
-            DEFAULT_BASE.to_string(),
+            PINBOARD_BASE.to_string(),
             client_builder(),
         )
     }
@@ -148,7 +149,7 @@ impl PinboardClient {
             .build()
             .context("building HTTP client")?;
         Ok(Self {
-            http: RetryingClient::new(http, MAX_RETRIES, Duration::from_secs(RATE_LIMIT_SECS)),
+            http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
             auth_token,
             rate_limit_secs,
             wrote: Cell::new(false),
@@ -502,7 +503,7 @@ mod tests {
     use crate::http::{ELLIPSIS, ERROR_BODY_MAX_BYTES};
 
     fn test_client() -> PinboardClient {
-        PinboardClient::with_base_url("user:tok".into(), DEFAULT_BASE.to_string()).unwrap()
+        PinboardClient::with_base_url("user:tok".into(), PINBOARD_BASE.to_string()).unwrap()
     }
 
     /// A realistic set of fixed params (URL, title, tags, auth, …).

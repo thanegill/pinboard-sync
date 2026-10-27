@@ -22,7 +22,7 @@ use crate::tags::{push_prefixed, push_tags};
 use crate::urls::github_key;
 use url::Url;
 
-const API_BASE: &str = "https://api.github.com";
+const GITHUB_API_BASE: &str = "https://api.github.com";
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 /// The most stars `/user/starred` returns per page; GitHub's default is 30.
@@ -258,7 +258,7 @@ pub struct GitHubClient {
 
 impl GitHubClient {
     pub fn new(token: ConfiguredSecret, config: GitHubConfig) -> anyhow::Result<Self> {
-        Self::build(token, config, API_BASE.to_string())
+        Self::build(token, config, GITHUB_API_BASE.to_string())
     }
 
     fn build(token: ConfiguredSecret, config: GitHubConfig, base: String) -> anyhow::Result<Self> {
@@ -809,7 +809,11 @@ mod tests {
 
     #[test]
     fn dedup_key_only_matches_github() {
-        let c = GitHubClient::with_base_url("t".into(), GitHubConfig::default(), API_BASE.into());
+        let c = GitHubClient::with_base_url(
+            "t".into(),
+            GitHubConfig::default(),
+            GITHUB_API_BASE.into(),
+        );
         assert_eq!(
             c.dedup_key(&url("https://github.com/o/r")).as_deref(),
             Some("github.com/o/r")

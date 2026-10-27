@@ -98,8 +98,8 @@ fn post_at(
 fn settings(use_post_date: bool, max_age_days: u64, limit: Option<NonZeroUsize>) -> JobSettings {
     JobSettings {
         limit: limit.map_or(SyncLimit::All, SyncLimit::Max),
-        toread: false,
-        shared: false,
+        read_later: false,
+        public: false,
         dates: DateOpts {
             use_post_date,
             max_age_days,
@@ -253,8 +253,8 @@ async fn prepare_new_drafts_stamps_flags_and_clears_dates_outside_the_age_cap() 
     };
     let job = JobSettings {
         limit: SyncLimit::All,
-        toread: true,
-        shared: true,
+        read_later: true,
+        public: true,
         dates: DateOpts {
             use_post_date: true,
             max_age_days: 30,

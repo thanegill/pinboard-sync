@@ -211,9 +211,9 @@ impl UrlKey for SourceClient {
 }
 
 /// The per-account settings every `build_*_job` resolves the same way: the
-/// `limit`/`toread`/`shared` trio through [`resolve_setting`] plus the dates through
-/// [`resolve_dates`], each on the flag → account → per-source default → `[pinboard]`
-/// global ladder. Leaves client/secret/hook construction to each source builder.
+/// `limit`/`read_later`/`public` trio through [`resolve_setting`] plus the dates through
+/// [`resolve_dates`], each on the flag → account → per-source default → `[pinboard]` global
+/// ladder. Leaves client/secret/hook construction to each source builder.
 fn resolve_job_settings(
     account: Option<&impl config::Account>,
     overrides: &SyncOverrides,
@@ -227,13 +227,13 @@ fn resolve_job_settings(
             src.limit,
             config.pinboard.limit.unwrap_or_default(),
         ),
-        toread: resolve_setting(
+        read_later: resolve_setting(
             overrides.flags.toread,
             account.and_then(|a| a.toread()),
             src.toread,
             config.pinboard.toread,
         ),
-        shared: resolve_setting(
+        public: resolve_setting(
             overrides.flags.public,
             account.and_then(|a| a.public()),
             src.public,
@@ -483,7 +483,7 @@ mod tests {
 
     /// Override values chosen so each setting is distinct from the others and from the
     /// `Config::default()` globals — so a builder that wires a flag into the *wrong*
-    /// `SyncJob` field (e.g. `public` into the `toread` slot) fails the assertions.
+    /// `SyncJob` field (e.g. `public` into the `read_later` slot) fails the assertions.
     fn wiring_overrides() -> SyncOverrides {
         SyncOverrides {
             flags: SyncFlags {
@@ -505,8 +505,8 @@ mod tests {
             SyncLimit::Max(NonZeroUsize::new(7).unwrap()),
             "limit"
         );
-        assert!(settings.toread, "toread");
-        assert!(!settings.shared, "shared (from --public=false)");
+        assert!(settings.read_later, "read_later");
+        assert!(!settings.public, "public (from --public=false)");
         assert!(settings.dates.use_post_date, "use_post_date");
         assert_eq!(settings.dates.max_age_days, 99, "max_age_days");
     }
@@ -515,8 +515,8 @@ mod tests {
     pub(super) fn fetch_only(limit: SyncLimit) -> JobSettings {
         JobSettings {
             limit,
-            toread: false,
-            shared: false,
+            read_later: false,
+            public: false,
             dates: crate::test_support::NO_DATING,
         }
     }

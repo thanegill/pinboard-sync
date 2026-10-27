@@ -799,8 +799,8 @@ impl HackerNewsClient {
     async fn sync_once(&self, drafts: &[BookmarkDraft], account: &[Bookmark]) -> Vec<Bookmark> {
         let settings = crate::sync::JobSettings {
             limit: crate::config::SyncLimit::All,
-            toread: false,
-            shared: false,
+            read_later: false,
+            public: false,
             dates: crate::test_support::NO_DATING,
         };
         let new = crate::sync::prepare_new_drafts(self, drafts.to_vec(), account, &settings, 0);

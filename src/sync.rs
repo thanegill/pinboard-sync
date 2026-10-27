@@ -33,10 +33,10 @@ pub fn filter_new<S: Source>(
 #[derive(Debug, Clone, Copy)]
 pub struct JobSettings {
     pub limit: SyncLimit,
-    /// To-read flag for this account's new bookmarks.
-    pub toread: bool,
-    /// Public/shared flag for this account's new bookmarks.
-    pub shared: bool,
+    /// Whether this account's new bookmarks are queued to read (`--toread`, `toread`).
+    pub read_later: bool,
+    /// Whether this account's new bookmarks are public (`--public`, `public`).
+    pub public: bool,
     pub dates: DateOpts,
 }
 
@@ -44,8 +44,8 @@ pub struct JobSettings {
 /// ([`filter_new`]) and collapsed so each `dedup_key` appears once (keep-first, matching
 /// the cross-job [`merge_deduped`] so `limit` counts distinct items rather than letting
 /// duplicate-key drafts consume slots), each stamped with the account's resolved
-/// `toread`/`shared` flags and post date (kept only when `use_post_date` is on and the
-/// post is within the age cap relative to `now`, else cleared so Pinboard defaults to
+/// `read_later`/`public` flags and post date (kept only when `use_post_date` is on and
+/// the post is within the age cap relative to `now`, else cleared so Pinboard defaults to
 /// "now"), and truncated to the per-job `limit`, if any, which keeps the newest.
 ///
 /// Returned oldest first, the reverse of the source's newest-first order, so a run cut
@@ -65,8 +65,8 @@ pub fn prepare_new_drafts<S: Source>(
     let mut seen = HashSet::new();
     new.retain(|d| seen.insert(d.dedup_key.clone()));
     for d in &mut new {
-        d.bookmark.read_later = settings.toread;
-        d.bookmark.public = settings.shared;
+        d.bookmark.read_later = settings.read_later;
+        d.bookmark.public = settings.public;
         d.bookmark.timestamp = settings.dates.sync_date(d.bookmark.timestamp, now);
     }
     if let Some(limit) = settings.limit.write_cap() {

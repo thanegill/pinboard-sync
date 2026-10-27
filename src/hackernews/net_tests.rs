@@ -1,4 +1,7 @@
+use super::algolia::{ALGOLIA_CHUNK_PAUSE, ITEM_BATCH};
+use super::favorites::MAX_FAVORITES_PAGES;
 use super::*;
+use crate::backup::RawKind;
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};

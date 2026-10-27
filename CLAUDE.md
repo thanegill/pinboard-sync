@@ -239,39 +239,38 @@ real clients are covered by `net_tests` against a wiremock server via test-only
 
 **Sources:** Reddit ([`reddit.rs`](src/reddit.rs) — cookie-authenticated
 `saved.json`/`api/info.json`, plus the `PostInfo` port for cleanup), GitHub
-([`github.rs`](src/github.rs) — `/user/starred` with Link-header pagination, 100 per
-page, `sort=created&direction=desc` pinned rather than left to GitHub's defaults because
-the incremental read depends on newest-starred-first), HackerNews (below). Reddit's saved
+([`github.rs`](src/github.rs) — `/user/starred` with Link-header pagination, 100 per page,
+`sort=created&direction=desc` pinned rather than left to GitHub's defaults because the
+incremental read depends on newest-starred-first), HackerNews (below). Reddit's saved
 listing is newest-saved first with no sort parameter. Both stop their incremental read at
 the first page whose drafts all have their `dedup_key` among `synced_keys`
 (`page_is_caught_up`: an entry that makes no draft adds nothing, an empty page proves
 nothing). Each page is shaped once and its drafts kept, so a dropped entry warns once
-(Reddit's `walk_saved` hands pages to a callback for this). They share HackerNews' two
-known gaps below and a third that applies to all three: a page whose items are all
-already on Pinboard stops the read even with missing items below it, whether on a first
-sync whose newest items got there another way or because such items landed above an
-unwritten one between runs. `--limit all` recovers all three.
-HackerNews ([`hackernews.rs`](src/hackernews.rs) — scrapes `/favorites` for item IDs
-then batch-reads item details from the Algolia HN search API — `objectID:… OR …`,
-chunked, so hundreds of favorites cost a couple of queries, not one per item). The
-favorites pages are the costly half (they are what HN answers with 429), so `sync`
-stops following "More" in each stream (stories, comments) at the first page that would
-give it nothing to write (`is_caught_up`). To tell, `fetch_incremental` looks each page's
-items up on Algolia as it is read (one query per page) and checks every draft's
-`dedup_key` against Pinboard's, the same test `sync::filter_new` applies. That is
-deliberately not "is this item ID bookmarked": a favorited story whose article was
-already saved by hand dedups by URL and never gets an `HN Link:` note, and an ID test
-would page down to every such item on every run. Items gone from Algolia make no draft,
-so they don't hold the walk open either. Favorites list newest first, so later pages
-hold nothing new, with two known gaps: an older favorite deleted from Pinboard is not
-re-added, and a failed write followed by a full page of newer successes is never
-retried. `sync hackernews --limit all` reads every page and recovers them. `backup`
-keeps the full traversal with its batched lookup.
-`cleanup hackernews --link-discussions` (default off) is the reverse: for article
-bookmarks carrying the `link_tag` marker (default `find-hn`), it looks each up on HN
-by URL (one Algolia query each) and adds the discussion link. Reddit's bookmark/tag
-shaping lives in
-[`src/reddit/model.rs`](src/reddit/model.rs).
+(Reddit's `walk_saved` hands pages to a callback for this). They share HackerNews' two known
+gaps below and a third that applies to all three: a page whose items are all already on
+Pinboard stops the read even with missing items below it, whether on a first sync whose
+newest items got there another way or because such items landed above an unwritten one
+between runs. `--limit all` recovers all three. HackerNews
+([`hackernews.rs`](src/hackernews.rs) — scrapes `/favorites` for item IDs
+([`favorites.rs`](src/hackernews/favorites.rs)) then batch-reads item details from the
+Algolia HN search API ([`algolia.rs`](src/hackernews/algolia.rs)) — `objectID:… OR …`,
+chunked, so hundreds of favorites cost a couple of queries, not one per item). The favorites
+pages are the costly half (they are what HN answers with 429), so `sync` stops following
+"More" in each stream (stories, comments) at the first page that would give it nothing to
+write (`is_caught_up`). To tell, `fetch_incremental` looks each page's items up on Algolia
+as it is read (one query per page) and checks every draft's `dedup_key` against Pinboard's,
+the same test `sync::filter_new` applies. That is deliberately not "is this item ID
+bookmarked": a favorited story whose article was already saved by hand dedups by URL and
+never gets an `HN Link:` note, and an ID test would page down to every such item on every
+run. Items gone from Algolia make no draft, so they don't hold the walk open either.
+Favorites list newest first, so later pages hold nothing new, with two known gaps: an older
+favorite deleted from Pinboard is not re-added, and a failed write followed by a full page
+of newer successes is never retried. `sync hackernews --limit all` reads every page and
+recovers them. `backup` keeps the full traversal with its batched lookup.
+`cleanup hackernews --link-discussions` (default off) is the reverse: for article bookmarks
+carrying the `link_tag` marker (default `find-hn`), it looks each up on HN by URL (one
+Algolia query each) and adds the discussion link.
+[`src/reddit/model.rs`](src/reddit/model.rs) holds Reddit's bookmark/tag shaping.
 
 **The Reddit cookie is shaped in one place**,
 [`src/reddit/cookie.rs`](src/reddit/cookie.rs). `RedditClient::build` turns the configured

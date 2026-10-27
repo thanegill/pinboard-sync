@@ -4,47 +4,34 @@
 //! article (with the HN discussion in the notes); favorited *comments* bookmark the
 //! HN permalink.
 
+mod algolia;
 pub mod cleanup;
+mod favorites;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use log::{debug, warn};
-use scraper::{Html, Selector};
+use log::warn;
 use serde::Deserialize;
 
-use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
+use crate::backup::{BackupDump, BackupSource, RawSink};
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
-use crate::http::{client_builder, retry_after_up_to, RetryingClient};
+use crate::http::{client_builder, RetryingClient};
 use crate::reddit::model::{is_reddit_host, over18_dest, reddit_key};
-use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey};
+use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 use crate::tags::{push_prefixed, push_tag, push_tags};
 use crate::urls::{github_key, url_key};
+use favorites::FAVORITES_PAGE_PAUSE;
 use url::Url;
 
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0";
 const HN_BASE: &str = "https://news.ycombinator.com";
 const ALGOLIA_BASE: &str = "https://hn.algolia.com";
-/// Item IDs per Algolia `objectID:… OR …` query. The API rejects very long filter
-/// strings (~200+ clauses), so stay well under that.
-const ITEM_BATCH: usize = 100;
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
-/// The longest `Retry-After` a favorites-page 429 is waited out for, once. A 429 asking
-/// for longer, or for nothing, fails the fetch at once rather than holding the run open.
-const FAVORITES_MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
-/// The pause before each favorites page after a fetch's first, the comments stream's
-/// first page included.
-const FAVORITES_PAGE_PAUSE: Duration = Duration::from_millis(500);
-/// The pause before each Algolia item chunk after the first.
-const ALGOLIA_CHUNK_PAUSE: Duration = Duration::from_millis(300);
-/// Cap on favorites pages followed via the "More" link (30 items per page, so this
-/// covers thousands of favorites). Bounds a malformed or looping "More" link so the
-/// scrape can't spin forever.
-const MAX_FAVORITES_PAGES: usize = 100;
 
 /// Tag vocabulary for HackerNews favorites. `tags` are applied to every bookmark
 /// (defaulting to `["hackernews"]`); the rest default to their built-in values, and
@@ -118,59 +105,6 @@ impl HackerNewsItemKind {
 impl std::fmt::Display for HackerNewsItemKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
-    }
-}
-
-/// An Algolia HN search response.
-#[derive(Debug, Deserialize)]
-struct AlgoliaSearchResponse {
-    #[serde(default)]
-    hits: Vec<AlgoliaHit>,
-}
-
-/// One hit from the Algolia HN search API.
-#[derive(Debug, Deserialize)]
-struct AlgoliaHit {
-    #[serde(rename = "objectID")]
-    object_id: String,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
-    author: Option<String>,
-    #[serde(default)]
-    story_text: Option<String>,
-    #[serde(default)]
-    comment_text: Option<String>,
-    #[serde(rename = "_tags", default)]
-    tags: Vec<String>,
-    /// Item creation time (unix epoch seconds).
-    #[serde(default)]
-    created_at_i: Option<i64>,
-}
-
-impl From<AlgoliaHit> for HackerNewsItem {
-    fn from(h: AlgoliaHit) -> Self {
-        // The item type is carried in `_tags` (e.g. "story"/"comment"/"poll"/"job").
-        let kind = [
-            HackerNewsItemKind::Comment,
-            HackerNewsItemKind::Poll,
-            HackerNewsItemKind::Job,
-            HackerNewsItemKind::Story,
-        ]
-        .into_iter()
-        .find(|kind| h.tags.iter().any(|tag| tag == kind.as_str()))
-        .unwrap_or_default();
-        HackerNewsItem {
-            id: h.object_id.parse().unwrap_or(0),
-            kind,
-            by: h.author.unwrap_or_default(),
-            url: h.url,
-            title: h.title,
-            text: h.comment_text.or(h.story_text),
-            created_at: h.created_at_i,
-        }
     }
 }
 
@@ -319,207 +253,6 @@ impl HackerNewsClient {
             ..self
         }
     }
-
-    /// Collect favorited item IDs from the stories page (`comments=false`) or the
-    /// comments page (`comments=true`), following the "More" link across pages. With
-    /// `synced_keys`, each page's items are looked up as it is read and shaped into
-    /// `drafts`, and the walk stops at the first page that has nothing new
-    /// ([`is_caught_up`]).
-    async fn collect_ids(
-        &self,
-        comments: bool,
-        synced_keys: Option<&HashSet<String>>,
-        out: &mut Vec<HackerNewsItemId>,
-        drafts: &mut HashMap<HackerNewsItemId, BookmarkDraft>,
-        sink: &mut RawSink,
-    ) -> Result<(), SourceError> {
-        // The scraped page is the only record of a favorite HN's API never exposes, so
-        // `backup` keeps it verbatim alongside the Algolia details.
-        let stream = if comments {
-            "favorites-comments"
-        } else {
-            "favorites"
-        };
-        let label = format!("hn {stream}");
-        let suffix = if comments { "&comments=t" } else { "" };
-        let mut next = Some(format!(
-            "{}/favorites?id={}{}",
-            self.base, self.username, suffix
-        ));
-        let mut visited = HashSet::new();
-        let mut page = 0usize;
-        while let Some(url) = next.take() {
-            page += 1;
-            if page > MAX_FAVORITES_PAGES {
-                warn!(
-                    "hn {stream} for '{}': hit the {MAX_FAVORITES_PAGES}-page cap; \
-                     stopping (some favorites may be missing)",
-                    self.username
-                );
-                sink.mark_truncated(format!(
-                    "hn {stream} stopped at the {MAX_FAVORITES_PAGES}-page cap"
-                ));
-                break;
-            }
-            if !visited.insert(url.clone()) {
-                warn!(
-                    "hn {stream} for '{}': 'More' link looped back to {url}; stopping",
-                    self.username
-                );
-                break;
-            }
-            if page > 1 {
-                crate::http::sleep(FAVORITES_PAGE_PAUSE).await;
-            }
-            let resp = self
-                .http
-                .send_with(&label, retry_after_up_to(FAVORITES_MAX_RETRY_AFTER), || {
-                    self.http.get(&url)
-                })
-                .await?;
-            let status = resp.status();
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                let retry_after = resp
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|value| value.to_str().ok())
-                    .map(|value| format!(" (Retry-After: {value})"))
-                    .unwrap_or_default();
-                return Err(SourceError::RateLimited(format!(
-                    "hn {stream} for '{}' returned {status}{retry_after}",
-                    self.username
-                )));
-            }
-            let body = resp.text().await.unwrap_or_default();
-            if !status.is_success() {
-                return Err(anyhow::anyhow!(
-                    "hn {stream} for '{}' returned {status}",
-                    self.username
-                )
-                .into());
-            }
-            sink.push(stream, RawKind::Html, &body);
-            let (ids, more) = match parse_favorite_ids(&body) {
-                FavoritesPage::Recognized { ids, more } => (ids, more),
-                FavoritesPage::Unrecognized => {
-                    return Err(anyhow::anyhow!(
-                        "hn {stream} for '{}' had no recognizable favorites structure \
-                         (page {page}); HN's markup may have changed",
-                        self.username
-                    )
-                    .into());
-                }
-            };
-            let ids: Vec<HackerNewsItemId> = ids.into_iter().map(HackerNewsItemId::from).collect();
-            let caught_up = match synced_keys {
-                Some(synced_keys) => {
-                    let page_drafts = self.drafts_by_id(self.fetch_items(&ids, sink).await?);
-                    let caught_up = is_caught_up(&ids, &page_drafts, synced_keys);
-                    drafts.extend(page_drafts);
-                    caught_up
-                }
-                None => false,
-            };
-            out.extend(ids);
-            if caught_up {
-                debug!(
-                    "hn {stream} for '{}': page {page} has nothing new; stopping",
-                    self.username
-                );
-                break;
-            }
-            next = more.and_then(|href| self.resolve(&href, stream));
-        }
-        Ok(())
-    }
-
-    /// Resolve an HN "More" href (typically relative, e.g. `favorites?id=u&p=2`)
-    /// against the favorites origin. Relative hrefs resolve against `base`; an
-    /// absolute href whose host differs from `base` is refused (returns `None`)
-    /// so a hostile favorites page can't steer the crawler at an arbitrary host.
-    /// `stream` names the favorites page the link came from, for the warning.
-    fn resolve(&self, href: &str, stream: &str) -> Option<String> {
-        let base = Url::parse(&self.base).ok()?;
-        let resolved = base.join(href).ok()?;
-        if resolved.host_str() != base.host_str() {
-            warn!(
-                "hn {stream} for '{}': ignoring 'More' link to foreign host {resolved}",
-                self.username
-            );
-            return None;
-        }
-        Some(resolved.to_string())
-    }
-
-    /// Batch-fetch item details by ID from the Algolia HN search API, keyed by ID.
-    /// IDs are queried in chunks of [`ITEM_BATCH`] via `objectID:… OR …`; items that
-    /// no longer exist are simply absent from the map.
-    async fn fetch_items(
-        &self,
-        ids: &[HackerNewsItemId],
-        sink: &mut RawSink,
-    ) -> Result<HashMap<HackerNewsItemId, HackerNewsItem>, SourceError> {
-        let endpoint = format!("{}/api/v1/search", self.algolia);
-        let mut out = HashMap::new();
-        for (i, chunk) in ids.chunks(ITEM_BATCH).enumerate() {
-            if i > 0 {
-                crate::http::sleep(ALGOLIA_CHUNK_PAUSE).await;
-            }
-            let filters = chunk
-                .iter()
-                .map(|id| format!("objectID:{id}"))
-                .collect::<Vec<_>>()
-                .join(" OR ");
-            let hits_per_page = chunk.len().to_string();
-            let resp = self
-                .http
-                .send("hn algolia", || {
-                    self.http.get(&endpoint).query(&[
-                        ("filters", filters.as_str()),
-                        ("hitsPerPage", hits_per_page.as_str()),
-                    ])
-                })
-                .await?;
-            let resp = algolia_success(resp, "hn algolia").await?;
-            let body = resp.text().await.context("reading hn algolia response")?;
-            sink.push("", RawKind::Json, &body);
-            let search: AlgoliaSearchResponse =
-                serde_json::from_str(&body).context("parsing hn algolia response")?;
-            for hit in search.hits {
-                let item = HackerNewsItem::from(hit);
-                out.insert(HackerNewsItemId::from(item.id), item);
-            }
-        }
-        Ok(out)
-    }
-
-    /// Find the HN story id discussing `url`, via the Algolia URL search. Returns
-    /// the id only when a hit's URL matches `url` (so loose matches are ignored).
-    async fn search_by_url(&self, url: &Url) -> Result<Option<HackerNewsItemId>, SourceError> {
-        let endpoint = format!("{}/api/v1/search", self.algolia);
-        let resp = self
-            .http
-            .send("hn algolia url", || {
-                self.http.get(&endpoint).query(&[
-                    ("restrictSearchableAttributes", "url"),
-                    ("query", url.as_str()),
-                    ("hitsPerPage", "5"),
-                ])
-            })
-            .await?;
-        let resp = algolia_success(resp, "hn algolia url search").await?;
-        let search: AlgoliaSearchResponse =
-            resp.json().await.context("parsing hn algolia response")?;
-        let want = url_key(url);
-        Ok(search.hits.into_iter().find_map(|h| {
-            let hit_key = h
-                .url
-                .as_deref()
-                .and_then(|s| Url::parse(s).ok())
-                .and_then(|u| url_key(&u));
-            (want.is_some() && hit_key == want).then(|| HackerNewsItemId::from(h.object_id))
-        }))
-    }
 }
 
 impl Source for HackerNewsClient {
@@ -624,37 +357,6 @@ fn hackernews_key(url: &Url, reddit_domains: &[String]) -> Option<String> {
         .or_else(|| url_key(url))
 }
 
-/// `resp` when it succeeded, else an error naming the `what` request with its status and
-/// an excerpt of the body.
-async fn algolia_success(
-    resp: reqwest::Response,
-    what: &str,
-) -> Result<reqwest::Response, SourceError> {
-    let status = resp.status();
-    if status.is_success() {
-        return Ok(resp);
-    }
-    let body = resp.text().await.unwrap_or_default();
-    Err(crate::http::error_with_body(&format!("{what} returned {status}"), &body, &[]).into())
-}
-
-/// Whether a favorites page would give `sync` nothing to write: every item on it that
-/// has a draft in `drafts` has its `dedup_key` among `synced_keys`. Favorites list newest
-/// first, so the pages after it hold nothing new either. A page whose items make no draft
-/// at all (gone from Algolia, or unparseable) is caught up too; an empty page proves
-/// nothing.
-fn is_caught_up(
-    page: &[HackerNewsItemId],
-    drafts: &HashMap<HackerNewsItemId, BookmarkDraft>,
-    synced_keys: &HashSet<String>,
-) -> bool {
-    page_is_caught_up(
-        page.len(),
-        page.iter().filter_map(|id| drafts.get(id)),
-        synced_keys,
-    )
-}
-
 /// A HackerNews item id — the `<n>` in a `news.ycombinator.com/item?id=<n>` URL. Held
 /// as a string (the favorites page scrapes it as text and Algolia's `objectID` filter
 /// takes it as text); built from a numeric id, a scraped string, or parsed out of a URL
@@ -725,41 +427,6 @@ impl From<&HackerNewsItemId> for Url {
 /// The URL isn't an HN `item?id=<n>` permalink (so it has no [`HackerNewsItemId`]).
 #[derive(Debug)]
 pub struct NotHnItemUrl;
-
-/// Outcome of parsing a favorites page. `Unrecognized` means the page had neither
-/// favorite rows nor the favorites-page marker: HN's markup likely changed, so the
-/// scrape should fail loudly rather than silently import nothing.
-enum FavoritesPage {
-    Recognized {
-        ids: Vec<String>,
-        more: Option<String>,
-    },
-    Unrecognized,
-}
-
-/// Parse a favorites page: the favorited item IDs (the `id` of each `tr.athing`
-/// row) and the "More" link href, if any. A page with no rows is only accepted as a
-/// (genuinely empty) favorites list when it carries HN's `<html op="favorites">`
-/// marker; otherwise it is [`FavoritesPage::Unrecognized`]. Pure, so it's unit-tested
-/// on sample HTML.
-fn parse_favorite_ids(html: &str) -> FavoritesPage {
-    let doc = Html::parse_document(html);
-    let row = Selector::parse("tr.athing").unwrap();
-    let ids: Vec<String> = doc
-        .select(&row)
-        .filter_map(|e| e.value().attr("id").map(str::to_string))
-        .collect();
-    let marker = Selector::parse(r#"html[op="favorites"]"#).unwrap();
-    if ids.is_empty() && doc.select(&marker).next().is_none() {
-        return FavoritesPage::Unrecognized;
-    }
-    let more = Selector::parse("a.morelink").unwrap();
-    let next = doc
-        .select(&more)
-        .next()
-        .and_then(|e| e.value().attr("href").map(str::to_string));
-    FavoritesPage::Recognized { ids, more: next }
-}
 
 /// The slug for a `Show/Ask/Tell/Launch HN:` title prefix (e.g. `Show HN:` →
 /// `show-hn`), or `None` for ordinary titles.

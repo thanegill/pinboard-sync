@@ -1,3 +1,4 @@
+use super::favorites::{is_caught_up, parse_favorite_ids, FavoritesPage};
 use super::*;
 use crate::test_support::url;
 use serde_json::json;

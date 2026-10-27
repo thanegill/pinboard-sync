@@ -300,28 +300,27 @@ the destination is a target like any source. `ExportBookmark` is deliberately *n
 `Serialize` on the domain `Bookmark`: the snapshot format is a stable output contract, and
 a domain rename must not silently change an operator's files.
 
-**All tags are config-driven; there are no tag CLI flags.** Each source has a tag
-config struct (`RedditConfig`, `GitHubConfig`, `HackerNewsConfig`) of overridable
-fields with built-in defaults; the `tags` list (default e.g. `["reddit"]`) is the
-base tag plus any extras, and `push_tag`/`push_prefixed` in [`src/tags.rs`](src/tags.rs)
-render them (empty string disables a tag). `reddit::model`'s tag tests
-([`src/reddit/model/tests.rs`](src/reddit/model/tests.rs)) are the spec — keep them in
-sync with rule changes. Pinboard tags can't contain spaces (the API splits the tag
-string on them) or commas (its API docs forbid them), so `push_prefixed` slugs internal
-whitespace and commas in the value (e.g. the GitHub language `Jupyter Notebook` →
-`lang:jupyter-notebook`) and `Config::parse` rejects both in config-supplied
-tags/prefixes. Reddit's URL host is the configurable `reddit_domain` (used
-by both sync `bookmark_url` and cleanup's `normalize_url`); `reddit_key` stays
-host-agnostic so dedup matches across subdomains, and takes that domain too, so a
-mirror outside reddit.com still counts as a Reddit host. Each Reddit account's client,
-and HackerNews keying an article on Reddit, match against every configured account's
-domain (`Config::reddit_domains`, which is why `SourceAccount::client` takes the whole
-`Config`), so a save on another account's mirror still keys. `cleanup reddit` takes
-every account's config (`RedditCleanupOpts::accounts`): it leaves a bookmark on
-whichever configured domain it is on rather than moving it to the running account's (so
-passes run as different accounts never move it back and forth), shapes it with the tags
-of the account that domain belongs to, and collapses a post stored on several onto the
-first in config order.
+**All tags are config-driven; there are no tag CLI flags.** Each source has a tag config
+struct (`RedditConfig`, `GitHubConfig`, `HackerNewsConfig`) of overridable fields with
+built-in defaults; the `tags` list (default e.g. `["reddit"]`) is the base tag plus any
+extras, and `push_tag`/`push_prefixed` in [`src/tags.rs`](src/tags.rs) render them (empty
+string disables a tag). `reddit::model`'s tag tests
+([`src/reddit/model/tests.rs`](src/reddit/model/tests.rs)) are the spec — keep them in sync
+with rule changes. Pinboard tags can't contain spaces (the API splits the tag string on
+them) or commas (its API docs forbid them), so `push_prefixed` slugs internal whitespace and
+commas in the value (e.g. the GitHub language `Jupyter Notebook` → `lang:jupyter-notebook`)
+and `Config::parse` rejects both in config-supplied tags/prefixes. Reddit's URL host is the
+configurable `reddit_domain` (used by both sync `bookmark_url` and cleanup's
+`normalize_url`); `reddit_key` stays host-agnostic so dedup matches across subdomains, and
+takes that domain too, so a mirror outside reddit.com still counts as a Reddit host. Each
+Reddit account's client, and HackerNews keying an article on Reddit, match against every
+configured account's domain (`Config::reddit_domains`, which is why `SourceAccount::client`
+takes the whole `Config`), so a save on another account's mirror still keys.
+`cleanup reddit` takes every account's config (`RedditCleanupOpts::configured`): it leaves a
+bookmark on whichever configured domain it is on rather than moving it to the running
+account's (so passes run as different accounts never move it back and forth), shapes it with
+the tags of the account that domain belongs to, and collapses a post on several onto the one
+configured first.
 
 **Config + secret resolution.** [`src/config.rs`](src/config.rs) parses the
 `--config` TOML: one `[pinboard]` destination, `[hooks]`, and per-source account

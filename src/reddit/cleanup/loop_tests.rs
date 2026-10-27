@@ -8,7 +8,7 @@ fn opts() -> RedditCleanupOpts {
         fix_titles: true,
         config: RedditConfig::default(),
         dates: NO_DATING,
-        accounts: Vec::new(),
+        configured: Vec::new(),
     }
 }
 
@@ -657,7 +657,7 @@ async fn cleanup_running(
     };
     let opts = RedditCleanupOpts {
         config: running.clone(),
-        accounts: accounts.to_vec(),
+        configured: accounts.to_vec(),
         ..opts()
     };
     run(&pinboard.cleanup_store(false), Some(reddit), &opts)

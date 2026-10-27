@@ -1152,7 +1152,7 @@ mod tests {
             fix_titles: false,
             config: config.clone(),
             dates: NO_DATING,
-            accounts: vec![config],
+            configured: vec![config],
         };
         run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts)
             .await

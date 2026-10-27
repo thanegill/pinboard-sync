@@ -769,6 +769,15 @@ macro_rules! impl_account {
 }
 impl_account!(RedditAccount, GitHubAccount, HackerNewsAccount);
 
+/// `own`, then each of `configured`: the order a source checks its accounts in when it
+/// recognises a bookmark another of them wrote, its own account first.
+pub fn own_then_configured<'a, C>(
+    own: &'a C,
+    configured: &'a [C],
+) -> impl Iterator<Item = &'a C> + 'a {
+    std::iter::once(own).chain(configured)
+}
+
 /// Resolve a setting through its precedence tiers, highest first: the CLI flag, else
 /// the account override, else the per-source default, else the resolved `[pinboard]`
 /// global. The first present (`Some`) value wins; the global is the guaranteed fallback.

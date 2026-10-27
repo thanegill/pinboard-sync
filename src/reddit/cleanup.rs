@@ -11,6 +11,7 @@ use anyhow::Result;
 
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
+use crate::config::own_then_configured;
 use crate::htmltext::collapse_whitespace;
 use crate::reddit::model::{
     cased_subreddit, created_at, over18_dest, reddit_key, RedditConfig, RedditKind, RedditSavedItem,
@@ -34,15 +35,13 @@ pub struct RedditCleanupOpts {
     /// Every configured account's config, in config order. A bookmark already on one of
     /// their domains is left there (see [`RedditCleanupOpts::natural_url`]) and shaped with
     /// that account's tags ([`RedditCleanupOpts::config_for`]).
-    pub accounts: Vec<RedditConfig>,
+    pub configured: Vec<RedditConfig>,
 }
 
 impl RedditCleanupOpts {
     /// The account's own domain, then every configured one.
     fn domains(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(&self.config)
-            .chain(&self.accounts)
-            .map(|account| account.domain.as_str())
+        own_then_configured(&self.config, &self.configured).map(|account| account.domain.as_str())
     }
 
     /// The config to shape a bookmark at `url` with: the account's own when `url` is on its
@@ -58,12 +57,10 @@ impl RedditCleanupOpts {
         &'s self,
         url: &'u Url,
     ) -> impl Iterator<Item = &'s RedditConfig> + 'u {
-        std::iter::once(&self.config)
-            .chain(&self.accounts)
-            .filter(move |account| {
-                url.host_str()
-                    .is_some_and(|host| host.eq_ignore_ascii_case(&account.domain))
-            })
+        own_then_configured(&self.config, &self.configured).filter(move |account| {
+            url.host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case(&account.domain))
+        })
     }
 
     /// The bare tags [`normalize_tags`] keeps at `url` even when named like the subreddit
@@ -353,7 +350,7 @@ fn collapse_hosts(bookmarks: &[Bookmark], opts: &RedditCleanupOpts) -> HashMap<S
     }
     let rank = |host: &String| {
         let position = opts
-            .accounts
+            .configured
             .iter()
             .position(|account| account.domain.eq_ignore_ascii_case(host));
         (position.unwrap_or(usize::MAX), host.clone())

@@ -544,8 +544,8 @@ async fn cleanup_github_with_client<S: BookmarkStore + AccountState>(
     config: &Config,
 ) -> Result<()> {
     let hook = cleanup_hook(account, config);
-    let accounts: Vec<GitHubConfig> = config.github.iter().map(GitHubConfig::from).collect();
-    github::cleanup::run(store, client, dates, &accounts)
+    let configured: Vec<GitHubConfig> = config.github.iter().map(GitHubConfig::from).collect();
+    github::cleanup::run(store, client, dates, &configured)
         .await
         .map_err(|e| handle_source_err(e, hook.as_deref()))
 }
@@ -591,7 +591,7 @@ async fn cleanup_reddit_account<S: BookmarkStore + AccountState>(
         fix_titles: overrides.fix_titles,
         config: account.map(RedditConfig::from).unwrap_or_default(),
         dates,
-        accounts: config.reddit.iter().map(RedditConfig::from).collect(),
+        configured: config.reddit.iter().map(RedditConfig::from).collect(),
     };
 
     // Reddit (for /api/info) is needed when marking NSFW, fixing titles, or dating by

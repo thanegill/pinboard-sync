@@ -12,6 +12,7 @@ use url::Url;
 use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
+use crate::config::own_then_configured;
 use crate::htmltext::{collapse_whitespace, html_to_plain};
 use crate::source::{Source, SourceError};
 use crate::tags::{extend_unique, prefixed, push_unique};
@@ -30,7 +31,7 @@ use crate::urls::{url_key, UrlExt};
 /// and deletes the old, preserving the creation time. A repo that no longer exists (404)
 /// keeps just the URL canonicalization.
 ///
-/// `accounts` holds the tag config of every configured GitHub account. A star carrying
+/// `configured` holds the tag config of every configured GitHub account. A star carrying
 /// any of their base tags counts as synced, and its tags are refreshed by the config of
 /// each account whose base tag it carries, the client's own first, so a star of a second
 /// account doesn't gain the first's base tag.
@@ -38,7 +39,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
     store: &S,
     client: &GitHubClient,
     dates: DateOpts,
-    accounts: &[GitHubConfig],
+    configured: &[GitHubConfig],
 ) -> Result<(), SourceError> {
     // Taken from the run's live view, so an earlier source's writes are already reflected.
     let gh_bms: Vec<Bookmark> = store
@@ -64,18 +65,18 @@ pub async fn run<S: BookmarkStore + AccountState>(
     let pass = GitHubCleanupPass {
         client,
         star_dates,
-        star_configs: star_configs(&client.config, accounts),
+        star_configs: star_configs(&client.config, configured),
     };
     run_pass(store, &gh_bms, "github", dates, &pass)
         .await
         .into_result()
 }
 
-/// `own` followed by each of `accounts` with a base tag no earlier config has, so every
+/// `own` followed by each of `configured` with a base tag no earlier config has, so every
 /// base tag is refreshed by one config: the client's own where they share it.
-fn star_configs(own: &GitHubConfig, accounts: &[GitHubConfig]) -> Vec<GitHubConfig> {
+fn star_configs(own: &GitHubConfig, configured: &[GitHubConfig]) -> Vec<GitHubConfig> {
     let mut configs: Vec<GitHubConfig> = Vec::new();
-    for cfg in std::iter::once(own).chain(accounts) {
+    for cfg in own_then_configured(own, configured) {
         let Some(tag) = base_tag(cfg) else {
             continue;
         };

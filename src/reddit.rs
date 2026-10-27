@@ -20,6 +20,7 @@ use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::Bookmark;
+use crate::config::own_then_configured;
 use crate::http::{client_builder, RetryingClient, USER_AGENT};
 use crate::reddit::cookie::{refused_cookie_advice, SessionCookie};
 use crate::reddit::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
@@ -349,8 +350,7 @@ impl UrlKey for RedditClient {
     /// Reddit's dedup key is the host-agnostic permalink path, so the same post matches
     /// across `old.`/`www.`/`m.` subdomains and every configured `reddit_domain`.
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        std::iter::once(&self.config.domain)
-            .chain(&self.reddit_domains)
+        own_then_configured(&self.config.domain, &self.reddit_domains)
             .find_map(|domain| reddit_key(url, domain))
     }
 }

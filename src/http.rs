@@ -554,7 +554,24 @@ where
         .with_context(|| format!("{label} not sent"))?
         .map_err(reqwest::Error::without_url)
         .with_context(|| format!("{label} failed after {} attempts", attempts.get()))
+        .map(|mut resp| {
+            resp.extensions_mut().insert(Attempts(attempts.get()));
+            resp
+        })
         .inspect(|resp| log::debug!("{}", protocol_debug_line(resp)))
+}
+
+/// How many attempts a response from [`RetryingClient::send`] took, carried in its
+/// extensions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Attempts(u32);
+
+/// Whether `resp` answered a retry, so an earlier attempt may have reached the server and
+/// already taken effect.
+pub fn answered_a_retry(resp: &reqwest::Response) -> bool {
+    resp.extensions()
+        .get::<Attempts>()
+        .is_some_and(|Attempts(attempts)| *attempts > 1)
 }
 
 /// The debug line naming the protocol a response came over, for checking what each

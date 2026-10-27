@@ -11,6 +11,9 @@ All notable changes to this project are documented here. The format is based on
 - `cleanup reddit` now adds the author, flair, media and comment tags `sync` writes,
   each only when the bookmark has no tag of that kind yet.
 - `config check <file>` validates a config without contacting any service.
+- A warning when a setting in the environment (`$GITHUB_TOKEN`, `$REDDIT_COOKIE_FILE`,
+  `$HN_USERNAME`, ...) applies to several configured accounts of one source, since it
+  outranks each account's own value.
 
 ### Changed
 
@@ -57,6 +60,12 @@ All notable changes to this project are documented here. The format is based on
   now keep them.
 - Reddit titles keep literal text like `&amp;`, which `raw_json=1` already returns
   unescaped, instead of decoding it.
+- `backup --all` fires the `PINBOARD_SYNC_ON_AUTH_FAILURE` hook, as `sync --all` does.
+- `backup --all` and `backup <source> --all` back up the rest when one account can't be
+  built, and record it as failed.
+- `sync <source> --all` syncs the other accounts when one can't be built, as `sync --all`
+  does.
+- A Pinboard delete retried after a lost response no longer fails on `item not found`.
 
 ## [0.6.0] - 2026-10-25
 

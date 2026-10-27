@@ -64,6 +64,14 @@ pub async fn capturing_logs<T>(fut: impl Future<Output = T>) -> (T, Vec<String>)
         .await
 }
 
+/// The warnings among lines [`capturing_logs`] returned.
+pub fn warnings(logs: &[String]) -> Vec<&str> {
+    logs.iter()
+        .map(String::as_str)
+        .filter(|line| line.starts_with("WARN"))
+        .collect()
+}
+
 /// Ends [`long_error_page`], past the excerpt's cut, so it must not reach the message.
 pub const ERROR_PAGE_TAIL: &str = "end-of-error-page";
 

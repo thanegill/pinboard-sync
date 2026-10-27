@@ -7,7 +7,9 @@ use anyhow::{bail, Result};
 
 use crate::backup;
 use crate::config::{Config, GitHubAccount, HackerNewsAccount, RedditAccount};
-use crate::jobs::{build_job, open_pinboard, SourceAccount, SyncOverrides};
+use crate::jobs::{
+    build_job, open_pinboard, warn_shared_env_secrets, SourceAccount, SyncOverrides,
+};
 use crate::source::{Source, SourceError};
 
 /// Validate the Pinboard token and every configured account's credentials by
@@ -63,6 +65,7 @@ async fn check_accounts<A: SourceAccount>(ovr: &SyncOverrides, config: &Config) 
         println!("- {source} — no accounts configured");
         return 0;
     }
+    warn_shared_env_secrets::<A>(ovr, config);
     let mut failed = 0;
     for account in accounts {
         let name = account.account_name().unwrap_or("(unnamed)");

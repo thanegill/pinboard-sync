@@ -186,41 +186,42 @@ fn secret_ladder(
 #[derive(Clone, Copy)]
 pub struct EnvSecret {
     var: &'static str,
-    accepts: fn(&str) -> bool,
+    is_configured: fn(&str) -> bool,
 }
 
 impl EnvSecret {
     pub const REDDIT_USERNAME: EnvSecret = EnvSecret {
         var: "REDDIT_USERNAME",
-        accepts: is_nonblank,
+        is_configured: is_nonblank,
     };
     pub const REDDIT_COOKIE: EnvSecret = EnvSecret {
         var: "REDDIT_COOKIE",
-        accepts: reddit::cookie::is_configured_cookie,
+        is_configured: reddit::cookie::is_configured_cookie,
     };
     pub const GITHUB_TOKEN: EnvSecret = EnvSecret {
         var: "GITHUB_TOKEN",
-        accepts: is_nonblank,
+        is_configured: is_nonblank,
     };
     pub const HN_USERNAME: EnvSecret = EnvSecret {
         var: "HN_USERNAME",
-        accepts: is_nonblank,
+        is_configured: is_nonblank,
     };
 
     /// Whether the ladder would take `value` for this secret rather than skip it.
     pub fn accepts(self, value: &str) -> bool {
-        (self.accepts)(value)
+        (self.is_configured)(value)
     }
 
     /// `$VAR` or `$VAR_FILE`, whichever the ladder would take this secret from, if either.
     fn env_setting(self) -> Option<String> {
         let (rung, _) = secret_ladder(None, self.var, None, None)
             .into_iter()
-            .find(|(_, value)| value.as_deref().is_some_and(self.accepts))?;
-        Some(match rung {
-            SecretRung::EnvFile => format!("${}_FILE", self.var),
-            _ => format!("${}", self.var),
-        })
+            .find(|(_, value)| value.as_deref().is_some_and(|value| self.accepts(value)))?;
+        match rung {
+            SecretRung::Env => Some(format!("${}", self.var)),
+            SecretRung::EnvFile => Some(format!("${}_FILE", self.var)),
+            SecretRung::Flag | SecretRung::ConfigInline | SecretRung::ConfigFile => None,
+        }
     }
 }
 

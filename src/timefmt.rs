@@ -2,10 +2,12 @@
 //! source post dates are carried internally, so the age cap is a plain integer
 //! compare) and the RFC 3339 string Pinboard's `dt` expects (e.g.
 //! `2010-12-11T19:48:02Z`) — plus the option itself, [`DateOpts`], which sync and every
-//! cleanup pass apply.
+//! cleanup pass apply, and its resolution through the config tiers ([`resolve_dates`]).
 
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
+
+use crate::config::{self, resolve_setting, Config};
 
 /// Parse an RFC 3339 timestamp (e.g. GitHub's `starred_at`) to unix epoch seconds.
 pub fn rfc3339_to_unix(s: &str) -> Option<i64> {
@@ -60,7 +62,7 @@ fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
 
 /// The `use_post_date` policy: whether to date bookmarks by the source date, the backdate
 /// age cap, and whether `cleanup` pushes stale (older-than-cap) items to "now". Resolved
-/// once per account in `jobs::resolve_dates`; `sync` applies the first two via
+/// once per account in [`resolve_dates`]; `sync` applies the first two via
 /// [`DateOpts::sync_date`], and a `cleanup` pass applies all three uniformly via
 /// [`DateOpts::cleanup_date`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,9 +117,128 @@ impl DateOpts {
     }
 }
 
+/// CLI-flag overrides for the date settings, sitting at the top of the tier
+/// (flag → account → per-source default → `[pinboard]` global). All-`None` means
+/// "no flag given", so resolution falls through to the existing tiers unchanged.
+#[derive(Default, Clone)]
+pub struct DateOverrides {
+    pub use_post_date: Option<bool>,
+    pub max_age_days: Option<u64>,
+    pub stale_to_now: Option<bool>,
+}
+
+impl DateOverrides {
+    /// Let a date flag placed before the source subcommand (on `CleanupCmd`) take
+    /// effect, falling back to this per-source value. Mirrors sync's
+    /// `SyncOverrides::with_top_level_hook`.
+    pub fn with_top_level(self, top: &DateOverrides) -> DateOverrides {
+        DateOverrides {
+            use_post_date: top.use_post_date.or(self.use_post_date),
+            max_age_days: top.max_age_days.or(self.max_age_days),
+            stale_to_now: top.stale_to_now.or(self.stale_to_now),
+        }
+    }
+}
+
+/// The `use_post_date` trio for an account, each resolved through [`resolve_setting`]
+/// (flag → account → per-source default → `[pinboard]` global, with `max_age_days`
+/// defaulting to [`config::DEFAULT_MAX_AGE_DAYS`]). Shared by every `sync`/`cleanup`
+/// builder.
+pub fn resolve_dates(
+    over: &DateOverrides,
+    account: Option<&impl config::Account>,
+    src: &config::SourceDefaults,
+    config: &Config,
+) -> DateOpts {
+    DateOpts {
+        use_post_date: resolve_setting(
+            over.use_post_date,
+            account.and_then(|a| a.use_post_date()),
+            src.use_post_date,
+            config.pinboard.use_post_date,
+        ),
+        max_age_days: resolve_setting(
+            over.max_age_days,
+            account.and_then(|a| a.max_age_days()),
+            src.post_date_max_age_days,
+            config
+                .pinboard
+                .post_date_max_age_days
+                .unwrap_or(config::DEFAULT_MAX_AGE_DAYS),
+        ),
+        stale_to_now: resolve_setting(
+            over.stale_to_now,
+            account.and_then(|a| a.stale_to_now()),
+            src.cleanup_stale_to_now,
+            config.pinboard.cleanup_stale_to_now,
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::RedditAccount;
+
+    #[test]
+    fn date_settings_stale_to_now_flag_tops_the_tier() {
+        let config = Config::default(); // global cleanup_stale_to_now = false
+        let src = &config.defaults.reddit;
+
+        // flag forces it on against a false global
+        let over = DateOverrides {
+            stale_to_now: Some(true),
+            ..Default::default()
+        };
+        let d = resolve_dates(&over, None::<&RedditAccount>, src, &config);
+        assert!(d.stale_to_now);
+
+        // flag forces it off against a true global
+        let mut config = Config::default();
+        config.pinboard.cleanup_stale_to_now = true;
+        let src = &config.defaults.reddit;
+        let over = DateOverrides {
+            stale_to_now: Some(false),
+            ..Default::default()
+        };
+        let d = resolve_dates(&over, None::<&RedditAccount>, src, &config);
+        assert!(!d.stale_to_now);
+    }
+
+    #[test]
+    fn date_settings_max_age_days_flag_tops_the_tier() {
+        let mut config = Config::default();
+        config.pinboard.post_date_max_age_days = Some(10); // global
+        let src = &config.defaults.reddit; // per-source default None
+
+        // flag wins
+        let over = DateOverrides {
+            max_age_days: Some(99),
+            ..Default::default()
+        };
+        let d = resolve_dates(&over, None::<&RedditAccount>, src, &config);
+        assert_eq!(d.max_age_days, 99);
+
+        // no flag → global
+        let d = resolve_dates(
+            &DateOverrides::default(),
+            None::<&RedditAccount>,
+            src,
+            &config,
+        );
+        assert_eq!(d.max_age_days, 10);
+
+        // global unset → built-in default
+        let config = Config::default();
+        let src = &config.defaults.reddit;
+        let d = resolve_dates(
+            &DateOverrides::default(),
+            None::<&RedditAccount>,
+            src,
+            &config,
+        );
+        assert_eq!(d.max_age_days, config::DEFAULT_MAX_AGE_DAYS);
+    }
 
     #[test]
     fn round_trips_a_known_instant_with_trailing_z() {

@@ -14,7 +14,9 @@ use url::Url;
 use crate::backup::{self, BackupSource};
 use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::cli::SyncFlags;
-use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit};
+use crate::config::{
+    self, resolve_setting, Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit,
+};
 use crate::github::{GitHubClient, GitHubConfig};
 use crate::hackernews::{HackerNewsClient, HackerNewsConfig};
 use crate::hook::resolve_hook;
@@ -27,7 +29,7 @@ use crate::secrets::{
 };
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 use crate::sync::JobSettings;
-use crate::timefmt::DateOpts;
+use crate::timefmt::{resolve_dates, DateOverrides};
 
 /// Build one job per configured account across every source for `sync --all`,
 /// isolating build failures: an account whose required secret won't resolve is
@@ -153,71 +155,6 @@ fn job_label<A: SourceAccount>(account: Option<&A>) -> String {
         A::SOURCE,
         account.and_then(|a| a.account_name()).unwrap_or("default")
     )
-}
-
-/// Resolve a setting through its precedence tiers, highest first: the CLI flag, else
-/// the account override, else the per-source default, else the resolved `[pinboard]`
-/// global. The first present (`Some`) value wins; the global is the guaranteed fallback.
-fn resolve_setting<T>(flag: Option<T>, account: Option<T>, source: Option<T>, global: T) -> T {
-    flag.or(account).or(source).unwrap_or(global)
-}
-
-/// CLI-flag overrides for the date settings, sitting at the top of the tier
-/// (flag → account → per-source default → `[pinboard]` global). All-`None` means
-/// "no flag given", so resolution falls through to the existing tiers unchanged.
-#[derive(Default, Clone)]
-pub struct DateOverrides {
-    pub use_post_date: Option<bool>,
-    pub max_age_days: Option<u64>,
-    pub stale_to_now: Option<bool>,
-}
-
-impl DateOverrides {
-    /// Let a date flag placed before the source subcommand (on `CleanupCmd`) take
-    /// effect, falling back to this per-source value. Mirrors sync's
-    /// `SyncOverrides::with_top_level_hook`.
-    pub fn with_top_level(self, top: &DateOverrides) -> DateOverrides {
-        DateOverrides {
-            use_post_date: top.use_post_date.or(self.use_post_date),
-            max_age_days: top.max_age_days.or(self.max_age_days),
-            stale_to_now: top.stale_to_now.or(self.stale_to_now),
-        }
-    }
-}
-
-/// The `use_post_date` trio for an account, each resolved through [`resolve_setting`]
-/// (flag → account → per-source default → `[pinboard]` global, with `max_age_days`
-/// defaulting to [`config::DEFAULT_MAX_AGE_DAYS`]). Shared by every `sync`/`cleanup`
-/// builder.
-pub fn resolve_dates(
-    over: &DateOverrides,
-    account: Option<&impl config::Account>,
-    src: &config::SourceDefaults,
-    config: &Config,
-) -> DateOpts {
-    DateOpts {
-        use_post_date: resolve_setting(
-            over.use_post_date,
-            account.and_then(|a| a.use_post_date()),
-            src.use_post_date,
-            config.pinboard.use_post_date,
-        ),
-        max_age_days: resolve_setting(
-            over.max_age_days,
-            account.and_then(|a| a.max_age_days()),
-            src.post_date_max_age_days,
-            config
-                .pinboard
-                .post_date_max_age_days
-                .unwrap_or(config::DEFAULT_MAX_AGE_DAYS),
-        ),
-        stale_to_now: resolve_setting(
-            over.stale_to_now,
-            account.and_then(|a| a.stale_to_now()),
-            src.cleanup_stale_to_now,
-            config.pinboard.cleanup_stale_to_now,
-        ),
-    }
 }
 
 /// One of the concrete source clients, unified behind the `Source` port so `--all`
@@ -529,81 +466,6 @@ mod tests {
     use super::*;
     use crate::test_support::warnings;
     use std::num::NonZeroUsize;
-
-    #[test]
-    fn resolve_setting_picks_the_highest_present_tier() {
-        // flag → account → source → global, first `Some` wins.
-        assert_eq!(resolve_setting(Some(1), Some(2), Some(3), 5), 1); // flag tops all
-        assert_eq!(resolve_setting(None, Some(2), Some(3), 5), 2); // account over source
-        assert_eq!(resolve_setting(None, None, Some(3), 5), 3); // source over global
-        assert_eq!(resolve_setting::<usize>(None, None, None, 5), 5); // global fallback
-
-        // A `Some(false)` flag is a real value, so it forces a `true` lower tier off —
-        // the behavior a bare clap flag could not express (this is why `--public[=BOOL]`).
-        assert!(!resolve_setting(Some(false), Some(true), Some(true), true));
-        assert!(resolve_setting(Some(true), None, None, false));
-        assert!(resolve_setting(None, None, None, true)); // global fallback
-    }
-
-    #[test]
-    fn date_settings_stale_to_now_flag_tops_the_tier() {
-        let config = Config::default(); // global cleanup_stale_to_now = false
-        let src = &config.defaults.reddit;
-
-        // flag forces it on against a false global
-        let over = DateOverrides {
-            stale_to_now: Some(true),
-            ..Default::default()
-        };
-        let d = resolve_dates(&over, None::<&RedditAccount>, src, &config);
-        assert!(d.stale_to_now);
-
-        // flag forces it off against a true global
-        let mut config = Config::default();
-        config.pinboard.cleanup_stale_to_now = true;
-        let src = &config.defaults.reddit;
-        let over = DateOverrides {
-            stale_to_now: Some(false),
-            ..Default::default()
-        };
-        let d = resolve_dates(&over, None::<&RedditAccount>, src, &config);
-        assert!(!d.stale_to_now);
-    }
-
-    #[test]
-    fn date_settings_max_age_days_flag_tops_the_tier() {
-        let mut config = Config::default();
-        config.pinboard.post_date_max_age_days = Some(10); // global
-        let src = &config.defaults.reddit; // per-source default None
-
-        // flag wins
-        let over = DateOverrides {
-            max_age_days: Some(99),
-            ..Default::default()
-        };
-        let d = resolve_dates(&over, None::<&RedditAccount>, src, &config);
-        assert_eq!(d.max_age_days, 99);
-
-        // no flag → global
-        let d = resolve_dates(
-            &DateOverrides::default(),
-            None::<&RedditAccount>,
-            src,
-            &config,
-        );
-        assert_eq!(d.max_age_days, 10);
-
-        // global unset → built-in default
-        let config = Config::default();
-        let src = &config.defaults.reddit;
-        let d = resolve_dates(
-            &DateOverrides::default(),
-            None::<&RedditAccount>,
-            src,
-            &config,
-        );
-        assert_eq!(d.max_age_days, config::DEFAULT_MAX_AGE_DAYS);
-    }
 
     /// Override values chosen so each setting is distinct from the others and from the
     /// `Config::default()` globals — so a builder that wires a flag into the *wrong*

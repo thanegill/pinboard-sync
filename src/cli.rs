@@ -7,8 +7,9 @@ use clap::{Args, Parser, Subcommand, ValueHint};
 use clap_complete::Shell;
 
 use crate::config::SyncLimit;
-use crate::jobs::{DateOverrides, SyncOverrides};
+use crate::jobs::SyncOverrides;
 use crate::reddit::cleanup::RedditCleanupFlags;
+use crate::timefmt::DateOverrides;
 
 #[derive(Parser)]
 #[command(name = "pinboard-sync", version, about, arg_required_else_help = true)]

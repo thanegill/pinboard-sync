@@ -43,10 +43,7 @@ use hackernews::cleanup::HackerNewsCleanupOpts;
 use hackernews::{HackerNewsClient, HackerNewsConfig};
 use hook::{cleanup_hook, handle_source_err, on_auth_failure_from_env};
 use jobs::backup_jobs::{backup_jobs, BackupJob, SkippedTarget};
-use jobs::{
-    build_all_jobs, build_jobs, open_pinboard, resolve_dates, AllRun, DateOverrides, SyncJob,
-    SyncOverrides,
-};
+use jobs::{build_all_jobs, build_jobs, open_pinboard, AllRun, SyncJob, SyncOverrides};
 use pinboard::PinboardClient;
 use reddit::cleanup::RedditCleanupFlags;
 use reddit::model::RedditConfig;
@@ -56,7 +53,7 @@ use secrets::{
     resolve_reddit_cookie,
 };
 use source::{BookmarkDraft, SourceError};
-use timefmt::DateOpts;
+use timefmt::{resolve_dates, DateOpts, DateOverrides};
 
 #[tokio::main]
 async fn main() -> ExitCode {

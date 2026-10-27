@@ -392,7 +392,7 @@ fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
 /// can't contain either (its API splits the tag string on spaces, and its docs forbid
 /// commas), so one here silently corrupts and should fail loudly instead. The error names
 /// the field, never the value, which may be a credential pasted into the wrong key.
-pub(crate) fn reject_untaggable(field: &str, value: &str) -> Result<()> {
+pub(crate) fn check_taggable(field: &str, value: &str) -> Result<()> {
     if value.chars().any(char::is_whitespace) {
         bail!("config: `{field}` must not contain whitespace");
     }
@@ -406,13 +406,13 @@ pub(crate) fn reject_untaggable(field: &str, value: &str) -> Result<()> {
 fn check_tag(field: &str, value: &Option<String>) -> Result<()> {
     value
         .as_deref()
-        .map_or(Ok(()), |v| reject_untaggable(field, v))
+        .map_or(Ok(()), |v| check_taggable(field, v))
 }
 
 /// Error if any tag in the list contains whitespace or a comma.
 fn check_tags(field: &str, values: &Option<Vec<String>>) -> Result<()> {
     for (index, v) in values.iter().flatten().enumerate() {
-        reject_untaggable(&format!("{field}[{index}]"), v)?;
+        check_taggable(&format!("{field}[{index}]"), v)?;
     }
     Ok(())
 }

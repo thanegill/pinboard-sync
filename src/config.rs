@@ -319,7 +319,7 @@ impl Config {
     ) -> Result<()> {
         let redates_every_run = |account: Option<&T>| {
             crate::timefmt::resolve_dates(
-                &crate::timefmt::DateOverrides::default(),
+                &crate::cli::DateFlags::default(),
                 account,
                 defaults,
                 self,

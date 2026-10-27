@@ -13,7 +13,7 @@ use url::Url;
 
 use crate::backup::{self, BackupSource};
 use crate::bookmark::Bookmark;
-use crate::cli::SyncFlags;
+use crate::cli::{DateFlags, SyncFlags};
 use crate::config::{
     self, resolve_setting, Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit,
 };
@@ -29,7 +29,7 @@ use crate::secrets::{
 };
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 use crate::sync::JobSettings;
-use crate::timefmt::{resolve_dates, DateOverrides};
+use crate::timefmt::resolve_dates;
 
 /// A target an `--all` run could not build, and why. `sync` and `backup` both carry these
 /// out of their build phase so the run can count each one as failed, and still run the
@@ -248,7 +248,7 @@ fn resolve_job_settings(
             src.public,
             config.pinboard.public,
         ),
-        dates: resolve_dates(&DateOverrides::from(&overrides.flags), account, src, config),
+        dates: resolve_dates(&DateFlags::from(&overrides.flags), account, src, config),
     }
 }
 

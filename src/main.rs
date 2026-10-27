@@ -34,7 +34,7 @@ use log::{debug, error, info, warn};
 
 use bookmark::{AccountState, AccountView, Bookmark, BookmarkStore, CleanupStore};
 use cli::{
-    BackupCmd, CleanupCmd, CleanupSource, Cli, Command, ConfigAction, GitHubCleanupArgs,
+    BackupCmd, CleanupCmd, CleanupSource, Cli, Command, ConfigAction, DateFlags, GitHubCleanupArgs,
     HackerNewsCleanupArgs, RedditCleanupArgs, SyncCmd, SyncSource,
 };
 use config::{Config, GitHubAccount, HackerNewsAccount, RedditAccount};
@@ -56,7 +56,7 @@ use secrets::{
     resolve_reddit_cookie,
 };
 use source::{BookmarkDraft, SourceError};
-use timefmt::{resolve_cleanup_dates, DateOpts, DateOverrides};
+use timefmt::{resolve_cleanup_dates, DateOpts};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -422,7 +422,7 @@ fn resolve_backup_dir(flag: Option<String>, config: &Config) -> Result<PathBuf> 
 // --- cleanup -----------------------------------------------------------------
 
 async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
-    let overrides = DateOverrides::from(&cmd.dates);
+    let overrides = cmd.dates;
     match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
@@ -493,7 +493,7 @@ struct CleanupTarget<'a, A> {
 /// account, or `None` for a source with no accounts. Resolved before `posts/all` is read,
 /// so a refused run does not spend that rate-limited call.
 fn cleanup_all_target<'a, A: SourceAccount>(
-    overrides: &DateOverrides,
+    overrides: &DateFlags,
     config: &'a Config,
 ) -> Result<Option<CleanupTarget<'a, A>>> {
     let Some(account) = A::configured(config).first() else {
@@ -515,10 +515,10 @@ fn cleanup_dry_run(top_dry_run: bool, source_dry_run: bool) -> bool {
 async fn run_cleanup_github(
     args: GitHubCleanupArgs,
     top_dry_run: bool,
-    top_overrides: &DateOverrides,
+    top_overrides: &DateFlags,
     config: &Config,
 ) -> Result<()> {
-    let overrides = DateOverrides::from(&args.dates).with_top_level(top_overrides);
+    let overrides = args.dates.with_top_level(top_overrides);
     let account = config::select_account(&config.github, args.account.as_deref())?;
     let dates = resolve_cleanup_dates(
         "`cleanup github`",
@@ -565,7 +565,7 @@ async fn cleanup_github_with_client<S: BookmarkStore + AccountState>(
 async fn run_cleanup_reddit(
     args: RedditCleanupArgs,
     top_dry_run: bool,
-    top_overrides: &DateOverrides,
+    top_overrides: &DateFlags,
     config: &Config,
 ) -> Result<()> {
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
@@ -574,7 +574,7 @@ async fn run_cleanup_reddit(
     let account = config::select_account(&config.reddit, args.account.as_deref())?;
     let dates = resolve_cleanup_dates(
         "`cleanup reddit`",
-        &DateOverrides::from(&args.dates).with_top_level(top_overrides),
+        &args.dates.with_top_level(top_overrides),
         account,
         &config.defaults.reddit,
         config,
@@ -625,7 +625,7 @@ async fn cleanup_reddit_account<S: BookmarkStore + AccountState>(
 async fn run_cleanup_hackernews(
     args: HackerNewsCleanupArgs,
     top_dry_run: bool,
-    top_overrides: &DateOverrides,
+    top_overrides: &DateFlags,
     config: &Config,
 ) -> Result<()> {
     // One pass over the Pinboard account's HN bookmarks, using the selected (or
@@ -633,7 +633,7 @@ async fn run_cleanup_hackernews(
     let account = config::select_account(&config.hackernews, args.account.as_deref())?;
     let dates = resolve_cleanup_dates(
         "`cleanup hackernews`",
-        &DateOverrides::from(&args.dates).with_top_level(top_overrides),
+        &args.dates.with_top_level(top_overrides),
         account,
         &config.defaults.hackernews,
         config,
@@ -1029,8 +1029,7 @@ mod tests {
         let args = reddit_cleanup_args(&cmd);
         assert_eq!(args.dates.use_post_date, None);
 
-        let overrides =
-            DateOverrides::from(&args.dates).with_top_level(&DateOverrides::from(&cmd.dates));
+        let overrides = args.dates.with_top_level(&cmd.dates);
         assert_eq!(overrides.use_post_date, Some(true));
     }
 
@@ -1043,8 +1042,7 @@ mod tests {
         let args = reddit_cleanup_args(&cmd);
         assert_eq!(args.dates.use_post_date, Some(false));
 
-        let overrides =
-            DateOverrides::from(&args.dates).with_top_level(&DateOverrides::from(&cmd.dates));
+        let overrides = args.dates.with_top_level(&cmd.dates);
         assert_eq!(overrides.use_post_date, Some(false));
     }
 

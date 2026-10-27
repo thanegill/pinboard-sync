@@ -195,6 +195,26 @@ mod tests {
     use super::*;
     use crate::reddit::TEST_COOKIE_SOURCE;
 
+    /// Asserts that each `(raw, sent)` cookie counts as a session and is sent as `sent`.
+    fn assert_sends(cases: &[(&str, &str)]) {
+        for (raw, sent) in cases {
+            assert!(is_configured_cookie(raw), "{raw:?}");
+            assert_eq!(
+                session_cookie(raw, TEST_COOKIE_SOURCE).as_deref(),
+                Some(*sent),
+                "{raw:?}"
+            );
+        }
+    }
+
+    /// Asserts that each configured value sets no session, so nothing is sent for it.
+    fn assert_no_session(values: &[&str]) {
+        for unset in values {
+            assert_eq!(session_cookie(unset, TEST_COOKIE_SOURCE), None, "{unset:?}");
+            assert!(!is_configured_cookie(unset), "{unset:?}");
+        }
+    }
+
     #[test]
     fn a_cookie_secret_is_the_session_as_a_server_would_echo_it() {
         let quoted = SessionCookie {
@@ -227,14 +247,8 @@ mod tests {
             ("\"abc\"", "reddit_session=abc"),
             (" \"reddit_session=abc\"\n", "reddit_session=abc"),
         ];
-        for (raw, sent) in cases {
-            assert_eq!(
-                session_cookie(raw, TEST_COOKIE_SOURCE).as_deref(),
-                Some(sent),
-                "{raw:?}"
-            );
-        }
-        for unset in [
+        assert_sends(&cases);
+        assert_no_session(&[
             " \n",
             "\"\"",
             "reddit_session=",
@@ -242,10 +256,7 @@ mod tests {
             "\"reddit_session=\"",
             "a=1; reddit_session=",
             "reddit_session= ; a=1",
-        ] {
-            assert_eq!(session_cookie(unset, TEST_COOKIE_SOURCE), None, "{unset:?}");
-            assert!(!is_configured_cookie(unset), "{unset:?}");
-        }
+        ]);
         assert!(is_configured_cookie("abc"));
     }
 
@@ -260,14 +271,8 @@ mod tests {
                 "reddit_session=abc",
             ),
         ];
-        for (raw, sent) in cases {
-            assert_eq!(
-                session_cookie(raw, TEST_COOKIE_SOURCE).as_deref(),
-                Some(sent),
-                "{raw:?}"
-            );
-        }
-        for unset in [
+        assert_sends(&cases);
+        assert_no_session(&[
             "\"",
             " \" \n",
             "\"\"\"",
@@ -276,15 +281,12 @@ mod tests {
             "reddit_session=\"",
             "reddit_session=\"\"",
             "a=1; reddit_session=\" \"",
-        ] {
-            assert_eq!(session_cookie(unset, TEST_COOKIE_SOURCE), None, "{unset:?}");
-            assert!(!is_configured_cookie(unset), "{unset:?}");
-        }
+        ]);
     }
 
     #[test]
     fn a_cookie_of_only_separators_is_no_cookie() {
-        for unset in [
+        assert_no_session(&[
             ";",
             "=",
             "=;",
@@ -293,10 +295,7 @@ mod tests {
             "reddit_session==",
             "reddit_session=;=",
             "a=1; reddit_session= =",
-        ] {
-            assert_eq!(session_cookie(unset, TEST_COOKIE_SOURCE), None, "{unset:?}");
-            assert!(!is_configured_cookie(unset), "{unset:?}");
-        }
+        ]);
         let cases = [
             ("reddit_session==; reddit_session=abc", "reddit_session=abc"),
             ("reddit_session=abc; =; ;", "reddit_session=abc"),
@@ -310,13 +309,7 @@ mod tests {
             ("a=1;;", "a=1"),
             ("a=1; ;b=2;", "a=1;b=2"),
         ];
-        for (raw, sent) in cases {
-            assert_eq!(
-                session_cookie(raw, TEST_COOKIE_SOURCE).as_deref(),
-                Some(sent),
-                "{raw:?}"
-            );
-        }
+        assert_sends(&cases);
     }
 
     #[test]
@@ -335,14 +328,7 @@ mod tests {
             ("reddit_session=abc;", "reddit_session=abc"),
             ("a=1;; reddit_session=abc", "a=1; reddit_session=abc"),
         ];
-        for (raw, sent) in cases {
-            assert!(is_configured_cookie(raw), "{raw:?}");
-            assert_eq!(
-                session_cookie(raw, TEST_COOKIE_SOURCE).as_deref(),
-                Some(sent),
-                "{raw:?}"
-            );
-        }
+        assert_sends(&cases);
         assert!(!is_configured_cookie("reddit_session=; reddit_session= "));
     }
 

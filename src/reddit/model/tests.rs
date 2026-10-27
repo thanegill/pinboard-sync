@@ -311,41 +311,33 @@ fn comment_gets_reddit_comment_tag_and_link_title() {
 }
 
 #[test]
-fn reddit_note_wraps_quoted_body_and_keeps_links_outside() {
+fn notes_wrap_the_quoted_body_and_keep_links_outside() {
     let domain = "old.reddit.com";
     // Comment: thread link outside, body in a blockquote.
     assert_eq!(
-        reddit_note(
-            true,
-            "hi",
-            "",
-            "",
-            false,
-            Some("/r/x/comments/a/t/"),
-            domain
-        ),
+        comment_note("hi", Some("/r/x/comments/a/t/"), domain),
         "Thread: https://old.reddit.com/r/x/comments/a/t/\n\n<blockquote>hi</blockquote>"
     );
     // Comment with no body: just the thread link, no empty blockquote.
     assert_eq!(
-        reddit_note(true, "", "", "", false, Some("/r/x/comments/a/t/"), domain),
+        comment_note("", Some("/r/x/comments/a/t/"), domain),
         "Thread: https://old.reddit.com/r/x/comments/a/t/"
     );
     // Comment with body but no resolvable thread: just the wrapped body.
     assert_eq!(
-        reddit_note(true, "hi", "", "", false, None, domain),
+        comment_note("hi", None, domain),
         "<blockquote>hi</blockquote>"
     );
     // Self-post: selftext wrapped.
     assert_eq!(
-        reddit_note(false, "", "post body", "", true, None, domain),
+        post_note("post body", "", true),
         "<blockquote>post body</blockquote>"
     );
     // Empty self-post: no notes (its url is its own permalink).
-    assert_eq!(reddit_note(false, "", "", "", true, None, domain), "");
+    assert_eq!(post_note("", "", true), "");
     // Link post: external URL is a bare fallback, not quoted.
     assert_eq!(
-        reddit_note(false, "", "", "https://example.com", false, None, domain),
+        post_note("", "https://example.com", false),
         "https://example.com"
     );
 }

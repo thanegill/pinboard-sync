@@ -317,14 +317,10 @@ async fn fetch_post_info<R: PostInfo>(
             // <blockquote> shaping retrofits onto existing bookmarks: selftext quoted,
             // empty for an empty self-post, else the external URL.
             let selftext = entry.fields.selftext.clone().unwrap_or_default();
-            let note = crate::reddit::model::reddit_note(
-                false,
-                "",
+            let note = crate::reddit::model::post_note(
                 &selftext,
                 entry.fields.url.as_deref().unwrap_or_default(),
                 entry.fields.is_self,
-                None,
-                &opts.config.domain,
             );
             info.posts.insert(
                 name,

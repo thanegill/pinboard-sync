@@ -442,24 +442,26 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             // against what it left rather than the pre-run snapshot.
             let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), cmd.dry_run);
             let mut run = AllRun::default();
-            if let Some((acct, dates)) = github {
-                run.record(cleanup_github_account(&store, Some(acct), None, dates, config).await);
+            if let Some(CleanupTarget { account, dates }) = github {
+                run.record(
+                    cleanup_github_account(&store, Some(account), None, dates, config).await,
+                );
             }
-            if let Some((acct, dates)) = reddit {
+            if let Some(CleanupTarget { account, dates }) = reddit {
                 let reddit_overrides = RedditCleanupOverrides {
                     cookie: None,
                     mark_nsfw: true,
                     fix_titles: true,
                 };
                 run.record(
-                    cleanup_reddit_account(Some(acct), reddit_overrides, dates, &store, config)
+                    cleanup_reddit_account(Some(account), reddit_overrides, dates, &store, config)
                         .await,
                 );
             }
-            if let Some((acct, dates)) = hackernews {
+            if let Some(CleanupTarget { account, dates }) = hackernews {
                 run.record(
                     cleanup_hackernews_account(
-                        Some(acct),
+                        Some(account),
                         false, // linking is opt-in via `cleanup hackernews --link-discussions`
                         None,
                         dates,
@@ -483,20 +485,26 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
     }
 }
 
-/// The account a `cleanup --all` pass runs as (the source's first) and its dates, or
-/// `None` for a source with no accounts. Resolved before `posts/all` is read, so a
-/// refused run does not spend that rate-limited call.
+/// One source's pass of a `cleanup --all` run: the account it runs as and its dates.
+struct CleanupTarget<'a, A> {
+    account: &'a A,
+    dates: DateOpts,
+}
+
+/// The [`CleanupTarget`] of `A`'s pass in `cleanup --all`, run as the source's first
+/// account, or `None` for a source with no accounts. Resolved before `posts/all` is read,
+/// so a refused run does not spend that rate-limited call.
 fn cleanup_all_target<'a, A: SourceAccount>(
     overrides: &DateOverrides,
     config: &'a Config,
-) -> Result<Option<(&'a A, DateOpts)>> {
+) -> Result<Option<CleanupTarget<'a, A>>> {
     let Some(account) = A::configured(config).first() else {
         return Ok(None);
     };
     let pass = format!("`cleanup --all` ({} pass)", A::SOURCE);
     let dates =
         resolve_cleanup_dates(&pass, overrides, Some(account), A::defaults(config), config)?;
-    Ok(Some((account, dates)))
+    Ok(Some(CleanupTarget { account, dates }))
 }
 
 /// A cleanup pass runs dry when `--dry-run` is given either before the source

@@ -673,6 +673,10 @@ mod tests {
                 "[[github]]\nlimit = \"ghp_SECRET\"\n",
                 "line 2, column 9: `limit` must be",
             ),
+            (
+                "[[github]]\ntoken = \"ghp_SECRET\"\n[[github]]\ntoken = \"ghp_SECRET2\"\n",
+                "github[0] and github[1] would both back up as `github-default`",
+            ),
         ] {
             let error = format!("{:#}", check_config_text(text).unwrap_err());
             assert!(error.contains(field), "{error}");

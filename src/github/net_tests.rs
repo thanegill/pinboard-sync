@@ -349,6 +349,48 @@ async fn repo_lookup_is_none_for_a_gone_repo() {
 }
 
 #[tokio::test]
+async fn repo_lookup_is_none_for_a_403_that_will_repeat_but_errs_for_a_plain_denial() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/tos/blocked"))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_string(
+                r#"{"message":"Repository access blocked","block":{"reason":"tos"}}"#,
+            ),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/sso/gated"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .insert_header(
+                    "x-github-sso",
+                    "required; url=https://github.com/orgs/sso/sso",
+                )
+                .set_body_string(
+                    r#"{"message":"Resource protected by organization SAML enforcement."}"#,
+                ),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/plain/denied"))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_string(r#"{"message":"Must have admin rights"}"#),
+        )
+        .mount(&server)
+        .await;
+    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+
+    assert!(client.repo("tos", "blocked").await.unwrap().is_none());
+    assert!(client.repo("sso", "gated").await.unwrap().is_none());
+    let err = client.repo("plain", "denied").await.unwrap_err();
+    assert!(matches!(err, SourceError::Other(_)), "{err:?}");
+    assert!(err.to_string().contains("403"), "{err}");
+}
+
+#[tokio::test]
 async fn dump_keeps_the_fields_the_typed_shape_drops() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

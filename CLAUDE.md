@@ -330,7 +330,11 @@ top-level) runs every configured account, aggregating failures via `AllRun` and
 exiting non-zero if any fail. `cleanup --all` runs once per source (reddit, github,
 hackernews), since it normalizes the shared bookmark set. `cleanup github`
 canonicalizes repo-root URLs and looks each repo up via the API to rewrite
-renamed/moved repos and refresh the title + language tag.
+renamed/moved repos. It refreshes only what the tool wrote: notes in `github_note`'s
+shape, the base/language tags of bookmarks carrying the base tag, their title only
+while it is still `owner/repo`, and their star date only while the notes are the tool's
+too. A repo root is often another source's bookmark (an HN story linking it, or one a
+rename merged a star into), so never widen that.
 
 **`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
 `SyncJob { client: SourceClient, hook, settings }`, `settings` a `sync::JobSettings` holding the
@@ -447,9 +451,11 @@ same statuses a real permission denial uses — so `github::rate_limit_message` 
 the headers instead: `x-ratelimit-remaining: 0` (with `x-ratelimit-reset` for the
 instant) or a `retry-after`. It must not become `ReauthRequired` (no credential change
 clears a quota, and firing the hook would send the operator after the wrong problem) nor
-a permanent skip like the `451` arm. Retrying is not the answer either: `send`'s
-2s-linear backoff over 4 attempts totals ~12s, while a primary limit resets up to an hour
-out and GitHub asks for a minute on secondary limits, so it would only fail more slowly.
+a permanent skip (`github::permanent_refusal`: a 451, or a 403 with a `block` body or
+`X-GitHub-SSO: required`, which defers to `rate_limit_message` first). Retrying is not
+the answer either: `send`'s 2s-linear backoff over 4 attempts totals ~12s, while a
+primary limit resets up to an hour out and GitHub asks for a minute on secondary
+limits, so it would only fail more slowly.
 The 403 form isn't retried; the **429** form still is, by the default
 `backoff_if_transient` classifier, and those ~12s are simply wasted before the response
 is read — harmless, and the reason a `rate_limit_message` unit test uses a synthesized

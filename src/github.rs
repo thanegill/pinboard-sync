@@ -201,6 +201,48 @@ fn rate_limit_message(
     None
 }
 
+/// Why a `/repos/{owner}/{name}` refusal will repeat on every run, for the warning, or
+/// `None` for one that may clear (a rate limit, an outage, an ordinary permission error).
+///
+/// GitHub refuses a repo it has blocked with `451` under the DMCA, but with a `403` for a
+/// Terms of Service block; both carry the same `{"message": "Repository access blocked",
+/// "block": {...}}` body, and the `block` object is what tells the 403 apart from a
+/// permission denial. A repo of an organization enforcing SAML SSO, which the token isn't
+/// authorized for, answers `403` with the documented `X-GitHub-SSO: required; url=...`
+/// header; only the operator authorizing the token clears it, and a token stays valid for
+/// every other repo, so it is no reason to stop the pass.
+fn permanent_refusal(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    body: &str,
+) -> Option<&'static str> {
+    if status == reqwest::StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS {
+        return Some("is blocked (451)");
+    }
+    if status != reqwest::StatusCode::FORBIDDEN
+        || rate_limit_message(status, headers, body).is_some()
+    {
+        return None;
+    }
+    let sso_required = headers
+        .get("x-github-sso")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim_start().starts_with("required"));
+    if sso_required {
+        return Some(
+            "is behind an organization's SAML SSO, which the token isn't authorized for (403)",
+        );
+    }
+    let blocked = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .is_some_and(|refusal| {
+            refusal
+                .get("block")
+                .is_some_and(serde_json::Value::is_object)
+        });
+    blocked.then_some("is blocked (403)")
+}
+
 /// Reads a user's starred repos via a personal access token.
 pub struct GitHubClient {
     http: RetryingClient,
@@ -271,16 +313,28 @@ impl GitHubClient {
         let status = resp.status();
         let headers = resp.headers().clone();
         let body = resp.text().await.unwrap_or_default();
-        if let Some(message) = rate_limit_message(status, &headers, &body) {
+        self.refusal_of(what, status, &headers, &body)
+    }
+
+    /// [`Self::refusal`] for a response already read.
+    fn refusal_of(
+        &self,
+        what: &str,
+        status: reqwest::StatusCode,
+        headers: &reqwest::header::HeaderMap,
+        body: &str,
+    ) -> SourceError {
+        if let Some(message) = rate_limit_message(status, headers, body) {
             return SourceError::RateLimited(message);
         }
-        crate::http::error_with_body(&format!("{what} returned {status}"), &body, &[&self.token])
+        crate::http::error_with_body(&format!("{what} returned {status}"), body, &[&self.token])
             .into()
     }
 
     /// Look up a repo via `/repos/{owner}/{name}` (the API follows renames and
     /// transfers, returning the current name/URL). `None` if it is permanently
-    /// inaccessible — deleted or private (404), or blocked under the DMCA (451).
+    /// inaccessible — deleted or private (404), or refused for good
+    /// ([`permanent_refusal`]: blocked, or behind SSO this token isn't authorized for).
     async fn repo(&self, owner: &str, name: &str) -> Result<Option<GitHubRepo>, SourceError> {
         let endpoint = format!("{}/repos/{}/{}", self.base, owner, name);
         let resp = self
@@ -294,16 +348,19 @@ impl GitHubClient {
         if status == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        // Unlike a 404 the repo does still exist, so say so rather than skipping silently.
-        if status == reqwest::StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS {
-            warn!(
-                "github repo {owner}/{name} is blocked (451); keeping its stored title, \
-                 notes and tags"
-            );
-            return Ok(None);
-        }
         if !status.is_success() {
-            return Err(self.refusal("github repo", resp).await);
+            let headers = resp.headers().clone();
+            let body = resp.text().await.unwrap_or_default();
+            // Unlike a 404 the repo does still exist, so say so rather than skipping
+            // silently.
+            if let Some(why) = permanent_refusal(status, &headers, &body) {
+                warn!(
+                    "github repo {owner}/{name} {why}; keeping its stored title, notes \
+                     and tags"
+                );
+                return Ok(None);
+            }
+            return Err(self.refusal_of("github repo", status, &headers, &body));
         }
         let repo: GitHubRepo = resp.json().await.context("parsing github repo response")?;
         Ok(Some(repo))
@@ -539,6 +596,64 @@ mod tests {
                 &headers(&[("x-ratelimit-remaining", "4999")]),
                 r#"{"message":"Must have admin rights to Repository."}"#,
             ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_blocked_or_sso_gated_repo_is_refused_for_good() {
+        let forbidden = reqwest::StatusCode::FORBIDDEN;
+        let tos_block = r#"{"message":"Repository access blocked","block":{"reason":"tos",
+            "created_at":"2014-01-31T22:32:14Z","html_url":"https://github.com/tos"}}"#;
+        assert!(permanent_refusal(forbidden, &headers(&[]), tos_block).is_some());
+        let sso = headers(&[(
+            "x-github-sso",
+            "required; url=https://github.com/orgs/acme/sso?authorization_request=x",
+        )]);
+        assert!(
+            permanent_refusal(forbidden, &sso, r#"{"message":"Resource protected"}"#).is_some()
+        );
+        assert!(permanent_refusal(
+            reqwest::StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS,
+            &headers(&[]),
+            ""
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn a_refusal_that_may_clear_is_not_permanent() {
+        let forbidden = reqwest::StatusCode::FORBIDDEN;
+        let denied = r#"{"message":"Must have admin rights to Repository."}"#;
+        assert_eq!(permanent_refusal(forbidden, &headers(&[]), denied), None);
+        assert_eq!(
+            permanent_refusal(forbidden, &headers(&[]), "not json, block"),
+            None
+        );
+        assert_eq!(
+            permanent_refusal(forbidden, &headers(&[]), r#"{"block":"a string"}"#),
+            None
+        );
+        // A list endpoint's partial results name the orgs left out; that is no refusal.
+        let partial = headers(&[("x-github-sso", "partial-results; organizations=1,2")]);
+        assert_eq!(permanent_refusal(forbidden, &partial, denied), None);
+        // A rate limit stops the pass instead, even with a block-shaped body.
+        let limited = headers(&[("x-ratelimit-remaining", "0")]);
+        assert_eq!(
+            permanent_refusal(forbidden, &limited, r#"{"block":{"reason":"tos"}}"#),
+            None
+        );
+        let limited_behind_sso = headers(&[
+            ("retry-after", "60"),
+            (
+                "x-github-sso",
+                "required; url=https://github.com/orgs/acme/sso",
+            ),
+        ]);
+        assert_eq!(permanent_refusal(forbidden, &limited_behind_sso, ""), None);
+        let tos_block = r#"{"message":"Repository access blocked","block":{"reason":"tos"}}"#;
+        assert_eq!(
+            permanent_refusal(reqwest::StatusCode::BAD_GATEWAY, &headers(&[]), tos_block),
             None
         );
     }

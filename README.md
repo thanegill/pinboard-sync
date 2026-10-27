@@ -243,7 +243,8 @@ grows. Rare, but if you see a note accumulating `… [truncated]` markers, short
   account's `reddit_domain` stays there and is shaped with that account's tag settings,
   and a post stored on several of them collapses onto the one listed first. It
   normalizes tags (ensures every entry of `tags` and a correctly-cased
-  `subreddit:<sub>` tag, dropping bare/legacy duplicates), adds `reddit-comment` to
+  `subreddit:<sub>` tag, dropping bare/legacy duplicates except one that an account on
+  the bookmark's domain adds as a base, NSFW or comment tag), adds `reddit-comment` to
   comment bookmarks, and — using Reddit's `/api/info` — marks `over_18` posts `nsfw`, replaces generic placeholder titles with
   the real ones, and adds the author, flair and media-type tags `sync` writes. Each of
   those three is added only when the bookmark has no tag with its prefix yet, so a

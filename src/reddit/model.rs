@@ -414,12 +414,30 @@ pub fn cased_subreddit(subreddit: &str) -> String {
 /// same key. `domain` is the account's `reddit_domain`, a Reddit host even outside
 /// reddit.com (a mirror), since that is where sync writes the account's bookmarks.
 pub fn reddit_key(url: &Url, domain: &str) -> Option<String> {
-    let host = url.host_str()?;
-    if !(host_matches(host, "reddit.com") || host.eq_ignore_ascii_case(domain)) {
+    if !is_reddit_host(url, domain) {
         return None;
     }
     let key = url.path().trim_end_matches('/').to_ascii_lowercase();
     (!key.is_empty()).then_some(key)
+}
+
+/// Whether `url` is on a Reddit host: reddit.com, a subdomain of it, or `domain`, the
+/// account's `reddit_domain`.
+pub fn is_reddit_host(url: &Url, domain: &str) -> bool {
+    url.host_str()
+        .is_some_and(|host| host_matches(host, "reddit.com") || host.eq_ignore_ascii_case(domain))
+}
+
+/// If `url` is a reddit `over18` interstitial, return its `dest` target (the `url`
+/// crate percent-decodes the query value).
+pub fn over18_dest(url: &Url) -> Option<Url> {
+    if !host_matches(url.host_str()?, "reddit.com")
+        || !url.path().trim_start_matches('/').starts_with("over18")
+    {
+        return None;
+    }
+    let dest = url.query_pairs().find(|(key, _)| key == "dest")?.1;
+    Url::parse(&dest).ok()
 }
 
 #[cfg(test)]

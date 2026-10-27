@@ -70,6 +70,8 @@ All notable changes to this project are documented here. The format is based on
   does.
 - A Pinboard delete retried after a lost response no longer fails on `item not found`.
 - A `reddit_domain` with a port or another form that isn't a bare host is rejected.
+- A HackerNews favorite linking a Reddit `over18` page or the bare Reddit root is no longer
+  re-added after `cleanup reddit` rewrites it.
 
 ## [0.6.0] - 2026-10-25
 

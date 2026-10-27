@@ -144,7 +144,7 @@ pinboard-sync sync reddit --reddit-username you --reddit-cookie 'reddit_session=
 pinboard-sync sync github
 
 # HackerNews (PINBOARD_TOKEN + HN_USERNAME; favorites are public)
-pinboard-sync sync hackernews --username you
+pinboard-sync sync hackernews --hn-username you
 
 # Preview without writing
 pinboard-sync sync reddit --dry-run
@@ -178,11 +178,11 @@ variables for them.
 | Flag | Commands | Setting |
 | --- | --- | --- |
 | `--limit <auto\|all\|N>` | `sync` | `auto` (default): no cap, and each source stops reading pages at the first one with nothing new. `all`: no cap, read every page. `N`: write at most N new bookmarks, reading every page. `0` is rejected. |
-| `--max-age-days <N>` | `sync`, `cleanup` | Only backdate posts newer than N days; older use "now". |
+| `--post-date-max-age-days <N>` | `sync`, `cleanup` | Only backdate posts newer than N days; older use "now". |
 | `--toread[=BOOL]` | `sync` | Mark new bookmarks to-read. |
 | `--public[=BOOL]` | `sync` | Create bookmarks public (default private). |
 | `--use-post-date[=BOOL]` | `sync`, `cleanup` | Date bookmarks by the source post date. |
-| `--stale-to-now[=BOOL]` | `cleanup` | Re-date too-old posts to now (default: keep existing). |
+| `--cleanup-stale-to-now[=BOOL]` | `cleanup` | Re-date too-old posts to now (default: keep existing). |
 
 The boolean flags take an optional value: `--toread` means `true`, `--toread=false`
 forces it off (so a config-set `true` can be overridden back to `false`). Bare
@@ -274,14 +274,13 @@ grows. Rare, but if you see a note accumulating `… [truncated]` markers, short
   canonicalization, with a warning for the last two. Needs the GitHub token; without
   `use_post_date` the bookmark's creation time is preserved.
 
-- **HackerNews** (`cleanup hackernews`) — rewrites favorited *story* bookmarks whose
-  URL is the HN item page (`news.ycombinator.com/item?id=…`) to the linked **article**,
-  re-deriving the title, the `HN Link:` notes, and tags; favorited *comments* keep
-  their HN permalink. Favorites are public, so no auth beyond the Pinboard token is
-  needed. Optionally, `--link-discussions` (off by default) goes the other way: for
-  article bookmarks carrying the marker tag (`find-hn` by default, override with
-  `--link-tag`), it looks each up on HN by URL and adds the discussion link to the
-  notes.
+- **HackerNews** (`cleanup hackernews`) — rewrites favorited *story* bookmarks whose URL
+  is the HN item page (`news.ycombinator.com/item?id=…`) to the linked **article**,
+  re-deriving the title, the `HN Link:` notes, and tags; favorited *comments* keep their
+  HN permalink. Favorites are public, so no auth beyond the Pinboard token is needed.
+  Optionally, `--link-discussions` (off by default) goes the other way: for article
+  bookmarks carrying the marker tag (`find-hn` by default, override with `--tag-link`), it
+  looks each up on HN by URL and adds the discussion link to the notes.
 
 ## What `backup` does
 
@@ -524,7 +523,7 @@ With `use_post_date`, a bookmark's creation date (Pinboard's `dt`) is set to the
     keeps its date, so a stale item is re-dated at most once per cap period (monthly by
     default). The config rejects a cap of `0` with `cleanup_stale_to_now`, since every
     date would then be outside the cap, and `cleanup` refuses the same pairing when
-    `--max-age-days` or `--stale-to-now` supplies either half.
+    `--post-date-max-age-days` or `--cleanup-stale-to-now` supplies either half.
 - **When the date is unknown** (the source exposes none), the date is left untouched.
 - **`cleanup` compares by instant.** A re-write only happens when a field a write would
   change actually differs. The date is compared as a moment in time, not as a string, so

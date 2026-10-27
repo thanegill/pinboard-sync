@@ -488,7 +488,7 @@ async fn run_cleanup_hackernews(
     cleanup_hackernews_account(account, args.link_discussions, args.link_tag, dates, &store).await
 }
 
-/// Build the HackerNews tag config for a cleanup run, letting `--link-tag` override the
+/// Build the HackerNews tag config for a cleanup run, letting `--tag-link` override the
 /// config `tag_link`. The override is validated for whitespace like the config value so a
 /// space-bearing marker (which Pinboard would split, matching nothing) fails loudly.
 fn resolve_hackernews_cleanup_config(
@@ -497,7 +497,7 @@ fn resolve_hackernews_cleanup_config(
 ) -> Result<HackerNewsConfig> {
     let mut hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
     if let Some(tag) = link_tag {
-        config::check_taggable("`--link-tag`", &tag)?;
+        config::check_taggable("`--tag-link`", &tag)?;
         hn_config.link_tag = tag;
     }
     Ok(hn_config)

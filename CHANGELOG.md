@@ -8,8 +8,6 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
-- Flags also take the spelling of the config key they override: `--post-date-max-age-days`,
-  `--cleanup-stale-to-now`, `--tag-link` and `--hn-username`.
 - `cleanup reddit` now adds the author, flair, media and comment tags `sync` writes,
   each only when the bookmark has no tag of that kind yet.
 - `config check <file>` validates a config without contacting any service.
@@ -19,8 +17,15 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- Four flags are renamed. Three take the spelling of the config key they override:
+  `--max-age-days` is `--post-date-max-age-days`, `--stale-to-now` is
+  `--cleanup-stale-to-now` and `--link-tag` is `--tag-link`. HackerNews' `--username` is
+  `--hn-username`, beside `--reddit-username`. `--help` and the shell completions offer
+  only the new names, their value names follow (`<POST_DATE_MAX_AGE_DAYS>`, ...), and
+  messages name the new flag even when the old one was typed.
 - A config pairing `post_date_max_age_days = 0` with `cleanup_stale_to_now` is rejected.
-- `cleanup` refuses the same pairing when `--max-age-days` or `--stale-to-now` sets it.
+- `cleanup` refuses the same pairing when `--post-date-max-age-days` or
+  `--cleanup-stale-to-now` sets it.
 - Either refusal names where each half was set: the flag, the account,
   `[defaults.<source>]` or `[pinboard]`.
 - The flake is built with flake-parts. Its `flake-utils` input is now `flake-parts`, and
@@ -28,6 +33,11 @@ All notable changes to this project are documented here. The format is based on
   functions: importing them works as before, calling one as a function does not.
 - An empty `--out` is an error, as an empty `[backup].directory` already was. It used to
   fall back to `[backup].directory`.
+
+### Deprecated
+
+- `--max-age-days`, `--stale-to-now`, `--link-tag` and HackerNews' `--username` still work,
+  as hidden aliases of their new names, for this release only.
 
 ### Removed
 
@@ -38,7 +48,7 @@ All notable changes to this project are documented here. The format is based on
 - A missing Reddit or HackerNews username or Pinboard token names every setting it can come
   from, `$REDDIT_USERNAME_FILE`, `$HN_USERNAME_FILE` and `$PINBOARD_TOKEN_FILE` included,
   as the cookie and GitHub token messages already did.
-- A `--link-tag` with whitespace or a comma is refused as `--link-tag`'s own error, no
+- A `--tag-link` with whitespace or a comma is refused as `--tag-link`'s own error, no
   longer one that starts `config:` as if the config had set it.
 - A Reddit cookie with a stray `;` (`abc;`, `a=1;;`) is sent without it, so a bare value
   still counts as the session.

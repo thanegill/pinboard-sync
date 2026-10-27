@@ -348,8 +348,8 @@ fn a_missing_secret_names_every_setting_it_can_come_from() {
     );
     assert_eq!(
         error(build_job::<HackerNewsAccount>(None, &overrides, &config)),
-        "missing HackerNews username (set --username, $HN_USERNAME, $HN_USERNAME_FILE, or \
-         the config's `username`)"
+        "missing HackerNews username (set --hn-username, $HN_USERNAME, $HN_USERNAME_FILE, \
+         or the config's `username`)"
     );
     assert_eq!(
         format!(

@@ -96,7 +96,7 @@ impl SecretSpec {
     };
     pub const HN_USERNAME: SecretSpec = SecretSpec {
         what: "HackerNews username",
-        flag: "--username",
+        flag: "--hn-username",
         var: "HN_USERNAME",
         env: "$HN_USERNAME",
         env_file: "$HN_USERNAME_FILE",
@@ -383,7 +383,7 @@ mod tests {
         );
         assert_eq!(
             SecretSpec::HN_USERNAME.settings(),
-            "--username, $HN_USERNAME, $HN_USERNAME_FILE, or the config's `username`"
+            "--hn-username, $HN_USERNAME, $HN_USERNAME_FILE, or the config's `username`"
         );
     }
 

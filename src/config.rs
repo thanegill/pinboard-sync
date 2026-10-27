@@ -334,11 +334,9 @@ impl Config {
                 .map(|index| format!("{source}[{index}]")),
         };
         match offender {
-            Some(scope) => bail!(
-                "config: {scope} resolves `post_date_max_age_days` to 0 with \
-                 `cleanup_stale_to_now` on, so cleanup would re-date its stale bookmarks on \
-                 every run; raise the cap or turn `cleanup_stale_to_now` off"
-            ),
+            Some(scope) => Err(crate::timefmt::redates_every_run_error(&format!(
+                "config: {scope}"
+            ))),
             None => Ok(()),
         }
     }

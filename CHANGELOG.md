@@ -18,6 +18,7 @@ All notable changes to this project are documented here. The format is based on
 ### Changed
 
 - A config pairing `post_date_max_age_days = 0` with `cleanup_stale_to_now` is rejected.
+- `cleanup` refuses the same pairing when `--max-age-days` or `--stale-to-now` sets it.
 - The flake is built with flake-parts. Its `flake-utils` input is now `flake-parts`, and
   its `nixosModules` are module attrsets tagged `_class = "nixos"` rather than bare
   functions: importing them works as before, calling one as a function does not.

@@ -175,6 +175,33 @@ pub fn resolve_dates(
     }
 }
 
+/// [`resolve_dates`] for a cleanup pass, refusing a resolution that
+/// [`DateOpts::redates_every_run`]. Config validation rules that out for the config tiers
+/// alone; this catches the same pairing when a flag supplies either half. `pass` names
+/// the pass in the error, e.g. "`cleanup github`".
+pub fn resolve_cleanup_dates(
+    pass: &str,
+    over: &DateOverrides,
+    account: Option<&impl config::Account>,
+    src: &config::SourceDefaults,
+    config: &Config,
+) -> anyhow::Result<DateOpts> {
+    let dates = resolve_dates(over, account, src, config);
+    if dates.redates_every_run() {
+        return Err(redates_every_run_error(&format!("{pass} with its flags")));
+    }
+    Ok(dates)
+}
+
+/// Why `scope`'s dating settings are refused. It names the settings, never a value.
+pub fn redates_every_run_error(scope: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{scope} resolves `post_date_max_age_days` to 0 with `cleanup_stale_to_now` on, so \
+         cleanup would re-date its stale bookmarks on every run; raise the cap or turn \
+         `cleanup_stale_to_now` off"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

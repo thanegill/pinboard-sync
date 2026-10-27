@@ -519,7 +519,8 @@ With `use_post_date`, a bookmark's creation date (Pinboard's `dt`) is set to the
     true`, which re-dates stale items to now. A bookmark already dated within the cap
     keeps its date, so a stale item is re-dated at most once per cap period (monthly by
     default). The config rejects a cap of `0` with `cleanup_stale_to_now`, since every
-    date would then be outside the cap.
+    date would then be outside the cap, and `cleanup` refuses the same pairing when
+    `--max-age-days` or `--stale-to-now` supplies either half.
 - **When the date is unknown** (the source exposes none), the date is left untouched.
 - **`cleanup` compares by instant.** A re-write only happens when a field a write would
   change actually differs. The date is compared as a moment in time, not as a string, so

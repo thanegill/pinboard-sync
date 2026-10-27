@@ -12,7 +12,7 @@ use log::{debug, info};
 use url::Url;
 
 use crate::backup::{self, BackupSource};
-use crate::bookmark::{Bookmark, BookmarkStore};
+use crate::bookmark::Bookmark;
 use crate::cli::SyncFlags;
 use crate::config::{
     self, resolve_setting, Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit,

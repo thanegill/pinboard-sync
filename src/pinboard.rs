@@ -257,15 +257,18 @@ fn wire_to_bookmarks(wire: Vec<PinboardBookmark>) -> Vec<Bookmark> {
         .collect()
 }
 
-impl BookmarkStore for PinboardClient {
-    async fn all(&self) -> Result<Vec<Bookmark>> {
+impl PinboardClient {
+    /// Every bookmark in the account (`posts/all`).
+    pub async fn all(&self) -> Result<Vec<Bookmark>> {
         let resp = self.get_posts_all("no").await?;
         let body = resp.text().await.context("reading Pinboard posts/all")?;
         let wire: Vec<PinboardBookmark> =
             serde_json::from_str(&body).context("parsing Pinboard posts/all")?;
         Ok(wire_to_bookmarks(wire))
     }
+}
 
+impl BookmarkStore for PinboardClient {
     /// An `item not found` answering a retry counts as done: the attempt before it may have
     /// deleted the bookmark before its response was lost. On a first attempt it is an error.
     async fn delete(&self, url: &Url) -> Result<()> {
@@ -430,8 +433,8 @@ impl PinboardClient {
     }
 
     /// GET `posts/all` with the given `meta` flag (`"yes"` includes each entry's
-    /// `meta`/`hash`), retrying transient failures. Shared by [`BookmarkStore::all`], which
-    /// parses the JSON, and [`Self::export_all`], which returns the body verbatim.
+    /// `meta`/`hash`), retrying transient failures. Shared by [`Self::all`], which parses
+    /// the JSON, and [`Self::export_all`], which returns the body verbatim.
     async fn get_posts_all(&self, meta: &str) -> Result<reqwest::Response> {
         let params = [
             ("auth_token", self.auth_token.as_str()),
@@ -470,9 +473,9 @@ impl PinboardClient {
         )
     }
 
-    /// Fetch the raw `posts/all` JSON body verbatim (with `meta=yes`), for backups.
-    /// Unlike [`BookmarkStore::all`], this neither parses nor filters — it returns exactly
-    /// what Pinboard sends, preserving `meta`/`hash` and any entries `all` would skip.
+    /// Fetch the raw `posts/all` JSON body verbatim (with `meta=yes`), for backups. Unlike
+    /// [`Self::all`], this neither parses nor filters — it returns exactly what Pinboard
+    /// sends, preserving `meta`/`hash` and any entries `all` would skip.
     pub async fn export_all(&self) -> Result<String> {
         let resp = self.get_posts_all("yes").await?;
         resp.text().await.context("reading Pinboard posts/all body")

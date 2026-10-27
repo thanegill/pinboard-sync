@@ -78,13 +78,12 @@ impl Bookmark {
     }
 }
 
-/// The bookmark-store operations the sync/cleanup loops depend on. Abstracted from the
-/// concrete Pinboard client so those loops can be exercised with an in-memory fake. A
-/// write takes a whole [`Bookmark`]; the client maps it to the Pinboard `posts/add`
-/// parameters at the boundary (see `pinboard::post_add`).
+/// The bookmark-store writes the sync/cleanup loops depend on. Abstracted from the concrete
+/// Pinboard client so those loops can be exercised with an in-memory fake. A write takes a
+/// whole [`Bookmark`]; the client maps it to the Pinboard `posts/add` parameters at the
+/// boundary (see `pinboard::post_add`). Reading the account is not part of the port: a run
+/// reads `posts/all` once, through `PinboardClient::all`, before any loop starts.
 pub trait BookmarkStore {
-    /// Every bookmark in the account (`posts/all`).
-    async fn all(&self) -> Result<Vec<Bookmark>>;
     /// Add a new bookmark. A `None` `timestamp` lets Pinboard default the date to now.
     async fn add(&self, b: &Bookmark) -> Result<()>;
     /// Re-add an existing bookmark with normalized fields.
@@ -314,11 +313,6 @@ impl<P> AccountState for CleanupStore<'_, P> {
 }
 
 impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
-    /// The run's own view, not a fetch: `posts/all` is read once, before the passes.
-    async fn all(&self) -> Result<Vec<Bookmark>> {
-        Ok(self.snapshot())
-    }
-
     async fn add(&self, b: &Bookmark) -> Result<()> {
         if !self.dry_run {
             self.inner.add(b).await?;
@@ -480,10 +474,9 @@ mod cleanup_store_tests {
     use crate::test_support::{stored_at, FakePinboard};
 
     #[tokio::test]
-    async fn all_answers_from_the_view_without_fetching() {
-        // `posts/all` is rate-limited to one call per five minutes, so a second one inside
-        // a run would fail it. The store answers from the view it already has — and that
-        // view reflects this run's writes, which a re-fetch would not.
+    async fn the_snapshot_reflects_this_runs_writes() {
+        // A later pass plans from the snapshot, so it has to show what an earlier pass
+        // wrote, which the `posts/all` read before the run does not.
         let pinboard = FakePinboard::default();
         let store = CleanupStore::new(
             &pinboard,
@@ -492,15 +485,10 @@ mod cleanup_store_tests {
         );
         store.update(&at("https://a/", "written")).await.unwrap();
 
-        let all = store.all().await.unwrap();
+        let all = store.snapshot();
 
-        assert_eq!(
-            *pinboard.all_calls.borrow(),
-            0,
-            "must not reach the network"
-        );
         assert_eq!(all.len(), 1);
-        assert_eq!(all[0].note, "written", "and must reflect this run's writes");
+        assert_eq!(all[0].note, "written");
     }
 
     fn at(url: &str, note: &str) -> Bookmark {

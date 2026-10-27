@@ -253,9 +253,8 @@ pub fn replay(seed: &[Bookmark], ops: &[Op]) -> Vec<Bookmark> {
 
 #[derive(Default)]
 pub struct FakePinboard {
+    /// The account a cleanup store over this fake starts from.
     pub all: Vec<Bookmark>,
-    /// How many times `all()` was called (to assert single-fetch behavior).
-    pub all_calls: RefCell<usize>,
     pub added: RefCell<Vec<AddCall>>,
     pub updated: RefCell<Vec<UpdateCall>>,
     pub deleted: RefCell<Vec<String>>,
@@ -279,10 +278,6 @@ impl FakePinboard {
 }
 
 impl BookmarkStore for FakePinboard {
-    async fn all(&self) -> Result<Vec<Bookmark>> {
-        *self.all_calls.borrow_mut() += 1;
-        Ok(self.all.clone())
-    }
     async fn add(&self, b: &Bookmark) -> Result<()> {
         if self.fail_add_urls.contains(b.url.as_str()) {
             return Err(anyhow!("simulated add failure for {}", b.url));

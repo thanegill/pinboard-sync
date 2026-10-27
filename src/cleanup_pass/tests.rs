@@ -967,11 +967,6 @@ async fn the_view_never_drifts_from_the_account() {
         (second_outcome.changed, second_outcome.write_failed),
         (2, 0)
     );
-    assert_eq!(
-        *pinboard.all_calls.borrow(),
-        0,
-        "the run reads `posts/all` once, before the passes — never from inside one"
-    );
     let ops = pinboard.ops.borrow();
     assert!(
         ops.iter().any(|op| matches!(op, Op::Delete(_))),

@@ -133,8 +133,6 @@ async fn filter_new_skips_present_then_write_adds_the_rest() {
     let outcome = write_drafts(&pinboard, &new, false).await;
     assert_eq!(outcome.written, 1);
     assert_eq!(outcome.failed, 0);
-    // The write path never lists posts/all itself.
-    assert_eq!(*pinboard.all_calls.borrow(), 0);
     assert_eq!(pinboard.added.borrow().len(), 1);
 }
 

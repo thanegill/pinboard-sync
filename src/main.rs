@@ -157,10 +157,7 @@ fn print_man() -> Result<()> {
 /// TOML file); absent = defaults. Unlike secrets, the config takes no `_FILE` form —
 /// it is already a file path.
 fn load_config(flag: Option<String>) -> Result<Config> {
-    let path = flag
-        .or_else(|| std::env::var("PINBOARD_SYNC_CONFIG").ok())
-        .filter(|s| !s.is_empty());
-    match path {
+    match config_path(flag, std::env::var("PINBOARD_SYNC_CONFIG").ok()) {
         Some(path) => {
             let config = read_config(Path::new(&path))?;
             info!("loaded config {path}: {}", account_counts(&config));
@@ -171,6 +168,13 @@ fn load_config(flag: Option<String>) -> Result<Config> {
             Ok(Config::default())
         }
     }
+}
+
+/// The config file to load: the `--config` flag, else `$PINBOARD_SYNC_CONFIG`, else none.
+/// An empty value counts as none, and an empty flag still outranks the env var, so
+/// `--config ''` runs on the built-in defaults whatever the environment sets.
+fn config_path(flag: Option<String>, env: Option<String>) -> Option<String> {
+    flag.or(env).filter(|path| !path.is_empty())
 }
 
 fn read_config(path: &Path) -> Result<Config> {
@@ -695,6 +699,27 @@ mod tests {
         let hn_config =
             resolve_hackernews_cleanup_config(None, Some("find-hn".into())).expect("valid tag");
         assert_eq!(hn_config.link_tag, "find-hn");
+    }
+
+    #[test]
+    fn the_config_path_is_the_flag_then_the_env_var() {
+        let some = |path: &str| Some(path.to_string());
+        assert_eq!(
+            config_path(some("flag.toml"), some("env.toml")),
+            some("flag.toml")
+        );
+        assert_eq!(config_path(None, some("env.toml")), some("env.toml"));
+        assert_eq!(config_path(None, None), None);
+        assert_eq!(
+            config_path(None, some("")),
+            None,
+            "an empty env var is unset"
+        );
+        assert_eq!(
+            config_path(some(""), some("env.toml")),
+            None,
+            "`--config ''` turns the env var off"
+        );
     }
 
     #[test]

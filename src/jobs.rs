@@ -324,8 +324,10 @@ pub trait SourceAccount: config::Account + Sized {
     fn env_secrets(ovr: &SyncOverrides) -> Vec<EnvSecret>;
 
     /// The client for `account`, or for the implicit CLI/env account when `None`, with
-    /// its credentials resolved through the secret ladder.
-    fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient>;
+    /// its credentials resolved through the secret ladder. `config` is the whole config,
+    /// for what one source needs to know of another's accounts.
+    fn client(account: Option<&Self>, ovr: &SyncOverrides, config: &Config)
+        -> Result<SourceClient>;
 
     /// The auth-failure hook for `account`: `top` (the flag or env value the command
     /// resolved), else the account's, else the per-source default, else `[hooks]`. Both
@@ -363,7 +365,7 @@ impl SourceAccount for RedditAccount {
         ])
     }
 
-    fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient> {
+    fn client(account: Option<&Self>, ovr: &SyncOverrides, _: &Config) -> Result<SourceClient> {
         let username = resolve_secret(
             ovr.reddit_username.clone(),
             "REDDIT_USERNAME",
@@ -400,7 +402,7 @@ impl SourceAccount for GitHubAccount {
         unflagged(&[(EnvSecret::GITHUB_TOKEN, &ovr.github_token)])
     }
 
-    fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient> {
+    fn client(account: Option<&Self>, ovr: &SyncOverrides, _: &Config) -> Result<SourceClient> {
         let token = resolve_github_token(ovr.github_token.clone(), account)
             .with_context(missing_github_token)?;
         let github_config = account.map(GitHubConfig::from).unwrap_or_default();
@@ -430,7 +432,11 @@ impl SourceAccount for HackerNewsAccount {
         unflagged(&[(EnvSecret::HN_USERNAME, &ovr.hackernews_username)])
     }
 
-    fn client(account: Option<&Self>, ovr: &SyncOverrides) -> Result<SourceClient> {
+    fn client(
+        account: Option<&Self>,
+        ovr: &SyncOverrides,
+        config: &Config,
+    ) -> Result<SourceClient> {
         let username = resolve_secret(
             ovr.hackernews_username.clone(),
             "HN_USERNAME",
@@ -441,9 +447,10 @@ impl SourceAccount for HackerNewsAccount {
             "missing HackerNews username (set --username, HN_USERNAME, or `username` in the config)",
         )?;
         let hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
-        Ok(SourceClient::HackerNews(HackerNewsClient::new(
-            username, hn_config,
-        )?))
+        Ok(SourceClient::HackerNews(
+            HackerNewsClient::new(username, hn_config)?
+                .with_reddit_domains(config.reddit_domains()),
+        ))
     }
 
     /// None: HackerNews favorites are public, so nothing can need re-authenticating.
@@ -460,7 +467,7 @@ pub fn build_job<A: SourceAccount>(
     config: &Config,
 ) -> Result<SyncJob> {
     Ok(SyncJob {
-        client: A::client(account, ovr)?,
+        client: A::client(account, ovr, config)?,
         label: job_label(account),
         hook: A::hook(account, ovr.on_auth_failure.clone(), config),
         settings: resolve_job_settings(account, ovr, A::defaults(config), config),
@@ -667,6 +674,30 @@ mod tests {
         };
         let job = build_job::<HackerNewsAccount>(None, &ovr, &Config::default()).expect("builds");
         assert_wired(&job);
+    }
+
+    #[test]
+    fn a_hackernews_job_keys_articles_on_a_configured_reddit_domain_as_reddit() {
+        let config = Config {
+            reddit: vec![RedditAccount {
+                reddit_domain: Some("reddit.mirror.example".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ovr = SyncOverrides {
+            hackernews_username: Some("alice".into()),
+            ..Default::default()
+        };
+        let job = build_job::<HackerNewsAccount>(None, &ovr, &config).expect("builds");
+        assert_eq!(
+            job.client
+                .dedup_key(&crate::test_support::url(
+                    "https://reddit.mirror.example/r/rust/comments/abc/title/"
+                ))
+                .as_deref(),
+            Some("/r/rust/comments/abc/title")
+        );
     }
 
     /// `sync --all`'s build phase must isolate a per-account build failure so the

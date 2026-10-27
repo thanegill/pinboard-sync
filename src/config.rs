@@ -246,6 +246,14 @@ impl Config {
         !(self.reddit.is_empty() && self.github.is_empty() && self.hackernews.is_empty())
     }
 
+    /// Every configured Reddit account's `reddit_domain`, defaults included.
+    pub fn reddit_domains(&self) -> Vec<String> {
+        self.reddit
+            .iter()
+            .map(|account| RedditConfig::from(account).domain)
+            .collect()
+    }
+
     /// Parse a config from TOML text, validating tag fields.
     pub fn parse(text: &str) -> Result<Self> {
         let config: Config = toml::from_str(text)

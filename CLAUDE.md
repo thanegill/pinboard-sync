@@ -312,7 +312,9 @@ whitespace and commas in the value (e.g. the GitHub language `Jupyter Notebook` 
 tags/prefixes. Reddit's URL host is the configurable `reddit_domain` (used
 by both sync `bookmark_url` and cleanup's `normalize_url`); `reddit_key` stays
 host-agnostic so dedup matches across subdomains, and takes that domain too, so a
-mirror outside reddit.com still counts as a Reddit host.
+mirror outside reddit.com still counts as a Reddit host. HackerNews keys an article on
+Reddit the same way, against every configured account's domain (`Config::reddit_domains`,
+which is why `SourceAccount::client` takes the whole `Config`).
 
 **Config + secret resolution.** [`src/config.rs`](src/config.rs) parses the
 `--config` TOML: one `[pinboard]` destination, `[hooks]`, and per-source account

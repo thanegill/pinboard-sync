@@ -177,8 +177,13 @@ impl From<AlgoliaHit> for HackerNewsItem {
 impl HackerNewsItem {
     /// Shape the item into a Pinboard draft. Comments keep the HN permalink; stories
     /// bookmark the linked article (HN discussion in the notes), falling back to the
-    /// HN permalink for text posts (Ask HN, etc.).
-    fn into_draft(self, cfg: &HackerNewsConfig) -> Option<BookmarkDraft> {
+    /// HN permalink for text posts (Ask HN, etc.). `reddit_domains` are the configured
+    /// Reddit accounts' `reddit_domain`s, for the article's key ([`hn_url_key`]).
+    fn into_draft(
+        self,
+        cfg: &HackerNewsConfig,
+        reddit_domains: &[String],
+    ) -> Option<BookmarkDraft> {
         let item_id = HackerNewsItemId::from(self.id);
         // The HN discussion permalink (always valid — the id sits in the query string).
         let hn_url = Url::from(&item_id);
@@ -214,7 +219,8 @@ impl HackerNewsItem {
         let (url, dedup_key) = match article.as_deref() {
             Some(u) => match Url::parse(u) {
                 Ok(parsed) => {
-                    let key = hn_url_key(&parsed).unwrap_or_else(|| parsed.to_string());
+                    let key =
+                        hn_url_key(&parsed, reddit_domains).unwrap_or_else(|| parsed.to_string());
                     (parsed, key)
                 }
                 Err(e) => {
@@ -267,6 +273,8 @@ pub struct HackerNewsClient {
     http: RetryingClient,
     username: String,
     config: HackerNewsConfig,
+    /// The configured Reddit accounts' `reddit_domain`s, which key as Reddit hosts.
+    reddit_domains: Vec<String>,
     /// HN site base (overridden in tests).
     base: String,
     /// Algolia API base (overridden in tests).
@@ -297,9 +305,19 @@ impl HackerNewsClient {
             http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
             username,
             config,
+            reddit_domains: Vec::new(),
             base,
             algolia,
         })
+    }
+
+    /// The client keying an article on any of `domains` as Reddit's own dedup key does,
+    /// so it still matches once `cleanup reddit` has moved it onto that domain.
+    pub fn with_reddit_domains(self, domains: Vec<String>) -> Self {
+        Self {
+            reddit_domains: domains,
+            ..self
+        }
     }
 
     /// Collect favorited item IDs from the stories page (`comments=false`) or the
@@ -555,7 +573,10 @@ impl HackerNewsClient {
     ) -> HashMap<HackerNewsItemId, BookmarkDraft> {
         items
             .into_iter()
-            .filter_map(|(id, item)| item.into_draft(&self.config).map(|draft| (id, draft)))
+            .filter_map(|(id, item)| {
+                item.into_draft(&self.config, &self.reddit_domains)
+                    .map(|draft| (id, draft))
+            })
             .collect()
     }
 }
@@ -570,21 +591,27 @@ impl BackupSource for HackerNewsClient {
 
 impl UrlKey for HackerNewsClient {
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        hn_url_key(url)
+        hn_url_key(url, &self.reddit_domains)
     }
 }
 
 /// The key a draft and a stored bookmark at `url` share. An HN item permalink keys on its
 /// id (`hn:<id>`), even as a story's article URL (a meta post), since a host+path key
-/// drops the id query. An article on Reddit or GitHub keys as that source does, so it
-/// still matches once `cleanup reddit` or `cleanup github` has moved it to its canonical
-/// URL; Reddit's key covers only reddit.com hosts, since HN cannot know a Reddit
-/// account's mirror `reddit_domain`. Any other article falls back to the host+path key.
-fn hn_url_key(url: &Url) -> Option<String> {
+/// drops the id query. An article on Reddit (a reddit.com host, or one of
+/// `reddit_domains`, the configured accounts' `reddit_domain`s) or GitHub keys as that
+/// source does, so it still matches once `cleanup reddit` or `cleanup github` has moved it
+/// to its canonical URL. Any other article falls back to the host+path key.
+fn hn_url_key(url: &Url, reddit_domains: &[String]) -> Option<String> {
     HackerNewsItemId::try_from(url)
         .ok()
         .map(|id| id.dedup_key())
-        .or_else(|| reddit_key(url, "reddit.com"))
+        .or_else(|| {
+            reddit_domains
+                .iter()
+                .map(String::as_str)
+                .chain(["reddit.com"])
+                .find_map(|domain| reddit_key(url, domain))
+        })
         .or_else(|| github_key(url))
         .or_else(|| url_key(url))
 }
@@ -756,7 +783,7 @@ impl HackerNewsClient {
                                         "url": url });
         serde_json::from_value::<HackerNewsItem>(story)
             .unwrap()
-            .into_draft(&self.config)
+            .into_draft(&self.config, &self.reddit_domains)
             .unwrap()
     }
 
@@ -843,7 +870,7 @@ mod tests {
             "id": 42, "type": "story", "by": "alice",
             "title": "Cool thing", "url": "https://example.com/x"
         }))
-        .into_draft(&HackerNewsConfig::default())
+        .into_draft(&HackerNewsConfig::default(), &[])
         .unwrap();
         assert_eq!(d.bookmark.url.as_str(), "https://example.com/x");
         assert_eq!(d.bookmark.title, "Cool thing");
@@ -869,7 +896,7 @@ mod tests {
             "id": 42, "type": "story", "by": "alice",
             "title": "Meta post", "url": article
         }))
-        .into_draft(&HackerNewsConfig::default())
+        .into_draft(&HackerNewsConfig::default(), &[])
         .unwrap();
         assert_eq!(d.bookmark.url.as_str(), article);
         assert_eq!(d.dedup_key, "hn:999");
@@ -883,7 +910,7 @@ mod tests {
             "id": 7, "type": "story", "by": "bob",
             "title": "Ask HN: How?", "text": "<p>details</p>"
         }))
-        .into_draft(&HackerNewsConfig::default())
+        .into_draft(&HackerNewsConfig::default(), &[])
         .unwrap();
         assert_eq!(
             d.bookmark.url.as_str(),
@@ -902,7 +929,7 @@ mod tests {
         let d = item(json!({
             "id": 8, "type": "story", "by": "bob", "title": "Ask HN: empty?"
         }))
-        .into_draft(&HackerNewsConfig::default())
+        .into_draft(&HackerNewsConfig::default(), &[])
         .unwrap();
         assert_eq!(
             d.bookmark.url.as_str(),
@@ -920,7 +947,7 @@ mod tests {
             "title": "Rust&#x27;s &amp; more", "url": "https://example.com/a",
             "text": "<p>see <a href=\"https://x.com\">x</a> &gt; y</p>"
         }))
-        .into_draft(&HackerNewsConfig::default())
+        .into_draft(&HackerNewsConfig::default(), &[])
         .unwrap();
         // Title: entities decoded, tags stripped, single line.
         assert_eq!(d.bookmark.title, "Rust's & more");
@@ -936,7 +963,7 @@ mod tests {
         let d = item(json!({
             "id": 9, "type": "comment", "by": "carol", "text": "my reply"
         }))
-        .into_draft(&HackerNewsConfig::default())
+        .into_draft(&HackerNewsConfig::default(), &[])
         .unwrap();
         assert_eq!(
             d.bookmark.url.as_str(),
@@ -962,7 +989,7 @@ mod tests {
         // parses, so only article stories can hit this.)
         assert!(
             item(json!({ "id": 5, "type": "story", "by": "ann", "url": "not a url" }))
-                .into_draft(&HackerNewsConfig::default())
+                .into_draft(&HackerNewsConfig::default(), &[])
                 .is_none()
         );
     }
@@ -1101,6 +1128,45 @@ mod tests {
         assert_eq!(
             cleaned[0].url.as_str(),
             "https://old.reddit.com/r/rust/comments/abc/title/"
+        );
+
+        assert_eq!(client.sync_once(&drafts, &cleaned).await, cleaned);
+    }
+
+    #[tokio::test]
+    async fn a_story_linking_reddit_is_not_re_added_after_cleanup_reddit_moves_it_to_a_mirror() {
+        use crate::reddit::cleanup::{run, RedditCleanupOpts};
+        use crate::reddit::model::RedditConfig;
+        use crate::test_support::{replay, FakePinboard, FakeReddit, NO_DATING};
+
+        let mirror = "reddit.mirror.example";
+        let client = HackerNewsClient::new("u".into(), HackerNewsConfig::default())
+            .unwrap()
+            .with_reddit_domains(vec![mirror.into()]);
+        let drafts = [client.story_draft("https://www.reddit.com/r/rust/comments/abc/title/")];
+        let synced = client.sync_once(&drafts, &[]).await;
+        assert_eq!(synced.len(), 1);
+
+        let pinboard = FakePinboard {
+            all: synced.clone(),
+            ..Default::default()
+        };
+        let opts = RedditCleanupOpts {
+            mark_nsfw: false,
+            fix_titles: false,
+            config: RedditConfig {
+                domain: mirror.into(),
+                ..Default::default()
+            },
+            dates: NO_DATING,
+        };
+        run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts)
+            .await
+            .unwrap();
+        let cleaned = replay(&synced, &pinboard.ops.borrow());
+        assert_eq!(
+            cleaned[0].url.as_str(),
+            "https://reddit.mirror.example/r/rust/comments/abc/title/"
         );
 
         assert_eq!(client.sync_once(&drafts, &cleaned).await, cleaned);

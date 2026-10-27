@@ -187,7 +187,11 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         };
         // Re-derive the bookmark from the fresh item (url/title/note/date), then preserve
         // the stored bookmark's existing tags and privacy on the re-write.
-        let Some(mut new) = item.clone().into_draft(self.config).map(|d| d.bookmark) else {
+        let Some(mut new) = item
+            .clone()
+            .into_draft(self.config, &[])
+            .map(|d| d.bookmark)
+        else {
             return Ok(Plan::Skipped);
         };
         let mut tags = bookmark.tags.clone();

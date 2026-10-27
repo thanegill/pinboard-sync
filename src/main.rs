@@ -279,7 +279,7 @@ async fn run_sync_jobs(
         jobs.len(),
         bookmarks.len()
     );
-    let now = timefmt::now_unix();
+    let now = time::OffsetDateTime::now_utc();
     let fetched = futures::future::join_all(jobs.iter().map(|job| async move {
         let drafts = job.fetch(bookmarks).await?;
         let fetched = drafts.len();

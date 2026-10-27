@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 
 use log::{debug, error};
+use time::OffsetDateTime;
 
 use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::config::SyncLimit;
@@ -59,7 +60,7 @@ pub fn prepare_new_drafts<S: Source>(
     drafts: Vec<BookmarkDraft>,
     existing: &[Bookmark],
     settings: &JobSettings,
-    now: i64,
+    now: OffsetDateTime,
 ) -> Vec<BookmarkDraft> {
     let mut new = filter_new(source, drafts, existing);
     let mut seen = HashSet::new();

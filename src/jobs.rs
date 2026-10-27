@@ -611,7 +611,7 @@ mod tests {
             vec![alices_save],
             &stored,
             &fetch_only(SyncLimit::All),
-            0,
+            time::OffsetDateTime::UNIX_EPOCH,
         );
         assert!(new.is_empty(), "re-added: {:?}", new[0].bookmark.url);
     }

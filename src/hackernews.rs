@@ -803,7 +803,13 @@ impl HackerNewsClient {
             public: false,
             dates: crate::test_support::NO_DATING,
         };
-        let new = crate::sync::prepare_new_drafts(self, drafts.to_vec(), account, &settings, 0);
+        let new = crate::sync::prepare_new_drafts(
+            self,
+            drafts.to_vec(),
+            account,
+            &settings,
+            time::OffsetDateTime::UNIX_EPOCH,
+        );
         let pinboard = crate::test_support::FakePinboard::default();
         let tally = crate::sync::write_drafts(&pinboard, &new, false).await;
         assert_eq!(tally.failed, 0);

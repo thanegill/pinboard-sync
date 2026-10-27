@@ -47,12 +47,6 @@ pub fn from_unix(secs: i64) -> Option<OffsetDateTime> {
     OffsetDateTime::from_unix_timestamp(secs).ok()
 }
 
-/// Current time as unix epoch seconds (UTC). Kept as the single `now` call site; pure
-/// logic (the age cap) takes the value as a parameter so it stays testable.
-pub fn now_unix() -> i64 {
-    OffsetDateTime::now_utc().unix_timestamp()
-}
-
 /// Whether a post created at `timestamp` (epoch) is at most `max_age_days` old relative
 /// to `now` (epoch) — the `use_post_date` backdate cap. Shared by
 /// [`DateOpts::sync_date`] and [`DateOpts::cleanup_date`].
@@ -75,14 +69,20 @@ pub struct DateOpts {
 
 impl DateOpts {
     /// The creation time a new `sync` bookmark is written with. `candidate` is the source
-    /// post time (if known) and `now` the run's time (epoch). Returns the source time when
-    /// dating is on and the post is within the cap; otherwise `None`, so Pinboard dates the
+    /// post time (if known) and `now` the run's time. Returns the source time when dating
+    /// is on and the post is within the cap; otherwise `None`, so Pinboard dates the
     /// bookmark "now".
-    pub fn sync_date(self, candidate: Option<OffsetDateTime>, now: i64) -> Option<OffsetDateTime> {
+    pub fn sync_date(
+        self,
+        candidate: Option<OffsetDateTime>,
+        now: OffsetDateTime,
+    ) -> Option<OffsetDateTime> {
         if !self.use_post_date {
             return None;
         }
-        candidate.filter(|ts| within_age_cap(now, ts.unix_timestamp(), self.max_age_days))
+        candidate.filter(|ts| {
+            within_age_cap(now.unix_timestamp(), ts.unix_timestamp(), self.max_age_days)
+        })
     }
 
     /// The creation time a `cleanup` re-write should set. `candidate` is the source post

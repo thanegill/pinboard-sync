@@ -3,8 +3,11 @@ use std::num::NonZeroUsize;
 use super::*;
 use crate::source::{page_is_caught_up, Source, SourceError, UrlKey};
 use crate::test_support::{listing_entry, replay, stored_at as bookmark, FakePinboard, FakeReddit};
+use crate::timefmt::from_unix;
 use serde_json::json;
 use url::Url;
+
+const EPOCH: OffsetDateTime = OffsetDateTime::UNIX_EPOCH;
 
 /// A source serving one or more streams of pages, each newest first and concatenated
 /// in order (as HackerNews serves stories then comments). Its incremental read stops
@@ -260,7 +263,7 @@ async fn prepare_new_drafts_stamps_flags_and_clears_dates_outside_the_age_cap() 
         },
     };
     let drafts = reddit.fetch().await.unwrap();
-    let new = prepare_new_drafts(&reddit, drafts, &[], &job, now);
+    let new = prepare_new_drafts(&reddit, drafts, &[], &job, from_unix(now).unwrap());
     assert_eq!(new.len(), 2);
     // The resolved flags are stamped onto every new draft.
     assert!(new
@@ -295,7 +298,7 @@ async fn prepare_new_drafts_clears_all_dates_when_use_post_date_off() {
         reddit.fetch().await.unwrap(),
         &[],
         &settings(false, 30, None),
-        now,
+        from_unix(now).unwrap(),
     );
     assert_eq!(new.len(), 1);
     assert_eq!(new[0].bookmark.timestamp, None);
@@ -316,7 +319,7 @@ async fn prepare_new_drafts_truncates_to_the_per_job_limit() {
         reddit.fetch().await.unwrap(),
         &[],
         &settings(false, 30, None),
-        0,
+        EPOCH,
     );
     assert_eq!(all.len(), 3);
     // A positive limit caps the batch.
@@ -325,7 +328,7 @@ async fn prepare_new_drafts_truncates_to_the_per_job_limit() {
         reddit.fetch().await.unwrap(),
         &[],
         &settings(false, 30, NonZeroUsize::new(2)),
-        0,
+        EPOCH,
     );
     assert_eq!(capped.len(), 2);
 }
@@ -353,7 +356,7 @@ async fn prepare_new_drafts_dedups_within_the_batch_before_applying_the_limit() 
         drafts,
         &[],
         &settings(false, 30, NonZeroUsize::new(2)),
-        0,
+        EPOCH,
     );
     let keys: Vec<&str> = new.iter().map(|d| d.dedup_key.as_str()).collect();
     assert_eq!(keys, vec!["kB", "k"]);
@@ -370,8 +373,8 @@ async fn merge_deduped_writes_a_url_shared_across_jobs_once() {
         ..Default::default()
     };
     let job = settings(false, 30, None);
-    let one = prepare_new_drafts(&reddit, reddit.fetch().await.unwrap(), &[], &job, 0);
-    let two = prepare_new_drafts(&reddit, reddit.fetch().await.unwrap(), &[], &job, 0);
+    let one = prepare_new_drafts(&reddit, reddit.fetch().await.unwrap(), &[], &job, EPOCH);
+    let two = prepare_new_drafts(&reddit, reddit.fetch().await.unwrap(), &[], &job, EPOCH);
     assert_eq!(one.len(), 1);
     assert_eq!(two.len(), 1);
 
@@ -459,7 +462,7 @@ async fn new_drafts_are_written_oldest_first() {
         source.fetch().await.unwrap(),
         &[],
         &settings(false, 30, None),
-        0,
+        EPOCH,
     );
     let pinboard = FakePinboard::default();
     let _ = write_drafts(&pinboard, &new, false).await;
@@ -482,7 +485,7 @@ async fn a_capped_job_writes_its_newest_drafts_oldest_first() {
         source.fetch().await.unwrap(),
         &[],
         &settings(false, 30, NonZeroUsize::new(2)),
-        0,
+        EPOCH,
     );
     let pinboard = FakePinboard::default();
     let _ = write_drafts(&pinboard, &new, false).await;
@@ -523,7 +526,7 @@ async fn write_after_interrupting(source: &PagedSource, killed_after: usize) -> 
         source.fetch_incremental(&[]).await.unwrap(),
         &[],
         &job,
-        0,
+        EPOCH,
     );
     let _ = write_drafts(&pinboard, &first_run[..killed_after], false).await;
 
@@ -533,7 +536,7 @@ async fn write_after_interrupting(source: &PagedSource, killed_after: usize) -> 
         source.fetch_incremental(&account).await.unwrap(),
         &account,
         &job,
-        0,
+        EPOCH,
     );
     let _ = write_drafts(&pinboard, &second_run, false).await;
 
@@ -588,7 +591,7 @@ async fn jobs_are_written_in_turn_each_oldest_first_and_the_earlier_keeps_a_shar
             source.fetch().await.unwrap(),
             &[],
             &job,
-            0,
+            EPOCH,
         ));
     }
     let pinboard = FakePinboard::default();

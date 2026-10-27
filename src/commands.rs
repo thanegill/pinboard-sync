@@ -331,8 +331,14 @@ fn cleanup_all_target<'a, A: SourceAccount>(
         return Ok(None);
     };
     let pass = format!("`cleanup --all` ({} pass)", A::SOURCE);
-    let dates =
-        resolve_cleanup_dates(&pass, overrides, Some(account), A::defaults(config), config)?;
+    let dates = resolve_cleanup_dates(
+        &pass,
+        A::SOURCE,
+        overrides,
+        Some(account),
+        A::defaults(config),
+        config,
+    )?;
     Ok(Some(CleanupTarget { account, dates }))
 }
 
@@ -353,6 +359,7 @@ async fn run_cleanup_github(
     let account = config::select_account(&config.github, args.account.as_deref())?;
     let dates = resolve_cleanup_dates(
         "`cleanup github`",
+        "github",
         &overrides,
         account,
         &config.defaults.github,
@@ -405,6 +412,7 @@ async fn run_cleanup_reddit(
     let account = config::select_account(&config.reddit, args.account.as_deref())?;
     let dates = resolve_cleanup_dates(
         "`cleanup reddit`",
+        "reddit",
         &args.dates.with_top_level(top_overrides),
         account,
         &config.defaults.reddit,
@@ -464,6 +472,7 @@ async fn run_cleanup_hackernews(
     let account = config::select_account(&config.hackernews, args.account.as_deref())?;
     let dates = resolve_cleanup_dates(
         "`cleanup hackernews`",
+        "hackernews",
         &args.dates.with_top_level(top_overrides),
         account,
         &config.defaults.hackernews,

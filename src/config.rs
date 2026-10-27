@@ -317,28 +317,22 @@ impl Config {
         accounts: &[T],
         defaults: &SourceDefaults,
     ) -> Result<()> {
-        let redates_every_run = |account: Option<&T>| {
+        let check = |account: Option<&T>, scope: String| {
             crate::settings::resolve_dates(
                 &crate::cli::DateFlags::default(),
                 account,
                 defaults,
                 self,
             )
-            .redates_every_run()
+            .check_redating(&format!("config: {scope}"), source)
         };
-        let offender = match accounts {
-            [] => redates_every_run(None).then(|| format!("{source} (implicit CLI/env account)")),
-            _ => accounts
-                .iter()
-                .position(|account| redates_every_run(Some(account)))
-                .map(|index| format!("{source}[{index}]")),
-        };
-        match offender {
-            Some(scope) => Err(crate::settings::redates_every_run_error(&format!(
-                "config: {scope}"
-            ))),
-            None => Ok(()),
+        if accounts.is_empty() {
+            return check(None, format!("{source} (implicit CLI/env account)"));
         }
+        for (index, account) in accounts.iter().enumerate() {
+            check(Some(account), format!("{source}[{index}]"))?;
+        }
+        Ok(())
     }
 }
 

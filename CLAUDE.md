@@ -358,22 +358,24 @@ is often another source's bookmark (an HN story linking it, or one a rename merg
 into), so never widen that.
 
 **`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
-`SyncJob { client: SourceClient, hook, settings }`, `settings` a `sync::JobSettings` holding the
-resolved `limit`, write flags and `DateOpts` — the same value `sync::prepare_new_drafts` reads;
-`SourceClient` is an enum over the
-three clients implementing `Source`, so `build_jobs` + `run_sync_jobs` handle one
-account and `--all` uniformly. Per-account settings
-(`toread`/`public`/`limit`/`use_post_date`/…) resolve CLI flag → account →
+`SyncJob { client: SourceClient, hook, settings }`, `settings` a `sync::JobSettings` holding
+the resolved `limit`, write flags and `DateOpts` — the same value `sync::prepare_new_drafts`
+reads; `SourceClient` is an enum over the three clients implementing `Source`, so
+`build_jobs` + `run_sync_jobs` handle one account and `--all` uniformly. Per-account
+settings (`toread`/`public`/`limit`/`use_post_date`/…) resolve CLI flag → account →
 `[defaults.<source>]` → `[pinboard]` through the generic `resolve_setting` helper and
-`resolve_dates` (into the `DateOpts` sync and every cleanup pass share), reading the shared override fields via the `config::Account` trait. `run_sync_jobs` fetches every job's source
-concurrently via `futures::future::join_all` (reads only, on one task — the client
-futures aren't `Send`, so no `tokio::spawn`), then writes the merged, URL-deduped
-drafts **sequentially** through one rate-limited writer (`sync::write_drafts`).
-Reads parallel, writes serial — `posts/all` is fetched once up front and shared.
-`completions <shell>` and `config example` are utility subcommands the Nix package
-install consumes. `config check <file>` validates a file with `Config::parse`, the same
-parse and validation `--config` gets, and resolves no secret. The flake's module check
-runs it on the rendered TOML.
+`resolve_dates` (into the `DateOpts` sync and every cleanup pass share), reading the shared
+override fields via the `config::Account` trait. Each comes back as a `settings::Resolved`
+that carries the `Tier` it was set at, so a refusal (`ResolvedDates::check_redating`, the
+one rule `config check` and a run share) names where each setting came from, never its
+value. `run_sync_jobs` fetches every job's source concurrently via
+`futures::future::join_all` (reads only, on one task — the client futures aren't `Send`, so
+no `tokio::spawn`), then writes the merged, URL-deduped drafts **sequentially** through one
+rate-limited writer (`sync::write_drafts`). Reads parallel, writes serial — `posts/all` is
+fetched once up front and shared. `completions <shell>` and `config example` are utility
+subcommands the Nix package install consumes. `config check <file>` validates a file with
+`Config::parse`, the same parse and validation `--config` gets, and resolves no secret. The
+flake's module check runs it on the rendered TOML.
 
 **Re-auth vs other errors drive a side effect.** `SourceError::ReauthRequired` (Reddit
 401/403 that isn't the "blocked by network security" page, a Reddit redirect to `/login`,

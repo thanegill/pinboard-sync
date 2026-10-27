@@ -490,23 +490,24 @@ async fn cleanup_error(config_text: &str, argv: &[&str]) -> String {
 
 #[tokio::test]
 async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() {
-    let refused = |pass: &str| {
+    let refused = |pass: &str, cap_from: &str, stale_from: &str| {
         format!(
-            "{pass} with its flags resolves `post_date_max_age_days` to 0 with \
-             `cleanup_stale_to_now` on, so cleanup would re-date its stale bookmarks on \
-             every run; raise the cap or turn `cleanup_stale_to_now` off"
+            "{pass} resolves `post_date_max_age_days` to 0 (from {cap_from}) with \
+             `cleanup_stale_to_now` on (from {stale_from}), so cleanup would re-date its \
+             stale bookmarks on every run; raise the cap or turn `cleanup_stale_to_now` off"
         )
     };
+    let flags = |pass: &str| refused(pass, "`--max-age-days`", "`--stale-to-now`");
     let both = ["--max-age-days", "0", "--stale-to-now"];
     for source in ["github", "reddit", "hackernews"] {
-        let pass = refused(&format!("`cleanup {source}`"));
+        let pass = format!("`cleanup {source}`");
         assert_eq!(
             cleanup_error("", &[&[source][..], &both].concat()).await,
-            pass
+            flags(&pass)
         );
         assert_eq!(
             cleanup_error("", &[&both[..], &[source]].concat()).await,
-            pass
+            flags(&pass)
         );
         assert_eq!(
             cleanup_error(
@@ -514,7 +515,7 @@ async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() 
                 &[source, "--max-age-days", "0"]
             )
             .await,
-            pass
+            refused(&pass, "`--max-age-days`", "`[pinboard]`")
         );
     }
 
@@ -522,7 +523,7 @@ async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() 
                         [[hackernews]]\nusername = \"u\"\n";
     assert_eq!(
         cleanup_error(every_source, &[&["--all"][..], &both].concat()).await,
-        refused("`cleanup --all` (github pass)")
+        flags("`cleanup --all` (github pass)")
     );
     assert_eq!(
         cleanup_error(
@@ -530,7 +531,11 @@ async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() 
             &["--all", "--stale-to-now"]
         )
         .await,
-        refused("`cleanup --all` (reddit pass)")
+        refused(
+            "`cleanup --all` (reddit pass)",
+            "`[defaults.reddit]`",
+            "`--stale-to-now`"
+        )
     );
 
     for argv in [

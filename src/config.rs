@@ -119,9 +119,9 @@ pub struct PinboardConfig {
 /// Built-in default backdate window (days) when no config sets `post_date_max_age_days`.
 pub const DEFAULT_MAX_AGE_DAYS: u64 = 30;
 
-/// How much one `sync` run writes and reads: the `limit` config key at every tier and
-/// the `--limit` flag. Written `auto`, `all`, or a positive number. `0`, which used to
-/// mean "no cap", is rejected rather than quietly mapped to either word.
+/// How much one `sync` run writes and reads: the `limit` config key at every tier and the
+/// `--limit` flag. Written `auto`, `all`, or a positive number. `0` is rejected rather
+/// than quietly mapped to either word.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SyncLimit {
     /// No write cap; a source may stop paging once it reaches items already synced.

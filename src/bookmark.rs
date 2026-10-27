@@ -615,9 +615,8 @@ mod account_view_tests {
 
     #[test]
     fn reinserting_a_removed_url_does_not_duplicate_it() {
-        // `remove` used to leave the order entry behind as a tombstone, so a later
-        // `insert` of the same URL appended a second one and `iter()` yielded the
-        // bookmark twice — which a later pass would then plan twice.
+        // A tombstone left in the order would let a later `insert` of the same URL append a
+        // second entry, and `iter()` would yield it twice for a later pass to plan twice.
         let mut view = AccountView::new(vec![at("https://a/", ""), at("https://b/", "")]);
         view.remove(&Url::parse("https://a/").unwrap());
         view.insert(&at("https://a/", "back"));

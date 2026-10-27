@@ -126,7 +126,7 @@ struct RedditPostMeta {
     created_utc: Option<f64>,
     /// The notes rebuilt from authoritative data — the quoted body wrapped in a
     /// `<blockquote>` (empty when there's nothing to quote). Used to retrofit existing
-    /// bookmarks to the shape `sync` now writes.
+    /// bookmarks to the shape `sync` writes.
     note: String,
     /// The raw `selftext`, i.e. the rebuilt notes before the `<blockquote>` wrapping —
     /// the shape an older sync wrote. Lets the retrofit recognize its own past output.

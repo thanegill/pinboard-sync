@@ -1038,10 +1038,9 @@ mod tests {
 
     #[test]
     fn top_level_dry_run_reaches_single_source_cleanup() {
-        // `--dry-run` placed before the source subcommand must make the pass dry,
-        // even though the per-source args default `dry_run` to false. Regression:
-        // the single-source arms once passed only `args.dry_run`, so a `--dry-run`
-        // before the subcommand silently performed live writes.
+        // `--dry-run` placed before the source subcommand must make the pass dry, even
+        // though the per-source args default `dry_run` to false: honoring only
+        // `args.dry_run` would make a `--dry-run` before the subcommand write for real.
         for name in ["reddit", "github", "hackernews"] {
             let cmd = parse_cleanup(&["--dry-run", name]);
             assert!(cmd.dry_run, "top-level --dry-run parsed for {name}");

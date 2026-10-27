@@ -338,9 +338,8 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // the untouchable check: those plans were already counted as they were held back,
         // and reporting the group again would inflate `refused` past the number of writes
         // actually abandoned. It also keeps `merge_bookmarks` from being handed an empty
-        // slice to index — today the survivor always supplies a first element, but that is
-        // a property of two distant pieces of code agreeing, and this pass has a history of
-        // one of them moving.
+        // slice to index: the survivor always supplies a first element, but only because
+        // two distant pieces of code agree.
         if group.is_empty() {
             continue;
         }
@@ -768,8 +767,7 @@ async fn write_merge<S: BookmarkStore>(
         merged.read_later = survivor.read_later;
         // `None` means the stored date was absent or wouldn't parse, and writing it back
         // omits `dt` entirely — under `replace=yes` Pinboard then re-dates the record to
-        // now. Keep the earliest date the merge found instead of losing the record's age;
-        // before this path such a bookmark was refused, never written.
+        // now. Keep the earliest date the merge found instead of losing the record's age.
         merged.timestamp = survivor.timestamp.or(merged.timestamp);
     }
     let target = &merged.url;

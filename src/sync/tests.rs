@@ -141,10 +141,10 @@ async fn filter_new_skips_present_then_write_adds_the_rest() {
 
 #[tokio::test]
 async fn present_bookmark_with_unparseable_time_still_dedups() {
-    // Regression: a stored bookmark whose Pinboard `time` won't parse must remain in
-    // the dedup set. It reaches this path through `Bookmark::try_from` (timestamp
-    // becomes None), and its draft must count as already-present, not new — otherwise
-    // sync re-adds the URL and clobbers its date/title/tags/notes.
+    // A stored bookmark whose Pinboard `time` won't parse must remain in the dedup set.
+    // It reaches this path through `Bookmark::try_from` (timestamp becomes None), and
+    // its draft must count as already-present, not new — otherwise sync re-adds the URL
+    // and clobbers its date/title/tags/notes.
     let reddit = FakeReddit {
         saved: vec![post("t3_a", "/r/rust/comments/a/x/")],
         ..Default::default()
@@ -335,10 +335,10 @@ async fn prepare_new_drafts_truncates_to_the_per_job_limit() {
 
 #[tokio::test]
 async fn prepare_new_drafts_dedups_within_the_batch_before_applying_the_limit() {
-    // Regression: two drafts sharing a dedup_key must collapse to one BEFORE the
-    // limit truncation, so `limit` counts distinct items. Otherwise the duplicate
-    // consumes a slot and crowds out a genuinely new item (which merge_deduped then
-    // drops when it collapses the pair across jobs).
+    // Two drafts sharing a dedup_key must collapse to one BEFORE the limit truncation,
+    // so `limit` counts distinct items. Otherwise the duplicate consumes a slot and
+    // crowds out a genuinely new item (which merge_deduped then drops when it collapses
+    // the pair across jobs).
     let draft = |url: &str, key: &str| BookmarkDraft {
         bookmark: Bookmark {
             title: "T".into(),
@@ -389,10 +389,10 @@ async fn merge_deduped_writes_a_url_shared_across_jobs_once() {
 
 #[tokio::test]
 async fn merge_deduped_collapses_drafts_sharing_a_dedup_key_with_differing_urls() {
-    // Regression: two fresh drafts in one batch that share a dedup_key but whose URLs
-    // differ byte-for-byte (e.g. two HN favorites of the same article stored as
-    // http vs https) must collapse to one write — matching filter_new's existing-key
-    // check, so a first-time run doesn't create two bookmarks for one item.
+    // Two fresh drafts in one batch that share a dedup_key but whose URLs differ
+    // byte-for-byte (e.g. two HN favorites of the same article stored as http vs https)
+    // must collapse to one write — matching filter_new's existing-key check, so a
+    // first-time run doesn't create two bookmarks for one item.
     let draft = |url: &str, key: &str| BookmarkDraft {
         bookmark: Bookmark {
             title: "T".into(),

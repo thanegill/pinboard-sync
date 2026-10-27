@@ -64,24 +64,24 @@ then per group `refuse_group`, `write_single` or `write_merge`. The merge rules 
 **A failed lookup is not a failed run.** `PassOutcome` counts `plan_failed` (a link we
 couldn't read from the source) separately from `write_failed` (Pinboard refusing us, on
 either `apply_update` or `apply_merge`), and `PassOutcome::into_result` — the single place
-the exit code is decided — fails only on the latter, plus a dead credential and lookups
-failing in the **majority** (`plan_failed > reached.max(1)` — one failed lookup is always
-survivable, which matters for a pass whose steady-state population is one or two, like the
-discussion-link pass that strips its own marker tag). The majority test rather than "all
-of them" because a `plan` failure can no longer be one dead link: every permanent per-item
-condition now reaches the driver as a `Plan` (a deleted or blocked repo is a
-`Plan::Bookmark` keeping its canonical URL; a URL the pass doesn't handle is
-`Plan::Skipped`), leaving `plan_failed` to mean rate limits, post-retry 5xx, and network
-trouble. A handful of those is a blip worth riding out; most of them failing means most of
-the work silently did not happen. This is deliberate: `cleanup`
-runs as a scheduled service, and a permanently dead URL must not wedge it into a failed
-state forever. `SourceError::ReauthRequired`, `SourceError::RateLimited` and
+the exit code is decided — fails only on the latter, plus a halt (a dead credential, an
+exhausted quota or an edge block) and lookups failing in the **majority**
+(`plan_failed > reached.max(1)` — one failed lookup is always survivable, which matters for
+a pass whose steady-state population is one or two, like the discussion-link pass that
+strips its own marker tag). The majority test rather than "all of them" because a `plan`
+failure is never one dead link: every permanent per-item condition reaches the driver as a
+`Plan` (a deleted or blocked repo is a `Plan::Bookmark` keeping its canonical URL; a URL the
+pass doesn't handle is `Plan::Skipped`), leaving `plan_failed` to mean post-retry 5xx,
+network trouble and unlabelled throttling. A handful of those is a blip worth riding out;
+most of them failing means most of the work silently did not happen. This is deliberate:
+`cleanup` runs as a scheduled service, and a permanently dead URL must not wedge it into a
+failed state forever. `SourceError::ReauthRequired`, `SourceError::RateLimited` and
 `SourceError::Blocked` stop the pass (a dead credential, an exhausted quota and an edge
 block all fail every remaining lookup too) but the plans already made are still written —
 which is why `plan` returns `SourceError` rather than a flattened `anyhow::Error`.
 `PassOutcome::halted` records *which* it was as a `Halt`, and `into_result` maps each back
-to its own `SourceError` so `main` fires the auth-failure hook for `Halt::Reauth` only —
-no credential change clears a rate limit or an edge block.
+to its own `SourceError` so `main` fires the auth-failure hook for `Halt::Reauth` only — no
+credential change clears a rate limit or an edge block.
 
 **The run has one live view of the account, not a snapshot.** `posts/all` is read once into
 an `AccountView` ([`src/bookmark.rs`](src/bookmark.rs)), and `CleanupStore` wraps the real
@@ -221,19 +221,19 @@ the next run's incremental read sees them and pages down to the written ones. Wr
 first, page 1 would be fully on Pinboard and the next run would stop there for good. A
 failed write still doesn't stop the batch, so a failed write is stranded once a full page of
 newer items after it succeeds (a page holding it still reads as not caught up, so it is
-retried). There is no `0`: it used to mean "no cap", and since that now splits into `auto`
-and `all` it is rejected rather than guessed. A bad value's error names the field, never the
-value. `backup`, `doctor` and `cleanup github`'s `use_post_date` star dates call `fetch()`,
-so they keep the full traversal. To add a source, implement `Source`, add its account array
-to `config.rs`, and implement [`src/jobs.rs`](src/jobs.rs)'s `SourceAccount` for the account
-type: its `SOURCE` name (the job labels, backup file stems and `doctor` lines), where its
-accounts and `[defaults.<source>]` live, how its client is built, and its auth-failure hook.
-`sync`, `backup` and `doctor` reach every source through that one trait (`build_job::<A>`
-and friends); only the `SourceClient` enum and the call lists name them. The clients also
-sit behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a `&Bookmark`) so
-the loops are unit-tested with in-memory fakes
-([`src/test_support.rs`](src/test_support.rs)); real clients are covered by `net_tests`
-against a wiremock server via test-only `with_base_url(s)` constructors.
+retried). There is no `0`: "no cap" is either `auto` or `all`, so `0` is rejected rather
+than guessed. A bad value's error names the field, never the value. `backup`, `doctor` and
+`cleanup github`'s `use_post_date` star dates call `fetch()`, so they keep the full
+traversal. To add a source, implement `Source`, add its account array to `config.rs`, and
+implement [`src/jobs.rs`](src/jobs.rs)'s `SourceAccount` for the account type: its `SOURCE`
+name (the job labels, backup file stems and `doctor` lines), where its accounts and
+`[defaults.<source>]` live, how its client is built, and its auth-failure hook. `sync`,
+`backup` and `doctor` reach every source through that one trait (`build_job::<A>` and
+friends); only the `SourceClient` enum and the call lists name them. The clients also sit
+behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a `&Bookmark`) so the
+loops are unit-tested with in-memory fakes ([`src/test_support.rs`](src/test_support.rs));
+real clients are covered by `net_tests` against a wiremock server via test-only
+`with_base_url(s)` constructors.
 
 **Sources:** Reddit ([`reddit.rs`](src/reddit.rs) — cookie-authenticated
 `saved.json`/`api/info.json`, plus the `PostInfo` port for cleanup), GitHub
@@ -374,96 +374,92 @@ install consumes. `config check <file>` validates a file with `Config::parse`, t
 parse and validation `--config` gets, and resolves no secret. The flake's module check
 runs it on the rendered TOML.
 
-**Re-auth vs other errors drive a side effect.** `SourceError::ReauthRequired`
-(Reddit 401/403 that isn't the "blocked by network security" page, a Reddit redirect to
-`/login`, GitHub 401) fires the
-`--on-auth-failure` hook and exits non-zero; `SourceError::Other` (transient/parse)
-doesn't. HackerNews is public
-and never re-auths. **`cleanup` fires it too, not just `sync`** — which is why the three
-`cleanup` entry points return `Result<(), SourceError>` rather than `anyhow::Result`:
-flattening the variant at that boundary is exactly what used to lose the hook. Every
-re-auth-capable read in `cleanup` is covered, not only the pass — GitHub's `repo()`
-mid-pass (via `Halt`), GitHub's `fetch()` for `use_post_date` star dates, and Reddit's
-`/api/info`, whose expired cookie is by far the most common in practice. [`src/hook.rs`](src/hook.rs)'s
-`handle_source_err` is the single place the hook is fired, shared with `sync`; `cleanup`
-resolves the command through `PINBOARD_SYNC_ON_AUTH_FAILURE` → account →
-`[defaults.<source>]` → `[hooks]` (no `--on-auth-failure` flag on `cleanup`, unlike
-`sync`, whose per-source flag is itself env-backed). **Reading that env var is
-load-bearing**: [`nix/module.nix`](nix/module.nix) exports `onAuthFailure` only into the
-unit environment — it never reaches the generated TOML — and runs the `cleanup --all`
-timer with it, so resolving from config alone would leave the hook dead for the
-deployment it exists to serve. Every client sends through its `http::RetryingClient`
-([`src/http.rs`](src/http.rs)) — the `reqwest::Client` plus its `max_attempts`, base
-delay and `ConnectBudget`, fixed where the client is built — and its `send`/`send_with`
-are the one retrying send. That backs off on network errors / 429 / 5xx but returns other
-statuses as-is. It builds the request once and hands it to tower's
+**Re-auth vs other errors drive a side effect.** `SourceError::ReauthRequired` (Reddit
+401/403 that isn't the "blocked by network security" page, a Reddit redirect to `/login`,
+GitHub 401) fires the `--on-auth-failure` hook and exits non-zero; `SourceError::Other`
+(transient/parse) doesn't. HackerNews is public and never re-auths. **`cleanup` fires it
+too, not just `sync`** — which is why the three `cleanup` entry points return
+`Result<(), SourceError>` rather than `anyhow::Result`: flattening the variant at that
+boundary would lose the hook. Every re-auth-capable read in `cleanup` is covered, not only
+the pass — GitHub's `repo()` mid-pass (via `Halt`), GitHub's `fetch()` for `use_post_date`
+star dates, and Reddit's `/api/info`, whose expired cookie is by far the most common in
+practice. [`src/hook.rs`](src/hook.rs)'s `handle_source_err` is the single place the hook is
+fired, shared with `sync`; `cleanup` resolves the command through
+`PINBOARD_SYNC_ON_AUTH_FAILURE` → account → `[defaults.<source>]` → `[hooks]` (no
+`--on-auth-failure` flag on `cleanup`, unlike `sync`, whose per-source flag is itself
+env-backed). **Reading that env var is load-bearing**: [`nix/module.nix`](nix/module.nix)
+exports `onAuthFailure` only into the unit environment — it never reaches the generated TOML
+— and runs the `cleanup --all` timer with it, so resolving from config alone would leave the
+hook dead for the deployment it exists to serve. Every client sends through its
+`http::RetryingClient` ([`src/http.rs`](src/http.rs)) — the `reqwest::Client` plus its
+`max_attempts`, base delay and `ConnectBudget`, fixed where the client is built — and its
+`send`/`send_with` are the one retrying send. That backs off on network errors / 429 / 5xx
+but returns other statuses as-is. It builds the request once and hands it to tower's
 `retry::Retry` over the request's `reqwest::Client`; every decision lives in
-`http::RetryPolicy`, whose waits go through `http::sleep`, and its unit tests drive the
-same policy over a `tower::service_fn` mock of canned outcomes. reqwest's `read_timeout`
-(`READ_TIMEOUT`, 60s) times out both the wait for response headers, counted from the
-send so it must stay above `CONNECT_TIMEOUT` (a const assert holds it there), and any gap
-between body chunks. A header timeout is a plain transport error and takes the linear
-retries. A body stall happens after `send` has returned, so it is not retried
-and fails the caller's read. There is deliberately no overall `timeout`, which would cap
-a slow but steady `posts/all`. Which responses retry, and how, is a classifier returning
-an `http::Verdict` (`Done`, `Backoff`, `RetryOnceAfter(wait)`): `send` uses
-`backoff_if_transient`, and `send_with` takes any other. The one other today is
-the HackerNews favorites pages' `retry_after_up_to(FAVORITES_MAX_RETRY_AFTER)`, which
-shares the 5xx rule: four quick retries of a 429 there only prolong HN's block, so a 429
-is retried at most once, and only after a
-`Retry-After` (delta-seconds or HTTP-date) of at most `FAVORITES_MAX_RETRY_AFTER`
-(120s). Any other 429 comes back as the response and becomes `SourceError::RateLimited`.
-The one wait is per page request, so a run that keeps drawing short `Retry-After`s can
-wait on each page. Their 5xx/transport/connect retries are unchanged, and Algolia and the
-other clients keep backing off on 429. A request that could not establish a connection
+`http::RetryPolicy`, whose waits go through `http::sleep`, and its unit tests drive the same
+policy over a `tower::service_fn` mock of canned outcomes. reqwest's `read_timeout`
+(`READ_TIMEOUT`, 60s) times out both the wait for response headers, counted from the send so
+it must stay above `CONNECT_TIMEOUT` (a const assert holds it there), and any gap between
+body chunks. A header timeout is a plain transport error and takes the linear retries. A
+body stall happens after `send` has returned, so it is not retried and fails the caller's
+read. There is deliberately no overall `timeout`, which would cap a slow but steady
+`posts/all`. Which responses retry, and how, is a classifier returning an `http::Verdict`
+(`Done`, `Backoff`, `RetryOnceAfter(wait)`): `send` uses `backoff_if_transient`, and
+`send_with` takes any other. The one other today is the HackerNews favorites pages'
+`retry_after_up_to(FAVORITES_MAX_RETRY_AFTER)`, which shares the 5xx rule: four quick
+retries of a 429 there only prolong HN's block, so a 429 is retried at most once, and only
+after a `Retry-After` (delta-seconds or HTTP-date) of at most `FAVORITES_MAX_RETRY_AFTER`
+(120s). Any other 429 comes back as the response and becomes `SourceError::RateLimited`. The
+one wait is per page request, so a run that keeps drawing short `Retry-After`s can wait on
+each page. Their 5xx/transport/connect retries are unchanged, and Algolia and the other
+clients keep backing off on 429. A request that could not establish a connection
 (`is_connect`: any connector failure, so DNS, TCP connect, or the TLS handshake) gets its
-own exponential `CONNECT_BACKOFF` (5s … 80s, ~2.5 minutes in all), on top of and
-separate from the caller's linear `max_attempts` budget, so a resolver restart during a
-NixOS switch doesn't fail a timer-started run; tests inject a zero schedule through
+own exponential `CONNECT_BACKOFF` (5s … 80s, ~2.5 minutes in all), on top of and separate
+from the caller's linear `max_attempts` budget, so a resolver restart during a NixOS switch
+doesn't fail a timer-started run; tests inject a zero schedule through
 `send_with_connect_backoff`. That long wait is **once per host per client**: each client's
-`RetryingClient` owns a `ConnectBudget`, keyed by the request URL's host and port (HackerNews reaches both
-its site and Algolia), whose entry is spent when one request waits out the whole
-schedule and still can't connect. After that the host's connect errors take the linear
-policy. A request whose last *linear* attempt still got no response, whether it could not
-connect or connected but saw no headers within `READ_TIMEOUT` (`http::Reach`), **gives
-the host up** if no attempt to the host has had a response for at least the whole
+`RetryingClient` owns a `ConnectBudget`, keyed by the request URL's host and port
+(HackerNews reaches both its site and Algolia), whose entry is spent when one request waits
+out the whole schedule and still can't connect. After that the host's connect errors take
+the linear policy. A request whose last *linear* attempt still got no response, whether it
+could not connect or connected but saw no headers within `READ_TIMEOUT` (`http::Reach`),
+**gives the host up** if no attempt to the host has had a response for at least the whole
 schedule (`failing_since`, an `Outage` that starts with the first unanswered attempt, is
-timed on the monotonic clock, and is reset by any response, 5xx and 429 included, or by
-any other kind of failure; idle time between requests counts). Connect failures and
-header timeouts share that one run, so alternating them can't reset it. An unanswered
-HTTP/2 ping is `is_timeout` too, so it counts the same; an h2 reset or killed connection
-does not. An outage that runs on past the long wait is given up by the next request, a
-server that accepts connections but never answers by the first request whose read
-timeouts outlast the schedule, and a fresh outage after the host has answered again must
-last the schedule's length, so a brief resolver restart can't end the run. A body that
-stalls after `send` returned does not count: the host answered. `RetryPolicy` stamps each attempt's start
+timed on the monotonic clock, and is reset by any response, 5xx and 429 included, or by any
+other kind of failure; idle time between requests counts). Connect failures and header
+timeouts share that one run, so alternating them can't reset it. An unanswered HTTP/2 ping
+is `is_timeout` too, so it counts the same; an h2 reset or killed connection does not. An
+outage that runs on past the long wait is given up by the next request, a server that
+accepts connections but never answers by the first request whose read timeouts outlast the
+schedule, and a fresh outage after the host has answered again must last the schedule's
+length, so a brief resolver restart can't end the run. A body that stalls after `send`
+returned does not count: the host answered. `RetryPolicy` stamps each attempt's start
 (`attempt_started`, set when a retry's wait ends), and `retry` checks the give-up before
-handing the request to tower, so a given-up host sees no attempt. Every later request to
-a given-up host fails at once as "`<label>` not sent: giving up: `<host>` unreachable
-since `<outage start>`". Without that, an outage that starts mid-run costs 2 to 3
-minutes per remaining item (4 or 5 linear attempts × the 30s connect timeout), or 4 to
-5.5 for a silent server, hours for a `cleanup` over hundreds of bookmarks. The give-up is
-a plain `SourceError::Other`, deliberately not a `Halt`: in `cleanup` each remaining
-lookup lands in `plan_failed` at no cost and the majority rule decides the run, exactly
-as it would for the same failures arriving slowly; it never fires the auth-failure hook.
-Nothing un-gives-up a host within a run. `send` strips the request URL from
-every client's transport error before wrapping it, because Pinboard's `auth_token` rides
-in the query string and `reqwest::Error` prints the URL in `Display` and `Debug`. Never
-put a request URL with a query into a message: Pinboard errors name the endpoint (no
-query) instead. An error quotes a response body only through
-`http::error_with_body`, which puts a one-line excerpt of at most 300 bytes in the error
-and logs the whole body at debug level (`-v`, or `RUST_LOG=pinboard_sync=debug`), in any
-build, escaped as one string literal so a hostile body can't forge log lines. Tests read
-the log through `test_support::capturing_logs`. Every caller passes its client's secrets
-(the GitHub token; the Reddit `Cookie` header and its session value; none for Algolia),
-and `http::redact` replaces them in the whole body before either the log line or the
-excerpt is made, so the cut can't leave part of one behind. Pinboard's echo can take more
-forms, so any text from a Pinboard response that goes into an error (a non-success body
-via `PinboardClient::status_error`, or a `result_code`) goes through `redacted_error`,
-which redacts the token, its secret part (which also covers it percent-encoded) and any
-`auth_token=` value from the whole text first. A body worth seeing under `-v` that no
-error quotes (Reddit's unrecognised 401/403 page) goes through `http::log_body_at_debug`,
-the same escaped line, under the same redaction rule.
+handing the request to tower, so a given-up host sees no attempt. Every later request to a
+given-up host fails at once as "`<label>` not sent: giving up: `<host>` unreachable since
+`<outage start>`". Without that, an outage that starts mid-run costs 2 to 3 minutes per
+remaining item (4 or 5 linear attempts × the 30s connect timeout), or 4 to 5.5 for a silent
+server, hours for a `cleanup` over hundreds of bookmarks. The give-up is a plain
+`SourceError::Other`, deliberately not a `Halt`: in `cleanup` each remaining lookup lands in
+`plan_failed` at no cost and the majority rule decides the run, exactly as it would for the
+same failures arriving slowly; it never fires the auth-failure hook. Nothing un-gives-up a
+host within a run. `send` strips the request URL from every client's transport error before
+wrapping it, because Pinboard's `auth_token` rides in the query string and `reqwest::Error`
+prints the URL in `Display` and `Debug`. Never put a request URL with a query into a
+message: Pinboard errors name the endpoint (no query) instead. An error quotes a response
+body only through `http::error_with_body`, which puts a one-line excerpt of at most 300
+bytes in the error and logs the whole body at debug level (`-v`, or
+`RUST_LOG=pinboard_sync=debug`), in any build, escaped as one string literal so a hostile
+body can't forge log lines. Tests read the log through `test_support::capturing_logs`. Every
+caller passes its client's secrets (the GitHub token; the Reddit `Cookie` header and its
+session value; none for Algolia), and `http::redact` replaces them in the whole body before
+either the log line or the excerpt is made, so the cut can't leave part of one behind.
+Pinboard's echo can take more forms, so any text from a Pinboard response that goes into an
+error (a non-success body via `PinboardClient::status_error`, or a `result_code`) goes
+through `redacted_error`, which redacts the token, its secret part (which also covers it
+percent-encoded) and any `auth_token=` value from the whole text first. A body worth seeing
+under `-v` that no error quotes (Reddit's unrecognised 401/403 page) goes through
+`http::log_body_at_debug`, the same escaped line, under the same redaction rule.
 
 **`SourceError::RateLimited` is the third case, and deliberately not either of those.**
 GitHub answers both its primary and secondary rate limits with a **403 or 429** — the

@@ -501,7 +501,7 @@ fn accepts_any_host_cleanup_can_set_and_reddit_key_matches() {
         )
         .unwrap_or_else(|| panic!("{domain}: cleanup could not set the host"));
         assert_eq!(
-            crate::reddit::model::reddit_key(&moved, domain).as_deref(),
+            crate::keys::reddit_key(&moved, domain).as_deref(),
             Some("/r/rust/comments/abc/x"),
             "{domain}"
         );

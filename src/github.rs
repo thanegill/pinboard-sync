@@ -14,12 +14,12 @@ use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::{client_builder, RetryingClient, USER_AGENT};
+use crate::keys::github_key;
 use crate::secrets::ConfiguredSecret;
 use crate::source::{
     deserialize_lenient, page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey,
 };
 use crate::tags::{push_prefixed, push_tags};
-use crate::urls::github_key;
 use url::Url;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";

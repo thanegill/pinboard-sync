@@ -207,35 +207,35 @@ drafts, and `sync::prepare_new_drafts`, bounded by `UrlKey` alone since that is 
 builds the set of existing keys by mapping the account's bookmarks through
 `source.dedup_key` (`UrlKey::synced_keys`) and keeps the drafts whose `dedup_key` isn't
 present. **A key must survive cleanup's canonicalization**, or sync re-adds what cleanup
-moved: HN keys a Reddit or GitHub article with `reddit_key` / `urls::github_key`
-(`hackernews_key`), so a change to either, or to what `cleanup reddit` / `cleanup github`
-rewrite a URL to, has to keep HN converging. `sync` fetches through `SyncJob::fetch`, which
-picks the traversal from the job's `config::SyncLimit` (`limit` / `--limit`, parsed by one
-`FromStr` + `Deserialize` pair): `auto`, the default, calls
-`Source::fetch_incremental(existing)`, which defaults to the full fetch and which a source
-may override to stop paging once it reaches items already on Pinboard (all three do, through
-one rule, `source::page_is_caught_up`); `all` and a cap `N` call the full `fetch()`. A
-capped run writes only the newest drafts, so an incremental read would never reach the rest
-again. **`prepare_new_drafts` returns each job's drafts oldest first** (after the cap picks
-the newest N), the reverse of the newest-first read, and that is what keeps an interrupted
-`auto` run recoverable: the unwritten remainder is the newest items, on the first pages, so
-the next run's incremental read sees them and pages down to the written ones. Written newest
-first, page 1 would be fully on Pinboard and the next run would stop there for good. A
-failed write still doesn't stop the batch, so a failed write is stranded once a full page of
-newer items after it succeeds (a page holding it still reads as not caught up, so it is
-retried). There is no `0`: "no cap" is either `auto` or `all`, so `0` is rejected rather
-than guessed. A bad value's error names the field, never the value. `backup`, `doctor` and
-`cleanup github`'s `use_post_date` star dates call `fetch()`, so they keep the full
-traversal. To add a source, implement `Source`, add its account array to `config.rs`, and
-implement [`src/jobs.rs`](src/jobs.rs)'s `SourceAccount` for the account type: its `SOURCE`
-name (the job labels, backup file stems and `doctor` lines), where its accounts and
-`[defaults.<source>]` live, how its client is built, and its auth-failure hook. `sync`,
-`backup` and `doctor` reach every source through that one trait (`build_job::<A>` and
-friends); only the `SourceClient` enum and the call lists name them. The clients also sit
-behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a `&Bookmark`) so the
-loops are unit-tested with in-memory fakes ([`src/test_support.rs`](src/test_support.rs));
-real clients are covered by `net_tests` against a wiremock server via test-only
-`with_base_url(s)` constructors.
+moved: HN keys a Reddit or GitHub article with `reddit_key` / `github_key`
+(`hackernews_key`, all three in [`src/keys.rs`](src/keys.rs)), so a change to either, or to
+what `cleanup reddit` / `cleanup github` rewrite a URL to, has to keep HN converging. `sync`
+fetches through `SyncJob::fetch`, which picks the traversal from the job's
+`config::SyncLimit` (`limit` / `--limit`, parsed by one `FromStr` + `Deserialize` pair):
+`auto`, the default, calls `Source::fetch_incremental(existing)`, which defaults to the full
+fetch and which a source may override to stop paging once it reaches items already on
+Pinboard (all three do, through one rule, `source::page_is_caught_up`); `all` and a cap `N`
+call the full `fetch()`. A capped run writes only the newest drafts, so an incremental read
+would never reach the rest again. **`prepare_new_drafts` returns each job's drafts oldest
+first** (after the cap picks the newest N), the reverse of the newest-first read, and that
+is what keeps an interrupted `auto` run recoverable: the unwritten remainder is the newest
+items, on the first pages, so the next run's incremental read sees them and pages down to
+the written ones. Written newest first, page 1 would be fully on Pinboard and the next run
+would stop there for good. A failed write still doesn't stop the batch, so a failed write is
+stranded once a full page of newer items after it succeeds (a page holding it still reads as
+not caught up, so it is retried). There is no `0`: "no cap" is either `auto` or `all`, so
+`0` is rejected rather than guessed. A bad value's error names the field, never the value.
+`backup`, `doctor` and `cleanup github`'s `use_post_date` star dates call `fetch()`, so they
+keep the full traversal. To add a source, implement `Source`, add its account array to
+`config.rs`, and implement [`src/jobs.rs`](src/jobs.rs)'s `SourceAccount` for the account
+type: its `SOURCE` name (the job labels, backup file stems and `doctor` lines), where its
+accounts and `[defaults.<source>]` live, how its client is built, and its auth-failure hook.
+`sync`, `backup` and `doctor` reach every source through that one trait (`build_job::<A>`
+and friends); only the `SourceClient` enum and the call lists name them. The clients also
+sit behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a `&Bookmark`) so
+the loops are unit-tested with in-memory fakes
+([`src/test_support.rs`](src/test_support.rs)); real clients are covered by `net_tests`
+against a wiremock server via test-only `with_base_url(s)` constructors.
 
 **Sources:** Reddit ([`reddit.rs`](src/reddit.rs) — cookie-authenticated
 `saved.json`/`api/info.json`, plus the `PostInfo` port for cleanup), GitHub

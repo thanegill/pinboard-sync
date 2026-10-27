@@ -22,8 +22,9 @@ use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::config::own_then_configured;
 use crate::http::{client_builder, RetryingClient, USER_AGENT};
+use crate::keys::reddit_key;
 use crate::reddit::cookie::{refused_cookie_advice, SessionCookie};
-use crate::reddit::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
+use crate::reddit::model::{RedditConfig, RedditListing, RedditListingEntry};
 use crate::secrets::ConfiguredSecret;
 use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey};
 

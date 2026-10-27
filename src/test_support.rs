@@ -14,7 +14,8 @@ use tempfile::TempDir;
 use url::Url;
 
 use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore};
-use crate::reddit::model::{reddit_key, RedditConfig, RedditListingEntry};
+use crate::keys::reddit_key;
+use crate::reddit::model::{RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 use crate::timefmt::DateOpts;

@@ -19,10 +19,9 @@ use crate::backup::{BackupDump, BackupSource, RawSink};
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::{client_builder, RetryingClient};
-use crate::reddit::model::{is_reddit_host, over18_dest, reddit_key};
+use crate::keys::hackernews_key;
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 use crate::tags::{push_prefixed, push_tag, push_tags};
-use crate::urls::{github_key, url_key};
 use favorites::FAVORITES_PAGE_PAUSE;
 use url::Url;
 
@@ -328,35 +327,6 @@ impl UrlKey for HackerNewsClient {
     }
 }
 
-/// The key a draft and a stored bookmark at `url` share. An HN item permalink keys on its
-/// id (`hn:<id>`), even as a story's article URL (a meta post), since a host+path key
-/// drops the id query. An article on Reddit (a reddit.com host, or one of
-/// `reddit_domains`, the configured accounts' `reddit_domain`s) or GitHub keys as that
-/// source does, so it still matches once `cleanup reddit` or `cleanup github` has moved it
-/// to its canonical URL. Any other article falls back to the host+path key.
-///
-/// Reddit's `over18` interstitial keys as its `dest`, which `cleanup reddit` unwraps it
-/// to, and the bare Reddit root, which `reddit_key` leaves unkeyed, keys as `/`, the path
-/// cleanup keeps when it moves it onto the account's domain.
-fn hackernews_key(url: &Url, reddit_domains: &[String]) -> Option<String> {
-    if let Some(dest) = over18_dest(url) {
-        return hackernews_key(&dest, reddit_domains);
-    }
-    HackerNewsItemId::try_from(url)
-        .ok()
-        .map(|id| id.dedup_key())
-        .or_else(|| {
-            let domain = reddit_domains
-                .iter()
-                .map(String::as_str)
-                .chain(["reddit.com"])
-                .find(|domain| is_reddit_host(url, domain))?;
-            Some(reddit_key(url, domain).unwrap_or_else(|| "/".to_string()))
-        })
-        .or_else(|| github_key(url))
-        .or_else(|| url_key(url))
-}
-
 /// A HackerNews item id — the `<n>` in a `news.ycombinator.com/item?id=<n>` URL. Held
 /// as a string (the favorites page scrapes it as text and Algolia's `objectID` filter
 /// takes it as text); built from a numeric id, a scraped string, or parsed out of a URL
@@ -373,7 +343,7 @@ impl std::fmt::Display for HackerNewsItemId {
 impl HackerNewsItemId {
     /// The key `sync` dedups a favorited HN item on: `hn:<id>`, matching however the
     /// bookmark is stored.
-    fn dedup_key(&self) -> String {
+    pub(crate) fn dedup_key(&self) -> String {
         format!("hn:{self}")
     }
 }

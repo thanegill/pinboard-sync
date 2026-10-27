@@ -9,8 +9,8 @@ use url::Url;
 
 use super::{HackerNewsClient, HackerNewsItem, HackerNewsItemId, HackerNewsItemKind};
 use crate::backup::{RawKind, RawSink};
+use crate::keys::url_key;
 use crate::source::SourceError;
-use crate::urls::url_key;
 
 /// Item IDs per Algolia `objectID:… OR …` query. The API rejects very long filter
 /// strings (~200+ clauses), so stay well under that.

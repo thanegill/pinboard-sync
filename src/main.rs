@@ -14,6 +14,7 @@ mod hook;
 mod htmltext;
 mod http;
 mod jobs;
+mod keys;
 mod pinboard;
 mod reddit;
 mod secrets;

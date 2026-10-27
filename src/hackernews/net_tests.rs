@@ -137,7 +137,7 @@ async fn fetch_succeeds_on_genuinely_empty_favorites() {
     assert!(drafts.is_empty());
 }
 
-fn favorites_client(hn: &MockServer) -> HackerNewsClient {
+fn hackernews_client(hn: &MockServer) -> HackerNewsClient {
     HackerNewsClient::with_base_urls(
         "psophis".into(),
         HackerNewsConfig::default(),
@@ -310,7 +310,7 @@ async fn a_favorites_429_without_retry_after_is_not_retried() {
         .mount(&hn)
         .await;
 
-    let err = favorites_client(&hn).fetch().await.unwrap_err();
+    let err = hackernews_client(&hn).fetch().await.unwrap_err();
 
     let SourceError::RateLimited(message) = err else {
         panic!("expected RateLimited, got {err:?}");
@@ -329,7 +329,7 @@ async fn a_favorites_429_with_a_long_retry_after_is_not_retried() {
         .mount(&hn)
         .await;
 
-    let err = favorites_client(&hn).fetch().await.unwrap_err();
+    let err = hackernews_client(&hn).fetch().await.unwrap_err();
 
     let SourceError::RateLimited(message) = err else {
         panic!("expected RateLimited, got {err:?}");
@@ -357,7 +357,7 @@ async fn a_favorites_429_with_a_short_retry_after_is_retried_once() {
         .mount(&hn)
         .await;
 
-    let (drafts, waits) = crate::http::recording_waits(favorites_client(&hn).fetch()).await;
+    let (drafts, waits) = crate::http::recording_waits(hackernews_client(&hn).fetch()).await;
 
     assert!(drafts.unwrap().is_empty());
     assert_eq!(
@@ -378,7 +378,7 @@ async fn a_second_favorites_429_stops_the_fetch() {
         .mount(&hn)
         .await;
 
-    let (result, waits) = crate::http::recording_waits(favorites_client(&hn).fetch()).await;
+    let (result, waits) = crate::http::recording_waits(hackernews_client(&hn).fetch()).await;
 
     let err = result.unwrap_err();
     assert!(matches!(err, SourceError::RateLimited(_)), "got {err:?}");

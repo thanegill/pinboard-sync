@@ -508,7 +508,11 @@ const TEST_COOKIE_SOURCE: &str = "$REDDIT_COOKIE_FILE";
 #[cfg(test)]
 impl RedditClient {
     /// Test constructor pointing both endpoints at a mock server.
-    pub(crate) fn for_test(cookie: Option<String>, username: Option<String>, base: String) -> Self {
+    pub(crate) fn with_base_url(
+        cookie: Option<String>,
+        username: Option<String>,
+        base: String,
+    ) -> Self {
         let cookie = cookie.map(|value| ConfiguredSecret {
             value,
             source: TEST_COOKIE_SOURCE,

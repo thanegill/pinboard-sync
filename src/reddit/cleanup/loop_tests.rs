@@ -600,7 +600,7 @@ async fn bookmarks_moved_to_a_mirror_domain_still_dedup_for_sync() {
         "https://redlib.example.org/r/rust/comments/a/x/"
     );
 
-    let mut client = crate::reddit::RedditClient::for_test(None, None, "http://unused".into());
+    let mut client = crate::reddit::RedditClient::with_base_url(None, None, "http://unused".into());
     client.config = mirror;
     let saved = listing_entry(
         "t3",

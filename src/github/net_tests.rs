@@ -499,7 +499,7 @@ async fn three_star_pages(server: &MockServer, hits: [u64; 3]) {
     }
 }
 
-fn star_client(server: &MockServer) -> GitHubClient {
+fn github_client(server: &MockServer) -> GitHubClient {
     GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri())
 }
 
@@ -513,7 +513,7 @@ async fn incremental_fetch_stops_at_the_first_page_with_nothing_new() {
     three_star_pages(&server, [1, 1, 0]).await;
 
     let existing = [crate::test_support::stored_at("https://github.com/s/o")];
-    let drafts = star_client(&server)
+    let drafts = github_client(&server)
         .fetch_incremental(&existing)
         .await
         .unwrap();
@@ -525,7 +525,7 @@ async fn incremental_fetch_reads_on_while_every_page_has_something_new() {
     let server = MockServer::start().await;
     three_star_pages(&server, [1, 1, 1]).await;
 
-    let drafts = star_client(&server).fetch_incremental(&[]).await.unwrap();
+    let drafts = github_client(&server).fetch_incremental(&[]).await.unwrap();
     assert_eq!(titles(&drafts), ["s/n", "s/o", "s/p"]);
 }
 
@@ -534,7 +534,7 @@ async fn dump_reads_every_star_page() {
     let server = MockServer::start().await;
     three_star_pages(&server, [1, 1, 1]).await;
 
-    let dump = star_client(&server).dump().await.unwrap();
+    let dump = github_client(&server).dump().await.unwrap();
     assert_eq!(dump.raw.len(), 3);
 }
 
@@ -561,7 +561,7 @@ async fn cleanup_with_post_dates_reads_every_star_page() {
 
     cleanup::run(
         &pinboard.cleanup_store(false),
-        &star_client(&server),
+        &github_client(&server),
         DateOpts {
             use_post_date: true,
             max_age_days: 30,

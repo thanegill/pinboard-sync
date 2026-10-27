@@ -938,7 +938,11 @@ mod net_tests {
         assert_second_page_reads(
             mount,
             |server| {
-                SourceClient::Reddit(RedditClient::for_test(None, Some("u".into()), server.uri()))
+                SourceClient::Reddit(RedditClient::with_base_url(
+                    None,
+                    Some("u".into()),
+                    server.uri(),
+                ))
             },
             |request| request.url.query_pairs().any(|(key, _)| key == "after"),
             &[crate::test_support::stored_at(

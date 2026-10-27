@@ -271,11 +271,11 @@ impl Config {
         }
         const NAME_OR_USERNAME: &str = "`name` (or, with no `name`, `username`)";
         check_unique_names("reddit", &self.reddit)?;
-        check_one_unnamed("reddit", &self.reddit, NAME_OR_USERNAME)?;
+        check_distinct_slugs("reddit", &self.reddit, NAME_OR_USERNAME)?;
         check_unique_names("github", &self.github)?;
-        check_one_unnamed("github", &self.github, "`name`")?;
+        check_distinct_slugs("github", &self.github, "`name`")?;
         check_unique_names("hackernews", &self.hackernews)?;
-        check_one_unnamed("hackernews", &self.hackernews, NAME_OR_USERNAME)?;
+        check_distinct_slugs("hackernews", &self.hackernews, NAME_OR_USERNAME)?;
         self.check_stale_to_now_cap("reddit", &self.reddit, &self.defaults.reddit)?;
         self.check_stale_to_now_cap("github", &self.github, &self.defaults.github)?;
         self.check_stale_to_now_cap("hackernews", &self.hackernews, &self.defaults.hackernews)?;
@@ -417,22 +417,32 @@ fn check_tags(field: &str, values: &Option<Vec<String>>) -> Result<()> {
     Ok(())
 }
 
-/// Error if two accounts of a source would both write the `source-default` backup files,
-/// so that every `backup --all` fails: each has no [`Named::account_name`] (a `name`, or
-/// for Reddit and HackerNews a `username`), or one that [`slug`]s to `default` (empty,
-/// `default` itself, or only punctuation). `remedy` names the fields that would set one.
+/// Error if two accounts of a source would write the same backup files, so that every
+/// `backup --all` fails in `check_stem_collisions`: their [`Named::account_name`]s (a
+/// `name`, or for Reddit and HackerNews a `username`) [`slug`] alike. Slugging lowercases
+/// and folds punctuation, so `a.b` and `a/b`, or `Alice` and `alice`, collide; no name,
+/// an empty one and `default` all slug to `default`. `remedy` names the fields that
+/// would set a distinct one. The error names positions, never the names.
 ///
 /// [`slug`]: crate::backup::slug
-fn check_one_unnamed<T: Named>(source: &str, accounts: &[T], remedy: &str) -> Result<()> {
-    let mut unnamed = accounts
-        .iter()
-        .enumerate()
-        .filter(|(_, account)| crate::backup::slug(account.account_name()) == "default")
-        .map(|(index, _)| index);
-    if let (Some(first), Some(second)) = (unnamed.next(), unnamed.next()) {
+fn check_distinct_slugs<T: Named>(source: &str, accounts: &[T], remedy: &str) -> Result<()> {
+    let mut first_with_slug = HashMap::new();
+    for (index, account) in accounts.iter().enumerate() {
+        let slug = crate::backup::slug(account.account_name());
+        let Some(first) = first_with_slug.get(&slug) else {
+            first_with_slug.insert(slug, index);
+            continue;
+        };
+        if slug == "default" {
+            bail!(
+                "config: {source}[{first}] and {source}[{index}] would both back up as \
+                 `{source}-default`; give one of them a distinct {remedy}"
+            );
+        }
         bail!(
-            "config: {source}[{first}] and {source}[{second}] would both back up as \
-             `{source}-default`; give one of them a distinct {remedy}"
+            "config: {source}[{first}] and {source}[{index}] would back up to the same \
+             files, since their account names make the same file name; give one of them \
+             a distinct {remedy}"
         );
     }
     Ok(())

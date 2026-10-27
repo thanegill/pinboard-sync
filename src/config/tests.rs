@@ -222,6 +222,34 @@ fn reddit_and_hn_accounts_told_apart_by_username_alone_are_fine() {
 }
 
 #[test]
+fn account_names_that_slug_alike_are_rejected_without_quoting_them() {
+    for (source, field) in [
+        ("github", "name"),
+        ("reddit", "username"),
+        ("hackernews", "name"),
+    ] {
+        for (first, second) in [
+            ("secret.a", "secret/a"),
+            ("Secret", "secret"),
+            ("secret-x", "secret x!"),
+        ] {
+            assert_error_hides(
+                &format!(
+                    "[[{source}]]\n{field} = \"{first}\"\n[[{source}]]\nname = \"other\"\n\
+                     [[{source}]]\n{field} = \"{second}\"\n"
+                ),
+                "ecret",
+                &format!(
+                    "{source}[0] and {source}[2] would back up to the same files, since \
+                     their account names make the same file name"
+                ),
+            );
+        }
+    }
+    assert!(Config::parse("[[reddit]]\nusername = \"a.b\"\n[[reddit]]\nname = \"a.c\"\n").is_ok());
+}
+
+#[test]
 fn a_reddit_name_that_slugs_to_default_hides_its_username() {
     let error =
         Config::parse("[[reddit]]\n[[reddit]]\nname = \"\"\nusername = \"bob\"\n").unwrap_err();

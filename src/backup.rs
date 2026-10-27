@@ -392,9 +392,10 @@ fn check_writable(file: &BackupFile) -> Result<()> {
     Ok(())
 }
 
-/// Bail if two jobs would write the same files. `config::check_unique_names` guards
-/// account *names*, not slugs — `a.b` and `a/b` both slug to `a-b`, and the second job
-/// would silently overwrite the first. Checked before any write, not during.
+/// Bail if two jobs would write the same files — `a.b` and `a/b` both slug to `a-b`, and
+/// the second job would silently overwrite the first. Config validation
+/// (`config::check_distinct_slugs`) already rejects such accounts; this stays as the
+/// guard on the stems actually built. Checked before any write, not during.
 pub fn check_stem_collisions(stems: &[String]) -> Result<()> {
     let mut seen = HashSet::new();
     for stem in stems {

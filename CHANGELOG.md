@@ -52,6 +52,8 @@ All notable changes to this project are documented here. The format is based on
   every `backup --all` on their shared `github-default` files.
 - So is one with two `[[reddit]]` or `[[hackernews]]` accounts that set neither `name`
   nor `username`.
+- So is one with two accounts of a source whose names or usernames make the same backup
+  file name (`a.b` and `a/b`, or `Alice` and `alice`).
 - `cleanup_stale_to_now` re-dates a stale bookmark at most once per cap period, not on
   every run.
 - Dates are sent to Pinboard in UTC at whole seconds, the format its API documents.

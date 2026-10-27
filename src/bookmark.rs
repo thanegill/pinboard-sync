@@ -338,26 +338,30 @@ impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
     }
 }
 
+/// A stored bookmark at `url`, titled "T", with `note`: the fixture every test module here
+/// builds its account from.
+#[cfg(test)]
+fn at(url: &str, note: &str) -> Bookmark {
+    Bookmark {
+        title: "T".into(),
+        note: note.into(),
+        ..crate::test_support::stored_at(url)
+    }
+}
+
 #[cfg(test)]
 mod write_outcome_tests {
     use super::*;
-    use crate::test_support::{stored_at, FakePinboard};
-
-    fn at(url: &str) -> Bookmark {
-        Bookmark {
-            title: "T".into(),
-            ..stored_at(url)
-        }
-    }
+    use crate::test_support::{url, FakePinboard};
 
     #[tokio::test]
     async fn a_merge_reports_the_write_and_every_delete_that_landed() {
         let pinboard = FakePinboard::default();
-        let old_a = Url::parse("https://old-a/").unwrap();
-        let old_b = Url::parse("https://old-b/").unwrap();
+        let old_a = url("https://old-a/");
+        let old_b = url("https://old-b/");
 
         let out = pinboard
-            .apply_merge(&at("https://target/"), &[&old_a, &old_b])
+            .apply_merge(&at("https://target/", ""), &[&old_a, &old_b])
             .await;
 
         assert!(out.wrote);
@@ -371,11 +375,11 @@ mod write_outcome_tests {
         // would undo the write. Callers build `old_urls` excluding it, but this is a public
         // default method and the guard is what makes it safe to call with anything.
         let pinboard = FakePinboard::default();
-        let target = Url::parse("https://target/").unwrap();
-        let absorbed = Url::parse("https://absorbed/").unwrap();
+        let target = url("https://target/");
+        let absorbed = url("https://absorbed/");
 
         let outcome = pinboard
-            .apply_merge(&at("https://target/"), &[&target, &absorbed])
+            .apply_merge(&at("https://target/", ""), &[&target, &absorbed])
             .await;
 
         assert!(outcome.error.is_none());
@@ -399,12 +403,12 @@ mod write_outcome_tests {
                 .collect(),
             ..FakePinboard::default()
         };
-        let a = Url::parse("https://a/").unwrap();
-        let b = Url::parse("https://b/").unwrap();
-        let c = Url::parse("https://c/").unwrap();
+        let a = url("https://a/");
+        let b = url("https://b/");
+        let c = url("https://c/");
 
         let outcome = pinboard
-            .apply_merge(&at("https://target/"), &[&a, &b, &c])
+            .apply_merge(&at("https://target/", ""), &[&a, &b, &c])
             .await;
 
         assert!(outcome.wrote);
@@ -430,16 +434,16 @@ mod write_outcome_tests {
         // Absorbed URLs are independent. Abandoning the rest on the first failure leaves
         // more duplicate records behind than necessary, and the caller still has to know
         // the write itself landed so it doesn't treat the target as untouched.
-        let old_a = Url::parse("https://old-a/").unwrap();
-        let old_b = Url::parse("https://old-b/").unwrap();
-        let old_c = Url::parse("https://old-c/").unwrap();
+        let old_a = url("https://old-a/");
+        let old_b = url("https://old-b/");
+        let old_c = url("https://old-c/");
         let pinboard = FakePinboard {
             fail_delete_urls: [old_b.to_string()].into_iter().collect(),
             ..Default::default()
         };
 
         let out = pinboard
-            .apply_merge(&at("https://target/"), &[&old_a, &old_b, &old_c])
+            .apply_merge(&at("https://target/", ""), &[&old_a, &old_b, &old_c])
             .await;
 
         assert!(out.wrote, "the write landed and the caller must know");
@@ -457,9 +461,11 @@ mod write_outcome_tests {
             fail_update_urls: ["https://target/".to_string()].into_iter().collect(),
             ..Default::default()
         };
-        let old = Url::parse("https://old/").unwrap();
+        let old = url("https://old/");
 
-        let out = pinboard.apply_merge(&at("https://target/"), &[&old]).await;
+        let out = pinboard
+            .apply_merge(&at("https://target/", ""), &[&old])
+            .await;
 
         assert!(!out.wrote);
         assert!(out.deleted.is_empty());
@@ -471,7 +477,7 @@ mod write_outcome_tests {
 #[cfg(test)]
 mod cleanup_store_tests {
     use super::*;
-    use crate::test_support::{stored_at, FakePinboard};
+    use crate::test_support::{url, FakePinboard};
 
     #[tokio::test]
     async fn the_snapshot_reflects_this_runs_writes() {
@@ -491,14 +497,6 @@ mod cleanup_store_tests {
         assert_eq!(all[0].note, "written");
     }
 
-    fn at(url: &str, note: &str) -> Bookmark {
-        Bookmark {
-            title: "T".into(),
-            note: note.into(),
-            ..stored_at(url)
-        }
-    }
-
     #[tokio::test]
     async fn a_write_is_visible_to_the_next_read_without_refetching() {
         // The whole point: a later pass in the same run asks what occupies a URL and gets
@@ -511,21 +509,12 @@ mod cleanup_store_tests {
         );
 
         let out = store
-            .apply_update(
-                &at("https://b/", "new"),
-                Some(&Url::parse("https://a/").unwrap()),
-            )
+            .apply_update(&at("https://b/", "new"), Some(&url("https://a/")))
             .await;
         assert!(out.error.is_none());
 
-        assert_eq!(
-            store
-                .resident(&Url::parse("https://b/").unwrap())
-                .unwrap()
-                .note,
-            "new"
-        );
-        assert!(store.resident(&Url::parse("https://a/").unwrap()).is_none());
+        assert_eq!(store.resident(&url("https://b/")).unwrap().note, "new");
+        assert!(store.resident(&url("https://a/")).is_none());
         assert_eq!(fake.updated.borrow().len(), 1);
     }
 
@@ -538,15 +527,12 @@ mod cleanup_store_tests {
         let store = CleanupStore::new(&fake, AccountView::new(vec![at("https://a/", "old")]), true);
 
         let out = store
-            .apply_update(
-                &at("https://b/", "new"),
-                Some(&Url::parse("https://a/").unwrap()),
-            )
+            .apply_update(&at("https://b/", "new"), Some(&url("https://a/")))
             .await;
         assert!(out.error.is_none());
 
-        assert!(store.resident(&Url::parse("https://b/").unwrap()).is_some());
-        assert!(store.resident(&Url::parse("https://a/").unwrap()).is_none());
+        assert!(store.resident(&url("https://b/")).is_some());
+        assert!(store.resident(&url("https://a/")).is_none());
         assert!(fake.updated.borrow().is_empty(), "dry run must not write");
         assert!(fake.deleted.borrow().is_empty(), "dry run must not delete");
     }
@@ -564,16 +550,13 @@ mod cleanup_store_tests {
         );
 
         let out = store
-            .apply_update(
-                &at("https://b/", "new"),
-                Some(&Url::parse("https://a/").unwrap()),
-            )
+            .apply_update(&at("https://b/", "new"), Some(&url("https://a/")))
             .await;
 
         assert!(!out.wrote);
-        assert!(store.resident(&Url::parse("https://b/").unwrap()).is_none());
+        assert!(store.resident(&url("https://b/")).is_none());
         assert!(
-            store.resident(&Url::parse("https://a/").unwrap()).is_some(),
+            store.resident(&url("https://a/")).is_some(),
             "the old URL was never deleted, so it is still there"
         );
     }
@@ -582,15 +565,7 @@ mod cleanup_store_tests {
 #[cfg(test)]
 mod account_view_tests {
     use super::*;
-    use crate::test_support::stored_at;
-
-    fn at(url: &str, note: &str) -> Bookmark {
-        Bookmark {
-            title: "T".into(),
-            note: note.into(),
-            ..stored_at(url)
-        }
-    }
+    use crate::test_support::url;
 
     #[test]
     fn preserves_posts_all_order_across_writes_and_deletes() {
@@ -609,7 +584,7 @@ mod account_view_tests {
         assert_eq!(urls(&view), vec!["https://c/", "https://a/", "https://b/"]);
 
         view.insert(&at("https://d/", ""));
-        view.remove(&Url::parse("https://a/").unwrap());
+        view.remove(&url("https://a/"));
         assert_eq!(urls(&view), vec!["https://c/", "https://b/", "https://d/"]);
     }
 
@@ -618,7 +593,7 @@ mod account_view_tests {
         // A tombstone left in the order would let a later `insert` of the same URL append a
         // second entry, and `iter()` would yield it twice for a later pass to plan twice.
         let mut view = AccountView::new(vec![at("https://a/", ""), at("https://b/", "")]);
-        view.remove(&Url::parse("https://a/").unwrap());
+        view.remove(&url("https://a/"));
         view.insert(&at("https://a/", "back"));
 
         assert_eq!(urls(&view), vec!["https://b/", "https://a/"]);
@@ -628,13 +603,10 @@ mod account_view_tests {
     fn insert_upserts_and_remove_drops() {
         let mut view = AccountView::new(vec![at("https://a/", "old"), at("https://b/", "")]);
         view.insert(&at("https://a/", "new"));
-        view.remove(&Url::parse("https://b/").unwrap());
+        view.remove(&url("https://b/"));
 
-        assert_eq!(
-            view.get(&Url::parse("https://a/").unwrap()).unwrap().note,
-            "new"
-        );
-        assert!(view.get(&Url::parse("https://b/").unwrap()).is_none());
+        assert_eq!(view.get(&url("https://a/")).unwrap().note, "new");
+        assert!(view.get(&url("https://b/")).is_none());
         assert_eq!(view.iter().count(), 1);
     }
 
@@ -649,9 +621,7 @@ mod account_view_tests {
         ]);
         assert_eq!(view.iter().count(), 1);
         assert_eq!(
-            view.get(&Url::parse("https://dup.example/").unwrap())
-                .unwrap()
-                .note,
+            view.get(&url("https://dup.example/")).unwrap().note,
             "first"
         );
     }

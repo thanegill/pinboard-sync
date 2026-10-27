@@ -228,9 +228,10 @@ impl PassOutcome {
             if self.write_failed > 0 {
                 also.push(format!("{} write(s)", self.write_failed));
             }
-            let message = match also.is_empty() {
-                true => halt.message().to_string(),
-                false => format!("{} (also failed: {})", halt.message(), also.join(", ")),
+            let message = if also.is_empty() {
+                halt.message().to_string()
+            } else {
+                format!("{} (also failed: {})", halt.message(), also.join(", "))
             };
             return Err(match halt {
                 Halt::Reauth(_) => SourceError::ReauthRequired(message),
@@ -796,9 +797,10 @@ async fn write_merge<S: BookmarkStore>(
     }
 
     if dry_run {
-        let note_value = match merged.note.is_empty() {
-            true => "(removed)".to_string(),
-            false => merged.note.clone(),
+        let note_value = if merged.note.is_empty() {
+            "(removed)".to_string()
+        } else {
+            merged.note.clone()
         };
         let mut detail = vec![
             ("title", merged.title.clone()),
@@ -858,9 +860,10 @@ fn emit_preview(preview: &mut Vec<String>, url: &Url, detail: &[(&str, String)])
     };
     push(format!("[dry-run] {url}"));
     for (label, value) in detail {
-        push(match label.is_empty() {
-            true => format!("          {value}"),
-            false => format!("          {label:<6}-> {value}"),
+        push(if label.is_empty() {
+            format!("          {value}")
+        } else {
+            format!("          {label:<6}-> {value}")
         });
     }
 }

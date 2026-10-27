@@ -185,9 +185,10 @@ async fn two_page_favorites(hn: &MockServer, algolia: &MockServer, hits: [u64; 4
     let mut hits = hits.into_iter();
     for (comments, pages) in streams {
         for (page, (ids, more)) in pages.into_iter().enumerate() {
-            let stream = match comments {
-                true => Mock::given(query_param("comments", "t")),
-                false => Mock::given(query_param_is_missing("comments")),
+            let stream = if comments {
+                Mock::given(query_param("comments", "t"))
+            } else {
+                Mock::given(query_param_is_missing("comments"))
             };
             let numbered = match page {
                 0 => stream.and(query_param_is_missing("p")),

@@ -46,6 +46,17 @@ All notable changes to this project are documented here. The format is based on
 - Dates are sent to Pinboard in UTC at whole seconds, the format its API documents.
 - The NixOS module passes a `%` in `onAuthFailure`, `backup.directory` or a secret path
   through to the service as written.
+- A `reddit_domain` outside reddit.com no longer makes every `sync` re-add every save.
+- A HackerNews favorite linking a Reddit or GitHub page is no longer re-added after
+  `cleanup` moves it to its canonical URL, unless `reddit_domain` is outside reddit.com.
+- Commas, which Pinboard forbids in tags, are slugged like spaces in derived tags
+  (`reddit-flair:help-question`) and rejected in configured ones; tags already written
+  with a comma stay until removed by hand.
+- `cleanup` no longer decodes HTML entities in stored titles again on every run, so a
+  title like `Tom &amp;amp; Jerry` settles at once. Titles already stored with entities
+  now keep them.
+- Reddit titles keep literal text like `&amp;`, which `raw_json=1` already returns
+  unescaped, instead of decoding it.
 
 ## [0.6.0] - 2026-10-25
 

@@ -201,9 +201,12 @@ boundary.
 an existing Pinboard URL to that source's dedup key. `run_sync_jobs` (`main.rs`) fetches
 drafts, and `sync::prepare_new_drafts` builds the set of existing keys by mapping
 `pinboard.all()` through `source.dedup_key` (`UrlKey::synced_keys`) and keeps the drafts
-whose `dedup_key` isn't present. `sync` fetches through `SyncJob::fetch`, which picks
-the traversal from the job's `config::SyncLimit` (`limit` / `--limit`, parsed by one
-`FromStr` + `Deserialize` pair): `auto`, the default, calls
+whose `dedup_key` isn't present. **A key must survive cleanup's canonicalization**, or
+sync re-adds what cleanup moved: HN keys a Reddit or GitHub article with `reddit_key` /
+`urls::github_key` (`hn_url_key`), so a change to either, or to what `cleanup reddit` /
+`cleanup github` rewrite a URL to, has to keep HN converging. `sync` fetches through
+`SyncJob::fetch`, which picks the traversal from the job's `config::SyncLimit` (`limit`
+/ `--limit`, parsed by one `FromStr` + `Deserialize` pair): `auto`, the default, calls
 `Source::fetch_incremental(existing)`, which defaults to the full fetch and which a
 source may override to stop paging once it reaches items already on Pinboard (all three
 do, through one rule, `source::page_is_caught_up`); `all` and a cap `N` call the full
@@ -301,11 +304,13 @@ base tag plus any extras, and `push_tag`/`push_prefixed` in [`src/tags.rs`](src/
 render them (empty string disables a tag). `reddit::model`'s tag tests
 ([`src/reddit/model/tests.rs`](src/reddit/model/tests.rs)) are the spec — keep them in
 sync with rule changes. Pinboard tags can't contain spaces (the API splits the tag
-string on them), so `push_prefixed` slugs internal whitespace in the value (e.g. the
-GitHub language `Jupyter Notebook` → `lang:jupyter-notebook`) and `Config::parse`
-rejects whitespace in config-supplied tags/prefixes. Reddit's URL host is the configurable `reddit_domain` (used
+string on them) or commas (its API docs forbid them), so `push_prefixed` slugs internal
+whitespace and commas in the value (e.g. the GitHub language `Jupyter Notebook` →
+`lang:jupyter-notebook`) and `Config::parse` rejects both in config-supplied
+tags/prefixes. Reddit's URL host is the configurable `reddit_domain` (used
 by both sync `bookmark_url` and cleanup's `normalize_url`); `reddit_key` stays
-host-agnostic so dedup matches across subdomains.
+host-agnostic so dedup matches across subdomains, and takes that domain too, so a
+mirror outside reddit.com still counts as a Reddit host.
 
 **Config + secret resolution.** [`src/config.rs`](src/config.rs) parses the
 `--config` TOML: one `[pinboard]` destination, `[hooks]`, and per-source account

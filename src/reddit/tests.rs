@@ -399,3 +399,33 @@ fn a_saved_page_is_caught_up_when_its_saves_are_on_pinboard() {
         "an entry that makes no draft adds nothing"
     );
 }
+
+#[test]
+fn a_mirror_reddit_domain_dedups_against_its_own_and_reddit_com_bookmarks() {
+    use crate::test_support::{listing_entry, stored_at};
+    let post = |id: &str| {
+        listing_entry(
+            "t3",
+            serde_json::json!({ "name": format!("t3_{id}"), "subreddit": "rust",
+                                "permalink": format!("/r/rust/comments/{id}/x/"),
+                                "title": "T" }),
+        )
+    };
+    let mut client = RedditClient::for_test(None, None, "http://unused.invalid".into());
+    client.config.domain = "redlib.example.org".into();
+    let drafts = client.shape(vec![post("a"), post("b"), post("c")]);
+    let existing = [
+        stored_at("https://redlib.example.org/r/rust/comments/a/x/"),
+        stored_at("https://www.reddit.com/r/rust/comments/b/x/"),
+    ];
+
+    let new: Vec<String> = crate::sync::filter_new(&client, drafts, &existing)
+        .into_iter()
+        .map(|draft| draft.bookmark.url.to_string())
+        .collect();
+    assert_eq!(
+        new,
+        ["https://redlib.example.org/r/rust/comments/c/x/"],
+        "saves already on Pinboard under the mirror or reddit.com are not re-added"
+    );
+}

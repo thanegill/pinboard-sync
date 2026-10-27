@@ -118,6 +118,35 @@ async fn marks_nsfw_with_configured_tag_not_literal_nsfw() {
 }
 
 #[tokio::test]
+async fn a_fixed_title_is_the_raw_api_title() {
+    let pinboard = FakePinboard {
+        all: vec![bookmark(
+            "https://old.reddit.com/r/rust/comments/abc/x/",
+            "Reddit - Dive into anything",
+            "reddit subreddit:rust",
+        )],
+        ..Default::default()
+    };
+    let reddit = FakeReddit {
+        info: vec![listing_entry(
+            "t3",
+            json!({ "name": "t3_abc", "subreddit": "rust",
+                    "permalink": "/r/rust/comments/abc/x/",
+                    "title": "What &amp; means  in HTML" }),
+        )],
+        ..Default::default()
+    };
+
+    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+        .await
+        .unwrap();
+
+    let updated = pinboard.updated.borrow();
+    assert_eq!(updated.len(), 1);
+    assert_eq!(updated[0].description, "What &amp; means in HTML");
+}
+
+#[tokio::test]
 async fn configured_nsfw_tag_is_idempotent() {
     // A post already carrying the configured "adult" marker (what sync wrote) and
     // otherwise normalized must not be rewritten to add a duplicate/literal marker.
@@ -158,8 +187,8 @@ async fn configured_nsfw_tag_is_idempotent() {
 async fn preserves_markup_in_stored_title() {
     // A non-placeholder stored title carrying angle brackets / tag-like text is kept
     // verbatim through cleanup, not stripped as HTML — the deliberate tradeoff of
-    // treating every title as plain text (html_to_plain escapes `<`/`>` before
-    // parsing). The www host still forces a rewrite so an update is emitted.
+    // treating every title as plain text. The www host still forces a rewrite so an
+    // update is emitted.
     let pinboard = FakePinboard {
         all: vec![bookmark(
             "https://www.reddit.com/r/rust/comments/a/x/",
@@ -176,6 +205,34 @@ async fn preserves_markup_in_stored_title() {
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].description, "Vec<String> vs <b>Box</b> in Rust");
+}
+
+#[tokio::test]
+async fn keeps_entity_text_in_a_stored_title() {
+    // A stored title is already plain text: one that reads `&amp;` (literally, or left
+    // by an older double-encoding) is kept as it is rather than decoded a step further
+    // on every run.
+    let pinboard = FakePinboard {
+        all: vec![
+            bookmark(
+                "https://old.reddit.com/r/rust/comments/a/x/",
+                "Use &amp; to escape",
+                "reddit subreddit:rust",
+            ),
+            bookmark(
+                "https://old.reddit.com/r/rust/comments/b/x/",
+                "Tom &amp;amp; Jerry",
+                "reddit subreddit:rust",
+            ),
+        ],
+        ..Default::default()
+    };
+
+    run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts())
+        .await
+        .unwrap();
+
+    assert!(pinboard.updated.borrow().is_empty());
 }
 
 #[tokio::test]
@@ -508,6 +565,52 @@ async fn skips_unchanged_and_non_reddit() {
         .unwrap();
     assert!(pinboard.updated.borrow().is_empty());
     assert!(pinboard.deleted.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn bookmarks_moved_to_a_mirror_domain_still_dedup_for_sync() {
+    let mirror = RedditConfig {
+        domain: "redlib.example.org".into(),
+        ..RedditConfig::default()
+    };
+    let seed = vec![bookmark(
+        "https://www.reddit.com/r/rust/comments/a/x/",
+        "T",
+        "reddit subreddit:rust",
+    )];
+    let pinboard = FakePinboard {
+        all: seed.clone(),
+        ..Default::default()
+    };
+    let opts = RedditCleanupOpts {
+        config: mirror.clone(),
+        ..opts()
+    };
+    run(
+        &pinboard.cleanup_store(false),
+        Some(&FakeReddit::default()),
+        &opts,
+    )
+    .await
+    .unwrap();
+    let account = crate::test_support::replay(&seed, &pinboard.ops.borrow());
+    assert_eq!(
+        account[0].url.as_str(),
+        "https://redlib.example.org/r/rust/comments/a/x/"
+    );
+
+    let mut client = crate::reddit::RedditClient::for_test(None, None, "http://unused".into());
+    client.config = mirror;
+    let saved = listing_entry(
+        "t3",
+        json!({ "name": "t3_a", "subreddit": "rust",
+                "permalink": "/r/rust/comments/a/x/", "title": "T" }),
+    );
+    let drafts = client.shape(vec![saved]);
+    assert!(
+        crate::sync::filter_new(&client, drafts, &account).is_empty(),
+        "sync must not re-add the save cleanup moved onto the mirror"
+    );
 }
 
 #[tokio::test]

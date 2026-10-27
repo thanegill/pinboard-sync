@@ -447,9 +447,10 @@ multiple accounts of one source. All three accept the per-account override keys
 `tags` is the base list applied to every bookmark from that account, and setting it
 **replaces** the default rather than adding to it, so include the base tag yourself.
 Setting any prefixed or conditional tag to `""` disables it. Pinboard splits its tag
-string on spaces, so a tag or prefix containing whitespace is rejected at parse time;
-values interpolated into a prefix are slugged (`Jupyter Notebook` →
-`lang:jupyter-notebook`).
+string on spaces and forbids commas in a tag, so a tag or prefix containing whitespace
+or a comma is rejected at parse time; values interpolated into a prefix are slugged
+(`Jupyter Notebook` → `lang:jupyter-notebook`, `Help, Question` →
+`reddit-flair:help-question`).
 
 | Key | Source | Default | Produces |
 | --- | --- | --- | --- |
@@ -551,7 +552,7 @@ if a config field is ever added without a line documenting it there.
 ### `config check`
 
 `pinboard-sync config check <file>` parses and validates a config file exactly as a
-run's `--config` does: unknown keys, bad values, whitespace in tags, a malformed
+run's `--config` does: unknown keys, bad values, whitespace or commas in tags, a malformed
 `reddit_domain` and duplicate account names all fail it. It contacts no service and
 uses no secret, so a `*_file` path is not opened and an inline token is not
 checked against Pinboard. Use `doctor` for that. It prints an `OK` line and exits 0, or

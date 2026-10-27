@@ -612,3 +612,38 @@ async fn algolia_url_search_error_quotes_a_capped_one_line_excerpt() {
         "hn algolia url search returned 400 Bad Request",
     );
 }
+
+#[tokio::test]
+async fn a_story_linking_github_is_not_re_added_after_cleanup_github_canonicalizes_it() {
+    use crate::github::{GitHubClient, GitHubConfig};
+    use crate::test_support::{replay, FakePinboard, NO_DATING};
+
+    let github = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/Owner/Repo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "full_name": "Owner/Repo",
+            "html_url": "https://github.com/Owner/Repo"
+        })))
+        .mount(&github)
+        .await;
+
+    let client = HackerNewsClient::new("u".into(), HackerNewsConfig::default()).unwrap();
+    let drafts = [client.story_draft("https://www.github.com/Owner/Repo.git")];
+    let synced = client.sync_once(&drafts, &[]).await;
+    assert_eq!(synced.len(), 1);
+
+    let pinboard = FakePinboard {
+        all: synced.clone(),
+        ..Default::default()
+    };
+    let github_client =
+        GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), github.uri());
+    crate::github::cleanup::run(&pinboard.cleanup_store(false), &github_client, NO_DATING)
+        .await
+        .unwrap();
+    let cleaned = replay(&synced, &pinboard.ops.borrow());
+    assert_eq!(cleaned[0].url.as_str(), "https://github.com/Owner/Repo");
+
+    assert_eq!(client.sync_once(&drafts, &cleaned).await, cleaned);
+}

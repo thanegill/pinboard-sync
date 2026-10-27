@@ -12,7 +12,7 @@ use url::Url;
 use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
-use crate::htmltext::html_to_plain;
+use crate::htmltext::{collapse_whitespace, html_to_plain};
 use crate::source::{Source, SourceError};
 use crate::tags::{extend_unique, push_prefixed};
 use crate::timefmt::DateOpts;
@@ -84,7 +84,7 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         // rather than re-validating the host/path through `canonical_repo_url`.
         let mut url = Url::parse(&format!("https://github.com/{owner}/{repo}"))
             .context("building the canonical github URL")?;
-        let mut title = html_to_plain(&bookmark.title);
+        let mut title = collapse_whitespace(&bookmark.title, " ");
         let mut note = bookmark.note.clone();
         let mut tags = bookmark.tags.clone();
         let synced = is_synced_star(bookmark, &self.client.config);

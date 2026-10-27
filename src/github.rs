@@ -19,7 +19,7 @@ use crate::source::{
     deserialize_lenient, page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey,
 };
 use crate::tags::{push_prefixed, push_tags};
-use crate::urls::{url_key, UrlExt};
+use crate::urls::github_key;
 use url::Url;
 
 const API_BASE: &str = "https://api.github.com";
@@ -119,7 +119,7 @@ impl GitHubRepo {
                 )
             })
             .ok()?;
-        let dedup_key = url_key(&url).unwrap_or_else(|| url.to_string());
+        let dedup_key = github_key(&url).unwrap_or_else(|| url.to_string());
 
         let note = github_note(
             self.description.as_deref(),
@@ -492,16 +492,9 @@ impl BackupSource for GitHubClient {
 }
 
 impl UrlKey for GitHubClient {
-    /// The generic host+path key, gated to github.com hosts so a non-github bookmark
-    /// never produces a key. The `www.` alias is folded onto the bare host so a
-    /// `www.github.com/owner/repo` bookmark dedups against a `github.com/owner/repo`
-    /// star -- the same notion of "github repo host" canonicalization uses.
+    /// [`github_key`], so a `www.` or `.git` form of a repo dedups against its star.
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        let key = url_key(url).filter(|_| url.host_is("github.com"))?;
-        Some(match key.strip_prefix("www.") {
-            Some(stripped) => stripped.to_string(),
-            None => key,
-        })
+        github_key(url)
     }
 }
 

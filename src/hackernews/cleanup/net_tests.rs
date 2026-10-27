@@ -251,3 +251,42 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
     assert!(updated[0].tags.contains(&"reading".to_string()));
     assert!(pinboard.deleted.borrow().is_empty());
 }
+
+#[tokio::test]
+async fn link_discussions_keeps_entity_text_in_the_stored_title() {
+    let algolia = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .and(query_param("restrictSearchableAttributes", "url"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": [{ "objectID": "99", "url": "https://example.com/x",
+                       "_tags": ["story", "story_99"] }]
+        })))
+        .mount(&algolia)
+        .await;
+    let pinboard = FakePinboard {
+        all: vec![Bookmark {
+            title: "Use  &amp;amp; to escape".into(),
+            tags: vec!["find-hn".into()],
+            ..stored_at("https://example.com/x")
+        }],
+        ..Default::default()
+    };
+    let client = HackerNewsClient::with_base_urls(
+        String::new(),
+        HackerNewsConfig::default(),
+        "unused".into(),
+        algolia.uri(),
+    );
+    let opts = HackerNewsCleanupOpts {
+        link_discussions: true,
+        dates: NO_DATING,
+    };
+    run(&pinboard.cleanup_store(false), &client, &opts)
+        .await
+        .unwrap();
+
+    let updated = pinboard.updated.borrow();
+    assert_eq!(updated.len(), 1);
+    assert_eq!(updated[0].description, "Use &amp;amp; to escape");
+}

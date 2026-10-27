@@ -49,6 +49,34 @@ fn post_url_and_tags() {
 }
 
 #[test]
+fn draft_titles_are_raw_text_with_whitespace_collapsed() {
+    // `raw_json=1` already gives the literal title, so a `&amp;` in it is the poster's
+    // own text, not an escape to undo.
+    for (kind, fields) in [
+        (
+            "t3",
+            serde_json::json!({ "title": "What &amp; means\n in <b>HTML</b>" }),
+        ),
+        (
+            "t1",
+            serde_json::json!({ "link_title": "What &amp; means\n in <b>HTML</b>" }),
+        ),
+    ] {
+        let mut fields = fields;
+        fields["name"] = "t3_abc".into();
+        fields["subreddit"] = "rust".into();
+        fields["permalink"] = "/r/rust/comments/abc/x/".into();
+        let draft = item(kind, fields)
+            .into_draft(&RedditConfig::default())
+            .unwrap();
+        assert_eq!(
+            draft.bookmark.title, "What &amp; means in <b>HTML</b>",
+            "{kind}"
+        );
+    }
+}
+
+#[test]
 fn every_non_empty_base_tag_is_added() {
     let it = item(
         "t3",
@@ -122,6 +150,29 @@ fn post_tags_include_author_flair_and_type() {
     assert!(tags.contains(&"author:reddit:alice".to_string()));
     assert!(tags.contains(&"reddit-flair:help-wanted".to_string()));
     assert!(tags.contains(&"type:image".to_string()));
+}
+
+#[test]
+fn flair_commas_are_slugged_like_whitespace() {
+    // Pinboard tags may not contain commas any more than whitespace.
+    for (flair, want) in [
+        ("Help, Question", "reddit-flair:help-question"),
+        ("a,b", "reddit-flair:a-b"),
+        (",Meta,", "reddit-flair:meta"),
+    ] {
+        let it = item(
+            "t3",
+            serde_json::json!({
+                "name": "t3_abc", "subreddit": "rust", "permalink": "/r/rust/comments/abc/x/",
+                "title": "T", "link_flair_text": flair
+            }),
+        );
+        assert_eq!(
+            it.tags(&RedditConfig::default()),
+            vec!["reddit", "subreddit:rust", want],
+            "{flair:?}"
+        );
+    }
 }
 
 #[test]
@@ -338,7 +389,38 @@ fn a_deleted_author_gets_no_author_tag() {
 }
 
 fn key(url: &str) -> Option<String> {
-    reddit_key(&Url::parse(url).unwrap())
+    reddit_key(&Url::parse(url).unwrap(), "old.reddit.com")
+}
+
+#[test]
+fn reddit_key_treats_the_configured_domain_as_reddit() {
+    let mirror = |url: &str| reddit_key(&Url::parse(url).unwrap(), "redlib.example.org");
+    let want = Some("/r/rust/comments/abc/title".to_string());
+    assert_eq!(
+        mirror("https://redlib.example.org/r/rust/comments/abc/title/"),
+        want
+    );
+    assert_eq!(
+        mirror("https://www.reddit.com/r/Rust/comments/abc/title/"),
+        want
+    );
+    // The URL's host comes back lowercased, whatever case the config spells it in.
+    assert_eq!(
+        reddit_key(
+            &Url::parse("https://Redlib.Example.org/r/rust/comments/abc/title/").unwrap(),
+            "Redlib.Example.org"
+        ),
+        want
+    );
+    // Only the configured host itself, not its parent or a sibling.
+    assert_eq!(
+        mirror("https://example.org/r/rust/comments/abc/title/"),
+        None
+    );
+    assert_eq!(
+        key("https://redlib.example.org/r/rust/comments/abc/title/"),
+        None
+    );
 }
 
 #[test]

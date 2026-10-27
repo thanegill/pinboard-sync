@@ -95,7 +95,7 @@ impl RedditCleanupOpts {
     }
 
     /// [`reddit_key`] on any configured domain, as every account's sync keys a save.
-    fn key(&self, url: &Url) -> Option<String> {
+    fn reddit_key(&self, url: &Url) -> Option<String> {
         self.domains().find_map(|domain| reddit_key(url, domain))
     }
 
@@ -186,7 +186,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
         let opts = self.opts;
         let mut new_url = opts.natural_url(&bookmark.url);
         if let Some(host) = opts
-            .key(&new_url)
+            .reddit_key(&new_url)
             .and_then(|key| self.collapse_hosts.get(&key))
         {
             new_url = with_host(&new_url, host).unwrap_or(new_url);
@@ -346,13 +346,13 @@ async fn fetch_post_info<R: PostInfo>(
 
 /// For each post or comment stored on more than one host once each copy has its
 /// [`RedditCleanupOpts::natural_url`], the host the copies collapse onto, keyed by
-/// [`RedditCleanupOpts::key`]: the earliest account domain in config order, so the copies
-/// meet on the same URL whichever account cleanup runs as, and the driver merges them.
+/// [`RedditCleanupOpts::reddit_key`]: the earliest account domain in config order, so the
+/// copies meet on one URL, where the driver merges them, whichever account cleanup runs as.
 fn collapse_hosts(bookmarks: &[Bookmark], opts: &RedditCleanupOpts) -> HashMap<String, String> {
     let mut hosts_by_key: HashMap<String, BTreeSet<String>> = HashMap::new();
     for bookmark in bookmarks {
         let url = opts.natural_url(&bookmark.url);
-        let (Some(key), Some(host)) = (opts.key(&url), url.host_str()) else {
+        let (Some(key), Some(host)) = (opts.reddit_key(&url), url.host_str()) else {
             continue;
         };
         hosts_by_key
@@ -520,15 +520,17 @@ fn note_is_tool_generated(
         || is_self_link_notes(note, url, opts)
 }
 
-/// Whether `notes` is nothing but a Reddit link to the same post as `url` — the
-/// duplicated self-link older syncs wrote into empty self-posts' notes. Compared by
-/// [`RedditCleanupOpts::key`] (on any configured `reddit_domain`), so it matches across
-/// hosts/casing; non-Reddit notes (e.g. a link post's external URL) and free-text notes
-/// don't match and are left untouched.
+/// Whether `notes` is nothing but a Reddit link to the same post as `url` — the duplicated
+/// self-link older syncs wrote into empty self-posts' notes. Compared by
+/// [`RedditCleanupOpts::reddit_key`] (on any configured `reddit_domain`), so it matches
+/// across hosts/casing; non-Reddit notes (e.g. a link post's external URL) and free-text
+/// notes don't match and are left untouched.
 fn is_self_link_notes(notes: &str, url: &Url, opts: &RedditCleanupOpts) -> bool {
     let notes_key = Url::parse(notes.trim()).ok();
-    let notes_key = notes_key.as_ref().and_then(|notes_url| opts.key(notes_url));
-    notes_key.is_some() && notes_key == opts.key(url)
+    let notes_key = notes_key
+        .as_ref()
+        .and_then(|notes_url| opts.reddit_key(notes_url));
+    notes_key.is_some() && notes_key == opts.reddit_key(url)
 }
 
 /// The generic placeholder titles Reddit bookmarks often get from a browser.

@@ -1,4 +1,6 @@
 use super::*;
+use crate::keys::RedditKeys;
+use crate::source::UrlKey;
 
 #[test]
 fn empty_config_is_all_defaults() {
@@ -489,7 +491,7 @@ fn rejects_malformed_reddit_domain() {
 }
 
 #[test]
-fn accepts_any_host_cleanup_can_set_and_reddit_key_matches() {
+fn accepts_any_host_cleanup_can_set_and_reddit_keys_match() {
     for domain in [
         "Old.Reddit.com",
         "Reddit.Mirror.Example",
@@ -505,7 +507,7 @@ fn accepts_any_host_cleanup_can_set_and_reddit_key_matches() {
         )
         .unwrap_or_else(|| panic!("{domain}: cleanup could not set the host"));
         assert_eq!(
-            crate::keys::reddit_key(&moved, domain).as_deref(),
+            RedditKeys::new([domain]).dedup_key(&moved).as_deref(),
             Some("/r/rust/comments/abc/x"),
             "{domain}"
         );

@@ -19,7 +19,7 @@ use crate::backup::{BackupDump, BackupSource, RawSink};
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::{client_builder, RetryingClient};
-use crate::keys::hackernews_key;
+use crate::keys::{HackerNewsKeys, RedditKeys};
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 use crate::tags::{push_prefixed, push_tag, push_tags};
 use favorites::FAVORITES_PAGE_PAUSE;
@@ -110,13 +110,8 @@ impl std::fmt::Display for HackerNewsItemKind {
 impl HackerNewsItem {
     /// Shape the item into a Pinboard draft. Comments keep the HN permalink; stories
     /// bookmark the linked article (HN discussion in the notes), falling back to the HN
-    /// permalink for text posts (Ask HN, etc.). `reddit_domains` are the configured
-    /// Reddit accounts' `reddit_domain`s, for the article's key ([`hackernews_key`]).
-    fn into_draft(
-        self,
-        cfg: &HackerNewsConfig,
-        reddit_domains: &[String],
-    ) -> Option<BookmarkDraft> {
+    /// permalink for text posts (Ask HN, etc.). `keys` keys the article.
+    fn into_draft(self, cfg: &HackerNewsConfig, keys: &HackerNewsKeys) -> Option<BookmarkDraft> {
         let item_id = HackerNewsItemId::from(self.id);
         // The HN discussion permalink (always valid — the id sits in the query string).
         let hn_url = Url::from(&item_id);
@@ -152,7 +147,8 @@ impl HackerNewsItem {
         let (url, dedup_key) = match article.as_deref() {
             Some(u) => match Url::parse(u) {
                 Ok(parsed) => {
-                    let key = hackernews_key(&parsed, reddit_domains)
+                    let key = keys
+                        .dedup_key(&parsed)
                         .unwrap_or_else(|| parsed.to_string());
                     (parsed, key)
                 }
@@ -206,8 +202,8 @@ pub struct HackerNewsClient {
     http: RetryingClient,
     username: String,
     config: HackerNewsConfig,
-    /// The configured Reddit accounts' `reddit_domain`s, which key as Reddit hosts.
-    reddit_domains: Vec<String>,
+    /// Keys favorites, with every configured Reddit account's domain as a Reddit host.
+    keys: HackerNewsKeys,
     /// HN site base (overridden in tests).
     base: String,
     /// Algolia API base (overridden in tests).
@@ -238,7 +234,7 @@ impl HackerNewsClient {
             http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
             username,
             config,
-            reddit_domains: Vec::new(),
+            keys: HackerNewsKeys::default(),
             base,
             algolia,
         })
@@ -248,7 +244,7 @@ impl HackerNewsClient {
     /// so it still matches once `cleanup reddit` has moved it onto that domain.
     pub fn with_reddit_domains(self, domains: Vec<String>) -> Self {
         Self {
-            reddit_domains: domains,
+            keys: HackerNewsKeys::new(RedditKeys::new(domains)),
             ..self
         }
     }
@@ -306,7 +302,7 @@ impl HackerNewsClient {
         items
             .into_iter()
             .filter_map(|(id, item)| {
-                item.into_draft(&self.config, &self.reddit_domains)
+                item.into_draft(&self.config, &self.keys)
                     .map(|draft| (id, draft))
             })
             .collect()
@@ -323,7 +319,7 @@ impl BackupSource for HackerNewsClient {
 
 impl UrlKey for HackerNewsClient {
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        hackernews_key(url, &self.reddit_domains)
+        self.keys.dedup_key(url)
     }
 }
 
@@ -428,7 +424,7 @@ impl HackerNewsClient {
                                         "url": url });
         serde_json::from_value::<HackerNewsItem>(story)
             .unwrap()
-            .into_draft(&self.config, &self.reddit_domains)
+            .into_draft(&self.config, &self.keys)
             .unwrap()
     }
 

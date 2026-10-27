@@ -14,7 +14,7 @@ use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::{client_builder, RetryingClient, USER_AGENT};
-use crate::keys::github_key;
+use crate::keys::GitHubKeys;
 use crate::secrets::ConfiguredSecret;
 use crate::source::{
     deserialize_lenient, page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey,
@@ -119,7 +119,9 @@ impl GitHubRepo {
                 )
             })
             .ok()?;
-        let dedup_key = github_key(&url).unwrap_or_else(|| url.to_string());
+        let dedup_key = GitHubKeys
+            .dedup_key(&url)
+            .unwrap_or_else(|| url.to_string());
 
         let note = github_note(
             self.description.as_deref(),
@@ -492,9 +494,9 @@ impl BackupSource for GitHubClient {
 }
 
 impl UrlKey for GitHubClient {
-    /// [`github_key`], so a `www.` or `.git` form of a repo dedups against its star.
+    /// [`GitHubKeys`], so a `www.` or `.git` form of a repo dedups against its star.
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        github_key(url)
+        GitHubKeys.dedup_key(url)
     }
 }
 

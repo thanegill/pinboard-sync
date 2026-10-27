@@ -7,8 +7,8 @@ use url::Url;
 
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, collapse_whitespace};
-use crate::keys::reddit_key;
-use crate::source::BookmarkDraft;
+use crate::keys::RedditKeys;
+use crate::source::{BookmarkDraft, UrlKey};
 use crate::tags::{prefixed, push_prefixed, push_tag, push_tags};
 use crate::urls::host_matches;
 
@@ -367,7 +367,9 @@ impl RedditSavedItem {
             }
         };
         // The host-agnostic dedup key, derived from the same URL.
-        let dedup_key = reddit_key(&url, &cfg.domain).unwrap_or_else(|| url.to_string());
+        let dedup_key = RedditKeys::new([cfg.domain.as_str()])
+            .dedup_key(&url)
+            .unwrap_or_else(|| url.to_string());
         let timestamp = created_at(self.created_utc);
         let tags = self.tags(cfg);
         Some(BookmarkDraft {

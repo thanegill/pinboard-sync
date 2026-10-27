@@ -1097,6 +1097,7 @@ async fn plans_the_tags_sync_writes_for_each_tag_config() {
                     .await
                     .unwrap(),
                 opts: &opts,
+                keys: opts.reddit_keys(),
                 collapse_hosts: HashMap::new(),
             };
             let mut want = synced.tags.clone();

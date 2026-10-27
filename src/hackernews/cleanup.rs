@@ -15,6 +15,7 @@ use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, PassOutcome, Plan};
 use crate::htmltext::collapse_whitespace;
+use crate::keys::HackerNewsKeys;
 use crate::source::SourceError;
 use crate::tags::extend_unique;
 use crate::timefmt::DateOpts;
@@ -190,7 +191,7 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         // the stored bookmark's existing tags and privacy on the re-write.
         let Some(mut new) = item
             .clone()
-            .into_draft(self.config, &[])
+            .into_draft(self.config, &HackerNewsKeys::default())
             .map(|d| d.bookmark)
         else {
             return Ok(Plan::Skipped);

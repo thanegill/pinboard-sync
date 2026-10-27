@@ -13,12 +13,12 @@ use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::config::own_then_configured;
 use crate::htmltext::collapse_whitespace;
-use crate::keys::reddit_key;
+use crate::keys::RedditKeys;
 use crate::reddit::model::{
     cased_subreddit, created_at, over18_dest, RedditConfig, RedditKind, RedditSavedItem,
 };
 use crate::reddit::PostInfo;
-use crate::source::SourceError;
+use crate::source::{SourceError, UrlKey};
 use crate::tags::{push_prefixed, push_tags, push_unique};
 use crate::timefmt::DateOpts;
 use crate::urls::{host_matches, UrlExt};
@@ -92,9 +92,9 @@ impl RedditCleanupOpts {
         })
     }
 
-    /// [`reddit_key`] on any configured domain, as every account's sync keys a save.
-    fn reddit_key(&self, url: &Url) -> Option<String> {
-        self.domains().find_map(|domain| reddit_key(url, domain))
+    /// [`RedditKeys`] on every configured domain, as every account's sync keys a save.
+    fn reddit_keys(&self) -> RedditKeys {
+        RedditKeys::new(self.domains())
     }
 
     /// Where this pass moves `url` before collapsing copies: `over18` unwrapped, and a
@@ -159,10 +159,12 @@ pub async fn run<S: BookmarkStore + AccountState, R: PostInfo>(
         .collect();
 
     let info = fetch_post_info(reddit, opts, &reddit_bms).await?;
+    let keys = opts.reddit_keys();
     let pass = RedditCleanupPass {
         info,
         opts,
-        collapse_hosts: collapse_hosts(&reddit_bms, opts),
+        collapse_hosts: collapse_hosts(&reddit_bms, opts, &keys),
+        keys,
     };
     run_pass(store, &reddit_bms, "reddit", opts.dates, &pass)
         .await
@@ -175,6 +177,8 @@ pub async fn run<S: BookmarkStore + AccountState, R: PostInfo>(
 struct RedditCleanupPass<'a> {
     info: RedditInfo,
     opts: &'a RedditCleanupOpts,
+    /// From [`RedditCleanupOpts::reddit_keys`].
+    keys: RedditKeys,
     /// From [`collapse_hosts`].
     collapse_hosts: HashMap<String, String>,
 }
@@ -183,8 +187,9 @@ impl CleanupPass for RedditCleanupPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
         let opts = self.opts;
         let mut new_url = opts.natural_url(&bookmark.url);
-        if let Some(host) = opts
-            .reddit_key(&new_url)
+        if let Some(host) = self
+            .keys
+            .dedup_key(&new_url)
             .and_then(|key| self.collapse_hosts.get(&key))
         {
             new_url = with_host(&new_url, host).unwrap_or(new_url);
@@ -237,12 +242,18 @@ impl CleanupPass for RedditCleanupPass<'_> {
         let note = if is_comment_url(&new_url) {
             bookmark.note.clone()
         } else if let Some(post) = post {
-            if note_is_tool_generated(&bookmark.note, &post.note, &post.selftext, &new_url, opts) {
+            if note_is_tool_generated(
+                &bookmark.note,
+                &post.note,
+                &post.selftext,
+                &new_url,
+                &self.keys,
+            ) {
                 post.note.clone()
             } else {
                 bookmark.note.clone()
             }
-        } else if is_self_link_notes(&bookmark.note, &new_url, opts) {
+        } else if is_self_link_notes(&bookmark.note, &new_url, &self.keys) {
             String::new()
         } else {
             bookmark.note.clone()
@@ -334,14 +345,18 @@ async fn fetch_post_info<R: PostInfo>(
 }
 
 /// For each post or comment stored on more than one host once each copy has its
-/// [`RedditCleanupOpts::natural_url`], the host the copies collapse onto, keyed by
-/// [`RedditCleanupOpts::reddit_key`]: the earliest account domain in config order, so the
-/// copies meet on one URL, where the driver merges them, whichever account cleanup runs as.
-fn collapse_hosts(bookmarks: &[Bookmark], opts: &RedditCleanupOpts) -> HashMap<String, String> {
+/// [`RedditCleanupOpts::natural_url`], the host the copies collapse onto, keyed by `keys`:
+/// the earliest account domain in config order, so the copies meet on one URL, where the
+/// driver merges them, whichever account cleanup runs as.
+fn collapse_hosts(
+    bookmarks: &[Bookmark],
+    opts: &RedditCleanupOpts,
+    keys: &RedditKeys,
+) -> HashMap<String, String> {
     let mut hosts_by_key: HashMap<String, BTreeSet<String>> = HashMap::new();
     for bookmark in bookmarks {
         let url = opts.natural_url(&bookmark.url);
-        let (Some(key), Some(host)) = (opts.reddit_key(&url), url.host_str()) else {
+        let (Some(key), Some(host)) = (keys.dedup_key(&url), url.host_str()) else {
             continue;
         };
         hosts_by_key
@@ -500,26 +515,25 @@ fn note_is_tool_generated(
     rebuilt: &str,
     selftext: &str,
     url: &Url,
-    opts: &RedditCleanupOpts,
+    keys: &RedditKeys,
 ) -> bool {
     let trimmed = note.trim();
     trimmed.is_empty()
         || note == rebuilt
         || (!selftext.trim().is_empty() && trimmed == selftext.trim())
-        || is_self_link_notes(note, url, opts)
+        || is_self_link_notes(note, url, keys)
 }
 
 /// Whether `notes` is nothing but a Reddit link to the same post as `url` — the duplicated
-/// self-link older syncs wrote into empty self-posts' notes. Compared by
-/// [`RedditCleanupOpts::reddit_key`] (on any configured `reddit_domain`), so it matches
-/// across hosts/casing; non-Reddit notes (e.g. a link post's external URL) and free-text
-/// notes don't match and are left untouched.
-fn is_self_link_notes(notes: &str, url: &Url, opts: &RedditCleanupOpts) -> bool {
+/// self-link older syncs wrote into empty self-posts' notes. Compared by `keys` (on every
+/// configured `reddit_domain`), so it matches across hosts/casing; non-Reddit notes (e.g.
+/// a link post's external URL) and free-text notes don't match and are left untouched.
+fn is_self_link_notes(notes: &str, url: &Url, keys: &RedditKeys) -> bool {
     let notes_key = Url::parse(notes.trim()).ok();
     let notes_key = notes_key
         .as_ref()
-        .and_then(|notes_url| opts.reddit_key(notes_url));
-    notes_key.is_some() && notes_key == opts.reddit_key(url)
+        .and_then(|notes_url| keys.dedup_key(notes_url));
+    notes_key.is_some() && notes_key == keys.dedup_key(url)
 }
 
 /// The generic placeholder titles Reddit bookmarks often get from a browser.

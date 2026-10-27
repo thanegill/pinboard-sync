@@ -14,7 +14,7 @@ use tempfile::TempDir;
 use url::Url;
 
 use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore};
-use crate::keys::reddit_key;
+use crate::keys::RedditKeys;
 use crate::reddit::model::{RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
@@ -180,7 +180,7 @@ impl Source for FakeReddit {
 
 impl UrlKey for FakeReddit {
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        reddit_key(url, &RedditConfig::default().domain)
+        RedditKeys::new([RedditConfig::default().domain]).dedup_key(url)
     }
 }
 

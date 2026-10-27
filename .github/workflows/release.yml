@@ -5,11 +5,11 @@ name: Release
 #   git tag v0.3.0 && git push origin v0.3.0
 #
 # This workflow then does the bookkeeping a release needs: it stamps the tag's
-# version into Cargo.toml / Cargo.lock / flake.nix, rolls the changelog's
-# [Unreleased] section over to that version, commits the result back to master,
-# builds the binary through the flake (which also runs the test suite), and
-# publishes a GitHub release with the changelog section as its notes. You never
-# hand-edit a version number.
+# version into Cargo.toml / Cargo.lock (the Nix package reads it from Cargo.toml),
+# rolls the changelog's [Unreleased] section over to that version, commits the
+# result back to master, builds the binary through the flake (which also runs the
+# test suite), and publishes a GitHub release with the changelog section as its
+# notes. You never hand-edit a version number.
 
 on:
   push:
@@ -29,7 +29,7 @@ jobs:
     steps:
       # Check out the branch, not the detached tag, so we can commit the bump back.
       - name: Check out master
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: master
           fetch-depth: 0
@@ -49,8 +49,6 @@ jobs:
           sed -i -E "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
           # Cargo.lock: the version line directly under this crate's package entry.
           sed -i "/^name = \"pinboard-sync\"/{n;s/^version = .*/version = \"$VERSION\"/}" Cargo.lock
-          # flake.nix: the first `version = "...";` (the buildRustPackage attr).
-          sed -i -E "0,/version = \".*\";/s//version = \"$VERSION\";/" flake.nix
 
       - name: Roll over the changelog
         env:
@@ -78,19 +76,19 @@ jobs:
           echo "----- release notes -----"
           cat RELEASE_NOTES.md
 
-      # Commit before building: the flake's `src = ./.` only sees git-tracked
-      # files, so the bump has to be committed for `nix build` to pick it up.
+      # Commit before building, so the released binary is built from exactly the
+      # commit pushed to master.
       - name: Commit the version bump and changelog
         env:
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock flake.nix CHANGELOG.md
+          git add Cargo.toml Cargo.lock CHANGELOG.md
           git commit -m "chore: release v$VERSION"
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       # Builds the binary and runs the (sandbox-safe) test suite via doCheck.
       - name: Build the release binary
@@ -133,7 +131,7 @@ jobs:
       # another workflow — and this runs after the move, so the dispatched
       # `nix flake update pinboard-sync` sees the new `latest`.
       - name: Notify nixos-config to bump the pinboard-sync input
-        uses: peter-evans/repository-dispatch@v4
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
         with:
           token: ${{ secrets.NIXOS_CONFIG_DISPATCH_TOKEN }}
           repository: thanegill/nixos-config

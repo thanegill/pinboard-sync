@@ -17,7 +17,8 @@ nix develop --command cargo test
 nix develop --command cargo test <name>      # single test
 nix develop --command cargo clippy --all-targets -- -D warnings
 nix develop --command cargo fmt --check
-nix flake check                              # builds the package (runs tests) + evaluates the NixOS module and config-checks its TOML
+nix flake check                              # builds the package (runs tests) + evaluates the NixOS module and config-checks its TOML + lints the Nix files
+nix fmt                                      # formats the Nix files (nixfmt, via nixfmt-tree)
 ```
 
 `nix flake check` runs the flake's `checks` for the host system only: `checks.package`
@@ -27,8 +28,9 @@ fails on a module assertion or an undefined option without building anything for
 It also runs the host's `pinboard-sync config check` on the module's rendered settings,
 re-rendered from the internal `services.pinboard-sync.renderedSettings` option with the
 host's `pkgs.formats.toml`, because the module's own config file is an x86_64-linux
-derivation. So a key the binary would reject fails the check too. CI runs it on
-x86_64-linux.
+derivation. So a key the binary would reject fails the check too. `checks.nix-lint`
+runs `nixfmt --check`, statix and deadnix over every `.nix` file. CI runs
+`nix flake check` on x86_64-linux, in its `flake` job.
 
 `cargo clippy -D warnings` and `cargo fmt --check` are the gate — keep both clean.
 Commit often: each working feature or structural piece, with its tests, keeping the
@@ -504,8 +506,8 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
 
 - **native-tls, not rustls.** Reddit's anti-bot edge 403s rustls's TLS fingerprint
   but accepts native-tls's, so `reqwest` is built with `native-tls`. On Linux that's
-  OpenSSL via `openssl-sys`, so the flake carries `pkg-config` + `openssl` and the
-  closure includes OpenSSL. Keep it this way.
+  OpenSSL via `openssl-sys`, so [`nix/package.nix`](nix/package.nix) carries
+  `pkg-config` + `openssl` and the closure includes OpenSSL. Keep it this way.
 - **`native-tls-alpn` is load-bearing too.** Reddit's edge also 403s (with its
   network-security page) a TLS 1.3 ClientHello that carries no ALPN extension, which is
   what plain `native-tls` sends ([#78](https://github.com/thanegill/pinboard-sync/issues/78));
@@ -523,7 +525,7 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
   logs which protocol each response came over.
 - **The Nix package build runs the tests** (`buildRustPackage` `doCheck`), so a
   failing test blocks `nix build`/`nix flake check`. The `net_tests` modules bind a
-  socket, which the sandbox forbids — the flake's `checkFlags = [ "--skip=net_tests" ]`
+  socket, which the sandbox forbids — the package's `checkFlags = [ "--skip=net_tests" ]`
   excludes them there; they still run under `cargo test`. Keep all *other* tests
   hermetic (no network/sockets). A `net_tests` case that points a real client at a dead
   port sleeps the real ~2.5-minute `CONNECT_BACKOFF` unless it runs inside
@@ -552,7 +554,9 @@ and `extended` is the notes (delicious backcompat). Bookmarks are written
 - **`nix build`/`nix flake check` only see git-tracked files.** A new untracked
   module (or `config.example.toml`, used via `include_str!`) fails the sandbox build
   with `file not found`, even though dev-shell `cargo` passes — that discrepancy is
-  the tell. `git add` new files before building with Nix.
+  the tell. `git add` new files before building with Nix. The package source is also
+  narrowed to `Cargo.toml`, `Cargo.lock` and `src/` ([`nix/package.nix`](nix/package.nix)'s
+  fileset), so a file the build reads from anywhere else has to be added there too.
 - The User-Agent / client identifier (`http::USER_AGENT`) derives from `CARGO_PKG_NAME`/`CARGO_PKG_VERSION`.
 - **Service-specific, API-shaped structs carry a service prefix** (`GitHubRepo`,
   `HackerNewsItem`, `RedditSavedItem`, `AlgoliaSearchResponse`) — not bare `Repo`/`Item`.

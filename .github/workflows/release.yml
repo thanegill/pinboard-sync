@@ -88,7 +88,7 @@ jobs:
           git commit -m "chore: release v$VERSION"
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       # Builds the binary and runs the (sandbox-safe) test suite via doCheck.
       - name: Build the release binary
@@ -131,7 +131,7 @@ jobs:
       # another workflow — and this runs after the move, so the dispatched
       # `nix flake update pinboard-sync` sees the new `latest`.
       - name: Notify nixos-config to bump the pinboard-sync input
-        uses: peter-evans/repository-dispatch@v4
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
         with:
           token: ${{ secrets.NIXOS_CONFIG_DISPATCH_TOKEN }}
           repository: thanegill/nixos-config

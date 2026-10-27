@@ -523,10 +523,21 @@ async fn cleanup_one_github<S: BookmarkStore + AccountState>(
     config: &Config,
 ) -> Result<()> {
     let token = resolve_github_token(token_flag, account).with_context(missing_github_token)?;
-    let hook = cleanup_hook(account, config);
     let client = GitHubClient::new(token, account.map(GitHubConfig::from).unwrap_or_default())?;
+    cleanup_github_with(store, &client, account, dates, config).await
+}
+
+/// [`cleanup_one_github`] past building its client, which a test points at a fake API.
+async fn cleanup_github_with<S: BookmarkStore + AccountState>(
+    store: &S,
+    client: &GitHubClient,
+    account: Option<&GitHubAccount>,
+    dates: DateOpts,
+    config: &Config,
+) -> Result<()> {
+    let hook = cleanup_hook(account, config);
     let accounts: Vec<GitHubConfig> = config.github.iter().map(GitHubConfig::from).collect();
-    github::cleanup::run(store, &client, dates, &accounts)
+    github::cleanup::run(store, client, dates, &accounts)
         .await
         .map_err(|e| handle_source_err(e, hook.as_deref()))
 }
@@ -1284,6 +1295,60 @@ mod tests {
                 error.starts_with("missing Pinboard token"),
                 "{argv:?}: {error}"
             );
+        }
+    }
+
+    mod net_tests {
+        use super::*;
+        use crate::test_support::{stored_at, FakePinboard, NO_DATING};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        /// `cleanup github` runs as one account but must refresh the stars of every
+        /// `[[github]]` account, so all of their tag configs have to reach the pass.
+        #[tokio::test]
+        async fn cleanup_github_refreshes_another_accounts_star_by_its_tags() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/repos/o/r"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "full_name": "o/r",
+                    "html_url": "https://github.com/o/r",
+                    "language": "Rust"
+                })))
+                .mount(&server)
+                .await;
+            let config = Config::parse(
+                "[[github]]\nname = \"home\"\n\
+                 [[github]]\nname = \"work\"\ntags = [\"work-star\"]\n\
+                 tag_lang_prefix = \"language:\"\n",
+            )
+            .unwrap();
+            let pinboard = FakePinboard {
+                all: vec![Bookmark {
+                    tags: vec!["work-star".into()],
+                    ..stored_at("https://github.com/o/r")
+                }],
+                ..Default::default()
+            };
+            let home = &config.github[0];
+            let client =
+                GitHubClient::with_base_url("tok".into(), GitHubConfig::from(home), server.uri());
+
+            cleanup_github_with(
+                &pinboard.cleanup_store(false),
+                &client,
+                Some(home),
+                NO_DATING,
+                &config,
+            )
+            .await
+            .unwrap();
+
+            let updated = pinboard.updated.borrow();
+            assert_eq!(updated.len(), 1, "{updated:?}");
+            assert_eq!(updated[0].description, "o/r");
+            assert_eq!(updated[0].tags, ["work-star", "language:rust"]);
         }
     }
 }

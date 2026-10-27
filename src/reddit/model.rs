@@ -7,7 +7,7 @@ use url::Url;
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, collapse_whitespace};
 use crate::source::BookmarkDraft;
-use crate::tags::{push_prefixed, push_tag, push_tags};
+use crate::tags::{prefixed, push_prefixed, push_tag, push_tags};
 use crate::urls::host_matches;
 
 /// A Reddit "Listing" envelope (`{ "kind": "Listing", "data": { ... } }`).
@@ -338,9 +338,7 @@ impl RedditSavedItem {
     pub(crate) fn detail_tags<'c>(&self, cfg: &'c RedditConfig) -> Vec<(&'c str, String)> {
         let mut families: Vec<(&'c str, String)> = Vec::new();
         let mut push = |prefix: &'c str, value: &str| {
-            let mut tag = Vec::new();
-            push_prefixed(&mut tag, prefix, value);
-            families.extend(tag.into_iter().map(|tag| (prefix, tag)));
+            families.extend(prefixed(prefix, value).map(|tag| (prefix, tag)));
         };
         if let Some(author) = &self.author {
             push(&cfg.author_prefix, author);

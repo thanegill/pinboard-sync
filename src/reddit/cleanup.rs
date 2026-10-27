@@ -17,7 +17,7 @@ use crate::reddit::model::{
 };
 use crate::reddit::PostInfo;
 use crate::source::SourceError;
-use crate::tags::{extend_unique, push_prefixed, push_tags};
+use crate::tags::{push_prefixed, push_tags, push_unique};
 use crate::timefmt::DateOpts;
 use crate::urls::{host_matches, UrlExt};
 use url::Url;
@@ -202,16 +202,12 @@ impl CleanupPass for RedditCleanupPass<'_> {
         );
         let post = post_fullname(&new_url).and_then(|f| self.info.posts.get(&f));
 
-        if opts.mark_nsfw
-            && !owner.nsfw.is_empty()
-            && post.is_some_and(|p| p.over_18)
-            && !tags.iter().any(|t| t == &owner.nsfw)
-        {
-            tags.push(owner.nsfw.clone());
+        if opts.mark_nsfw && post.is_some_and(|p| p.over_18) {
+            push_unique(&mut tags, &owner.nsfw);
         }
 
         let own_fullname = if is_comment_url(&new_url) {
-            extend_unique(&mut tags, std::slice::from_ref(&owner.comment));
+            push_unique(&mut tags, &owner.comment);
             comment_fullname(&new_url)
         } else {
             post_fullname(&new_url)

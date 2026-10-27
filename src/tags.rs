@@ -19,26 +19,34 @@ pub fn push_tags(tags: &mut Vec<String>, keys: &[String]) {
     }
 }
 
-/// Append `prefix + value` to `tags`, collapsing each internal run of whitespace and
-/// commas in `value` to `-` (Pinboard tags can't contain either — the API splits on
-/// whitespace, and its docs forbid commas). Skipped if `prefix` is empty or `value` is
-/// nothing but whitespace and commas.
-pub fn push_prefixed(tags: &mut Vec<String>, prefix: &str, value: &str) {
+/// `prefix + value`, with each internal run of whitespace and commas in `value`
+/// collapsed to `-` (Pinboard tags can't contain either — the API splits on whitespace,
+/// and its docs forbid commas). `None` if `prefix` is empty or `value` is nothing but
+/// whitespace and commas.
+pub fn prefixed(prefix: &str, value: &str) -> Option<String> {
     let value = crate::htmltext::collapse_whitespace(&value.replace(',', " "), "-");
-    if !prefix.is_empty() && !value.is_empty() {
-        tags.push(format!("{prefix}{value}"));
+    (!prefix.is_empty() && !value.is_empty()).then(|| format!("{prefix}{value}"))
+}
+
+/// Append [`prefixed`]`(prefix, value)` to `tags`, if there is one.
+pub fn push_prefixed(tags: &mut Vec<String>, prefix: &str, value: &str) {
+    tags.extend(prefixed(prefix, value));
+}
+
+/// Append `tag` unless it is empty or already in `tags`. Empty tags are skipped for
+/// parity with [`push_tag`] (empty = the tag is disabled): stored tags derive via
+/// `split_whitespace` and so can never contain `""`, so emitting one would make a
+/// cleanup plan diff against storage on every run and never converge.
+pub fn push_unique(tags: &mut Vec<String>, tag: &str) {
+    if !tag.is_empty() && !tags.iter().any(|held| held == tag) {
+        tags.push(tag.to_string());
     }
 }
 
-/// Append each non-empty tag in `add` that isn't already in `tags` (order-preserving).
-/// Empty tags are skipped for parity with [`push_tag`] (empty = the tag is disabled):
-/// stored tags derive via `split_whitespace` and so can never contain `""`, so emitting
-/// one would make a cleanup plan diff against storage on every run and never converge.
+/// [`push_unique`] each tag in `add`, in order.
 pub fn extend_unique(tags: &mut Vec<String>, add: &[String]) {
     for tag in add {
-        if !tag.is_empty() && !tags.contains(tag) {
-            tags.push(tag.clone());
-        }
+        push_unique(tags, tag);
     }
 }
 

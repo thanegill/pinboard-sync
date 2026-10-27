@@ -14,7 +14,7 @@ use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::htmltext::{collapse_whitespace, html_to_plain};
 use crate::source::{Source, SourceError};
-use crate::tags::{extend_unique, push_prefixed};
+use crate::tags::{extend_unique, prefixed, push_unique};
 use crate::timefmt::DateOpts;
 use crate::urls::{url_key, UrlExt};
 
@@ -303,11 +303,11 @@ fn refresh_tags(
     let lang = repo.language.as_deref().filter(|lang| !lang.is_empty());
     for cfg in configs {
         extend_unique(&mut tags, &cfg.tags);
-        let mut lang_tag = Vec::new();
-        if let Some(lang) = lang {
-            push_prefixed(&mut lang_tag, &cfg.lang_prefix, &lang.to_lowercase());
+        if let Some(lang_tag) =
+            lang.and_then(|lang| prefixed(&cfg.lang_prefix, &lang.to_lowercase()))
+        {
+            push_unique(&mut tags, &lang_tag);
         }
-        extend_unique(&mut tags, &lang_tag);
     }
     tags
 }

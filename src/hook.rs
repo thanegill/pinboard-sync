@@ -68,19 +68,6 @@ fn hook_shell(system_shell: &Path) -> &Path {
     }
 }
 
-/// The auth-failure hook: resolved flag/env (`overrides.on_auth_failure`) → per-account
-/// override → per-source default → `[hooks]` global.
-pub fn resolve_hook(
-    flag: Option<String>,
-    account_override: Option<&str>,
-    source_override: Option<&str>,
-    config: &Config,
-) -> Option<String> {
-    flag.or_else(|| account_override.map(str::to_string))
-        .or_else(|| source_override.map(str::to_string))
-        .or_else(|| config.hooks.on_auth_failure.clone())
-}
-
 /// The auth-failure hook for a `cleanup` run: `PINBOARD_SYNC_ON_AUTH_FAILURE` → account →
 /// `[defaults.<source>]` → `[hooks]`. The `cleanup` subcommands take no
 /// `--on-auth-failure` flag, so the env var is the top rung.

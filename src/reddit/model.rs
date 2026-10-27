@@ -7,6 +7,7 @@ use url::Url;
 
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, collapse_whitespace};
+use crate::keys::reddit_key;
 use crate::source::BookmarkDraft;
 use crate::tags::{prefixed, push_prefixed, push_tag, push_tags};
 use crate::urls::host_matches;
@@ -404,26 +405,6 @@ pub fn cased_subreddit(subreddit: &str) -> String {
     } else {
         subreddit.to_lowercase()
     }
-}
-
-/// Build a dedup key from a full Reddit URL: the path, lowercased, with query/fragment
-/// and trailing slash removed. Returns `None` for non-Reddit URLs. Only the path is
-/// used, so the same post saved under any reddit host (`old.`/`www.`/`m.`) maps to the
-/// same key. `domain` is the account's `reddit_domain`, a Reddit host even outside
-/// reddit.com (a mirror), since that is where sync writes the account's bookmarks.
-pub fn reddit_key(url: &Url, domain: &str) -> Option<String> {
-    if !is_reddit_host(url, domain) {
-        return None;
-    }
-    let key = url.path().trim_end_matches('/').to_ascii_lowercase();
-    (!key.is_empty()).then_some(key)
-}
-
-/// Whether `url` is on a Reddit host: reddit.com, a subdomain of it, or `domain`, the
-/// account's `reddit_domain`.
-pub fn is_reddit_host(url: &Url, domain: &str) -> bool {
-    url.host_str()
-        .is_some_and(|host| host_matches(host, "reddit.com") || host.eq_ignore_ascii_case(domain))
 }
 
 /// If `url` is a reddit `over18` interstitial, return its `dest` target (the `url`

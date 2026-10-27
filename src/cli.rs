@@ -9,7 +9,6 @@ use clap_complete::Shell;
 use crate::config::SyncLimit;
 use crate::jobs::SyncOverrides;
 use crate::reddit::cleanup::RedditCleanupOverrides;
-use crate::timefmt::DateOverrides;
 
 #[derive(Parser)]
 #[command(name = "pinboard-sync", version, about, arg_required_else_help = true)]
@@ -316,9 +315,11 @@ pub enum CleanupSource {
     Hackernews(HackerNewsCleanupArgs),
 }
 
-/// The date-setting flags shared by every cleanup command (and `cleanup --all`),
-/// flattened into each so the declarations + their override mapping live in one place.
-#[derive(Args, Clone, Default)]
+/// The date-setting flags shared by every cleanup command (and `cleanup --all`), flattened
+/// into each so the declarations live in one place. They are the top tier of the date
+/// settings (flag → account → per-source default → `[pinboard]` global), and all-`None`
+/// means "no flag given", so resolution falls through to the other tiers.
+#[derive(Args, Clone, Copy, Default)]
 pub struct DateFlags {
     /// Only backdate posts newer than N days; older use "now" (overrides config).
     #[arg(long)]
@@ -331,13 +332,15 @@ pub struct DateFlags {
     pub stale_to_now: Option<bool>,
 }
 
-/// The date-setting overrides these flags supply, sitting at the top of the tier.
-impl From<&DateFlags> for DateOverrides {
-    fn from(flags: &DateFlags) -> Self {
-        DateOverrides {
-            use_post_date: flags.use_post_date,
-            max_age_days: flags.max_age_days,
-            stale_to_now: flags.stale_to_now,
+impl DateFlags {
+    /// Let a date flag placed before the source subcommand (on `CleanupCmd`) take
+    /// effect, falling back to this per-source value. Mirrors sync's
+    /// `SyncOverrides::with_top_level_hook`.
+    pub fn with_top_level(self, top_overrides: &DateFlags) -> DateFlags {
+        DateFlags {
+            use_post_date: top_overrides.use_post_date.or(self.use_post_date),
+            max_age_days: top_overrides.max_age_days.or(self.max_age_days),
+            stale_to_now: top_overrides.stale_to_now.or(self.stale_to_now),
         }
     }
 }
@@ -405,11 +408,11 @@ pub struct RedditCleanupArgs {
     pub dry_run: bool,
 }
 
-/// The date-setting overrides a sync invocation supplies. `stale_to_now` is cleanup-only,
-/// so it is always `None` here.
-impl From<&SyncFlags> for DateOverrides {
+/// The date-setting flags a sync invocation supplies. `stale_to_now` is cleanup-only, so it
+/// is always `None` here.
+impl From<&SyncFlags> for DateFlags {
     fn from(flags: &SyncFlags) -> Self {
-        DateOverrides {
+        DateFlags {
             use_post_date: flags.use_post_date,
             max_age_days: flags.max_age_days,
             stale_to_now: None,

@@ -13,8 +13,9 @@ use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::config::own_then_configured;
 use crate::htmltext::collapse_whitespace;
+use crate::keys::reddit_key;
 use crate::reddit::model::{
-    cased_subreddit, created_at, over18_dest, reddit_key, RedditConfig, RedditKind, RedditSavedItem,
+    cased_subreddit, created_at, over18_dest, RedditConfig, RedditKind, RedditSavedItem,
 };
 use crate::reddit::PostInfo;
 use crate::source::SourceError;

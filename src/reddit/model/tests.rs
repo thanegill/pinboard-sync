@@ -380,63 +380,6 @@ fn a_deleted_author_gets_no_author_tag() {
     }
 }
 
-fn key(url: &str) -> Option<String> {
-    reddit_key(&Url::parse(url).unwrap(), "old.reddit.com")
-}
-
-#[test]
-fn reddit_key_treats_the_configured_domain_as_reddit() {
-    let mirror = |url: &str| reddit_key(&Url::parse(url).unwrap(), "redlib.example.org");
-    let want = Some("/r/rust/comments/abc/title".to_string());
-    assert_eq!(
-        mirror("https://redlib.example.org/r/rust/comments/abc/title/"),
-        want
-    );
-    assert_eq!(
-        mirror("https://www.reddit.com/r/Rust/comments/abc/title/"),
-        want
-    );
-    // The URL's host comes back lowercased, whatever case the config spells it in.
-    assert_eq!(
-        reddit_key(
-            &Url::parse("https://Redlib.Example.org/r/rust/comments/abc/title/").unwrap(),
-            "Redlib.Example.org"
-        ),
-        want
-    );
-    // Only the configured host itself, not its parent or a sibling.
-    assert_eq!(
-        mirror("https://example.org/r/rust/comments/abc/title/"),
-        None
-    );
-    assert_eq!(
-        key("https://redlib.example.org/r/rust/comments/abc/title/"),
-        None
-    );
-}
-
-#[test]
-fn reddit_key_matches_across_subdomains_and_query_and_trailing_slash() {
-    let want = "/r/rust/comments/abc/title";
-    // The same post bookmarked under any host / case / query / no trailing slash.
-    for url in [
-        "https://old.reddit.com/r/rust/comments/abc/title/",
-        "https://www.reddit.com/r/Rust/comments/abc/Title/",
-        "http://m.reddit.com/r/rust/comments/abc/title",
-        "https://reddit.com/r/rust/comments/abc/title/?utm_source=x",
-    ] {
-        assert_eq!(key(url).as_deref(), Some(want), "url: {url}");
-    }
-}
-
-#[test]
-fn reddit_key_rejects_non_reddit_and_empty() {
-    assert_eq!(key("https://example.com/r/rust/comments/abc/"), None);
-    // "reddit.com" only in the path of another host must not match.
-    assert_eq!(key("https://example.com/reddit.com/x"), None);
-    assert_eq!(key("https://www.reddit.com/"), None);
-}
-
 #[test]
 fn malformed_child_is_skipped_not_failing_the_whole_page() {
     // The second child lacks the required `kind`, so it can't deserialize into a

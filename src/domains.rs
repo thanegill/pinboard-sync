@@ -1,8 +1,8 @@
-//! Per-domain URL canonicalization rules for domains that are NOT sync sources
-//! (i.e. anything other than reddit/github/hackernews). [`crate::urls::url_key`]
-//! delegates here for hosts carrying a case- or query-significant identifier that its
-//! generic normalization would otherwise clobber: domains whose identity lives in the
-//! query string (dropping the query would collapse distinct resources), or in a
+//! Per-domain URL canonicalization rules for domains that are NOT sync sources (i.e.
+//! anything other than reddit/github/hackernews). [`crate::keys::url_key`] delegates
+//! here for hosts carrying a case- or query-significant identifier that its generic
+//! normalization would otherwise clobber: domains whose identity lives in the query
+//! string (dropping the query would collapse distinct resources), or in a
 //! case-sensitive path segment (lowercasing the path would).
 
 use url::Url;
@@ -102,13 +102,13 @@ mod tests {
         // The 11-char base64url video id lives in the path, which url_key lowercases;
         // ids differing only in case are distinct videos and must yield distinct keys.
         assert_ne!(
-            crate::urls::url_key(&url("https://youtu.be/AbCdEfGhIjK")),
-            crate::urls::url_key(&url("https://youtu.be/abcdefghijk"))
+            crate::keys::url_key(&url("https://youtu.be/AbCdEfGhIjK")),
+            crate::keys::url_key(&url("https://youtu.be/abcdefghijk"))
         );
         // A normal host whose path is a case-insensitive identifier still collapses.
         assert_eq!(
-            crate::urls::url_key(&url("https://github.com/Owner/Repo")),
-            crate::urls::url_key(&url("https://github.com/owner/repo"))
+            crate::keys::url_key(&url("https://github.com/Owner/Repo")),
+            crate::keys::url_key(&url("https://github.com/owner/repo"))
         );
     }
 }

@@ -38,28 +38,30 @@ gate green.
 
 ## Architecture
 
-The flow is one pass: a source yields drafts → skip those already on Pinboard →
-write the rest. `main.rs` loads the config and dispatches each subcommand (`run_sync`,
-`run_cleanup`, `run_backup`); the clap types are in [`src/cli.rs`](src/cli.rs), secret
-resolution in [`src/secrets.rs`](src/secrets.rs), job building, the settings ladder, the
-Pinboard client setup (`open_pinboard`) and the `--all` failure tally (`AllRun`) in
-[`src/jobs.rs`](src/jobs.rs), with `backup`'s targets in
+The flow is one pass: a source yields drafts → skip those already on Pinboard → write the
+rest. `main.rs` loads the config and dispatches each subcommand to its driver in
+[`src/commands.rs`](src/commands.rs) (`run_sync`, `run_cleanup`, `run_backup`); the clap
+types are in [`src/cli.rs`](src/cli.rs), secret resolution in
+[`src/secrets.rs`](src/secrets.rs), the settings ladder (`resolve_setting`, `resolve_dates`,
+`resolve_job_settings`, `resolve_hook`) in [`src/settings.rs`](src/settings.rs), job
+building, the Pinboard client setup (`open_pinboard`) and the `--all` failure tally
+(`AllRun`) in [`src/jobs.rs`](src/jobs.rs), with `backup`'s targets in
 [`src/jobs/backup_jobs.rs`](src/jobs/backup_jobs.rs), the auth-failure hook in
-[`src/hook.rs`](src/hook.rs), and `doctor` in [`src/doctor.rs`](src/doctor.rs). The sync write loop is in
-[`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one
-driver** ([`src/cleanup_pass.rs`](src/cleanup_pass.rs)): a source implements
-`CleanupPass::plan` (the desired end-state for one bookmark, as a `Plan` — see below —
-with `Err` for a per-item failure), and `run_pass` owns the loop common to all of them:
-plan every bookmark, group the plans by target URL, then diff each plan against the stored
-one, skip unchanged, render the dry-run lines, write via `apply_update` (deleting the old
-URL on a rewrite), and tally into a `PassOutcome`. Colliding rewrites — several bookmarks
-normalizing to one URL — are field-merged into a single record via `apply_merge` (which
-deletes the absorbed URLs) rather than clobbering each other. `run_pass` itself only
-sequences the phases, each its own function: `plan_all` (the `Plan`s, and the `untouchable`
-URLs it could not read), `group_by_target`, `residents_of`, `hold_back_visibility_mismatches`,
-then per group `refuse_group`, `write_single` or `write_merge`. The merge rules themselves
-(`merge_bookmarks`, `incumbent_of`) live in
-[`src/cleanup_pass/merge.rs`](src/cleanup_pass/merge.rs).
+[`src/hook.rs`](src/hook.rs), and `doctor` in [`src/doctor.rs`](src/doctor.rs). The sync
+write loop is in [`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one driver**
+([`src/cleanup_pass.rs`](src/cleanup_pass.rs)): a source implements `CleanupPass::plan` (the
+desired end-state for one bookmark, as a `Plan` — see below — with `Err` for a per-item
+failure), and `run_pass` owns the loop common to all of them: plan every bookmark, group the
+plans by target URL, then diff each plan against the stored one, skip unchanged, render the
+dry-run lines, write via `apply_update` (deleting the old URL on a rewrite), and tally into
+a `PassOutcome`. Colliding rewrites — several bookmarks normalizing to one URL — are
+field-merged into a single record via `apply_merge` (which deletes the absorbed URLs) rather
+than clobbering each other. `run_pass` itself only sequences the phases, each its own
+function: `plan_all` (the `Plan`s, and the `untouchable` URLs it could not read),
+`group_by_target`, `residents_of`, `hold_back_visibility_mismatches`, then per group
+`refuse_group`, `write_single` or `write_merge`;
+[`src/cleanup_pass/merge.rs`](src/cleanup_pass/merge.rs) holds the merge rules
+(`merge_bookmarks`, `incumbent_of`).
 
 **A failed lookup is not a failed run.** `PassOutcome` counts `plan_failed` (a link we
 couldn't read from the source) separately from `write_failed` (Pinboard refusing us, on
@@ -80,8 +82,8 @@ failed state forever. `SourceError::ReauthRequired`, `SourceError::RateLimited` 
 block all fail every remaining lookup too) but the plans already made are still written —
 which is why `plan` returns `SourceError` rather than a flattened `anyhow::Error`.
 `PassOutcome::halted` records *which* it was as a `Halt`, and `into_result` maps each back
-to its own `SourceError` so `main` fires the auth-failure hook for `Halt::Reauth` only — no
-credential change clears a rate limit or an edge block.
+to its own `SourceError` so the `cleanup` command fires the auth-failure hook for
+`Halt::Reauth` only — no credential change clears a rate limit or an edge block.
 
 **The run has one live view of the account, not a snapshot.** `posts/all` is read once into
 an `AccountView` ([`src/bookmark.rs`](src/bookmark.rs)), and `CleanupStore` wraps the real
@@ -200,76 +202,75 @@ boundary.
 **Every source is a `Source`, and one sync loop drives them all.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `Vec<BookmarkDraft>` (a
 `Bookmark` plus the `dedup_key`), and the `UrlKey::dedup_key()` supertrait method maps an
-existing Pinboard URL to that source's dedup key. `run_sync_jobs` (`main.rs`) fetches
+existing Pinboard URL to that source's dedup key. `run_sync_jobs` (`commands.rs`) fetches
 drafts, and `sync::prepare_new_drafts`, bounded by `UrlKey` alone since that is all it uses,
 builds the set of existing keys by mapping the account's bookmarks through
 `source.dedup_key` (`UrlKey::synced_keys`) and keeps the drafts whose `dedup_key` isn't
 present. **A key must survive cleanup's canonicalization**, or sync re-adds what cleanup
-moved: HN keys a Reddit or GitHub article with `reddit_key` / `urls::github_key`
-(`hackernews_key`), so a change to either, or to what `cleanup reddit` / `cleanup github`
-rewrite a URL to, has to keep HN converging. `sync` fetches through `SyncJob::fetch`, which
-picks the traversal from the job's `config::SyncLimit` (`limit` / `--limit`, parsed by one
-`FromStr` + `Deserialize` pair): `auto`, the default, calls
-`Source::fetch_incremental(existing)`, which defaults to the full fetch and which a source
-may override to stop paging once it reaches items already on Pinboard (all three do, through
-one rule, `source::page_is_caught_up`); `all` and a cap `N` call the full `fetch()`. A
-capped run writes only the newest drafts, so an incremental read would never reach the rest
-again. **`prepare_new_drafts` returns each job's drafts oldest first** (after the cap picks
-the newest N), the reverse of the newest-first read, and that is what keeps an interrupted
-`auto` run recoverable: the unwritten remainder is the newest items, on the first pages, so
-the next run's incremental read sees them and pages down to the written ones. Written newest
-first, page 1 would be fully on Pinboard and the next run would stop there for good. A
-failed write still doesn't stop the batch, so a failed write is stranded once a full page of
-newer items after it succeeds (a page holding it still reads as not caught up, so it is
-retried). There is no `0`: "no cap" is either `auto` or `all`, so `0` is rejected rather
-than guessed. A bad value's error names the field, never the value. `backup`, `doctor` and
-`cleanup github`'s `use_post_date` star dates call `fetch()`, so they keep the full
-traversal. To add a source, implement `Source`, add its account array to `config.rs`, and
-implement [`src/jobs.rs`](src/jobs.rs)'s `SourceAccount` for the account type: its `SOURCE`
-name (the job labels, backup file stems and `doctor` lines), where its accounts and
-`[defaults.<source>]` live, how its client is built, and its auth-failure hook. `sync`,
-`backup` and `doctor` reach every source through that one trait (`build_job::<A>` and
-friends); only the `SourceClient` enum and the call lists name them. The clients also sit
-behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a `&Bookmark`) so the
-loops are unit-tested with in-memory fakes ([`src/test_support.rs`](src/test_support.rs));
-real clients are covered by `net_tests` against a wiremock server via test-only
-`with_base_url(s)` constructors.
+moved: HN keys a Reddit or GitHub article with `reddit_key` / `github_key`
+(`hackernews_key`, all three in [`src/keys.rs`](src/keys.rs)), so a change to either, or to
+what `cleanup reddit` / `cleanup github` rewrite a URL to, has to keep HN converging. `sync`
+fetches through `SyncJob::fetch`, which picks the traversal from the job's
+`config::SyncLimit` (`limit` / `--limit`, parsed by one `FromStr` + `Deserialize` pair):
+`auto`, the default, calls `Source::fetch_incremental(existing)`, which defaults to the full
+fetch and which a source may override to stop paging once it reaches items already on
+Pinboard (all three do, through one rule, `source::page_is_caught_up`); `all` and a cap `N`
+call the full `fetch()`. A capped run writes only the newest drafts, so an incremental read
+would never reach the rest again. **`prepare_new_drafts` returns each job's drafts oldest
+first** (after the cap picks the newest N), the reverse of the newest-first read, and that
+is what keeps an interrupted `auto` run recoverable: the unwritten remainder is the newest
+items, on the first pages, so the next run's incremental read sees them and pages down to
+the written ones. Written newest first, page 1 would be fully on Pinboard and the next run
+would stop there for good. A failed write still doesn't stop the batch, so a failed write is
+stranded once a full page of newer items after it succeeds (a page holding it still reads as
+not caught up, so it is retried). There is no `0`: "no cap" is either `auto` or `all`, so
+`0` is rejected rather than guessed. A bad value's error names the field, never the value.
+`backup`, `doctor` and `cleanup github`'s `use_post_date` star dates call `fetch()`, so they
+keep the full traversal. To add a source, implement `Source`, add its account array to
+`config.rs`, and implement [`src/jobs.rs`](src/jobs.rs)'s `SourceAccount` for the account
+type: its `SOURCE` name (the job labels, backup file stems and `doctor` lines), where its
+accounts and `[defaults.<source>]` live, how its client is built, and its auth-failure hook.
+`sync`, `backup` and `doctor` reach every source through that one trait (`build_job::<A>`
+and friends); only the `SourceClient` enum and the call lists name them. The clients also
+sit behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a `&Bookmark`) so
+the loops are unit-tested with in-memory fakes
+([`src/test_support.rs`](src/test_support.rs)); real clients are covered by `net_tests`
+against a wiremock server via test-only `with_base_url(s)` constructors.
 
 **Sources:** Reddit ([`reddit.rs`](src/reddit.rs) — cookie-authenticated
 `saved.json`/`api/info.json`, plus the `PostInfo` port for cleanup), GitHub
-([`github.rs`](src/github.rs) — `/user/starred` with Link-header pagination, 100 per
-page, `sort=created&direction=desc` pinned rather than left to GitHub's defaults because
-the incremental read depends on newest-starred-first), HackerNews (below). Reddit's saved
+([`github.rs`](src/github.rs) — `/user/starred` with Link-header pagination, 100 per page,
+`sort=created&direction=desc` pinned rather than left to GitHub's defaults because the
+incremental read depends on newest-starred-first), HackerNews (below). Reddit's saved
 listing is newest-saved first with no sort parameter. Both stop their incremental read at
 the first page whose drafts all have their `dedup_key` among `synced_keys`
 (`page_is_caught_up`: an entry that makes no draft adds nothing, an empty page proves
 nothing). Each page is shaped once and its drafts kept, so a dropped entry warns once
-(Reddit's `walk_saved` hands pages to a callback for this). They share HackerNews' two
-known gaps below and a third that applies to all three: a page whose items are all
-already on Pinboard stops the read even with missing items below it, whether on a first
-sync whose newest items got there another way or because such items landed above an
-unwritten one between runs. `--limit all` recovers all three.
-HackerNews ([`hackernews.rs`](src/hackernews.rs) — scrapes `/favorites` for item IDs
-then batch-reads item details from the Algolia HN search API — `objectID:… OR …`,
-chunked, so hundreds of favorites cost a couple of queries, not one per item). The
-favorites pages are the costly half (they are what HN answers with 429), so `sync`
-stops following "More" in each stream (stories, comments) at the first page that would
-give it nothing to write (`is_caught_up`). To tell, `fetch_incremental` looks each page's
-items up on Algolia as it is read (one query per page) and checks every draft's
-`dedup_key` against Pinboard's, the same test `sync::filter_new` applies. That is
-deliberately not "is this item ID bookmarked": a favorited story whose article was
-already saved by hand dedups by URL and never gets an `HN Link:` note, and an ID test
-would page down to every such item on every run. Items gone from Algolia make no draft,
-so they don't hold the walk open either. Favorites list newest first, so later pages
-hold nothing new, with two known gaps: an older favorite deleted from Pinboard is not
-re-added, and a failed write followed by a full page of newer successes is never
-retried. `sync hackernews --limit all` reads every page and recovers them. `backup`
-keeps the full traversal with its batched lookup.
-`cleanup hackernews --link-discussions` (default off) is the reverse: for article
-bookmarks carrying the `link_tag` marker (default `find-hn`), it looks each up on HN
-by URL (one Algolia query each) and adds the discussion link. Reddit's bookmark/tag
-shaping lives in
-[`src/reddit/model.rs`](src/reddit/model.rs).
+(Reddit's `walk_saved` hands pages to a callback for this). They share HackerNews' two known
+gaps below and a third that applies to all three: a page whose items are all already on
+Pinboard stops the read even with missing items below it, whether on a first sync whose
+newest items got there another way or because such items landed above an unwritten one
+between runs. `--limit all` recovers all three. HackerNews
+([`hackernews.rs`](src/hackernews.rs) — scrapes `/favorites` for item IDs
+([`favorites.rs`](src/hackernews/favorites.rs)) then batch-reads item details from the
+Algolia HN search API ([`algolia.rs`](src/hackernews/algolia.rs)) — `objectID:… OR …`,
+chunked, so hundreds of favorites cost a couple of queries, not one per item). The favorites
+pages are the costly half (they are what HN answers with 429), so `sync` stops following
+"More" in each stream (stories, comments) at the first page that would give it nothing to
+write (`is_caught_up`). To tell, `fetch_incremental` looks each page's items up on Algolia
+as it is read (one query per page) and checks every draft's `dedup_key` against Pinboard's,
+the same test `sync::filter_new` applies. That is deliberately not "is this item ID
+bookmarked": a favorited story whose article was already saved by hand dedups by URL and
+never gets an `HN Link:` note, and an ID test would page down to every such item on every
+run. Items gone from Algolia make no draft, so they don't hold the walk open either.
+Favorites list newest first, so later pages hold nothing new, with two known gaps: an older
+favorite deleted from Pinboard is not re-added, and a failed write followed by a full page
+of newer successes is never retried. `sync hackernews --limit all` reads every page and
+recovers them. `backup` keeps the full traversal with its batched lookup.
+`cleanup hackernews --link-discussions` (default off) is the reverse: for article bookmarks
+carrying the `link_tag` marker (default `find-hn`), it looks each up on HN by URL (one
+Algolia query each) and adds the discussion link.
+[`src/reddit/model.rs`](src/reddit/model.rs) holds Reddit's bookmark/tag shaping.
 
 **The Reddit cookie is shaped in one place**,
 [`src/reddit/cookie.rs`](src/reddit/cookie.rs). `RedditClient::build` turns the configured

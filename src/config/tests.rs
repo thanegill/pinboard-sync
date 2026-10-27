@@ -501,7 +501,7 @@ fn accepts_any_host_cleanup_can_set_and_reddit_key_matches() {
         )
         .unwrap_or_else(|| panic!("{domain}: cleanup could not set the host"));
         assert_eq!(
-            crate::reddit::model::reddit_key(&moved, domain).as_deref(),
+            crate::keys::reddit_key(&moved, domain).as_deref(),
             Some("/r/rust/comments/abc/x"),
             "{domain}"
         );
@@ -696,19 +696,4 @@ fn account_name_falls_back_to_username() {
         .account_name(),
         None
     );
-}
-
-#[test]
-fn resolve_setting_picks_the_highest_present_tier() {
-    // flag → account → source → global, first `Some` wins.
-    assert_eq!(resolve_setting(Some(1), Some(2), Some(3), 5), 1); // flag tops all
-    assert_eq!(resolve_setting(None, Some(2), Some(3), 5), 2); // account over source
-    assert_eq!(resolve_setting(None, None, Some(3), 5), 3); // source over global
-    assert_eq!(resolve_setting::<usize>(None, None, None, 5), 5); // global fallback
-
-    // A `Some(false)` flag is a real value, so it forces a `true` lower tier off —
-    // the behavior a bare clap flag could not express (this is why `--public[=BOOL]`).
-    assert!(!resolve_setting(Some(false), Some(true), Some(true), true));
-    assert!(resolve_setting(Some(true), None, None, false));
-    assert!(resolve_setting(None, None, None, true)); // global fallback
 }

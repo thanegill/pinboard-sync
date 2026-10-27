@@ -493,7 +493,7 @@ fn resolve_hackernews_cleanup_config(
 ) -> Result<HackerNewsConfig> {
     let mut hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
     if let Some(tag) = link_tag {
-        config::check_taggable("--link-tag", &tag)?;
+        config::check_taggable("`--link-tag`", &tag)?;
         hn_config.link_tag = tag;
     }
     Ok(hn_config)

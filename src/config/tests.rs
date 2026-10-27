@@ -701,3 +701,12 @@ fn account_name_falls_back_to_username() {
         None
     );
 }
+
+#[test]
+fn a_config_tag_refusal_says_it_came_from_the_config() {
+    let error = Config::parse("[[github]]\ntag_lang_prefix = \"a b\"").unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "config: `github[0].tag_lang_prefix` must not contain whitespace"
+    );
+}

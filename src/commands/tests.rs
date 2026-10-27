@@ -6,8 +6,16 @@ use clap::Parser;
 
 #[test]
 fn link_tag_override_rejects_whitespace_and_commas() {
-    assert!(resolve_hackernews_cleanup_config(None, Some("find hn".into())).is_err());
-    assert!(resolve_hackernews_cleanup_config(None, Some("find,hn".into())).is_err());
+    let refused = |tag: &str| {
+        resolve_hackernews_cleanup_config(None, Some(tag.into()))
+            .unwrap_err()
+            .to_string()
+    };
+    assert_eq!(
+        refused("find hn"),
+        "`--link-tag` must not contain whitespace"
+    );
+    assert_eq!(refused("find,hn"), "`--link-tag` must not contain a comma");
 }
 
 #[test]

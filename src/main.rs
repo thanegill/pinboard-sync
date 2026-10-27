@@ -42,7 +42,7 @@ use github::{GitHubClient, GitHubConfig};
 use hackernews::cleanup::HackerNewsCleanupOpts;
 use hackernews::{HackerNewsClient, HackerNewsConfig};
 use hook::{cleanup_hook, handle_source_err, on_auth_failure_from_env};
-use jobs::backup_jobs::{backup_jobs, BackupJob, SkippedTarget};
+use jobs::backup_jobs::{build_backup_plan, BackupJob, SkippedTarget};
 use jobs::{
     build_all_jobs, build_jobs, open_pinboard, AllRun, SourceAccount, SyncJob, SyncOverrides,
 };
@@ -202,7 +202,7 @@ fn check_config(path: &Path) -> Result<String> {
 
 async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     let top_dry_run = cmd.dry_run;
-    let (jobs, overrides, prebuilt_failures) = sync_jobs(cmd, config)?;
+    let (jobs, overrides, prebuilt_failures) = build_sync_plan(cmd, config)?;
     let (pinboard, bookmarks) =
         open_pinboard(overrides.flags.pinboard_token.clone(), config).await?;
     // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
@@ -219,7 +219,7 @@ async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
 
 /// The jobs a `sync` invocation runs, the overrides they were built from, and how many
 /// of its accounts could not be built, for [`run_sync_jobs`] to count as failed.
-fn sync_jobs(cmd: SyncCmd, config: &Config) -> Result<(Vec<SyncJob>, SyncOverrides, usize)> {
+fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<(Vec<SyncJob>, SyncOverrides, usize)> {
     Ok(match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
@@ -333,7 +333,7 @@ async fn run_sync_jobs(
 /// and the same items as domain bookmarks under `normalized/`, plus a `manifest.json`.
 /// Each run replaces the previous snapshot in place.
 async fn run_backup(cmd: BackupCmd, config: &Config) -> Result<()> {
-    let plan = backup_jobs(&cmd, config)?;
+    let plan = build_backup_plan(&cmd, config)?;
     let dir = resolve_backup_dir(plan.out.or_else(|| cmd.out.out.clone()), config)?;
     back_up(plan.jobs, plan.skipped, &dir, plan.dry_run || cmd.dry_run).await
 }
@@ -428,16 +428,16 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             if !config.has_accounts() {
                 bail!("cleanup --all requires a --config with at least one configured account");
             }
-            let github = cleanup_all_pass::<GitHubAccount>(&overrides, config)?;
-            let reddit = cleanup_all_pass::<RedditAccount>(&overrides, config)?;
-            let hackernews = cleanup_all_pass::<HackerNewsAccount>(&overrides, config)?;
+            let github = cleanup_all_target::<GitHubAccount>(&overrides, config)?;
+            let reddit = cleanup_all_target::<RedditAccount>(&overrides, config)?;
+            let hackernews = cleanup_all_target::<HackerNewsAccount>(&overrides, config)?;
             let (pinboard, bookmarks) = open_pinboard(None, config).await?;
             // One view across all three sources: each writes, and the next must plan
             // against what it left rather than the pre-run snapshot.
             let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), cmd.dry_run);
             let mut run = AllRun::default();
             if let Some((acct, dates)) = github {
-                run.record(cleanup_one_github(&store, Some(acct), None, dates, config).await);
+                run.record(cleanup_github_account(&store, Some(acct), None, dates, config).await);
             }
             if let Some((acct, dates)) = reddit {
                 let reddit_overrides = RedditCleanupOverrides {
@@ -446,12 +446,13 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                     fix_titles: true,
                 };
                 run.record(
-                    cleanup_one_reddit(Some(acct), reddit_overrides, dates, &store, config).await,
+                    cleanup_reddit_account(Some(acct), reddit_overrides, dates, &store, config)
+                        .await,
                 );
             }
             if let Some((acct, dates)) = hackernews {
                 run.record(
-                    cleanup_one_hackernews(
+                    cleanup_hackernews_account(
                         Some(acct),
                         false, // linking is opt-in via `cleanup hackernews --link-discussions`
                         None,
@@ -479,7 +480,7 @@ async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
 /// The account a `cleanup --all` pass runs as (the source's first) and its dates, or
 /// `None` for a source with no accounts. Resolved before `posts/all` is read, so a
 /// refused run does not spend that rate-limited call.
-fn cleanup_all_pass<'a, A: SourceAccount>(
+fn cleanup_all_target<'a, A: SourceAccount>(
     overrides: &DateOverrides,
     config: &'a Config,
 ) -> Result<Option<(&'a A, DateOpts)>> {
@@ -517,12 +518,12 @@ async fn run_cleanup_github(
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
-    cleanup_one_github(&store, account, args.github_token, dates, config).await
+    cleanup_github_account(&store, account, args.github_token, dates, config).await
 }
 
 /// Run github cleanup: build an API client from the account/env token and refresh
 /// renamed repos / titles / language.
-async fn cleanup_one_github<S: BookmarkStore + AccountState>(
+async fn cleanup_github_account<S: BookmarkStore + AccountState>(
     store: &S,
     account: Option<&GitHubAccount>,
     token_flag: Option<String>,
@@ -531,11 +532,11 @@ async fn cleanup_one_github<S: BookmarkStore + AccountState>(
 ) -> Result<()> {
     let token = resolve_github_token(token_flag, account).with_context(missing_github_token)?;
     let client = GitHubClient::new(token, account.map(GitHubConfig::from).unwrap_or_default())?;
-    cleanup_github_with(store, &client, account, dates, config).await
+    cleanup_github_with_client(store, &client, account, dates, config).await
 }
 
-/// [`cleanup_one_github`] past building its client, which a test points at a fake API.
-async fn cleanup_github_with<S: BookmarkStore + AccountState>(
+/// [`cleanup_github_account`] with its client built, which a test points at a fake API.
+async fn cleanup_github_with_client<S: BookmarkStore + AccountState>(
     store: &S,
     client: &GitHubClient,
     account: Option<&GitHubAccount>,
@@ -568,7 +569,7 @@ async fn run_cleanup_reddit(
     )?;
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
-    cleanup_one_reddit(
+    cleanup_reddit_account(
         account,
         RedditCleanupOverrides::from(&args),
         dates,
@@ -578,7 +579,7 @@ async fn run_cleanup_reddit(
     .await
 }
 
-async fn cleanup_one_reddit<S: BookmarkStore + AccountState>(
+async fn cleanup_reddit_account<S: BookmarkStore + AccountState>(
     account: Option<&RedditAccount>,
     overrides: RedditCleanupOverrides,
     dates: DateOpts,
@@ -628,7 +629,7 @@ async fn run_cleanup_hackernews(
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
-    cleanup_one_hackernews(account, args.link_discussions, args.link_tag, dates, &store).await
+    cleanup_hackernews_account(account, args.link_discussions, args.link_tag, dates, &store).await
 }
 
 /// Build the HackerNews tag config for a cleanup run, letting `--link-tag` override the
@@ -646,7 +647,7 @@ fn resolve_hackernews_cleanup_config(
     Ok(hn_config)
 }
 
-async fn cleanup_one_hackernews<S: BookmarkStore + AccountState>(
+async fn cleanup_hackernews_account<S: BookmarkStore + AccountState>(
     account: Option<&HackerNewsAccount>,
     link_discussions: bool,
     link_tag: Option<String>,
@@ -799,7 +800,8 @@ mod tests {
             ..Default::default()
         };
         for argv in [&["github", "--all"][..], &["--all"]] {
-            let (jobs, _, prebuilt_failures) = sync_jobs(parse_sync(argv), &config).expect("plans");
+            let (jobs, _, prebuilt_failures) =
+                build_sync_plan(parse_sync(argv), &config).expect("plans");
             assert_eq!((jobs.len(), prebuilt_failures), (1, 1), "sync {argv:?}");
         }
     }
@@ -1102,7 +1104,7 @@ mod tests {
         let config = Config::default();
 
         let cmd = parse_backup(&["--all", "pinboard"]);
-        let err = backup_jobs(&cmd, &config)
+        let err = build_backup_plan(&cmd, &config)
             .err()
             .expect("should be rejected");
         assert!(
@@ -1111,7 +1113,7 @@ mod tests {
         );
 
         let cmd = parse_backup(&[]);
-        let err = backup_jobs(&cmd, &config)
+        let err = build_backup_plan(&cmd, &config)
             .err()
             .expect("should be rejected");
         assert!(err.to_string().contains("specify a target"), "{err}");
@@ -1156,7 +1158,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let plan = backup_jobs(&parse_backup(&["--all"]), &config).expect("plans");
+        let plan = build_backup_plan(&parse_backup(&["--all"]), &config).expect("plans");
         let named: Vec<(&str, &str)> = plan
             .jobs
             .iter()
@@ -1197,7 +1199,7 @@ mod tests {
         };
         config.pinboard.token = Some("user:tok".into());
 
-        let plan = backup_jobs(&parse_backup(&["--all"]), &config).expect("plans");
+        let plan = build_backup_plan(&parse_backup(&["--all"]), &config).expect("plans");
         let labels: Vec<&str> = plan.jobs.iter().map(|job| job.label.as_str()).collect();
         assert_eq!(labels, ["reddit[alice]", "pinboard"]);
         assert_eq!(skipped_labels(&plan.skipped), ["github[default]"]);
@@ -1233,7 +1235,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let plan = backup_jobs(&parse_backup(&["github", "--all"]), &config).expect("plans");
+        let plan = build_backup_plan(&parse_backup(&["github", "--all"]), &config).expect("plans");
         let labels: Vec<&str> = plan.jobs.iter().map(|job| job.label.as_str()).collect();
         assert_eq!(labels, ["github[main]"]);
         assert_eq!(skipped_labels(&plan.skipped), ["github[tokenless]"]);
@@ -1343,7 +1345,7 @@ mod tests {
             let client =
                 GitHubClient::with_base_url("tok".into(), GitHubConfig::from(home), server.uri());
 
-            cleanup_github_with(
+            cleanup_github_with_client(
                 &pinboard.cleanup_store(false),
                 &client,
                 Some(home),

@@ -7,8 +7,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use log::warn;
 
 use super::{
-    build_job, job_label, pinboard_client, warn_shared_env_secrets, SourceAccount, SourceClient,
-    SyncOverrides,
+    build_job, job_label, pinboard_client_for_token, warn_shared_env_secrets, SourceAccount,
+    SourceClient, SyncOverrides,
 };
 use crate::backup::{self, BackupSource};
 use crate::cli::{BackupCmd, BackupTarget, OutFlag};
@@ -63,7 +63,7 @@ pub struct SkippedTarget {
     pub reason: anyhow::Error,
 }
 
-pub fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
+pub fn build_backup_plan(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
     match (cmd.all, &cmd.target) {
         (true, Some(_)) => bail!("--all cannot be combined with a target subcommand"),
         (true, None) => {
@@ -77,11 +77,11 @@ pub fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
                 out: None,
                 dry_run: false,
             };
-            every_backup_job::<RedditAccount>(&overrides, config, &mut plan);
-            every_backup_job::<GitHubAccount>(&overrides, config, &mut plan);
-            every_backup_job::<HackerNewsAccount>(&overrides, config, &mut plan);
+            build_every_backup_job::<RedditAccount>(&overrides, config, &mut plan);
+            build_every_backup_job::<GitHubAccount>(&overrides, config, &mut plan);
+            build_every_backup_job::<HackerNewsAccount>(&overrides, config, &mut plan);
             let has_source_targets = !plan.jobs.is_empty() || !plan.skipped.is_empty();
-            match pinboard_backup_job(None, config)? {
+            match build_pinboard_backup_job(None, config)? {
                 Some(job) => plan.jobs.push(job),
                 // Silence here would be the worst outcome: a nightly `--all` that quietly
                 // stops covering Pinboard (an unprovisioned sops secret makes
@@ -107,7 +107,7 @@ pub fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
             }
             Ok(plan)
         }
-        (false, Some(BackupTarget::Reddit(args))) => source_backup_plan::<RedditAccount>(
+        (false, Some(BackupTarget::Reddit(args))) => build_source_backup_plan::<RedditAccount>(
             args.account.as_deref(),
             args.all,
             &SyncOverrides::from(args.clone()),
@@ -115,7 +115,7 @@ pub fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
             args.dry_run,
             config,
         ),
-        (false, Some(BackupTarget::Github(args))) => source_backup_plan::<GitHubAccount>(
+        (false, Some(BackupTarget::Github(args))) => build_source_backup_plan::<GitHubAccount>(
             args.account.as_deref(),
             args.all,
             &SyncOverrides::from(args.clone()),
@@ -123,16 +123,18 @@ pub fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
             args.dry_run,
             config,
         ),
-        (false, Some(BackupTarget::Hackernews(args))) => source_backup_plan::<HackerNewsAccount>(
-            args.account.as_deref(),
-            args.all,
-            &SyncOverrides::from(args.clone()),
-            &args.out,
-            args.dry_run,
-            config,
-        ),
+        (false, Some(BackupTarget::Hackernews(args))) => {
+            build_source_backup_plan::<HackerNewsAccount>(
+                args.account.as_deref(),
+                args.all,
+                &SyncOverrides::from(args.clone()),
+                &args.out,
+                args.dry_run,
+                config,
+            )
+        }
         (false, Some(BackupTarget::Pinboard(args))) => {
-            let job = pinboard_backup_job(args.pinboard_token.clone(), config)?.context(
+            let job = build_pinboard_backup_job(args.pinboard_token.clone(), config)?.context(
                 "missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or \
                  [pinboard] in the config)",
             )?;
@@ -149,7 +151,7 @@ pub fn backup_jobs(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
 
 /// The backup plan for one source, selecting by name / first / every account. Reuses
 /// `build_job` so account selection and the whole secret ladder behave as in `sync`.
-fn source_backup_plan<A: SourceAccount>(
+fn build_source_backup_plan<A: SourceAccount>(
     name: Option<&str>,
     all: bool,
     overrides: &SyncOverrides,
@@ -170,25 +172,25 @@ fn source_backup_plan<A: SourceAccount>(
                 A::SOURCE
             );
         }
-        every_backup_job::<A>(overrides, config, &mut plan);
+        build_every_backup_job::<A>(overrides, config, &mut plan);
     } else {
         let account = config::select_account(A::configured(config), name)?;
         plan.jobs
-            .push(source_backup_job(account, overrides, config)?);
+            .push(build_backup_job(account, overrides, config)?);
     }
     Ok(plan)
 }
 
 /// A backup job for every configured account of one source, with each account that fails
 /// to build recorded in `plan.skipped` instead, so the healthy ones are still backed up.
-fn every_backup_job<A: SourceAccount>(
+fn build_every_backup_job<A: SourceAccount>(
     overrides: &SyncOverrides,
     config: &Config,
     plan: &mut BackupPlan,
 ) {
     warn_shared_env_secrets::<A>(overrides, config);
     for account in A::configured(config) {
-        match source_backup_job(Some(account), overrides, config) {
+        match build_backup_job(Some(account), overrides, config) {
             Ok(job) => plan.jobs.push(job),
             Err(reason) => plan.skipped.push(SkippedTarget {
                 label: job_label(Some(account)),
@@ -200,7 +202,7 @@ fn every_backup_job<A: SourceAccount>(
 
 /// Wrap one account's `SyncJob` as a backup job, keeping its client and auth hook and
 /// discarding the write-only settings (`limit`, `toread`, dates) backup has no use for.
-fn source_backup_job<A: SourceAccount>(
+fn build_backup_job<A: SourceAccount>(
     account: Option<&A>,
     overrides: &SyncOverrides,
     config: &Config,
@@ -220,12 +222,12 @@ fn source_backup_job<A: SourceAccount>(
 
 /// The Pinboard backup job, or `None` when no token is configured — so `backup --all`
 /// still backs up the sources on a machine that only holds source credentials.
-fn pinboard_backup_job(flag: Option<String>, config: &Config) -> Result<Option<BackupJob>> {
+fn build_pinboard_backup_job(flag: Option<String>, config: &Config) -> Result<Option<BackupJob>> {
     let Some(token) = resolve_pinboard_token(flag, &config.pinboard) else {
         return Ok(None);
     };
     Ok(Some(BackupJob {
-        client: BackupClient::Pinboard(pinboard_client(token, config)?),
+        client: BackupClient::Pinboard(pinboard_client_for_token(token, config)?),
         stem: "pinboard".to_string(),
         label: "pinboard".to_string(),
         hook: None,
@@ -262,7 +264,7 @@ mod tests {
             ..Default::default()
         };
         std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
-        let plan = backup_jobs(&backup_all(), &config);
+        let plan = build_backup_plan(&backup_all(), &config);
         std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
 
         let plan = plan.expect("plans");
@@ -277,9 +279,10 @@ mod tests {
             ..Default::default()
         };
 
-        let (_, logs) =
-            crate::test_support::capturing_logs(async { backup_jobs(&backup_all(), &config) })
-                .await;
+        let (_, logs) = crate::test_support::capturing_logs(async {
+            build_backup_plan(&backup_all(), &config)
+        })
+        .await;
 
         assert_eq!(
             warnings(&logs).first().copied(),

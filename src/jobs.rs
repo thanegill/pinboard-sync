@@ -426,14 +426,14 @@ pub fn build_job<A: SourceAccount>(
 }
 
 /// Resolve the Pinboard token and build the client (no fetch).
-fn build_pinboard(token_flag: Option<String>, config: &Config) -> Result<PinboardClient> {
+fn build_pinboard_client(token_flag: Option<String>, config: &Config) -> Result<PinboardClient> {
     let token = resolve_pinboard_token(token_flag, &config.pinboard)
         .context("missing Pinboard token (set --pinboard-token, PINBOARD_TOKEN/_FILE, or [pinboard] in the config)")?;
-    pinboard_client(token, config)
+    pinboard_client_for_token(token, config)
 }
 
 /// The client for an already-resolved token, at the configured write pacing.
-fn pinboard_client(token: String, config: &Config) -> Result<PinboardClient> {
+fn pinboard_client_for_token(token: String, config: &Config) -> Result<PinboardClient> {
     let rate_limit = config.pinboard.rate_limit_secs.unwrap_or(RATE_LIMIT_SECS);
     PinboardClient::new(token, rate_limit)
 }
@@ -445,7 +445,7 @@ pub async fn open_pinboard(
     token_flag: Option<String>,
     config: &Config,
 ) -> Result<(PinboardClient, Vec<Bookmark>)> {
-    let pinboard = build_pinboard(token_flag, config)?;
+    let pinboard = build_pinboard_client(token_flag, config)?;
     debug!("fetching existing bookmarks from Pinboard (posts/all)");
     let bookmarks = pinboard.all().await.context("listing Pinboard bookmarks")?;
     info!("pinboard: {} existing bookmark(s)", bookmarks.len());

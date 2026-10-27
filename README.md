@@ -334,9 +334,9 @@ already be truncated to fit its API's URL budget.
   so the target is reported failed and lands in the manifest's `failed` list rather than
   silently replacing a complete snapshot with a partial one.
 - **The directory comes from `--out DIR` or `[backup].directory`**, with no built-in
-  default. `backup <target>` narrows a run to one service (or one account); `--all` covers
-  the Pinboard account plus every configured source account. Backing up a source never
-  contacts Pinboard, so those targets need no Pinboard token.
+  default. An empty value is an error in either place. `backup <target>` narrows a run to
+  one service (or one account); `--all` covers the Pinboard account plus every configured
+  source account. A source's backup never contacts Pinboard and needs no Pinboard token.
 - `--dry-run` prints the file plan without writing, but still performs the full fetch.
 
 ## Config file and multiple accounts

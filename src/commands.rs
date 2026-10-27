@@ -175,7 +175,7 @@ async fn run_sync_jobs(
 /// Each run replaces the previous snapshot in place.
 pub async fn run_backup(cmd: BackupCmd, config: &Config) -> Result<()> {
     let plan = build_backup_plan(&cmd, config)?;
-    let dir = resolve_backup_dir(plan.out.or_else(|| cmd.out.out.clone()), config)?;
+    let dir = resolve_backup_dir([plan.out, cmd.out.out.clone()], config)?;
     back_up(plan.jobs, plan.skipped, &dir, plan.dry_run || cmd.dry_run).await
 }
 
@@ -241,11 +241,15 @@ async fn back_up(
     run.finish()
 }
 
-/// The snapshot directory: the `--out` flag, else `[backup].directory`. There is no
-/// built-in default — writing a snapshot into an unexpected working directory is worse
-/// than an error.
-fn resolve_backup_dir(flag: Option<String>, config: &Config) -> Result<PathBuf> {
-    first_nonempty([flag, config.backup.directory.clone()])
+/// The snapshot directory: the `--out` after the target, else the one before it, else
+/// `[backup].directory`. There is no built-in default — writing a snapshot into an
+/// unexpected working directory is worse than an error — and an empty `--out` in either
+/// place is refused, as an empty `[backup].directory` is, rather than skipped.
+fn resolve_backup_dir(flags: [Option<String>; 2], config: &Config) -> Result<PathBuf> {
+    if flags.iter().flatten().any(|dir| dir.trim().is_empty()) {
+        bail!("`--out` must not be empty");
+    }
+    first_nonempty(flags.into_iter().chain([config.backup.directory.clone()]))
         .map(PathBuf::from)
         .context("no backup directory (pass --out DIR or set [backup].directory in the config)")
 }

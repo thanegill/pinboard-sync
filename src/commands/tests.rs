@@ -368,17 +368,36 @@ fn backup_all_conflicts_with_a_target_and_a_bare_backup_is_rejected() {
 #[test]
 fn backup_dir_prefers_the_flag_then_the_config_then_errors() {
     let mut config = Config::default();
-    assert!(resolve_backup_dir(None, &config).is_err());
+    assert!(resolve_backup_dir([None, None], &config).is_err());
 
     config.backup.directory = Some("/from-config".into());
     assert_eq!(
-        resolve_backup_dir(None, &config).unwrap(),
+        resolve_backup_dir([None, None], &config).unwrap(),
         PathBuf::from("/from-config")
     );
     assert_eq!(
-        resolve_backup_dir(Some("/from-flag".into()), &config).unwrap(),
+        resolve_backup_dir([Some("/from-flag".into()), None], &config).unwrap(),
         PathBuf::from("/from-flag")
     );
+    let refused = |flags: [Option<&str>; 2]| {
+        resolve_backup_dir(flags.map(|flag| flag.map(String::from)), &config)
+            .unwrap_err()
+            .to_string()
+    };
+    assert_eq!(
+        resolve_backup_dir([Some("/after".into()), Some("/before".into())], &config).unwrap(),
+        PathBuf::from("/after"),
+        "the `--out` after the target wins"
+    );
+    for blank in ["", " "] {
+        for flags in [
+            [Some(blank), None],
+            [None, Some(blank)],
+            [Some("/y"), Some(blank)],
+        ] {
+            assert_eq!(refused(flags), "`--out` must not be empty", "{flags:?}");
+        }
+    }
 }
 
 /// Each source's name reaches its jobs' labels and backup file stems, which are part of

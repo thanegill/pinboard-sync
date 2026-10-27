@@ -24,6 +24,8 @@ All notable changes to this project are documented here. The format is based on
 - The flake is built with flake-parts. Its `flake-utils` input is now `flake-parts`, and
   its `nixosModules` are module attrsets tagged `_class = "nixos"` rather than bare
   functions: importing them works as before, calling one as a function does not.
+- An empty `--out` is an error, as an empty `[backup].directory` already was. It used to
+  fall back to `[backup].directory`.
 
 ### Removed
 

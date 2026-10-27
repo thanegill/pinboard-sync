@@ -17,16 +17,13 @@ pub fn rfc3339_to_unix(s: &str) -> Option<i64> {
 }
 
 /// Parse an RFC 3339 timestamp into an [`OffsetDateTime`] — the `cleanup` domain form of
-/// a bookmark's creation time. `None` if it doesn't parse. (Can't be a `From`/`TryFrom`
-/// impl: `OffsetDateTime` is foreign to this crate, so the orphan rule forbids it.)
+/// a bookmark's creation time. `None` if it doesn't parse.
 pub fn parse_rfc3339(s: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(s, &Rfc3339).ok()
 }
 
 /// Format an [`OffsetDateTime`] as RFC 3339, keeping its offset and any fractional
-/// seconds; Pinboard's `dt` goes through [`to_pinboard_dt`] instead. `None` if formatting
-/// fails. (Can't be a `From`/`Into` impl: `String` and `OffsetDateTime` are both foreign
-/// to this crate, so the orphan rule forbids it — and it's fallible.)
+/// seconds, or `None` if that fails. Pinboard's `dt` uses [`to_pinboard_dt`] instead.
 pub fn to_rfc3339(dt: OffsetDateTime) -> Option<String> {
     dt.format(&Rfc3339).ok()
 }
@@ -40,9 +37,7 @@ pub fn to_pinboard_dt(dt: OffsetDateTime) -> Option<String> {
 }
 
 /// An [`OffsetDateTime`] from unix epoch seconds — used to lift a source's epoch post
-/// date into the `cleanup` domain form. `None` if out of range. (Thin `.ok()` over the
-/// `time` crate's own `from_unix_timestamp`; can't be a `From` impl — `OffsetDateTime` is
-/// foreign and the conversion is fallible.)
+/// date into the `cleanup` domain form. `None` if out of range.
 pub fn from_unix(secs: i64) -> Option<OffsetDateTime> {
     OffsetDateTime::from_unix_timestamp(secs).ok()
 }

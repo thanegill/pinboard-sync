@@ -1,26 +1,23 @@
-//! The shared `cleanup` driver. Each source describes how to re-shape one bookmark
-//! (a [`CleanupPass`]); this module owns the loop common to all of them: plan every
-//! bookmark's end-state, then group the plans by their target URL and write each group.
+//! The shared `cleanup` driver. Each source describes how to re-shape one bookmark (a
+//! [`CleanupPass`]); [`run_pass`] owns the loop common to all of them: plan every
+//! bookmark's end-state, group the plans by target URL, and write each group.
+//!
 //! A lone plan is diffed against its stored bookmark, skipped when nothing changed, and
-//! written via [`BookmarkStore::apply_update`] (deleting the old URL on a rewrite). Two or
-//! more plans landing on one URL are a collision: they are field-merged (see
-//! [`merge_bookmarks`]) into a single record written via [`BookmarkStore::apply_merge`],
-//! which deletes the absorbed URLs. A bookmark already stored at the target joins that
-//! merge as well — Pinboard holds one record per URL, so the end state there has to be a
-//! single bookmark, and merging keeps what it had instead of replacing it. A plan that
-//! disagrees with it about visibility does not join: that one is refused and left where it
-//! is, while the rest of the group merges. The exception is a bookmark that is itself
-//! planned to move *away* from the target — it is not what stays there, so it neither leads
-//! the merge nor blocks it; its own plan is what preserves it. With no record staying at a
-//! target, the plans must still agree with each other about `public`, or none of them
-//! writes — a merge never picks a visibility. A rewrite's old URL is never
-//! deleted when it is itself the target of another planned write in the same pass, so
-//! colliding/chained rewrites can't clobber each other's record. Every refusal decided
-//! before the first write is closed under [`propagate_refusals`], which makes that much
-//! order-independent; a write that *fails* re-closes it too, but only over the groups not
-//! yet written, so a failed run is the one case where order shows.
-//! `run_pass` renders the dry-run lines and tallies into a [`PassOutcome`], which decides
-//! on its own whether the run failed — see [`PassOutcome::into_result`].
+//! written via [`BookmarkStore::apply_update`], deleting the old URL on a rewrite. Plans
+//! landing on one URL, with any record already stored there, are field-merged
+//! ([`merge_bookmarks`]) into one record written via [`BookmarkStore::apply_merge`], which
+//! deletes the absorbed URLs: Pinboard holds one record per URL. A plan that disagrees
+//! about visibility with the record staying at its target is refused and left where it is;
+//! with no record staying, plans that disagree with each other about `public` are all
+//! refused, since a merge never picks a visibility. A bookmark planned to move *away* from
+//! a target neither leads that merge nor blocks it.
+//!
+//! A rewrite never deletes an old URL that another plan targets, so chained rewrites can't
+//! clobber each other. Every refusal decided before the first write is closed under
+//! [`propagate_refusals`], which makes it order-independent; a failed write re-closes it
+//! over the groups not yet written, so a failed run is the one case where order shows. The
+//! dry-run lines and the tallies go into a [`PassOutcome`], whose
+//! [`PassOutcome::into_result`] decides whether the run failed.
 
 use std::collections::{HashMap, HashSet};
 
@@ -65,54 +62,38 @@ impl Plan {
 
 /// How a source re-shapes one bookmark during `cleanup`.
 pub trait CleanupPass {
-    /// The end-state for `bookmark` as a [`Plan`] — distinguishing an answer from the
-    /// source ([`Plan::Bookmark`], [`Plan::Unchanged`]) from a bookmark this pass does
-    /// not handle ([`Plan::Skipped`]), which the driver needs to tell one dead link
-    /// apart from an unreachable source.
-    /// [`SourceError::Other`] marks a per-item failure (logged and counted; the
-    /// pass continues with the next bookmark), while [`SourceError::ReauthRequired`],
-    /// [`SourceError::RateLimited`] and [`SourceError::Blocked`] stop the pass: a dead
-    /// credential, an exhausted quota and an edge block all fail every remaining lookup
-    /// too. A plan's
-    /// `timestamp` is the *candidate* source date; the driver resolves the final date
-    /// from it via the pass's [`DateOpts`], and takes `public`/`read_later` from the
-    /// stored bookmark — so those two fields on the returned `Bookmark` are ignored. (That
-    /// holds of each plan; the record *written* for a group of colliding plans still
-    /// follows [`merge_bookmarks`]'s rules across their stored flags.) The driver still
-    /// skips an unchanged plan (one
-    /// whose fields all match `bookmark`), so a pass can return the computed end-state
-    /// without checking for changes itself.
+    /// The end-state for `bookmark` as a [`Plan`]: an answer from the source
+    /// ([`Plan::Bookmark`], [`Plan::Unchanged`]) or a bookmark this pass does not handle
+    /// ([`Plan::Skipped`]): how the driver tells one dead link from an unreachable source.
+    ///
+    /// [`SourceError::Other`] is a per-item failure: logged and counted, and the pass goes
+    /// on. [`SourceError::ReauthRequired`], [`SourceError::RateLimited`] and
+    /// [`SourceError::Blocked`] stop the pass, since each fails every remaining lookup too.
+    ///
+    /// A plan's `timestamp` is only the candidate source date: the driver resolves the
+    /// final date with the pass's [`DateOpts`] and takes `public`/`read_later` from the
+    /// stored bookmark, ignoring the plan's (a merged group's record follows
+    /// [`merge_bookmarks`]'s rules over its members' stored flags). The driver skips a plan
+    /// that matches `bookmark`, so a pass need not check for changes itself.
     async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError>;
 }
 
-/// What one pass did. The two failure counts are kept apart because they mean
-/// different things: a `plan` failure is one link we could not read from the source,
-/// while a write failure is the destination itself refusing us.
-/// `must_use` because the whole design rests on [`PassOutcome::into_result`] being the
-/// one place the exit code is decided — dropping an outcome silently discards every
-/// failure it recorded.
+/// What one pass did. `plan_failed` (a link the source would not answer for) and
+/// `write_failed` (the destination refusing a write) are kept apart because they mean
+/// different things. `must_use`: [`PassOutcome::into_result`] is the one place the exit
+/// code is decided, so dropping an outcome discards every failure it recorded.
 #[must_use]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PassOutcome {
     /// Bookmarks written, or under `dry_run` that would be.
     pub changed: usize,
-    /// Under `dry_run`, the per-bookmark preview lines as printed (not the closing tally).
-    /// Kept rather than only written to stdout so it can be asserted on: a preview is the
-    /// one thing an operator reads before letting this tool loose on their account, and
-    /// while it was a bare `println!` the whole of it could be deleted with every test
-    /// still green.
+    /// Under `dry_run`, the per-bookmark preview lines as printed (not the closing tally),
+    /// kept so tests can assert on what an operator reads before a real run.
     pub preview: Vec<String>,
-    /// Rewrites this pass declined to make: the target must not be written at all (see
-    /// [`Refusal`]), or a plan was held back over visibility — because it disagreed with
-    /// the record staying at its target, or because nothing is staying there and the plans
-    /// heading for it disagreed with each other, in which case every one of them is held
-    /// back. Not a failure — leaving them alone is the safe
-    /// outcome — but it is work that did not happen, so it is reported rather than only
-    /// logged per-item.
-    ///
-    /// Counted per *group* when the target itself is untouchable (one refusal however many
-    /// bookmarks were heading there) and per *plan* when a single member is held back over
-    /// visibility, so this is a count of abandoned writes rather than of bookmarks.
+    /// Rewrites this pass declined to make: a target that must not be written at all (see
+    /// [`Refusal`]), or a plan held back over visibility. Not a failure, but work that did
+    /// not happen, so it is reported. Counted per *group* for an untouchable target and per
+    /// *plan* for one held back, so it counts abandoned writes, not bookmarks.
     pub refused: usize,
     /// Bookmarks the source gave an answer for — the evidence that it is reachable.
     /// Excludes [`Plan::Skipped`], which never asked it anything.
@@ -194,29 +175,16 @@ impl Halt {
 }
 
 impl PassOutcome {
-    /// The run's verdict. A link we could not look up is *not* a failed run: it is
-    /// logged, skipped, and every other bookmark is still cleaned up, so one
-    /// permanently dead URL cannot wedge a scheduled service into a failed state
-    /// forever. Three things do fail the run: a [`Halt`] (a dead credential, a rate
-    /// limit or an edge block), a write we could not make (the destination is what we
-    /// sync *to*), and lookups failing in the *majority*, which is an outage wearing a
-    /// per-item disguise.
+    /// The run's verdict. A link that could not be looked up does not fail the run: it is
+    /// logged and skipped, so one dead URL can't wedge a scheduled service. A [`Halt`], a
+    /// failed write, or a majority of failed lookups (`plan_failed > reached.max(1)`) do.
     ///
-    /// The majority test rather than "every lookup failed" because a `plan` failure can
-    /// no longer be one dead link: every permanent per-item condition reaches the driver
-    /// as a [`Plan`] (a deleted or blocked repo is [`Plan::Bookmark`], a URL the pass
-    /// does not handle is [`Plan::Skipped`]), and a recognised rate limit is a [`Halt`].
-    /// What is left in `plan_failed` is post-retry 5xx, network trouble, and throttling a
-    /// source did not label — a handful is a blip worth riding out, but most of them
-    /// failing means most of the work silently did not happen.
-    ///
-    /// The `max(1)` floor keeps that promise for a pass with a tiny population: the
-    /// discussion-link pass strips its own marker tag, so it steadily looks up one or two
-    /// bookmarks, and without the floor a single hiccup there would be a "majority" and
-    /// would wedge the service all over again. One failed lookup is always survivable.
-    /// Returns [`SourceError`] rather than a plain `anyhow::Error` so the *reason* still
-    /// reaches `main`, which is what decides whether to fire the auth-failure hook — a
-    /// halted credential must, a rate limit or an edge block must not.
+    /// The majority, not "every lookup", because permanent per-item conditions arrive as
+    /// [`Plan`]s, leaving `plan_failed` to post-retry 5xx, network trouble and unlabelled
+    /// throttling. The `max(1)` floor keeps one failed lookup survivable for a pass that
+    /// looks up only one or two bookmarks, like the discussion-link pass. Returns
+    /// [`SourceError`] so `main` fires the auth-failure hook for a halted credential, and
+    /// only for that.
     pub fn into_result(self) -> Result<(), SourceError> {
         if let Some(halt) = &self.halted {
             // Why we stopped is the headline, but it must not bury what else went wrong
@@ -260,30 +228,14 @@ impl PassOutcome {
     }
 }
 
-/// Run `pass` over `bookmarks` (already filtered to the source). Re-writes each changed
-/// bookmark (deleting the old URL when it changed), or prints the diff under the store's
-/// dry-run. `noun` names the source in the scan log. Never fails outright: every failure,
-/// including a dead credential, is tallied into the returned [`PassOutcome`], which the
-/// caller turns into a verdict.
+/// Run `pass` over `bookmarks` (already filtered to the source), as the module doc
+/// describes; under the store's dry-run, print what would change instead. `noun` names the
+/// source in the scan log. Never fails outright: every failure, a dead credential included,
+/// is tallied into the returned [`PassOutcome`].
 ///
 /// Residency is asked of `store`, whose view covers the *whole* account and reflects what
-/// earlier passes in this run already wrote. Both halves matter: a plan can target a URL
-/// outside its own filter — HackerNews rewrites a story bookmark to its article, which is
-/// by definition not an HN item URL — and writing there is `replace=yes` over a record
-/// this pass never planned; and `cleanup --all` runs three sources in turn over one
-/// account, so a snapshot taken before the first would be stale for the others.
-///
-/// Two phases so that several bookmarks whose plans normalize to the *same* URL don't
-/// clobber each other: phase 1 plans every bookmark (resolving date + privacy), phase 2
-/// groups the plans by target URL and writes each group. A lone group is a normal
-/// rewrite; a group of more than one is field-merged (see [`merge_bookmarks`]) into a
-/// single bookmark that absorbs the others.
-///
-/// A rewrite's old URL is only deleted when it is not itself the target of another
-/// planned write in the pass: if bookmark X normalizes onto a URL that is bookmark Y's
-/// stored URL while Y moves elsewhere, Y's delete would otherwise remove the record X
-/// just wrote there. Precomputing the set of all target URLs and refusing to delete any
-/// of them makes the pass order-independent.
+/// earlier passes of this run wrote: a plan can target a URL outside its own filter (an HN
+/// story rewritten to its article), and `cleanup --all` runs three sources on one account.
 pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     store: &S,
     bookmarks: &[Bookmark],

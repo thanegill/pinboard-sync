@@ -108,12 +108,6 @@ impl TryFrom<PinboardBookmark> for Bookmark {
     }
 }
 
-// The service-agnostic domain form, `crate::bookmark::Bookmark`, is what the rest of the
-// crate works with; `posts/all` parses into `PinboardBookmark` and converts via its
-// `TryFrom` impl, and a write takes a whole `Bookmark` (mapped to the API params in
-// `post_add`). The `BookmarkStore` port also lives in `bookmark`; this module is just the
-// Pinboard client behind that port.
-
 pub struct PinboardClient {
     http: RetryingClient,
     /// `username:TOKEN`.

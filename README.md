@@ -374,11 +374,13 @@ pinboard-sync --config ./config.toml cleanup --all          # reddit + github + 
 The selector is an account's `name`, falling back to its `username` for Reddit and
 HackerNews — so an account with `username = "alice"` and no `name` is reachable as
 `sync reddit alice`. GitHub has no username, so its accounts are selected by `name`
-only, and at most one `[[github]]` account may leave it out (or use one like `default`
-that makes the same backup filename). With no selector, a command uses the first
-account of that source. All tag settings (prefixes, the base `tags` list, the Reddit
-media-type allowlist, the HN special-type prefix) live in the config only — there are
-no tag CLI flags.
+only. At most one account per source may have no selector (or one like `default` that
+makes the same backup filename); a username from a flag or the environment
+(`$REDDIT_USERNAME`, `$HN_USERNAME`, or their `_FILE` forms) doesn't count, since it
+applies to every account alike. With no selector, a command uses the first account of
+that source. All tag settings (prefixes, the base `tags` list, the Reddit media-type
+allowlist, the HN special-type prefix) live in the config only — there are no tag CLI
+flags.
 
 ### Config reference
 

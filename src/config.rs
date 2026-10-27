@@ -269,10 +269,13 @@ impl Config {
         if self.backup.directory.as_deref().is_some_and(str::is_empty) {
             bail!("backup.directory must not be empty");
         }
+        const NAME_OR_USERNAME: &str = "`name` (or, with no `name`, `username`)";
         check_unique_names("reddit", &self.reddit)?;
+        check_one_unnamed("reddit", &self.reddit, NAME_OR_USERNAME)?;
         check_unique_names("github", &self.github)?;
-        check_one_unnamed("github", &self.github)?;
+        check_one_unnamed("github", &self.github, "`name`")?;
         check_unique_names("hackernews", &self.hackernews)?;
+        check_one_unnamed("hackernews", &self.hackernews, NAME_OR_USERNAME)?;
         self.check_stale_to_now_cap("reddit", &self.reddit, &self.defaults.reddit)?;
         self.check_stale_to_now_cap("github", &self.github, &self.defaults.github)?;
         self.check_stale_to_now_cap("hackernews", &self.hackernews, &self.defaults.hackernews)?;
@@ -417,11 +420,12 @@ fn check_tags(field: &str, values: &Option<Vec<String>>) -> Result<()> {
 }
 
 /// Error if two accounts of a source would both write the `source-default` backup files,
-/// so that every `backup --all` fails: each has no `name`, or one that [`slug`]s to
-/// `default` (empty, `default` itself, or only punctuation).
+/// so that every `backup --all` fails: each has no [`Named::account_name`] (a `name`, or
+/// for Reddit and HackerNews a `username`), or one that [`slug`]s to `default` (empty,
+/// `default` itself, or only punctuation). `remedy` names the fields that would set one.
 ///
 /// [`slug`]: crate::backup::slug
-fn check_one_unnamed<T: Named>(source: &str, accounts: &[T]) -> Result<()> {
+fn check_one_unnamed<T: Named>(source: &str, accounts: &[T], remedy: &str) -> Result<()> {
     let mut unnamed = accounts
         .iter()
         .enumerate()
@@ -430,7 +434,7 @@ fn check_one_unnamed<T: Named>(source: &str, accounts: &[T]) -> Result<()> {
     if let (Some(first), Some(second)) = (unnamed.next(), unnamed.next()) {
         bail!(
             "config: {source}[{first}] and {source}[{second}] would both back up as \
-             `{source}-default`; give one of them a distinct `name`"
+             `{source}-default`; give one of them a distinct {remedy}"
         );
     }
     Ok(())

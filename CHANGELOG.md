@@ -47,6 +47,8 @@ All notable changes to this project are documented here. The format is based on
   unauthorized SSO) instead of counting it as a failed lookup every run.
 - A config with two unnamed `[[github]]` accounts is rejected, rather than failing
   every `backup --all` on their shared `github-default` files.
+- So is one with two `[[reddit]]` or `[[hackernews]]` accounts that set neither `name`
+  nor `username`.
 - `cleanup_stale_to_now` re-dates a stale bookmark at most once per cap period, not on
   every run.
 - Dates are sent to Pinboard in UTC at whole seconds, the format its API documents.

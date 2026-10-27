@@ -694,6 +694,10 @@ mod tests {
                 "[[github]]\ntoken = \"ghp_SECRET\"\n[[github]]\ntoken = \"ghp_SECRET2\"\n",
                 "github[0] and github[1] would both back up as `github-default`",
             ),
+            (
+                "[[reddit]]\ncookie = \"reddit_session=SECRET\"\n[[reddit]]\n",
+                "reddit[0] and reddit[1] would both back up as `reddit-default`",
+            ),
         ] {
             let error = format!("{:#}", check_config_text(text).unwrap_err());
             assert!(error.contains(field), "{error}");

@@ -103,7 +103,7 @@ fn secret_under_a_non_string_key_is_not_quoted_back() {
 #[test]
 fn validation_error_names_the_field_not_the_value() {
     assert_error_hides(
-        "[[reddit]]\n[[reddit]]\ntags = [\"reddit\", \"reddit_session=SECRET1 x\"]\n",
+        "[[reddit]]\nusername = \"a\"\n[[reddit]]\ntags = [\"reddit\", \"reddit_session=SECRET1 x\"]\n",
         "SECRET1",
         "`reddit[1].tags[1]` must not contain whitespace",
     );
@@ -128,7 +128,7 @@ fn validation_error_names_the_field_not_the_value() {
         "`reddit[0].reddit_domain` contains whitespace",
     );
     assert_error_hides(
-        "[[reddit]]\n[[reddit]]\nreddit_domain = \"SECRET7.example:8080\"\n",
+        "[[reddit]]\nusername = \"a\"\n[[reddit]]\nreddit_domain = \"SECRET7.example:8080\"\n",
         "SECRET7",
         "`reddit[1].reddit_domain` contains a `:` (a port is not allowed)",
     );
@@ -190,11 +190,53 @@ fn one_unnamed_github_account_is_fine() {
 }
 
 #[test]
+fn two_reddit_or_hn_accounts_with_neither_name_nor_username_are_rejected() {
+    assert_error_hides(
+        "[[reddit]]\ncookie = \"reddit_session=SECRET1\"\n[[reddit]]\nusername = \"alice\"\n\
+         [[reddit]]\ncookie_file = \"/run/SECRET2\"\n",
+        "SECRET",
+        "reddit[0] and reddit[2] would both back up as `reddit-default`; give one of them \
+         a distinct `name` (or, with no `name`, `username`)",
+    );
+    assert_error_hides(
+        "[[hackernews]]\n[[hackernews]]\ntags = [\"SECRET3\"]\n",
+        "SECRET",
+        "hackernews[0] and hackernews[1] would both back up as `hackernews-default`",
+    );
+}
+
+/// The username a selector and a backup stem fall back on has to be in the config: one
+/// from `--reddit-username` or `$REDDIT_USERNAME(_FILE)` outranks every account's own, so
+/// it is the same for both and tells neither apart.
+#[test]
+fn reddit_and_hn_accounts_told_apart_by_username_alone_are_fine() {
+    for source in ["reddit", "hackernews"] {
+        for text in [
+            format!("[[{source}]]\nusername = \"alice\"\n[[{source}]]\nusername = \"bob\"\n"),
+            format!("[[{source}]]\n[[{source}]]\nusername = \"bob\"\n"),
+            format!("[[{source}]]\n[[{source}]]\nname = \"work\"\n"),
+        ] {
+            Config::parse(&text).unwrap_or_else(|e| panic!("{text:?}: {e:#}"));
+        }
+    }
+}
+
+#[test]
+fn a_reddit_name_that_slugs_to_default_hides_its_username() {
+    let error =
+        Config::parse("[[reddit]]\n[[reddit]]\nname = \"\"\nusername = \"bob\"\n").unwrap_err();
+    assert!(
+        format!("{error:#}").contains("reddit[0] and reddit[1] would both back up"),
+        "{error:#}"
+    );
+}
+
+#[test]
 fn debug_of_a_parsed_config_redacts_inline_secrets() {
     let cfg = Config::parse(
         "[pinboard]\ntoken = \"user:PINSECRET\"\n\
          [[reddit]]\ncookie = \"reddit_session=REDDITSECRET\"\ncookie_file = \"/run/cookie\"\n\
-         [[reddit]]\n\
+         [[reddit]]\nusername = \"alt\"\n\
          [[github]]\ntoken = \"ghp_GITHUBSECRET\"\n",
     )
     .unwrap();
@@ -384,7 +426,7 @@ fn rejects_a_zero_cap_with_stale_to_now_as_each_account_resolves_it() {
     .starts_with("config: github[0] resolves "));
     assert!(rejected(
         "[defaults.hackernews]\ncleanup_stale_to_now = true\n\
-         [[hackernews]]\n[[hackernews]]\npost_date_max_age_days = 0"
+         [[hackernews]]\n[[hackernews]]\nusername = \"u\"\npost_date_max_age_days = 0"
     )
     .starts_with("config: hackernews[1] resolves "));
 

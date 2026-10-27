@@ -8,7 +8,7 @@ use clap_complete::Shell;
 
 use crate::config::SyncLimit;
 use crate::jobs::SyncOverrides;
-use crate::reddit::cleanup::RedditCleanupFlags;
+use crate::reddit::cleanup::RedditCleanupOverrides;
 use crate::timefmt::DateOverrides;
 
 #[derive(Parser)]
@@ -490,9 +490,9 @@ impl From<HackerNewsSyncArgs> for SyncOverrides {
     }
 }
 
-impl From<&RedditCleanupArgs> for RedditCleanupFlags {
+impl From<&RedditCleanupArgs> for RedditCleanupOverrides {
     fn from(args: &RedditCleanupArgs) -> Self {
-        RedditCleanupFlags {
+        RedditCleanupOverrides {
             cookie: args.reddit_cookie.clone(),
             mark_nsfw: !args.no_nsfw,
             fix_titles: !args.no_titles,

@@ -2,12 +2,13 @@
 //! (URL form, subreddit casing, tag construction).
 
 use serde::{Deserialize, Deserializer};
+use time::OffsetDateTime;
 use url::Url;
 
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, collapse_whitespace};
 use crate::source::BookmarkDraft;
-use crate::tags::{push_prefixed, push_tag, push_tags};
+use crate::tags::{prefixed, push_prefixed, push_tag, push_tags};
 use crate::urls::host_matches;
 
 /// A Reddit "Listing" envelope (`{ "kind": "Listing", "data": { ... } }`).
@@ -141,7 +142,7 @@ pub struct RedditSavedItem {
     /// Post flair text (`flair:<slug>` tag).
     pub flair: Option<String>,
     /// Media type for posts (`image`/`video` only; `type:<x>` tag).
-    pub media_type: Option<String>,
+    pub media_type: Option<&'static str>,
 }
 
 impl RedditListingEntry {
@@ -190,15 +191,19 @@ impl RedditListingEntry {
             post_media_type(fields.is_video, fields.post_hint.as_deref())
         };
 
-        let note = reddit_note(
-            is_comment,
-            fields.body.as_deref().unwrap_or_default(),
-            fields.selftext.as_deref().unwrap_or_default(),
-            fields.url.as_deref().unwrap_or_default(),
-            fields.is_self,
-            fields.link_permalink.as_deref(),
-            domain,
-        );
+        let note = if is_comment {
+            comment_note(
+                fields.body.as_deref().unwrap_or_default(),
+                fields.link_permalink.as_deref(),
+                domain,
+            )
+        } else {
+            post_note(
+                fields.selftext.as_deref().unwrap_or_default(),
+                fields.url.as_deref().unwrap_or_default(),
+                fields.is_self,
+            )
+        };
 
         Some(RedditSavedItem {
             fullname,
@@ -216,40 +221,31 @@ impl RedditListingEntry {
     }
 }
 
-/// Build the Pinboard notes for a Reddit item: the quoted body (comment `body` / post
-/// `selftext`) wrapped in a literal `<blockquote>`, which Pinboard renders. For comments
-/// the parent-thread link is prepended outside the quote (a bare comment lacks it). For an
-/// empty self-post the notes are empty (its `url` is the post's own permalink, i.e. the
-/// bookmark URL — not worth duplicating); a link post keeps its external URL as the bare
-/// fallback. Shared by sync and cleanup. Reddit text is already Markdown (`raw_json=1`),
-/// so it is wrapped as-is, never HTML-converted.
-pub(crate) fn reddit_note(
-    is_comment: bool,
-    body: &str,
-    selftext: &str,
-    url: &str,
-    is_self: bool,
-    link_permalink: Option<&str>,
-    domain: &str,
-) -> String {
-    if is_comment {
-        let quoted = if body.is_empty() {
-            String::new()
-        } else {
-            blockquote(body)
-        };
-        match parent_thread_url(link_permalink, domain) {
-            Some(thread) if quoted.is_empty() => format!("Thread: {thread}"),
-            Some(thread) => format!("Thread: {thread}\n\n{quoted}"),
-            None => quoted,
-        }
-    } else if !selftext.is_empty() {
-        blockquote(selftext)
-    } else if is_self {
-        // Empty self-post: its `url` is its own permalink, so add nothing.
+/// The Pinboard notes for a Reddit comment: its `body` in a literal `<blockquote>`, which
+/// Pinboard renders, after the parent-thread link (a bare comment lacks it). Reddit text
+/// is already Markdown (`raw_json=1`), so it is wrapped as-is, never HTML-converted.
+pub(crate) fn comment_note(body: &str, link_permalink: Option<&str>, domain: &str) -> String {
+    let quoted = if body.is_empty() {
         String::new()
     } else {
-        // Link post: keep the external URL.
+        blockquote(body)
+    };
+    match parent_thread_url(link_permalink, domain) {
+        Some(thread) if quoted.is_empty() => format!("Thread: {thread}"),
+        Some(thread) => format!("Thread: {thread}\n\n{quoted}"),
+        None => quoted,
+    }
+}
+
+/// The Pinboard notes for a Reddit post, shared by sync and cleanup: its `selftext` in a
+/// literal `<blockquote>`; nothing for an empty self-post, whose `url` is its own
+/// permalink and so the bookmark URL; else a link post's external `url`, bare.
+pub(crate) fn post_note(selftext: &str, url: &str, is_self: bool) -> String {
+    if !selftext.is_empty() {
+        blockquote(selftext)
+    } else if is_self {
+        String::new()
+    } else {
         url.to_string()
     }
 }
@@ -267,13 +263,13 @@ fn parent_thread_url(link_permalink: Option<&str>, domain: &str) -> Option<Strin
 
 /// The media type of a post — `image` or `video` — or `None` for text/link
 /// posts, which don't get a `type:` tag.
-fn post_media_type(is_video: bool, post_hint: Option<&str>) -> Option<String> {
+fn post_media_type(is_video: bool, post_hint: Option<&str>) -> Option<&'static str> {
     if is_video {
-        return Some("video".to_string());
+        return Some("video");
     }
     match post_hint {
-        Some("image") => Some("image".to_string()),
-        Some("hosted:video") | Some("rich:video") => Some("video".to_string()),
+        Some("image") => Some("image"),
+        Some("hosted:video") | Some("rich:video") => Some("video"),
         _ => None,
     }
 }
@@ -343,9 +339,7 @@ impl RedditSavedItem {
     pub(crate) fn detail_tags<'c>(&self, cfg: &'c RedditConfig) -> Vec<(&'c str, String)> {
         let mut families: Vec<(&'c str, String)> = Vec::new();
         let mut push = |prefix: &'c str, value: &str| {
-            let mut tag = Vec::new();
-            push_prefixed(&mut tag, prefix, value);
-            families.extend(tag.into_iter().map(|tag| (prefix, tag)));
+            families.extend(prefixed(prefix, value).map(|tag| (prefix, tag)));
         };
         if let Some(author) = &self.author {
             push(&cfg.author_prefix, author);
@@ -353,7 +347,7 @@ impl RedditSavedItem {
         if let Some(flair) = &self.flair {
             push(&cfg.flair_prefix, &flair.to_lowercase());
         }
-        if let Some(media_type) = &self.media_type {
+        if let Some(media_type) = self.media_type {
             if cfg.media_types.iter().any(|t| t == media_type) {
                 push(&cfg.media_prefix, media_type);
             }
@@ -373,9 +367,7 @@ impl RedditSavedItem {
         };
         // The host-agnostic dedup key, derived from the same URL.
         let dedup_key = reddit_key(&url, &cfg.domain).unwrap_or_else(|| url.to_string());
-        let timestamp = self
-            .created_utc
-            .and_then(|s| crate::timefmt::from_unix(s as i64));
+        let timestamp = created_at(self.created_utc);
         let tags = self.tags(cfg);
         Some(BookmarkDraft {
             bookmark: Bookmark {
@@ -390,6 +382,12 @@ impl RedditSavedItem {
             dedup_key,
         })
     }
+}
+
+/// The instant a Reddit `created_utc` (epoch seconds, as a float) names, at whole
+/// seconds, as both sync and cleanup date a post by it.
+pub(crate) fn created_at(created_utc: Option<f64>) -> Option<OffsetDateTime> {
+    created_utc.and_then(|secs| crate::timefmt::from_unix(secs as i64))
 }
 
 /// Normalize a subreddit name for tagging: lowercase it, keeping the original

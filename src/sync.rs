@@ -1,21 +1,22 @@
 //! The sync write path: pick the drafts not already on Pinboard, and write them
-//! sequentially (Pinboard rate-limits `posts/add`). Source reads happen in the
-//! caller (so an `--all` run can fetch services concurrently); only the writes are
-//! serialized here. Generic over the [`Source`]/[`BookmarkStore`] ports so it can
-//! be unit-tested with in-memory fakes.
+//! sequentially (Pinboard rate-limits `posts/add`). Source reads happen in the caller (so
+//! an `--all` run can fetch services concurrently); only the writes are serialized here.
+//! Generic over the [`UrlKey`]/[`BookmarkStore`] ports so it can be unit-tested with
+//! in-memory fakes.
 
 use std::collections::HashSet;
 
 use log::{debug, error};
+use time::OffsetDateTime;
 
 use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::config::SyncLimit;
-use crate::source::{BookmarkDraft, Source};
+use crate::source::{BookmarkDraft, UrlKey};
 use crate::timefmt::DateOpts;
 
 /// The drafts not already present on Pinboard, matching each existing bookmark URL
-/// through this source's [`UrlKey::dedup_key`](crate::source::UrlKey::dedup_key).
-pub fn filter_new<S: Source>(
+/// through this source's [`UrlKey::dedup_key`].
+pub fn filter_new<S: UrlKey>(
     source: &S,
     drafts: Vec<BookmarkDraft>,
     existing: &[Bookmark],
@@ -33,10 +34,10 @@ pub fn filter_new<S: Source>(
 #[derive(Debug, Clone, Copy)]
 pub struct JobSettings {
     pub limit: SyncLimit,
-    /// To-read flag for this account's new bookmarks.
-    pub toread: bool,
-    /// Public/shared flag for this account's new bookmarks.
-    pub shared: bool,
+    /// Whether this account's new bookmarks are queued to read (`--toread`, `toread`).
+    pub read_later: bool,
+    /// Whether this account's new bookmarks are public (`--public`, `public`).
+    pub public: bool,
     pub dates: DateOpts,
 }
 
@@ -44,8 +45,8 @@ pub struct JobSettings {
 /// ([`filter_new`]) and collapsed so each `dedup_key` appears once (keep-first, matching
 /// the cross-job [`merge_deduped`] so `limit` counts distinct items rather than letting
 /// duplicate-key drafts consume slots), each stamped with the account's resolved
-/// `toread`/`shared` flags and post date (kept only when `use_post_date` is on and the
-/// post is within the age cap relative to `now`, else cleared so Pinboard defaults to
+/// `read_later`/`public` flags and post date (kept only when `use_post_date` is on and
+/// the post is within the age cap relative to `now`, else cleared so Pinboard defaults to
 /// "now"), and truncated to the per-job `limit`, if any, which keeps the newest.
 ///
 /// Returned oldest first, the reverse of the source's newest-first order, so a run cut
@@ -54,19 +55,19 @@ pub struct JobSettings {
 /// Newest first, an interrupted backfill would leave page 1 fully written, and the next
 /// run would stop there and never reach the older items. `now` is a parameter so tests
 /// are deterministic.
-pub fn prepare_new_drafts<S: Source>(
+pub fn prepare_new_drafts<S: UrlKey>(
     source: &S,
     drafts: Vec<BookmarkDraft>,
     existing: &[Bookmark],
     settings: &JobSettings,
-    now: i64,
+    now: OffsetDateTime,
 ) -> Vec<BookmarkDraft> {
     let mut new = filter_new(source, drafts, existing);
     let mut seen = HashSet::new();
     new.retain(|d| seen.insert(d.dedup_key.clone()));
     for d in &mut new {
-        d.bookmark.read_later = settings.toread;
-        d.bookmark.public = settings.shared;
+        d.bookmark.read_later = settings.read_later;
+        d.bookmark.public = settings.public;
         d.bookmark.timestamp = settings.dates.sync_date(d.bookmark.timestamp, now);
     }
     if let Some(limit) = settings.limit.write_cap() {

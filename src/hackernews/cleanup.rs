@@ -75,9 +75,10 @@ pub async fn run<S: BookmarkStore + AccountState>(
     // calls here and can fail on their own.
     // Its candidates come from the view *after* the item pass wrote, so a bookmark that
     // pass merged is re-planned from the merged record rather than from a stale copy.
-    let links = match opts.link_discussions {
-        true => Some(link_discussions(store, client, opts).await),
-        false => None,
+    let links = if opts.link_discussions {
+        Some(link_discussions(store, client, opts).await)
+    } else {
+        None
     };
     // Both passes ran, so report both failures: letting the first `?` short-circuit
     // would hide a wholesale failure of the second behind the first's message.
@@ -216,9 +217,9 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
     }
 }
 
-/// Links one `link_tag`-tagged article bookmark to its HN discussion: look it up by
-/// URL, add an `HN Link:` line to the notes, and swap the marker tag for the base HN
-/// tags. Always in-place — the URL is unchanged and `src_date` is `None`, so the
+/// Links one `link_tag`-tagged article bookmark to its HN discussion: look it up by URL,
+/// add an `HN Link:` line to the notes, and swap the marker tag for the base HN tags.
+/// Always in-place — the URL is unchanged and the planned `timestamp` is `None`, so the
 /// driver preserves the stored date regardless of the dating policy.
 struct HackerNewsLinkPass<'a> {
     client: &'a HackerNewsClient,

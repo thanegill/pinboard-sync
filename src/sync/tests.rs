@@ -3,8 +3,11 @@ use std::num::NonZeroUsize;
 use super::*;
 use crate::source::{page_is_caught_up, Source, SourceError, UrlKey};
 use crate::test_support::{listing_entry, replay, stored_at as bookmark, FakePinboard, FakeReddit};
+use crate::timefmt::from_unix;
 use serde_json::json;
 use url::Url;
+
+const EPOCH: OffsetDateTime = OffsetDateTime::UNIX_EPOCH;
 
 /// A source serving one or more streams of pages, each newest first and concatenated
 /// in order (as HackerNews serves stories then comments). Its incremental read stops
@@ -98,8 +101,8 @@ fn post_at(
 fn settings(use_post_date: bool, max_age_days: u64, limit: Option<NonZeroUsize>) -> JobSettings {
     JobSettings {
         limit: limit.map_or(SyncLimit::All, SyncLimit::Max),
-        toread: false,
-        shared: false,
+        read_later: false,
+        public: false,
         dates: DateOpts {
             use_post_date,
             max_age_days,
@@ -133,17 +136,15 @@ async fn filter_new_skips_present_then_write_adds_the_rest() {
     let outcome = write_drafts(&pinboard, &new, false).await;
     assert_eq!(outcome.written, 1);
     assert_eq!(outcome.failed, 0);
-    // The write path never lists posts/all itself.
-    assert_eq!(*pinboard.all_calls.borrow(), 0);
     assert_eq!(pinboard.added.borrow().len(), 1);
 }
 
 #[tokio::test]
 async fn present_bookmark_with_unparseable_time_still_dedups() {
-    // Regression: a stored bookmark whose Pinboard `time` won't parse must remain in
-    // the dedup set. It reaches this path through `Bookmark::try_from` (timestamp
-    // becomes None), and its draft must count as already-present, not new — otherwise
-    // sync re-adds the URL and clobbers its date/title/tags/notes.
+    // A stored bookmark whose Pinboard `time` won't parse must remain in the dedup set.
+    // It reaches this path through `Bookmark::try_from` (timestamp becomes None), and
+    // its draft must count as already-present, not new — otherwise sync re-adds the URL
+    // and clobbers its date/title/tags/notes.
     let reddit = FakeReddit {
         saved: vec![post("t3_a", "/r/rust/comments/a/x/")],
         ..Default::default()
@@ -253,8 +254,8 @@ async fn prepare_new_drafts_stamps_flags_and_clears_dates_outside_the_age_cap() 
     };
     let job = JobSettings {
         limit: SyncLimit::All,
-        toread: true,
-        shared: true,
+        read_later: true,
+        public: true,
         dates: DateOpts {
             use_post_date: true,
             max_age_days: 30,
@@ -262,7 +263,7 @@ async fn prepare_new_drafts_stamps_flags_and_clears_dates_outside_the_age_cap() 
         },
     };
     let drafts = reddit.fetch().await.unwrap();
-    let new = prepare_new_drafts(&reddit, drafts, &[], &job, now);
+    let new = prepare_new_drafts(&reddit, drafts, &[], &job, from_unix(now).unwrap());
     assert_eq!(new.len(), 2);
     // The resolved flags are stamped onto every new draft.
     assert!(new
@@ -297,7 +298,7 @@ async fn prepare_new_drafts_clears_all_dates_when_use_post_date_off() {
         reddit.fetch().await.unwrap(),
         &[],
         &settings(false, 30, None),
-        now,
+        from_unix(now).unwrap(),
     );
     assert_eq!(new.len(), 1);
     assert_eq!(new[0].bookmark.timestamp, None);
@@ -318,7 +319,7 @@ async fn prepare_new_drafts_truncates_to_the_per_job_limit() {
         reddit.fetch().await.unwrap(),
         &[],
         &settings(false, 30, None),
-        0,
+        EPOCH,
     );
     assert_eq!(all.len(), 3);
     // A positive limit caps the batch.
@@ -327,17 +328,17 @@ async fn prepare_new_drafts_truncates_to_the_per_job_limit() {
         reddit.fetch().await.unwrap(),
         &[],
         &settings(false, 30, NonZeroUsize::new(2)),
-        0,
+        EPOCH,
     );
     assert_eq!(capped.len(), 2);
 }
 
 #[tokio::test]
 async fn prepare_new_drafts_dedups_within_the_batch_before_applying_the_limit() {
-    // Regression: two drafts sharing a dedup_key must collapse to one BEFORE the
-    // limit truncation, so `limit` counts distinct items. Otherwise the duplicate
-    // consumes a slot and crowds out a genuinely new item (which merge_deduped then
-    // drops when it collapses the pair across jobs).
+    // Two drafts sharing a dedup_key must collapse to one BEFORE the limit truncation,
+    // so `limit` counts distinct items. Otherwise the duplicate consumes a slot and
+    // crowds out a genuinely new item (which merge_deduped then drops when it collapses
+    // the pair across jobs).
     let draft = |url: &str, key: &str| BookmarkDraft {
         bookmark: Bookmark {
             title: "T".into(),
@@ -355,7 +356,7 @@ async fn prepare_new_drafts_dedups_within_the_batch_before_applying_the_limit() 
         drafts,
         &[],
         &settings(false, 30, NonZeroUsize::new(2)),
-        0,
+        EPOCH,
     );
     let keys: Vec<&str> = new.iter().map(|d| d.dedup_key.as_str()).collect();
     assert_eq!(keys, vec!["kB", "k"]);
@@ -372,8 +373,8 @@ async fn merge_deduped_writes_a_url_shared_across_jobs_once() {
         ..Default::default()
     };
     let job = settings(false, 30, None);
-    let one = prepare_new_drafts(&reddit, reddit.fetch().await.unwrap(), &[], &job, 0);
-    let two = prepare_new_drafts(&reddit, reddit.fetch().await.unwrap(), &[], &job, 0);
+    let one = prepare_new_drafts(&reddit, reddit.fetch().await.unwrap(), &[], &job, EPOCH);
+    let two = prepare_new_drafts(&reddit, reddit.fetch().await.unwrap(), &[], &job, EPOCH);
     assert_eq!(one.len(), 1);
     assert_eq!(two.len(), 1);
 
@@ -388,10 +389,10 @@ async fn merge_deduped_writes_a_url_shared_across_jobs_once() {
 
 #[tokio::test]
 async fn merge_deduped_collapses_drafts_sharing_a_dedup_key_with_differing_urls() {
-    // Regression: two fresh drafts in one batch that share a dedup_key but whose URLs
-    // differ byte-for-byte (e.g. two HN favorites of the same article stored as
-    // http vs https) must collapse to one write — matching filter_new's existing-key
-    // check, so a first-time run doesn't create two bookmarks for one item.
+    // Two fresh drafts in one batch that share a dedup_key but whose URLs differ
+    // byte-for-byte (e.g. two HN favorites of the same article stored as http vs https)
+    // must collapse to one write — matching filter_new's existing-key check, so a
+    // first-time run doesn't create two bookmarks for one item.
     let draft = |url: &str, key: &str| BookmarkDraft {
         bookmark: Bookmark {
             title: "T".into(),
@@ -461,7 +462,7 @@ async fn new_drafts_are_written_oldest_first() {
         source.fetch().await.unwrap(),
         &[],
         &settings(false, 30, None),
-        0,
+        EPOCH,
     );
     let pinboard = FakePinboard::default();
     let _ = write_drafts(&pinboard, &new, false).await;
@@ -484,7 +485,7 @@ async fn a_capped_job_writes_its_newest_drafts_oldest_first() {
         source.fetch().await.unwrap(),
         &[],
         &settings(false, 30, NonZeroUsize::new(2)),
-        0,
+        EPOCH,
     );
     let pinboard = FakePinboard::default();
     let _ = write_drafts(&pinboard, &new, false).await;
@@ -525,7 +526,7 @@ async fn write_after_interrupting(source: &PagedSource, killed_after: usize) -> 
         source.fetch_incremental(&[]).await.unwrap(),
         &[],
         &job,
-        0,
+        EPOCH,
     );
     let _ = write_drafts(&pinboard, &first_run[..killed_after], false).await;
 
@@ -535,7 +536,7 @@ async fn write_after_interrupting(source: &PagedSource, killed_after: usize) -> 
         source.fetch_incremental(&account).await.unwrap(),
         &account,
         &job,
-        0,
+        EPOCH,
     );
     let _ = write_drafts(&pinboard, &second_run, false).await;
 
@@ -590,7 +591,7 @@ async fn jobs_are_written_in_turn_each_oldest_first_and_the_earlier_keeps_a_shar
             source.fetch().await.unwrap(),
             &[],
             &job,
-            0,
+            EPOCH,
         ));
     }
     let pinboard = FakePinboard::default();

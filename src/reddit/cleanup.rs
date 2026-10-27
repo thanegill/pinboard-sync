@@ -11,13 +11,14 @@ use anyhow::Result;
 
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
+use crate::config::own_then_configured;
 use crate::htmltext::collapse_whitespace;
 use crate::reddit::model::{
-    cased_subreddit, over18_dest, reddit_key, RedditConfig, RedditKind, RedditSavedItem,
+    cased_subreddit, created_at, over18_dest, reddit_key, RedditConfig, RedditKind, RedditSavedItem,
 };
 use crate::reddit::PostInfo;
 use crate::source::SourceError;
-use crate::tags::{extend_unique, push_prefixed, push_tags};
+use crate::tags::{push_prefixed, push_tags, push_unique};
 use crate::timefmt::DateOpts;
 use crate::urls::{host_matches, UrlExt};
 use url::Url;
@@ -34,15 +35,13 @@ pub struct RedditCleanupOpts {
     /// Every configured account's config, in config order. A bookmark already on one of
     /// their domains is left there (see [`RedditCleanupOpts::natural_url`]) and shaped with
     /// that account's tags ([`RedditCleanupOpts::config_for`]).
-    pub accounts: Vec<RedditConfig>,
+    pub configured: Vec<RedditConfig>,
 }
 
 impl RedditCleanupOpts {
     /// The account's own domain, then every configured one.
     fn domains(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(&self.config)
-            .chain(&self.accounts)
-            .map(|account| account.domain.as_str())
+        own_then_configured(&self.config, &self.configured).map(|account| account.domain.as_str())
     }
 
     /// The config to shape a bookmark at `url` with: the account's own when `url` is on its
@@ -58,12 +57,10 @@ impl RedditCleanupOpts {
         &'s self,
         url: &'u Url,
     ) -> impl Iterator<Item = &'s RedditConfig> + 'u {
-        std::iter::once(&self.config)
-            .chain(&self.accounts)
-            .filter(move |account| {
-                url.host_str()
-                    .is_some_and(|host| host.eq_ignore_ascii_case(&account.domain))
-            })
+        own_then_configured(&self.config, &self.configured).filter(move |account| {
+            url.host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case(&account.domain))
+        })
     }
 
     /// The bare tags [`normalize_tags`] keeps at `url` even when named like the subreddit
@@ -95,7 +92,7 @@ impl RedditCleanupOpts {
     }
 
     /// [`reddit_key`] on any configured domain, as every account's sync keys a save.
-    fn key(&self, url: &Url) -> Option<String> {
+    fn reddit_key(&self, url: &Url) -> Option<String> {
         self.domains().find_map(|domain| reddit_key(url, domain))
     }
 
@@ -115,7 +112,7 @@ impl RedditCleanupOpts {
 
 /// The `cleanup reddit` choices that are not account settings: the cookie flag, and which
 /// `/api/info`-backed fixes to make.
-pub struct RedditCleanupFlags {
+pub struct RedditCleanupOverrides {
     pub cookie: Option<String>,
     pub mark_nsfw: bool,
     pub fix_titles: bool,
@@ -129,7 +126,7 @@ struct RedditPostMeta {
     created_utc: Option<f64>,
     /// The notes rebuilt from authoritative data — the quoted body wrapped in a
     /// `<blockquote>` (empty when there's nothing to quote). Used to retrofit existing
-    /// bookmarks to the shape `sync` now writes.
+    /// bookmarks to the shape `sync` writes.
     note: String,
     /// The raw `selftext`, i.e. the rebuilt notes before the `<blockquote>` wrapping —
     /// the shape an older sync wrote. Lets the retrofit recognize its own past output.
@@ -186,7 +183,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
         let opts = self.opts;
         let mut new_url = opts.natural_url(&bookmark.url);
         if let Some(host) = opts
-            .key(&new_url)
+            .reddit_key(&new_url)
             .and_then(|key| self.collapse_hosts.get(&key))
         {
             new_url = with_host(&new_url, host).unwrap_or(new_url);
@@ -202,16 +199,12 @@ impl CleanupPass for RedditCleanupPass<'_> {
         );
         let post = post_fullname(&new_url).and_then(|f| self.info.posts.get(&f));
 
-        if opts.mark_nsfw
-            && !owner.nsfw.is_empty()
-            && post.is_some_and(|p| p.over_18)
-            && !tags.iter().any(|t| t == &owner.nsfw)
-        {
-            tags.push(owner.nsfw.clone());
+        if opts.mark_nsfw && post.is_some_and(|p| p.over_18) {
+            push_unique(&mut tags, &owner.nsfw);
         }
 
         let own_fullname = if is_comment_url(&new_url) {
-            extend_unique(&mut tags, std::slice::from_ref(&owner.comment));
+            push_unique(&mut tags, &owner.comment);
             comment_fullname(&new_url)
         } else {
             post_fullname(&new_url)
@@ -261,8 +254,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
         let timestamp = if is_comment_url(&new_url) {
             None
         } else {
-            post.and_then(|p| p.created_utc)
-                .and_then(|s| crate::timefmt::from_unix(s as i64))
+            created_at(post.and_then(|p| p.created_utc))
         };
 
         Ok(Plan::Bookmark(Bookmark {
@@ -317,14 +309,10 @@ async fn fetch_post_info<R: PostInfo>(
             // <blockquote> shaping retrofits onto existing bookmarks: selftext quoted,
             // empty for an empty self-post, else the external URL.
             let selftext = entry.fields.selftext.clone().unwrap_or_default();
-            let note = crate::reddit::model::reddit_note(
-                false,
-                "",
+            let note = crate::reddit::model::post_note(
                 &selftext,
                 entry.fields.url.as_deref().unwrap_or_default(),
                 entry.fields.is_self,
-                None,
-                &opts.config.domain,
             );
             info.posts.insert(
                 name,
@@ -346,13 +334,13 @@ async fn fetch_post_info<R: PostInfo>(
 
 /// For each post or comment stored on more than one host once each copy has its
 /// [`RedditCleanupOpts::natural_url`], the host the copies collapse onto, keyed by
-/// [`RedditCleanupOpts::key`]: the earliest account domain in config order, so the copies
-/// meet on the same URL whichever account cleanup runs as, and the driver merges them.
+/// [`RedditCleanupOpts::reddit_key`]: the earliest account domain in config order, so the
+/// copies meet on one URL, where the driver merges them, whichever account cleanup runs as.
 fn collapse_hosts(bookmarks: &[Bookmark], opts: &RedditCleanupOpts) -> HashMap<String, String> {
     let mut hosts_by_key: HashMap<String, BTreeSet<String>> = HashMap::new();
     for bookmark in bookmarks {
         let url = opts.natural_url(&bookmark.url);
-        let (Some(key), Some(host)) = (opts.key(&url), url.host_str()) else {
+        let (Some(key), Some(host)) = (opts.reddit_key(&url), url.host_str()) else {
             continue;
         };
         hosts_by_key
@@ -362,7 +350,7 @@ fn collapse_hosts(bookmarks: &[Bookmark], opts: &RedditCleanupOpts) -> HashMap<S
     }
     let rank = |host: &String| {
         let position = opts
-            .accounts
+            .configured
             .iter()
             .position(|account| account.domain.eq_ignore_ascii_case(host));
         (position.unwrap_or(usize::MAX), host.clone())
@@ -520,15 +508,17 @@ fn note_is_tool_generated(
         || is_self_link_notes(note, url, opts)
 }
 
-/// Whether `notes` is nothing but a Reddit link to the same post as `url` — the
-/// duplicated self-link older syncs wrote into empty self-posts' notes. Compared by
-/// [`RedditCleanupOpts::key`] (on any configured `reddit_domain`), so it matches across
-/// hosts/casing; non-Reddit notes (e.g. a link post's external URL) and free-text notes
-/// don't match and are left untouched.
+/// Whether `notes` is nothing but a Reddit link to the same post as `url` — the duplicated
+/// self-link older syncs wrote into empty self-posts' notes. Compared by
+/// [`RedditCleanupOpts::reddit_key`] (on any configured `reddit_domain`), so it matches
+/// across hosts/casing; non-Reddit notes (e.g. a link post's external URL) and free-text
+/// notes don't match and are left untouched.
 fn is_self_link_notes(notes: &str, url: &Url, opts: &RedditCleanupOpts) -> bool {
     let notes_key = Url::parse(notes.trim()).ok();
-    let notes_key = notes_key.as_ref().and_then(|notes_url| opts.key(notes_url));
-    notes_key.is_some() && notes_key == opts.key(url)
+    let notes_key = notes_key
+        .as_ref()
+        .and_then(|notes_url| opts.reddit_key(notes_url));
+    notes_key.is_some() && notes_key == opts.reddit_key(url)
 }
 
 /// The generic placeholder titles Reddit bookmarks often get from a browser.
@@ -542,7 +532,7 @@ pub fn is_placeholder_title(title: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::url;
+    use crate::test_support::{strings, url};
 
     fn norm(u: &str, domain: &str) -> Option<String> {
         normalize_url(&url(u), domain).map(String::from)
@@ -638,37 +628,27 @@ mod tests {
 
     #[test]
     fn normalize_tags_adds_base_and_subreddit_strips_legacy() {
-        let existing = vec![
-            "rust".to_string(),
-            "subreddit:".to_string(),
-            "subreddit:rust".to_string(),
-        ];
+        let existing = strings(&["rust", "subreddit:", "subreddit:rust"]);
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/rust/comments/x/"),
             &existing,
-            &["reddit".to_string()],
+            &strings(&["reddit"]),
             "subreddit:",
             &["nsfw"],
         );
-        assert_eq!(
-            tags,
-            vec!["reddit".to_string(), "subreddit:rust".to_string()]
-        );
+        assert_eq!(tags, strings(&["reddit", "subreddit:rust"]));
     }
 
     #[test]
     fn normalize_tags_lowercases_all_caps_subreddit() {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/NEWS/comments/x/"),
-            &["subreddit:NEWS".to_string(), "NEWS".to_string()],
-            &["reddit".to_string()],
+            &strings(&["subreddit:NEWS", "NEWS"]),
+            &strings(&["reddit"]),
             "subreddit:",
             &["nsfw"],
         );
-        assert_eq!(
-            tags,
-            vec!["reddit".to_string(), "subreddit:news".to_string()]
-        );
+        assert_eq!(tags, strings(&["reddit", "subreddit:news"]));
     }
 
     #[test]
@@ -676,26 +656,19 @@ mod tests {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/reddit/comments/x/"),
             &[],
-            &["reddit".to_string()],
+            &strings(&["reddit"]),
             "subreddit:",
             &["nsfw"],
         );
-        assert_eq!(
-            tags,
-            vec!["reddit".to_string(), "subreddit:reddit".to_string()]
-        );
+        assert_eq!(tags, strings(&["reddit", "subreddit:reddit"]));
     }
 
     #[test]
     fn normalize_tags_ensures_and_keeps_every_base_tag() {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/rust/comments/x/"),
-            &["rust".to_string()],
-            &[
-                "reddit".to_string(),
-                "rust".to_string(),
-                "saved".to_string(),
-            ],
+            &strings(&["rust"]),
+            &strings(&["reddit", "rust", "saved"]),
             "subreddit:",
             &["nsfw"],
         );
@@ -711,7 +684,7 @@ mod tests {
             "subreddit:",
             &["nsfw"],
         );
-        assert_eq!(tags, vec!["subreddit:rust".to_string()]);
+        assert_eq!(tags, strings(&["subreddit:rust"]));
     }
 
     #[test]
@@ -719,29 +692,29 @@ mod tests {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/rust/comments/x/"),
             &[],
-            &["reddit".to_string()],
+            &strings(&["reddit"]),
             "",
             &["nsfw"],
         );
-        assert_eq!(tags, vec!["reddit".to_string()]);
+        assert_eq!(tags, strings(&["reddit"]));
 
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/rust/comments/x/"),
-            &["rust".to_string()],
-            &["reddit".to_string()],
+            &strings(&["rust"]),
+            &strings(&["reddit"]),
             "",
             &["nsfw"],
         );
-        assert_eq!(tags, vec!["reddit".to_string(), "rust".to_string()]);
+        assert_eq!(tags, strings(&["reddit", "rust"]));
 
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/nsfw/comments/x/"),
-            &["nsfw".to_string()],
-            &["reddit".to_string()],
+            &strings(&["nsfw"]),
+            &strings(&["reddit"]),
             "",
             &["nsfw"],
         );
-        assert_eq!(tags, vec!["nsfw".to_string(), "reddit".to_string()]);
+        assert_eq!(tags, strings(&["nsfw", "reddit"]));
     }
 
     #[test]

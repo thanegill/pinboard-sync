@@ -139,6 +139,16 @@ pub fn stored_at(url: &str) -> Bookmark {
     }
 }
 
+/// `items` as owned strings, for a tag list or any other `Vec<String>` a test spells out.
+pub fn strings(items: &[&str]) -> Vec<String> {
+    items.iter().map(|item| item.to_string()).collect()
+}
+
+/// The titles of `drafts`, in order.
+pub fn titles(drafts: &[BookmarkDraft]) -> Vec<&str> {
+    drafts.iter().map(|d| d.bookmark.title.as_str()).collect()
+}
+
 /// Build a `RedditListingEntry` from `kind` (`t3`/`t1`) and a `data` JSON object.
 pub fn listing_entry(kind: &str, data: Value) -> RedditListingEntry {
     serde_json::from_value(serde_json::json!({ "kind": kind, "data": data })).unwrap()
@@ -253,9 +263,8 @@ pub fn replay(seed: &[Bookmark], ops: &[Op]) -> Vec<Bookmark> {
 
 #[derive(Default)]
 pub struct FakePinboard {
+    /// The account a cleanup store over this fake starts from.
     pub all: Vec<Bookmark>,
-    /// How many times `all()` was called (to assert single-fetch behavior).
-    pub all_calls: RefCell<usize>,
     pub added: RefCell<Vec<AddCall>>,
     pub updated: RefCell<Vec<UpdateCall>>,
     pub deleted: RefCell<Vec<String>>,
@@ -279,10 +288,6 @@ impl FakePinboard {
 }
 
 impl BookmarkStore for FakePinboard {
-    async fn all(&self) -> Result<Vec<Bookmark>> {
-        *self.all_calls.borrow_mut() += 1;
-        Ok(self.all.clone())
-    }
     async fn add(&self, b: &Bookmark) -> Result<()> {
         if self.fail_add_urls.contains(b.url.as_str()) {
             return Err(anyhow!("simulated add failure for {}", b.url));

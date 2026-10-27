@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::titles;
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -19,7 +20,7 @@ async fn repo_lookup_reports_an_exhausted_rate_limit_with_its_reset() {
         )
         .mount(&server)
         .await;
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
 
     let err = client.repo("o", "r").await.unwrap_err();
     assert!(
@@ -44,7 +45,7 @@ async fn a_secondary_rate_limit_is_recognised_by_its_message_alone() {
         ))
         .mount(&server)
         .await;
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
 
     let err = client.repo("o", "r").await.unwrap_err();
     assert!(
@@ -67,7 +68,7 @@ async fn a_plain_403_is_not_treated_as_a_rate_limit() {
         )
         .mount(&server)
         .await;
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
 
     let err = client.repo("o", "r").await.unwrap_err();
     assert!(
@@ -89,7 +90,7 @@ async fn a_secondary_rate_limit_is_recognised_by_retry_after() {
         )
         .mount(&server)
         .await;
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
 
     let err = client.repo("o", "r").await.unwrap_err();
     assert!(
@@ -108,7 +109,7 @@ async fn repo_error_quotes_a_capped_one_line_excerpt() {
         .respond_with(ResponseTemplate::new(422).set_body_string(long_error_page()))
         .mount(&server)
         .await;
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
 
     let err = client.repo("o", "r").await.unwrap_err();
     assert_quotes_capped_excerpt(
@@ -126,7 +127,7 @@ async fn starred_error_quotes_a_capped_one_line_excerpt() {
         .respond_with(ResponseTemplate::new(404).set_body_string(long_error_page()))
         .mount(&server)
         .await;
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
 
     let err = client.fetch().await.unwrap_err();
     assert_quotes_capped_excerpt(&err.to_string(), "github starred returned 404 Not Found");
@@ -168,7 +169,7 @@ async fn fetch_paginates_via_link_header_and_sends_token() {
         .mount(&server)
         .await;
 
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
     let drafts = client.fetch().await.unwrap();
     assert_eq!(drafts.len(), 2);
     assert_eq!(drafts[0].bookmark.title, "a/one");
@@ -203,7 +204,7 @@ async fn fetch_terminates_when_next_link_loops_back() {
         .mount(&server)
         .await;
 
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
     let drafts = client.fetch().await.unwrap();
     assert_eq!(drafts.len(), 1);
     assert_eq!(drafts[0].bookmark.title, "a/one");
@@ -224,7 +225,7 @@ async fn fetch_skips_malformed_element_and_keeps_the_good_repos() {
         .mount(&server)
         .await;
 
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
     let drafts = client.fetch().await.unwrap();
     assert_eq!(drafts.len(), 1);
     assert_eq!(drafts[0].bookmark.title, "a/one");
@@ -245,7 +246,7 @@ async fn fetch_errors_when_a_whole_page_fails_to_parse() {
         .mount(&server)
         .await;
 
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
     assert!(matches!(client.fetch().await, Err(SourceError::Other(_))));
 }
 
@@ -259,7 +260,7 @@ async fn fetch_empty_page_is_ok() {
         .mount(&server)
         .await;
 
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
     assert!(client.fetch().await.unwrap().is_empty());
 }
 
@@ -339,7 +340,7 @@ async fn repo_lookup_is_none_for_a_gone_repo() {
         ))
         .mount(&server)
         .await;
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
 
     assert!(client.repo("deleted", "repo").await.unwrap().is_none());
     assert!(
@@ -381,7 +382,7 @@ async fn repo_lookup_is_none_for_a_403_that_will_repeat_but_errs_for_a_plain_den
         )
         .mount(&server)
         .await;
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
 
     assert!(client.repo("tos", "blocked").await.unwrap().is_none());
     assert!(client.repo("sso", "gated").await.unwrap().is_none());
@@ -411,7 +412,7 @@ async fn dump_keeps_the_fields_the_typed_shape_drops() {
         .mount(&server)
         .await;
 
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
     let dump = client.dump().await.unwrap();
 
     let raw: serde_json::Value =
@@ -455,7 +456,7 @@ async fn dump_captures_every_page_in_order() {
         .mount(&server)
         .await;
 
-    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+    let client = github_client(&server);
     let dump = client.dump().await.unwrap();
     assert_eq!(dump.raw.len(), 2, "one captured body per page");
 
@@ -499,12 +500,8 @@ async fn three_star_pages(server: &MockServer, hits: [u64; 3]) {
     }
 }
 
-fn star_client(server: &MockServer) -> GitHubClient {
+fn github_client(server: &MockServer) -> GitHubClient {
     GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri())
-}
-
-fn titles(drafts: &[BookmarkDraft]) -> Vec<&str> {
-    drafts.iter().map(|d| d.bookmark.title.as_str()).collect()
 }
 
 #[tokio::test]
@@ -513,7 +510,7 @@ async fn incremental_fetch_stops_at_the_first_page_with_nothing_new() {
     three_star_pages(&server, [1, 1, 0]).await;
 
     let existing = [crate::test_support::stored_at("https://github.com/s/o")];
-    let drafts = star_client(&server)
+    let drafts = github_client(&server)
         .fetch_incremental(&existing)
         .await
         .unwrap();
@@ -525,7 +522,7 @@ async fn incremental_fetch_reads_on_while_every_page_has_something_new() {
     let server = MockServer::start().await;
     three_star_pages(&server, [1, 1, 1]).await;
 
-    let drafts = star_client(&server).fetch_incremental(&[]).await.unwrap();
+    let drafts = github_client(&server).fetch_incremental(&[]).await.unwrap();
     assert_eq!(titles(&drafts), ["s/n", "s/o", "s/p"]);
 }
 
@@ -534,7 +531,7 @@ async fn dump_reads_every_star_page() {
     let server = MockServer::start().await;
     three_star_pages(&server, [1, 1, 1]).await;
 
-    let dump = star_client(&server).dump().await.unwrap();
+    let dump = github_client(&server).dump().await.unwrap();
     assert_eq!(dump.raw.len(), 3);
 }
 
@@ -561,7 +558,7 @@ async fn cleanup_with_post_dates_reads_every_star_page() {
 
     cleanup::run(
         &pinboard.cleanup_store(false),
-        &star_client(&server),
+        &github_client(&server),
         DateOpts {
             use_post_date: true,
             max_age_days: 30,

@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{scratch_dir, stored_at};
+use crate::test_support::{scratch_dir, stored_at, strings};
 use time::OffsetDateTime;
 
 fn page(stream: &'static str, kind: RawKind, body: &str) -> RawPage {
@@ -105,11 +105,9 @@ fn slugs_are_filename_safe_and_default_when_absent() {
 
 #[test]
 fn collisions_are_caught_before_any_write() {
-    let ok = vec!["reddit-a".to_string(), "reddit-b".to_string()];
-    assert!(check_stem_collisions(&ok).is_ok());
+    assert!(check_stem_collisions(["reddit-a", "reddit-b"]).is_ok());
 
-    let clash = vec!["reddit-a-b".to_string(), "reddit-a-b".to_string()];
-    let err = check_stem_collisions(&clash).unwrap_err();
+    let err = check_stem_collisions(["reddit-a-b", "reddit-a-b"]).unwrap_err();
     assert!(format!("{err:#}").contains("reddit-a-b"), "{err:#}");
 }
 
@@ -268,7 +266,7 @@ fn a_partial_run_is_marked_incomplete_in_the_manifest() {
         dir,
         &entries,
         &[],
-        &["github[work]".to_string()],
+        &strings(&["github[work]"]),
         "2026-08-29T00:00:00Z",
     )
     .unwrap();
@@ -485,7 +483,7 @@ fn a_failed_target_updates_its_manifest_entry_rather_than_keeping_the_old_one() 
         dir,
         &[small],
         &[],
-        &["github[main]".to_string()],
+        &strings(&["github[main]"]),
         "2026-08-29T00:00:00Z",
     )
     .unwrap();
@@ -530,8 +528,8 @@ fn a_removed_file_loses_its_manifest_entry() {
     write_manifest(
         dir,
         &[entry("raw/reddit-main.json")],
-        &["normalized/reddit-main.json".to_string()],
-        &["reddit[main]".to_string()],
+        &strings(&["normalized/reddit-main.json"]),
+        &strings(&["reddit[main]"]),
         "2026-08-29T00:00:00Z",
     )
     .unwrap();
@@ -766,7 +764,7 @@ fn a_partial_file_stays_marked_after_a_later_clean_run_of_another_target() {
             Some("stopped at the page cap"),
         )],
         &[],
-        &["github[main]".to_string()],
+        &strings(&["github[main]"]),
         "2026-08-01T00:00:00Z",
     )
     .unwrap();

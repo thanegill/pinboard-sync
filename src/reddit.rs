@@ -20,6 +20,7 @@ use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::Bookmark;
+use crate::config::own_then_configured;
 use crate::http::{client_builder, RetryingClient, USER_AGENT};
 use crate::reddit::cookie::{refused_cookie_advice, SessionCookie};
 use crate::reddit::model::{reddit_key, RedditConfig, RedditListing, RedditListingEntry};
@@ -127,9 +128,8 @@ impl RedditClient {
 }
 
 impl RedditClient {
-    /// Fetch all saved items, newest first, following `after` pagination (Reddit
-    /// caps any listing at ~1000). Inherent (no longer a port): only `sync`'s
-    /// `Source::fetch` and the net tests call it, both within this crate.
+    /// Fetch all saved items, newest first, following `after` pagination (Reddit caps any
+    /// listing at ~1000).
     async fn fetch_saved(&self) -> Result<Vec<RedditListingEntry>, SourceError> {
         self.fetch_saved_capturing(&mut RawSink::disabled()).await
     }
@@ -349,8 +349,7 @@ impl UrlKey for RedditClient {
     /// Reddit's dedup key is the host-agnostic permalink path, so the same post matches
     /// across `old.`/`www.`/`m.` subdomains and every configured `reddit_domain`.
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        std::iter::once(&self.config.domain)
-            .chain(&self.reddit_domains)
+        own_then_configured(&self.config.domain, &self.reddit_domains)
             .find_map(|domain| reddit_key(url, domain))
     }
 }
@@ -508,7 +507,11 @@ const TEST_COOKIE_SOURCE: &str = "$REDDIT_COOKIE_FILE";
 #[cfg(test)]
 impl RedditClient {
     /// Test constructor pointing both endpoints at a mock server.
-    pub(crate) fn for_test(cookie: Option<String>, username: Option<String>, base: String) -> Self {
+    pub(crate) fn with_base_url(
+        cookie: Option<String>,
+        username: Option<String>,
+        base: String,
+    ) -> Self {
         let cookie = cookie.map(|value| ConfiguredSecret {
             value,
             source: TEST_COOKIE_SOURCE,

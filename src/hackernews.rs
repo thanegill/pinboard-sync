@@ -176,9 +176,9 @@ impl From<AlgoliaHit> for HackerNewsItem {
 
 impl HackerNewsItem {
     /// Shape the item into a Pinboard draft. Comments keep the HN permalink; stories
-    /// bookmark the linked article (HN discussion in the notes), falling back to the
-    /// HN permalink for text posts (Ask HN, etc.). `reddit_domains` are the configured
-    /// Reddit accounts' `reddit_domain`s, for the article's key ([`hn_url_key`]).
+    /// bookmark the linked article (HN discussion in the notes), falling back to the HN
+    /// permalink for text posts (Ask HN, etc.). `reddit_domains` are the configured
+    /// Reddit accounts' `reddit_domain`s, for the article's key ([`hackernews_key`]).
     fn into_draft(
         self,
         cfg: &HackerNewsConfig,
@@ -219,8 +219,8 @@ impl HackerNewsItem {
         let (url, dedup_key) = match article.as_deref() {
             Some(u) => match Url::parse(u) {
                 Ok(parsed) => {
-                    let key =
-                        hn_url_key(&parsed, reddit_domains).unwrap_or_else(|| parsed.to_string());
+                    let key = hackernews_key(&parsed, reddit_domains)
+                        .unwrap_or_else(|| parsed.to_string());
                     (parsed, key)
                 }
                 Err(e) => {
@@ -591,7 +591,7 @@ impl BackupSource for HackerNewsClient {
 
 impl UrlKey for HackerNewsClient {
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        hn_url_key(url, &self.reddit_domains)
+        hackernews_key(url, &self.reddit_domains)
     }
 }
 
@@ -605,9 +605,9 @@ impl UrlKey for HackerNewsClient {
 /// Reddit's `over18` interstitial keys as its `dest`, which `cleanup reddit` unwraps it
 /// to, and the bare Reddit root, which `reddit_key` leaves unkeyed, keys as `/`, the path
 /// cleanup keeps when it moves it onto the account's domain.
-fn hn_url_key(url: &Url, reddit_domains: &[String]) -> Option<String> {
+fn hackernews_key(url: &Url, reddit_domains: &[String]) -> Option<String> {
     if let Some(dest) = over18_dest(url) {
-        return hn_url_key(&dest, reddit_domains);
+        return hackernews_key(&dest, reddit_domains);
     }
     HackerNewsItemId::try_from(url)
         .ok()
@@ -799,11 +799,17 @@ impl HackerNewsClient {
     async fn sync_once(&self, drafts: &[BookmarkDraft], account: &[Bookmark]) -> Vec<Bookmark> {
         let settings = crate::sync::JobSettings {
             limit: crate::config::SyncLimit::All,
-            toread: false,
-            shared: false,
+            read_later: false,
+            public: false,
             dates: crate::test_support::NO_DATING,
         };
-        let new = crate::sync::prepare_new_drafts(self, drafts.to_vec(), account, &settings, 0);
+        let new = crate::sync::prepare_new_drafts(
+            self,
+            drafts.to_vec(),
+            account,
+            &settings,
+            time::OffsetDateTime::UNIX_EPOCH,
+        );
         let pinboard = crate::test_support::FakePinboard::default();
         let tally = crate::sync::write_drafts(&pinboard, &new, false).await;
         assert_eq!(tally.failed, 0);
@@ -1146,7 +1152,7 @@ mod tests {
             fix_titles: false,
             config: config.clone(),
             dates: NO_DATING,
-            accounts: vec![config],
+            configured: vec![config],
         };
         run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts)
             .await

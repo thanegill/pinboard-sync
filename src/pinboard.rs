@@ -16,11 +16,12 @@ use crate::http::{
 };
 use crate::source::SourceError;
 
-const DEFAULT_BASE: &str = "https://api.pinboard.in/v1";
+const PINBOARD_BASE: &str = "https://api.pinboard.in/v1";
 
 /// Seconds to wait between successful `posts/add` calls (Pinboard asks for ~3s).
 pub const RATE_LIMIT_SECS: u64 = 3;
 const MAX_RETRIES: u32 = 5;
+const RETRY_DELAY: Duration = Duration::from_secs(3);
 
 /// `posts/add` is a GET, so every field — notably `extended` (the notes) — rides in
 /// the request URL. Servers cap the request line (Pinboard answers a long one with
@@ -107,12 +108,6 @@ impl TryFrom<PinboardBookmark> for Bookmark {
     }
 }
 
-// The service-agnostic domain form, `crate::bookmark::Bookmark`, is what the rest of the
-// crate works with; `posts/all` parses into `PinboardBookmark` and converts via its
-// `TryFrom` impl, and a write takes a whole `Bookmark` (mapped to the API params in
-// `post_add`). The `BookmarkStore` port also lives in `bookmark`; this module is just the
-// Pinboard client behind that port.
-
 pub struct PinboardClient {
     http: RetryingClient,
     /// `username:TOKEN`.
@@ -132,7 +127,7 @@ impl PinboardClient {
         Self::build(
             auth_token,
             rate_limit_secs,
-            DEFAULT_BASE.to_string(),
+            PINBOARD_BASE.to_string(),
             client_builder(),
         )
     }
@@ -148,7 +143,7 @@ impl PinboardClient {
             .build()
             .context("building HTTP client")?;
         Ok(Self {
-            http: RetryingClient::new(http, MAX_RETRIES, Duration::from_secs(RATE_LIMIT_SECS)),
+            http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
             auth_token,
             rate_limit_secs,
             wrote: Cell::new(false),
@@ -256,15 +251,18 @@ fn wire_to_bookmarks(wire: Vec<PinboardBookmark>) -> Vec<Bookmark> {
         .collect()
 }
 
-impl BookmarkStore for PinboardClient {
-    async fn all(&self) -> Result<Vec<Bookmark>> {
+impl PinboardClient {
+    /// Every bookmark in the account (`posts/all`).
+    pub async fn all(&self) -> Result<Vec<Bookmark>> {
         let resp = self.get_posts_all("no").await?;
         let body = resp.text().await.context("reading Pinboard posts/all")?;
         let wire: Vec<PinboardBookmark> =
             serde_json::from_str(&body).context("parsing Pinboard posts/all")?;
         Ok(wire_to_bookmarks(wire))
     }
+}
 
+impl BookmarkStore for PinboardClient {
     /// An `item not found` answering a retry counts as done: the attempt before it may have
     /// deleted the bookmark before its response was lost. On a first attempt it is an error.
     async fn delete(&self, url: &Url) -> Result<()> {
@@ -429,8 +427,8 @@ impl PinboardClient {
     }
 
     /// GET `posts/all` with the given `meta` flag (`"yes"` includes each entry's
-    /// `meta`/`hash`), retrying transient failures. Shared by [`BookmarkStore::all`], which
-    /// parses the JSON, and [`Self::export_all`], which returns the body verbatim.
+    /// `meta`/`hash`), retrying transient failures. Shared by [`Self::all`], which parses
+    /// the JSON, and [`Self::export_all`], which returns the body verbatim.
     async fn get_posts_all(&self, meta: &str) -> Result<reqwest::Response> {
         let params = [
             ("auth_token", self.auth_token.as_str()),
@@ -469,9 +467,9 @@ impl PinboardClient {
         )
     }
 
-    /// Fetch the raw `posts/all` JSON body verbatim (with `meta=yes`), for backups.
-    /// Unlike [`BookmarkStore::all`], this neither parses nor filters — it returns exactly
-    /// what Pinboard sends, preserving `meta`/`hash` and any entries `all` would skip.
+    /// Fetch the raw `posts/all` JSON body verbatim (with `meta=yes`), for backups. Unlike
+    /// [`Self::all`], this neither parses nor filters — it returns exactly what Pinboard
+    /// sends, preserving `meta`/`hash` and any entries `all` would skip.
     pub async fn export_all(&self) -> Result<String> {
         let resp = self.get_posts_all("yes").await?;
         resp.text().await.context("reading Pinboard posts/all body")
@@ -502,7 +500,7 @@ mod tests {
     use crate::http::{ELLIPSIS, ERROR_BODY_MAX_BYTES};
 
     fn test_client() -> PinboardClient {
-        PinboardClient::with_base_url("user:tok".into(), DEFAULT_BASE.to_string()).unwrap()
+        PinboardClient::with_base_url("user:tok".into(), PINBOARD_BASE.to_string()).unwrap()
     }
 
     /// A realistic set of fixed params (URL, title, tags, auth, …).

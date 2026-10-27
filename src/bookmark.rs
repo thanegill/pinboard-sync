@@ -37,17 +37,17 @@ pub struct Bookmark {
 }
 
 impl Bookmark {
-    /// The written fields where `new` differs from `self` (the stored bookmark), each as
-    /// a `(label, rendered new value)` pair for the cleanup dry-run. Empty when nothing a
+    /// The written fields where `new` differs from `self` (the stored bookmark), each as a
+    /// `(label, rendered new value)` pair for the cleanup dry-run. Empty when nothing a
     /// write would change differs — so `cleanup` skips the bookmark. `timestamp` compares
     /// by instant (a re-formatted but equivalent time isn't a change). The `public` and
-    /// `read_later` flags are not compared, because on the paths that call this they
-    /// cannot differ, though for different reasons. A single plan carries the stored values,
+    /// `read_later` flags are not compared, because on the paths that call this they cannot
+    /// differ, though for different reasons. A single plan carries the stored values,
     /// forced there before diffing. In a merge, `public` is enforced — a member that
     /// disagrees with the record staying at the target is refused and never joins — while
     /// `read_later` is *restored* from that record afterwards, because members are free to
     /// disagree about it and the merge's any()-rule would otherwise flip it on. See
-    /// `cleanup_pass::run_pass`.
+    /// `cleanup_pass::hold_back_visibility_mismatches` and `cleanup_pass::write_merge`.
     pub fn diff(&self, new: &Bookmark) -> Vec<(&'static str, String)> {
         let mut changes = Vec::new();
         if new.url != self.url {
@@ -78,13 +78,12 @@ impl Bookmark {
     }
 }
 
-/// The bookmark-store operations the sync/cleanup loops depend on. Abstracted from the
-/// concrete Pinboard client so those loops can be exercised with an in-memory fake. A
-/// write takes a whole [`Bookmark`]; the client maps it to the Pinboard `posts/add`
-/// parameters at the boundary (see `pinboard::post_add`).
+/// The bookmark-store writes the sync/cleanup loops depend on. Abstracted from the concrete
+/// Pinboard client so those loops can be exercised with an in-memory fake. A write takes a
+/// whole [`Bookmark`]; the client maps it to the Pinboard `posts/add` parameters at the
+/// boundary (see `pinboard::post_add`). Reading the account is not part of the port: a run
+/// reads `posts/all` once, through `PinboardClient::all`, before any loop starts.
 pub trait BookmarkStore {
-    /// Every bookmark in the account (`posts/all`).
-    async fn all(&self) -> Result<Vec<Bookmark>>;
     /// Add a new bookmark. A `None` `timestamp` lets Pinboard default the date to now.
     async fn add(&self, b: &Bookmark) -> Result<()>;
     /// Re-add an existing bookmark with normalized fields.
@@ -314,11 +313,6 @@ impl<P> AccountState for CleanupStore<'_, P> {
 }
 
 impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
-    /// The run's own view, not a fetch: `posts/all` is read once, before the passes.
-    async fn all(&self) -> Result<Vec<Bookmark>> {
-        Ok(self.snapshot())
-    }
-
     async fn add(&self, b: &Bookmark) -> Result<()> {
         if !self.dry_run {
             self.inner.add(b).await?;
@@ -344,26 +338,30 @@ impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
     }
 }
 
+/// A stored bookmark at `url`, titled "T", with `note`: the fixture every test module here
+/// builds its account from.
+#[cfg(test)]
+fn at(url: &str, note: &str) -> Bookmark {
+    Bookmark {
+        title: "T".into(),
+        note: note.into(),
+        ..crate::test_support::stored_at(url)
+    }
+}
+
 #[cfg(test)]
 mod write_outcome_tests {
     use super::*;
-    use crate::test_support::{stored_at, FakePinboard};
-
-    fn at(url: &str) -> Bookmark {
-        Bookmark {
-            title: "T".into(),
-            ..stored_at(url)
-        }
-    }
+    use crate::test_support::{strings, url, FakePinboard};
 
     #[tokio::test]
     async fn a_merge_reports_the_write_and_every_delete_that_landed() {
         let pinboard = FakePinboard::default();
-        let old_a = Url::parse("https://old-a/").unwrap();
-        let old_b = Url::parse("https://old-b/").unwrap();
+        let old_a = url("https://old-a/");
+        let old_b = url("https://old-b/");
 
         let out = pinboard
-            .apply_merge(&at("https://target/"), &[&old_a, &old_b])
+            .apply_merge(&at("https://target/", ""), &[&old_a, &old_b])
             .await;
 
         assert!(out.wrote);
@@ -377,18 +375,18 @@ mod write_outcome_tests {
         // would undo the write. Callers build `old_urls` excluding it, but this is a public
         // default method and the guard is what makes it safe to call with anything.
         let pinboard = FakePinboard::default();
-        let target = Url::parse("https://target/").unwrap();
-        let absorbed = Url::parse("https://absorbed/").unwrap();
+        let target = url("https://target/");
+        let absorbed = url("https://absorbed/");
 
         let outcome = pinboard
-            .apply_merge(&at("https://target/"), &[&target, &absorbed])
+            .apply_merge(&at("https://target/", ""), &[&target, &absorbed])
             .await;
 
         assert!(outcome.error.is_none());
         assert_eq!(outcome.deleted, vec![absorbed]);
         assert_eq!(
             *pinboard.deleted.borrow(),
-            vec!["https://absorbed/".to_string()],
+            strings(&["https://absorbed/"]),
             "the target must not even be attempted"
         );
     }
@@ -405,12 +403,12 @@ mod write_outcome_tests {
                 .collect(),
             ..FakePinboard::default()
         };
-        let a = Url::parse("https://a/").unwrap();
-        let b = Url::parse("https://b/").unwrap();
-        let c = Url::parse("https://c/").unwrap();
+        let a = url("https://a/");
+        let b = url("https://b/");
+        let c = url("https://c/");
 
         let outcome = pinboard
-            .apply_merge(&at("https://target/"), &[&a, &b, &c])
+            .apply_merge(&at("https://target/", ""), &[&a, &b, &c])
             .await;
 
         assert!(outcome.wrote);
@@ -422,11 +420,7 @@ mod write_outcome_tests {
         assert_eq!(outcome.deleted, vec![c], "and the one that worked landed");
         assert_eq!(
             *pinboard.deleted.borrow(),
-            vec![
-                "https://a/".to_string(),
-                "https://b/".to_string(),
-                "https://c/".to_string()
-            ],
+            strings(&["https://a/", "https://b/", "https://c/"]),
             "every absorbed URL is still attempted"
         );
     }
@@ -436,16 +430,16 @@ mod write_outcome_tests {
         // Absorbed URLs are independent. Abandoning the rest on the first failure leaves
         // more duplicate records behind than necessary, and the caller still has to know
         // the write itself landed so it doesn't treat the target as untouched.
-        let old_a = Url::parse("https://old-a/").unwrap();
-        let old_b = Url::parse("https://old-b/").unwrap();
-        let old_c = Url::parse("https://old-c/").unwrap();
+        let old_a = url("https://old-a/");
+        let old_b = url("https://old-b/");
+        let old_c = url("https://old-c/");
         let pinboard = FakePinboard {
             fail_delete_urls: [old_b.to_string()].into_iter().collect(),
             ..Default::default()
         };
 
         let out = pinboard
-            .apply_merge(&at("https://target/"), &[&old_a, &old_b, &old_c])
+            .apply_merge(&at("https://target/", ""), &[&old_a, &old_b, &old_c])
             .await;
 
         assert!(out.wrote, "the write landed and the caller must know");
@@ -463,9 +457,11 @@ mod write_outcome_tests {
             fail_update_urls: ["https://target/".to_string()].into_iter().collect(),
             ..Default::default()
         };
-        let old = Url::parse("https://old/").unwrap();
+        let old = url("https://old/");
 
-        let out = pinboard.apply_merge(&at("https://target/"), &[&old]).await;
+        let out = pinboard
+            .apply_merge(&at("https://target/", ""), &[&old])
+            .await;
 
         assert!(!out.wrote);
         assert!(out.deleted.is_empty());
@@ -477,13 +473,12 @@ mod write_outcome_tests {
 #[cfg(test)]
 mod cleanup_store_tests {
     use super::*;
-    use crate::test_support::{stored_at, FakePinboard};
+    use crate::test_support::{url, FakePinboard};
 
     #[tokio::test]
-    async fn all_answers_from_the_view_without_fetching() {
-        // `posts/all` is rate-limited to one call per five minutes, so a second one inside
-        // a run would fail it. The store answers from the view it already has — and that
-        // view reflects this run's writes, which a re-fetch would not.
+    async fn the_snapshot_reflects_this_runs_writes() {
+        // A later pass plans from the snapshot, so it has to show what an earlier pass
+        // wrote, which the `posts/all` read before the run does not.
         let pinboard = FakePinboard::default();
         let store = CleanupStore::new(
             &pinboard,
@@ -492,23 +487,10 @@ mod cleanup_store_tests {
         );
         store.update(&at("https://a/", "written")).await.unwrap();
 
-        let all = store.all().await.unwrap();
+        let all = store.snapshot();
 
-        assert_eq!(
-            *pinboard.all_calls.borrow(),
-            0,
-            "must not reach the network"
-        );
         assert_eq!(all.len(), 1);
-        assert_eq!(all[0].note, "written", "and must reflect this run's writes");
-    }
-
-    fn at(url: &str, note: &str) -> Bookmark {
-        Bookmark {
-            title: "T".into(),
-            note: note.into(),
-            ..stored_at(url)
-        }
+        assert_eq!(all[0].note, "written");
     }
 
     #[tokio::test]
@@ -523,21 +505,12 @@ mod cleanup_store_tests {
         );
 
         let out = store
-            .apply_update(
-                &at("https://b/", "new"),
-                Some(&Url::parse("https://a/").unwrap()),
-            )
+            .apply_update(&at("https://b/", "new"), Some(&url("https://a/")))
             .await;
         assert!(out.error.is_none());
 
-        assert_eq!(
-            store
-                .resident(&Url::parse("https://b/").unwrap())
-                .unwrap()
-                .note,
-            "new"
-        );
-        assert!(store.resident(&Url::parse("https://a/").unwrap()).is_none());
+        assert_eq!(store.resident(&url("https://b/")).unwrap().note, "new");
+        assert!(store.resident(&url("https://a/")).is_none());
         assert_eq!(fake.updated.borrow().len(), 1);
     }
 
@@ -550,15 +523,12 @@ mod cleanup_store_tests {
         let store = CleanupStore::new(&fake, AccountView::new(vec![at("https://a/", "old")]), true);
 
         let out = store
-            .apply_update(
-                &at("https://b/", "new"),
-                Some(&Url::parse("https://a/").unwrap()),
-            )
+            .apply_update(&at("https://b/", "new"), Some(&url("https://a/")))
             .await;
         assert!(out.error.is_none());
 
-        assert!(store.resident(&Url::parse("https://b/").unwrap()).is_some());
-        assert!(store.resident(&Url::parse("https://a/").unwrap()).is_none());
+        assert!(store.resident(&url("https://b/")).is_some());
+        assert!(store.resident(&url("https://a/")).is_none());
         assert!(fake.updated.borrow().is_empty(), "dry run must not write");
         assert!(fake.deleted.borrow().is_empty(), "dry run must not delete");
     }
@@ -576,16 +546,13 @@ mod cleanup_store_tests {
         );
 
         let out = store
-            .apply_update(
-                &at("https://b/", "new"),
-                Some(&Url::parse("https://a/").unwrap()),
-            )
+            .apply_update(&at("https://b/", "new"), Some(&url("https://a/")))
             .await;
 
         assert!(!out.wrote);
-        assert!(store.resident(&Url::parse("https://b/").unwrap()).is_none());
+        assert!(store.resident(&url("https://b/")).is_none());
         assert!(
-            store.resident(&Url::parse("https://a/").unwrap()).is_some(),
+            store.resident(&url("https://a/")).is_some(),
             "the old URL was never deleted, so it is still there"
         );
     }
@@ -594,15 +561,7 @@ mod cleanup_store_tests {
 #[cfg(test)]
 mod account_view_tests {
     use super::*;
-    use crate::test_support::stored_at;
-
-    fn at(url: &str, note: &str) -> Bookmark {
-        Bookmark {
-            title: "T".into(),
-            note: note.into(),
-            ..stored_at(url)
-        }
-    }
+    use crate::test_support::url;
 
     #[test]
     fn preserves_posts_all_order_across_writes_and_deletes() {
@@ -621,17 +580,16 @@ mod account_view_tests {
         assert_eq!(urls(&view), vec!["https://c/", "https://a/", "https://b/"]);
 
         view.insert(&at("https://d/", ""));
-        view.remove(&Url::parse("https://a/").unwrap());
+        view.remove(&url("https://a/"));
         assert_eq!(urls(&view), vec!["https://c/", "https://b/", "https://d/"]);
     }
 
     #[test]
     fn reinserting_a_removed_url_does_not_duplicate_it() {
-        // `remove` used to leave the order entry behind as a tombstone, so a later
-        // `insert` of the same URL appended a second one and `iter()` yielded the
-        // bookmark twice — which a later pass would then plan twice.
+        // A tombstone left in the order would let a later `insert` of the same URL append a
+        // second entry, and `iter()` would yield it twice for a later pass to plan twice.
         let mut view = AccountView::new(vec![at("https://a/", ""), at("https://b/", "")]);
-        view.remove(&Url::parse("https://a/").unwrap());
+        view.remove(&url("https://a/"));
         view.insert(&at("https://a/", "back"));
 
         assert_eq!(urls(&view), vec!["https://b/", "https://a/"]);
@@ -641,13 +599,10 @@ mod account_view_tests {
     fn insert_upserts_and_remove_drops() {
         let mut view = AccountView::new(vec![at("https://a/", "old"), at("https://b/", "")]);
         view.insert(&at("https://a/", "new"));
-        view.remove(&Url::parse("https://b/").unwrap());
+        view.remove(&url("https://b/"));
 
-        assert_eq!(
-            view.get(&Url::parse("https://a/").unwrap()).unwrap().note,
-            "new"
-        );
-        assert!(view.get(&Url::parse("https://b/").unwrap()).is_none());
+        assert_eq!(view.get(&url("https://a/")).unwrap().note, "new");
+        assert!(view.get(&url("https://b/")).is_none());
         assert_eq!(view.iter().count(), 1);
     }
 
@@ -662,9 +617,7 @@ mod account_view_tests {
         ]);
         assert_eq!(view.iter().count(), 1);
         assert_eq!(
-            view.get(&Url::parse("https://dup.example/").unwrap())
-                .unwrap()
-                .note,
+            view.get(&url("https://dup.example/")).unwrap().note,
             "first"
         );
     }

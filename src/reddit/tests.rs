@@ -380,7 +380,7 @@ fn a_saved_page_is_caught_up_when_its_saves_are_on_pinboard() {
         )
     };
     let unshapable = listing_entry("t3", serde_json::json!({ "name": "t3_gone" }));
-    let client = RedditClient::for_test(None, None, "http://unused.invalid".into());
+    let client = RedditClient::with_base_url(None, None, "http://unused.invalid".into());
     let synced_keys = client.synced_keys(&[
         stored_at("https://www.reddit.com/r/rust/comments/a/x/"),
         stored_at("https://old.reddit.com/r/Rust/comments/b/x/"),
@@ -411,7 +411,7 @@ fn a_mirror_reddit_domain_dedups_against_its_own_and_reddit_com_bookmarks() {
                                 "title": "T" }),
         )
     };
-    let mut client = RedditClient::for_test(None, None, "http://unused.invalid".into());
+    let mut client = RedditClient::with_base_url(None, None, "http://unused.invalid".into());
     client.config.domain = "redlib.example.org".into();
     let drafts = client.shape(vec![post("a"), post("b"), post("c")]);
     let existing = [

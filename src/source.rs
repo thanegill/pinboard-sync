@@ -41,8 +41,8 @@ impl SourceError {
     /// has decided on the hook; `doctor`, which reports each credential rather than acting
     /// on it; and HackerNews, which is public and cannot need re-authentication. Everywhere
     /// else the variant is what decides whether the `--on-auth-failure` hook fires, so
-    /// flattening early is how `cleanup` silently lost that hook — don't reach for this to
-    /// make a type mismatch go away.
+    /// flattening early silently loses that hook — don't reach for this to make a type
+    /// mismatch go away.
     pub fn into_anyhow(self) -> anyhow::Error {
         match self {
             SourceError::ReauthRequired(m)

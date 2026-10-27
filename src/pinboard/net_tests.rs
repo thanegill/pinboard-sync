@@ -1,6 +1,7 @@
 use super::*;
 use crate::test_support::{
-    assert_quotes_capped_excerpt, capturing_logs, long_error_page, stored_at, ERROR_PAGE_TAIL,
+    assert_quotes_capped_excerpt, capturing_logs, long_error_page, stored_at, strings,
+    ERROR_PAGE_TAIL,
 };
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
@@ -141,6 +142,58 @@ async fn add_succeeds_on_done() {
         .await;
 
     client(&server).add(&post()).await.unwrap();
+}
+
+/// `posts/add` names the fields after delicious: the title is `description` and the
+/// notes are `extended`. Every write replaces the record at its URL, and the two flags
+/// go out as `yes`/`no`.
+#[tokio::test]
+async fn add_sends_each_field_under_its_pinboard_name() {
+    let server = MockServer::start().await;
+    let done = || ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"}));
+    let common = |url: &str| {
+        Mock::given(method("GET"))
+            .and(path("/posts/add"))
+            .and(query_param("url", url))
+            .and(query_param("description", "Title"))
+            .and(query_param("extended", "Some notes"))
+            .and(query_param("tags", "reddit subreddit:rust"))
+            .and(query_param("replace", "yes"))
+            .and(query_param("auth_token", "user:tok"))
+            .and(query_param("format", "json"))
+    };
+    common("https://example.com/public")
+        .and(query_param("shared", "yes"))
+        .and(query_param("toread", "no"))
+        .respond_with(done())
+        .expect(1)
+        .mount(&server)
+        .await;
+    common("https://example.com/read-later")
+        .and(query_param("shared", "no"))
+        .and(query_param("toread", "yes"))
+        .respond_with(done())
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let bookmark = |url: &str, public: bool, read_later: bool| Bookmark {
+        title: "Title".into(),
+        note: "Some notes".into(),
+        tags: strings(&["reddit", "subreddit:rust"]),
+        public,
+        read_later,
+        ..stored_at(url)
+    };
+    let client = client(&server);
+    client
+        .add(&bookmark("https://example.com/public", true, false))
+        .await
+        .unwrap();
+    client
+        .update(&bookmark("https://example.com/read-later", false, true))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

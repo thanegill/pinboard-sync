@@ -44,10 +44,10 @@ pub async fn run_doctor(config: &Config) -> Result<()> {
         }
     }
 
-    let ovr = SyncOverrides::default();
-    failed += check_accounts::<RedditAccount>(&ovr, config).await;
-    failed += check_accounts::<GitHubAccount>(&ovr, config).await;
-    failed += check_accounts::<HackerNewsAccount>(&ovr, config).await;
+    let overrides = SyncOverrides::default();
+    failed += check_accounts::<RedditAccount>(&overrides, config).await;
+    failed += check_accounts::<GitHubAccount>(&overrides, config).await;
+    failed += check_accounts::<HackerNewsAccount>(&overrides, config).await;
 
     if failed > 0 {
         bail!("{failed} check(s) failed");
@@ -58,18 +58,18 @@ pub async fn run_doctor(config: &Config) -> Result<()> {
 
 /// Probe each configured account by fetching its source; returns the count that
 /// failed. Reuses the normal job builders, so it exercises the real auth path.
-async fn check_accounts<A: SourceAccount>(ovr: &SyncOverrides, config: &Config) -> usize {
+async fn check_accounts<A: SourceAccount>(overrides: &SyncOverrides, config: &Config) -> usize {
     let source = A::SOURCE;
     let accounts = A::configured(config);
     if accounts.is_empty() {
         println!("- {source} — no accounts configured");
         return 0;
     }
-    warn_shared_env_secrets::<A>(ovr, config);
+    warn_shared_env_secrets::<A>(overrides, config);
     let mut failed = 0;
     for account in accounts {
         let name = account.account_name().unwrap_or("(unnamed)");
-        let result = match build_job(Some(account), ovr, config) {
+        let result = match build_job(Some(account), overrides, config) {
             Ok(job) => job.client.fetch().await.map_err(SourceError::into_anyhow),
             Err(e) => Err(e),
         };

@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::{strings, titles};
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -35,7 +36,7 @@ async fn fetch_saved_sends_cookie_paginates_and_parses_metadata() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::for_test(
+    let client = RedditClient::with_base_url(
         Some("reddit_session=secret".into()),
         Some("psophis".into()),
         server.uri(),
@@ -74,7 +75,7 @@ async fn sends_a_bare_cookie_value_as_reddit_session() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::for_test(
+    let client = RedditClient::with_base_url(
         Some("bare-value\n".into()),
         Some("psophis".into()),
         server.uri(),
@@ -127,7 +128,7 @@ async fn fetch_saved_maps_a_login_redirect_to_reauth_without_following_it() {
         .await;
     mount_login_page(&server).await;
 
-    let client = RedditClient::for_test(
+    let client = RedditClient::with_base_url(
         Some("reddit_session=stale".into()),
         Some("psophis".into()),
         server.uri(),
@@ -147,8 +148,8 @@ async fn info_maps_a_login_redirect_to_reauth_without_following_it() {
         .await;
     mount_login_page(&server).await;
 
-    let client = RedditClient::for_test(Some("reddit_session=stale".into()), None, server.uri());
-    let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
+    let client = info_client(&server, "reddit_session=stale");
+    let err = client.info(&strings(&["t3_a"])).await.unwrap_err();
     assert_refused_at_login(err);
 }
 
@@ -170,7 +171,7 @@ async fn fetch_saved_terminates_when_after_cursor_loops() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+    let client = reddit_client(&server);
     // Page 1 (no cursor) records the cursor; page 2 (after=t3_loop) re-sees it and
     // breaks, so exactly two pages are fetched.
     let (entries, waits) = crate::http::recording_waits(client.fetch_saved()).await;
@@ -196,7 +197,7 @@ async fn fetch_errors_when_a_non_empty_listing_yields_no_drafts() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+    let client = reddit_client(&server);
     assert!(matches!(client.fetch().await, Err(SourceError::Other(_))));
 }
 
@@ -218,7 +219,7 @@ async fn fetch_keeps_a_good_entry_and_drops_a_schema_broken_sibling() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+    let client = reddit_client(&server);
     let drafts = client.fetch().await.unwrap();
     assert_eq!(drafts.len(), 1);
     assert_eq!(
@@ -240,7 +241,7 @@ async fn fetch_empty_listing_is_ok() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+    let client = reddit_client(&server);
     assert!(client.fetch().await.unwrap().is_empty());
 }
 
@@ -251,7 +252,7 @@ async fn fetch_saved_maps_403_to_reauth() {
         .respond_with(ResponseTemplate::new(403).set_body_string("blocked"))
         .mount(&server)
         .await;
-    let client = RedditClient::for_test(None, Some("psophis".into()), server.uri());
+    let client = reddit_client(&server);
     assert!(matches!(
         client.fetch_saved().await,
         Err(SourceError::ReauthRequired(_))
@@ -265,9 +266,8 @@ async fn info_names_the_cookie_setting_in_a_403_but_never_the_cookie() {
         .respond_with(ResponseTemplate::new(403).set_body_string("denied"))
         .mount(&server)
         .await;
-    let client =
-        RedditClient::for_test(Some("reddit_session=SECRET403".into()), None, server.uri());
-    let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
+    let client = info_client(&server, "reddit_session=SECRET403");
+    let err = client.info(&strings(&["t3_a"])).await.unwrap_err();
     let SourceError::ReauthRequired(message) = &err else {
         panic!("a 403 must ask for a new cookie: {err:?}");
     };
@@ -292,7 +292,7 @@ async fn fetch_saved_maps_a_block_page_to_blocked() {
         .expect(1)
         .mount(&server)
         .await;
-    let client = RedditClient::for_test(
+    let client = RedditClient::with_base_url(
         Some("reddit_session=secret".into()),
         Some("psophis".into()),
         server.uri(),
@@ -310,8 +310,8 @@ async fn info_maps_a_block_page_to_blocked() {
         .expect(1)
         .mount(&server)
         .await;
-    let client = RedditClient::for_test(Some("reddit_session=secret".into()), None, server.uri());
-    let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
+    let client = info_client(&server, "reddit_session=secret");
+    let err = client.info(&strings(&["t3_a"])).await.unwrap_err();
     assert!(matches!(err, SourceError::Blocked(_)), "got {err:?}");
 }
 
@@ -329,8 +329,8 @@ async fn info_sends_a_bare_cookie_value_as_reddit_session() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::for_test(Some("bare-value".into()), None, server.uri());
-    assert!(client.info(&["t3_a".to_string()]).await.unwrap().is_empty());
+    let client = info_client(&server, "bare-value");
+    assert!(client.info(&strings(&["t3_a"])).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -351,8 +351,8 @@ async fn info_sends_cookie_and_returns_entries() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::for_test(Some("reddit_session=secret".into()), None, server.uri());
-    let entries = client.info(&["t3_a".to_string()]).await.unwrap();
+    let client = info_client(&server, "reddit_session=secret");
+    let entries = client.info(&strings(&["t3_a"])).await.unwrap();
     assert_eq!(entries.len(), 1);
     assert!(entries[0].fields.over_18);
 }
@@ -370,7 +370,7 @@ async fn info_pauses_only_between_batches() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::for_test(Some("reddit_session=secret".into()), None, server.uri());
+    let client = info_client(&server, "reddit_session=secret");
     let fullnames: Vec<String> = (0..250).map(|n| format!("t3_{n}")).collect();
     let (entries, waits) = crate::http::recording_waits(client.info(&fullnames)).await;
     assert!(entries.unwrap().is_empty());
@@ -408,8 +408,14 @@ async fn three_saved_pages(server: &MockServer, hits: [u64; 3]) {
     }
 }
 
-fn saved_client(server: &MockServer) -> RedditClient {
-    RedditClient::for_test(None, Some("psophis".into()), server.uri())
+/// A client reading `psophis`'s saved listing from `server`, with no cookie.
+fn reddit_client(server: &MockServer) -> RedditClient {
+    RedditClient::with_base_url(None, Some("psophis".into()), server.uri())
+}
+
+/// A client for `/api/info` lookups on `server`, sending `cookie`.
+fn info_client(server: &MockServer, cookie: &str) -> RedditClient {
+    RedditClient::with_base_url(Some(cookie.into()), None, server.uri())
 }
 
 /// Pinboard already holds the second page's save, so that page has nothing new.
@@ -419,16 +425,12 @@ fn second_page_synced() -> [Bookmark; 1] {
     )]
 }
 
-fn titles(drafts: &[BookmarkDraft]) -> Vec<&str> {
-    drafts.iter().map(|d| d.bookmark.title.as_str()).collect()
-}
-
 #[tokio::test]
 async fn incremental_fetch_stops_at_the_first_page_with_nothing_new() {
     let server = MockServer::start().await;
     three_saved_pages(&server, [1, 1, 0]).await;
 
-    let client = saved_client(&server);
+    let client = reddit_client(&server);
     let (drafts, waits) =
         crate::http::recording_waits(client.fetch_incremental(&second_page_synced())).await;
     assert_eq!(titles(&drafts.unwrap()), ["n", "o"]);
@@ -440,7 +442,7 @@ async fn incremental_fetch_reads_on_while_every_page_has_something_new() {
     let server = MockServer::start().await;
     three_saved_pages(&server, [1, 1, 1]).await;
 
-    let client = saved_client(&server);
+    let client = reddit_client(&server);
     let (drafts, waits) = crate::http::recording_waits(client.fetch_incremental(&[])).await;
     assert_eq!(titles(&drafts.unwrap()), ["n", "o", "p"]);
     assert_eq!(
@@ -473,7 +475,7 @@ async fn the_page_cap_stops_without_a_pause_after_the_last_page() {
         .mount(&server)
         .await;
 
-    let (entries, waits) = crate::http::recording_waits(saved_client(&server).fetch_saved()).await;
+    let (entries, waits) = crate::http::recording_waits(reddit_client(&server).fetch_saved()).await;
     assert_eq!(entries.unwrap().len(), MAX_SAVED_PAGES as usize);
     assert_eq!(waits, vec![REQUEST_PAUSE; MAX_SAVED_PAGES as usize - 1]);
 }
@@ -483,7 +485,7 @@ async fn dump_reads_every_saved_page() {
     let server = MockServer::start().await;
     three_saved_pages(&server, [1, 1, 1]).await;
 
-    let client = saved_client(&server);
+    let client = reddit_client(&server);
     let dump = crate::http::recording_waits(client.dump()).await.0.unwrap();
     assert_eq!(dump.raw.len(), 3);
 }
@@ -499,7 +501,7 @@ async fn saved_listing_error_quotes_a_capped_one_line_excerpt() {
         .mount(&server)
         .await;
 
-    let err = saved_client(&server).fetch_saved().await.unwrap_err();
+    let err = reddit_client(&server).fetch_saved().await.unwrap_err();
     crate::test_support::assert_quotes_capped_excerpt(
         &err.to_string(),
         "saved listing returned 404 Not Found",
@@ -535,13 +537,13 @@ async fn cleanup_looks_up_comments_by_their_own_fullname_in_the_post_batch() {
         ],
         ..Default::default()
     };
-    let client = RedditClient::for_test(Some("reddit_session=secret".into()), None, server.uri());
+    let client = info_client(&server, "reddit_session=secret");
     let opts = RedditCleanupOpts {
         mark_nsfw: true,
         fix_titles: false,
         config: RedditConfig::default(),
         dates: NO_DATING,
-        accounts: Vec::new(),
+        configured: Vec::new(),
     };
 
     run(&pinboard.cleanup_store(false), Some(&client), &opts)

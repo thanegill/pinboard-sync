@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{listing_entry, stored_at, FakePinboard, FakeReddit, NO_DATING};
+use crate::test_support::{listing_entry, stored_at, strings, FakePinboard, FakeReddit, NO_DATING};
 use serde_json::json;
 
 fn opts() -> RedditCleanupOpts {
@@ -8,7 +8,7 @@ fn opts() -> RedditCleanupOpts {
         fix_titles: true,
         config: RedditConfig::default(),
         dates: NO_DATING,
-        accounts: Vec::new(),
+        configured: Vec::new(),
     }
 }
 
@@ -73,7 +73,7 @@ async fn normalizes_url_tags_nsfw_and_title() {
     // URL changed, so the old one is deleted.
     assert_eq!(
         *pinboard.deleted.borrow(),
-        vec!["https://www.reddit.com/r/NEWS/comments/abc/x/".to_string()]
+        strings(&["https://www.reddit.com/r/NEWS/comments/abc/x/"])
     );
 }
 
@@ -600,7 +600,7 @@ async fn bookmarks_moved_to_a_mirror_domain_still_dedup_for_sync() {
         "https://redlib.example.org/r/rust/comments/a/x/"
     );
 
-    let mut client = crate::reddit::RedditClient::for_test(None, None, "http://unused".into());
+    let mut client = crate::reddit::RedditClient::with_base_url(None, None, "http://unused".into());
     client.config = mirror;
     let saved = listing_entry(
         "t3",
@@ -657,7 +657,7 @@ async fn cleanup_running(
     };
     let opts = RedditCleanupOpts {
         config: running.clone(),
-        accounts: accounts.to_vec(),
+        configured: accounts.to_vec(),
         ..opts()
     };
     run(&pinboard.cleanup_store(false), Some(reddit), &opts)

@@ -17,16 +17,13 @@ pub fn rfc3339_to_unix(s: &str) -> Option<i64> {
 }
 
 /// Parse an RFC 3339 timestamp into an [`OffsetDateTime`] — the `cleanup` domain form of
-/// a bookmark's creation time. `None` if it doesn't parse. (Can't be a `From`/`TryFrom`
-/// impl: `OffsetDateTime` is foreign to this crate, so the orphan rule forbids it.)
+/// a bookmark's creation time. `None` if it doesn't parse.
 pub fn parse_rfc3339(s: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(s, &Rfc3339).ok()
 }
 
 /// Format an [`OffsetDateTime`] as RFC 3339, keeping its offset and any fractional
-/// seconds; Pinboard's `dt` goes through [`to_pinboard_dt`] instead. `None` if formatting
-/// fails. (Can't be a `From`/`Into` impl: `String` and `OffsetDateTime` are both foreign
-/// to this crate, so the orphan rule forbids it — and it's fallible.)
+/// seconds, or `None` if that fails. Pinboard's `dt` uses [`to_pinboard_dt`] instead.
 pub fn to_rfc3339(dt: OffsetDateTime) -> Option<String> {
     dt.format(&Rfc3339).ok()
 }
@@ -40,17 +37,9 @@ pub fn to_pinboard_dt(dt: OffsetDateTime) -> Option<String> {
 }
 
 /// An [`OffsetDateTime`] from unix epoch seconds — used to lift a source's epoch post
-/// date into the `cleanup` domain form. `None` if out of range. (Thin `.ok()` over the
-/// `time` crate's own `from_unix_timestamp`; can't be a `From` impl — `OffsetDateTime` is
-/// foreign and the conversion is fallible.)
+/// date into the `cleanup` domain form. `None` if out of range.
 pub fn from_unix(secs: i64) -> Option<OffsetDateTime> {
     OffsetDateTime::from_unix_timestamp(secs).ok()
-}
-
-/// Current time as unix epoch seconds (UTC). Kept as the single `now` call site; pure
-/// logic (the age cap) takes the value as a parameter so it stays testable.
-pub fn now_unix() -> i64 {
-    OffsetDateTime::now_utc().unix_timestamp()
 }
 
 /// Whether a post created at `timestamp` (epoch) is at most `max_age_days` old relative
@@ -75,14 +64,20 @@ pub struct DateOpts {
 
 impl DateOpts {
     /// The creation time a new `sync` bookmark is written with. `candidate` is the source
-    /// post time (if known) and `now` the run's time (epoch). Returns the source time when
-    /// dating is on and the post is within the cap; otherwise `None`, so Pinboard dates the
+    /// post time (if known) and `now` the run's time. Returns the source time when dating
+    /// is on and the post is within the cap; otherwise `None`, so Pinboard dates the
     /// bookmark "now".
-    pub fn sync_date(self, candidate: Option<OffsetDateTime>, now: i64) -> Option<OffsetDateTime> {
+    pub fn sync_date(
+        self,
+        candidate: Option<OffsetDateTime>,
+        now: OffsetDateTime,
+    ) -> Option<OffsetDateTime> {
         if !self.use_post_date {
             return None;
         }
-        candidate.filter(|ts| within_age_cap(now, ts.unix_timestamp(), self.max_age_days))
+        candidate.filter(|ts| {
+            within_age_cap(now.unix_timestamp(), ts.unix_timestamp(), self.max_age_days)
+        })
     }
 
     /// The creation time a `cleanup` re-write should set. `candidate` is the source post
@@ -131,11 +126,11 @@ impl DateOverrides {
     /// Let a date flag placed before the source subcommand (on `CleanupCmd`) take
     /// effect, falling back to this per-source value. Mirrors sync's
     /// `SyncOverrides::with_top_level_hook`.
-    pub fn with_top_level(self, top: &DateOverrides) -> DateOverrides {
+    pub fn with_top_level(self, top_overrides: &DateOverrides) -> DateOverrides {
         DateOverrides {
-            use_post_date: top.use_post_date.or(self.use_post_date),
-            max_age_days: top.max_age_days.or(self.max_age_days),
-            stale_to_now: top.stale_to_now.or(self.stale_to_now),
+            use_post_date: top_overrides.use_post_date.or(self.use_post_date),
+            max_age_days: top_overrides.max_age_days.or(self.max_age_days),
+            stale_to_now: top_overrides.stale_to_now.or(self.stale_to_now),
         }
     }
 }
@@ -145,20 +140,20 @@ impl DateOverrides {
 /// defaulting to [`config::DEFAULT_MAX_AGE_DAYS`]). Shared by every `sync`/`cleanup`
 /// builder.
 pub fn resolve_dates(
-    over: &DateOverrides,
+    overrides: &DateOverrides,
     account: Option<&impl config::Account>,
     src: &config::SourceDefaults,
     config: &Config,
 ) -> DateOpts {
     DateOpts {
         use_post_date: resolve_setting(
-            over.use_post_date,
+            overrides.use_post_date,
             account.and_then(|a| a.use_post_date()),
             src.use_post_date,
             config.pinboard.use_post_date,
         ),
         max_age_days: resolve_setting(
-            over.max_age_days,
+            overrides.max_age_days,
             account.and_then(|a| a.max_age_days()),
             src.post_date_max_age_days,
             config
@@ -167,7 +162,7 @@ pub fn resolve_dates(
                 .unwrap_or(config::DEFAULT_MAX_AGE_DAYS),
         ),
         stale_to_now: resolve_setting(
-            over.stale_to_now,
+            overrides.stale_to_now,
             account.and_then(|a| a.stale_to_now()),
             src.cleanup_stale_to_now,
             config.pinboard.cleanup_stale_to_now,
@@ -181,12 +176,12 @@ pub fn resolve_dates(
 /// the pass in the error, e.g. "`cleanup github`".
 pub fn resolve_cleanup_dates(
     pass: &str,
-    over: &DateOverrides,
+    overrides: &DateOverrides,
     account: Option<&impl config::Account>,
     src: &config::SourceDefaults,
     config: &Config,
 ) -> anyhow::Result<DateOpts> {
-    let dates = resolve_dates(over, account, src, config);
+    let dates = resolve_dates(overrides, account, src, config);
     if dates.redates_every_run() {
         return Err(redates_every_run_error(&format!("{pass} with its flags")));
     }
@@ -213,22 +208,22 @@ mod tests {
         let src = &config.defaults.reddit;
 
         // flag forces it on against a false global
-        let over = DateOverrides {
+        let overrides = DateOverrides {
             stale_to_now: Some(true),
             ..Default::default()
         };
-        let d = resolve_dates(&over, None::<&RedditAccount>, src, &config);
+        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config);
         assert!(d.stale_to_now);
 
         // flag forces it off against a true global
         let mut config = Config::default();
         config.pinboard.cleanup_stale_to_now = true;
         let src = &config.defaults.reddit;
-        let over = DateOverrides {
+        let overrides = DateOverrides {
             stale_to_now: Some(false),
             ..Default::default()
         };
-        let d = resolve_dates(&over, None::<&RedditAccount>, src, &config);
+        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config);
         assert!(!d.stale_to_now);
     }
 
@@ -239,11 +234,11 @@ mod tests {
         let src = &config.defaults.reddit; // per-source default None
 
         // flag wins
-        let over = DateOverrides {
+        let overrides = DateOverrides {
             max_age_days: Some(99),
             ..Default::default()
         };
-        let d = resolve_dates(&over, None::<&RedditAccount>, src, &config);
+        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config);
         assert_eq!(d.max_age_days, 99);
 
         // no flag → global

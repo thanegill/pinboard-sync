@@ -12,9 +12,10 @@ use url::Url;
 use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
+use crate::config::own_then_configured;
 use crate::htmltext::{collapse_whitespace, html_to_plain};
 use crate::source::{Source, SourceError};
-use crate::tags::{extend_unique, push_prefixed};
+use crate::tags::{extend_unique, prefixed, push_unique};
 use crate::timefmt::DateOpts;
 use crate::urls::{url_key, UrlExt};
 
@@ -30,7 +31,7 @@ use crate::urls::{url_key, UrlExt};
 /// and deletes the old, preserving the creation time. A repo that no longer exists (404)
 /// keeps just the URL canonicalization.
 ///
-/// `accounts` holds the tag config of every configured GitHub account. A star carrying
+/// `configured` holds the tag config of every configured GitHub account. A star carrying
 /// any of their base tags counts as synced, and its tags are refreshed by the config of
 /// each account whose base tag it carries, the client's own first, so a star of a second
 /// account doesn't gain the first's base tag.
@@ -38,7 +39,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
     store: &S,
     client: &GitHubClient,
     dates: DateOpts,
-    accounts: &[GitHubConfig],
+    configured: &[GitHubConfig],
 ) -> Result<(), SourceError> {
     // Taken from the run's live view, so an earlier source's writes are already reflected.
     let gh_bms: Vec<Bookmark> = store
@@ -64,18 +65,18 @@ pub async fn run<S: BookmarkStore + AccountState>(
     let pass = GitHubCleanupPass {
         client,
         star_dates,
-        star_configs: star_configs(&client.config, accounts),
+        star_configs: star_configs(&client.config, configured),
     };
     run_pass(store, &gh_bms, "github", dates, &pass)
         .await
         .into_result()
 }
 
-/// `own` followed by each of `accounts` with a base tag no earlier config has, so every
+/// `own` followed by each of `configured` with a base tag no earlier config has, so every
 /// base tag is refreshed by one config: the client's own where they share it.
-fn star_configs(own: &GitHubConfig, accounts: &[GitHubConfig]) -> Vec<GitHubConfig> {
+fn star_configs(own: &GitHubConfig, configured: &[GitHubConfig]) -> Vec<GitHubConfig> {
     let mut configs: Vec<GitHubConfig> = Vec::new();
-    for cfg in std::iter::once(own).chain(accounts) {
+    for cfg in own_then_configured(own, configured) {
         let Some(tag) = base_tag(cfg) else {
             continue;
         };
@@ -105,10 +106,8 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         let Some((owner, repo)) = repo_root(&bookmark.url) else {
             return Ok(Plan::Skipped);
         };
-        // Default to the canonicalization, then refresh from the API when the repo
-        // still exists (a 404 keeps just the canonical URL). We already hold the
-        // parsed `(owner, repo)`, so build the canonical URL from them directly
-        // rather than re-validating the host/path through `canonical_repo_url`.
+        // Default to the canonicalization, then refresh from the API when the repo still
+        // exists (a 404 keeps just the canonical URL).
         let mut url = Url::parse(&format!("https://github.com/{owner}/{repo}"))
             .context("building the canonical github URL")?;
         let mut title = collapse_whitespace(&bookmark.title, " ");
@@ -303,11 +302,11 @@ fn refresh_tags(
     let lang = repo.language.as_deref().filter(|lang| !lang.is_empty());
     for cfg in configs {
         extend_unique(&mut tags, &cfg.tags);
-        let mut lang_tag = Vec::new();
-        if let Some(lang) = lang {
-            push_prefixed(&mut lang_tag, &cfg.lang_prefix, &lang.to_lowercase());
+        if let Some(lang_tag) =
+            lang.and_then(|lang| prefixed(&cfg.lang_prefix, &lang.to_lowercase()))
+        {
+            push_unique(&mut tags, &lang_tag);
         }
-        extend_unique(&mut tags, &lang_tag);
     }
     tags
 }
@@ -315,7 +314,33 @@ fn refresh_tags(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::url;
+    use crate::test_support::{stored_at, url};
+
+    /// A deep link, a gist or a bare owner is not this pass's bookmark: it is skipped
+    /// before any lookup, so it says nothing about whether GitHub is reachable and must
+    /// not count toward `PassOutcome::reached`.
+    #[tokio::test]
+    async fn a_bookmark_that_is_no_repo_root_is_skipped_without_a_lookup() {
+        let client = GitHubClient::with_base_url(
+            "tok".into(),
+            GitHubConfig::default(),
+            "http://unused.invalid".into(),
+        );
+        let pass = GitHubCleanupPass {
+            client: &client,
+            star_dates: HashMap::new(),
+            star_configs: Vec::new(),
+        };
+        for stored in [
+            "https://github.com/o/r/issues/5",
+            "https://gist.github.com/user/abcd1234",
+            "https://github.com/o",
+        ] {
+            let (plan, waits) = crate::http::recording_waits(pass.plan(&stored_at(stored))).await;
+            assert!(matches!(plan, Ok(Plan::Skipped)), "{stored}");
+            assert!(waits.is_empty(), "{stored} made a request");
+        }
+    }
 
     #[test]
     fn repo_root_only_matches_bare_github_repo_roots() {

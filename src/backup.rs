@@ -396,7 +396,7 @@ fn check_writable(file: &BackupFile) -> Result<()> {
 /// the second job would silently overwrite the first. Config validation
 /// (`config::check_distinct_slugs`) already rejects such accounts; this stays as the
 /// guard on the stems actually built. Checked before any write, not during.
-pub fn check_stem_collisions(stems: &[String]) -> Result<()> {
+pub fn check_stem_collisions<'a>(stems: impl IntoIterator<Item = &'a str>) -> Result<()> {
     let mut seen = HashSet::new();
     for stem in stems {
         if !seen.insert(stem) {

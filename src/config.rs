@@ -119,9 +119,9 @@ pub struct PinboardConfig {
 /// Built-in default backdate window (days) when no config sets `post_date_max_age_days`.
 pub const DEFAULT_MAX_AGE_DAYS: u64 = 30;
 
-/// How much one `sync` run writes and reads: the `limit` config key at every tier and
-/// the `--limit` flag. Written `auto`, `all`, or a positive number. `0`, which used to
-/// mean "no cap", is rejected rather than quietly mapped to either word.
+/// How much one `sync` run writes and reads: the `limit` config key at every tier and the
+/// `--limit` flag. Written `auto`, `all`, or a positive number. `0` is rejected rather
+/// than quietly mapped to either word.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SyncLimit {
     /// No write cap; a source may stop paging once it reaches items already synced.
@@ -392,7 +392,7 @@ fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
 /// can't contain either (its API splits the tag string on spaces, and its docs forbid
 /// commas), so one here silently corrupts and should fail loudly instead. The error names
 /// the field, never the value, which may be a credential pasted into the wrong key.
-pub(crate) fn reject_untaggable(field: &str, value: &str) -> Result<()> {
+pub(crate) fn check_taggable(field: &str, value: &str) -> Result<()> {
     if value.chars().any(char::is_whitespace) {
         bail!("config: `{field}` must not contain whitespace");
     }
@@ -406,13 +406,13 @@ pub(crate) fn reject_untaggable(field: &str, value: &str) -> Result<()> {
 fn check_tag(field: &str, value: &Option<String>) -> Result<()> {
     value
         .as_deref()
-        .map_or(Ok(()), |v| reject_untaggable(field, v))
+        .map_or(Ok(()), |v| check_taggable(field, v))
 }
 
 /// Error if any tag in the list contains whitespace or a comma.
 fn check_tags(field: &str, values: &Option<Vec<String>>) -> Result<()> {
     for (index, v) in values.iter().flatten().enumerate() {
-        reject_untaggable(&format!("{field}[{index}]"), v)?;
+        check_taggable(&format!("{field}[{index}]"), v)?;
     }
     Ok(())
 }
@@ -768,6 +768,15 @@ macro_rules! impl_account {
     };
 }
 impl_account!(RedditAccount, GitHubAccount, HackerNewsAccount);
+
+/// `own`, then each of `configured`: the order a source checks its accounts in when it
+/// recognises a bookmark another of them wrote, its own account first.
+pub fn own_then_configured<'a, C>(
+    own: &'a C,
+    configured: &'a [C],
+) -> impl Iterator<Item = &'a C> + 'a {
+    std::iter::once(own).chain(configured)
+}
 
 /// Resolve a setting through its precedence tiers, highest first: the CLI flag, else
 /// the account override, else the per-source default, else the resolved `[pinboard]`

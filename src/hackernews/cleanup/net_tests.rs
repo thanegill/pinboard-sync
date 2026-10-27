@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{stored_at, FakePinboard, NO_DATING};
+use crate::test_support::{stored_at, strings, FakePinboard, NO_DATING};
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -79,7 +79,7 @@ async fn cleanup_merges_a_story_into_a_separately_saved_article() {
     // ...and the now-redundant HN item bookmark is absorbed, so the pass converges.
     assert_eq!(
         *pinboard.deleted.borrow(),
-        vec!["https://news.ycombinator.com/item?id=42".to_string()]
+        strings(&["https://news.ycombinator.com/item?id=42"])
     );
 }
 
@@ -128,7 +128,7 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
     // The old HN item URL is deleted after the rewrite.
     assert_eq!(
         pinboard.deleted.borrow().as_slice(),
-        &["https://news.ycombinator.com/item?id=42".to_string()]
+        &strings(&["https://news.ycombinator.com/item?id=42"])
     );
 }
 

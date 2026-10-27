@@ -58,6 +58,7 @@ pub fn tags_differ(a: &[String], b: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::strings as tags;
 
     #[test]
     fn push_prefixed_slugs_internal_whitespace() {
@@ -80,7 +81,6 @@ mod tests {
 
     #[test]
     fn extend_unique_skips_empty_and_duplicate_tags() {
-        let tags = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let mut acc = tags(&["reddit"]);
         // An empty base tag (config `tags = [""]`) must not add a literal "" — stored
         // tags can never contain one, so it would diff against storage forever.
@@ -90,7 +90,6 @@ mod tests {
 
     #[test]
     fn tags_differ_is_set_based() {
-        let tags = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // A duplicate on one side must not read as a difference.
         assert!(!tags_differ(
             &tags(&["reddit"]),

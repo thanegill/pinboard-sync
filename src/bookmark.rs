@@ -352,7 +352,7 @@ fn at(url: &str, note: &str) -> Bookmark {
 #[cfg(test)]
 mod write_outcome_tests {
     use super::*;
-    use crate::test_support::{url, FakePinboard};
+    use crate::test_support::{strings, url, FakePinboard};
 
     #[tokio::test]
     async fn a_merge_reports_the_write_and_every_delete_that_landed() {
@@ -386,7 +386,7 @@ mod write_outcome_tests {
         assert_eq!(outcome.deleted, vec![absorbed]);
         assert_eq!(
             *pinboard.deleted.borrow(),
-            vec!["https://absorbed/".to_string()],
+            strings(&["https://absorbed/"]),
             "the target must not even be attempted"
         );
     }
@@ -420,11 +420,7 @@ mod write_outcome_tests {
         assert_eq!(outcome.deleted, vec![c], "and the one that worked landed");
         assert_eq!(
             *pinboard.deleted.borrow(),
-            vec![
-                "https://a/".to_string(),
-                "https://b/".to_string(),
-                "https://c/".to_string()
-            ],
+            strings(&["https://a/", "https://b/", "https://c/"]),
             "every absorbed URL is still attempted"
         );
     }

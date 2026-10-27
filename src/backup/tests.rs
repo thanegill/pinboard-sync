@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{scratch_dir, stored_at};
+use crate::test_support::{scratch_dir, stored_at, strings};
 use time::OffsetDateTime;
 
 fn page(stream: &'static str, kind: RawKind, body: &str) -> RawPage {
@@ -266,7 +266,7 @@ fn a_partial_run_is_marked_incomplete_in_the_manifest() {
         dir,
         &entries,
         &[],
-        &["github[work]".to_string()],
+        &strings(&["github[work]"]),
         "2026-08-29T00:00:00Z",
     )
     .unwrap();
@@ -483,7 +483,7 @@ fn a_failed_target_updates_its_manifest_entry_rather_than_keeping_the_old_one() 
         dir,
         &[small],
         &[],
-        &["github[main]".to_string()],
+        &strings(&["github[main]"]),
         "2026-08-29T00:00:00Z",
     )
     .unwrap();
@@ -528,8 +528,8 @@ fn a_removed_file_loses_its_manifest_entry() {
     write_manifest(
         dir,
         &[entry("raw/reddit-main.json")],
-        &["normalized/reddit-main.json".to_string()],
-        &["reddit[main]".to_string()],
+        &strings(&["normalized/reddit-main.json"]),
+        &strings(&["reddit[main]"]),
         "2026-08-29T00:00:00Z",
     )
     .unwrap();
@@ -764,7 +764,7 @@ fn a_partial_file_stays_marked_after_a_later_clean_run_of_another_target() {
             Some("stopped at the page cap"),
         )],
         &[],
-        &["github[main]".to_string()],
+        &strings(&["github[main]"]),
         "2026-08-01T00:00:00Z",
     )
     .unwrap();

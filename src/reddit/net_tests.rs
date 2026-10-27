@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::titles;
+use crate::test_support::{strings, titles};
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -149,7 +149,7 @@ async fn info_maps_a_login_redirect_to_reauth_without_following_it() {
     mount_login_page(&server).await;
 
     let client = info_client(&server, "reddit_session=stale");
-    let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
+    let err = client.info(&strings(&["t3_a"])).await.unwrap_err();
     assert_refused_at_login(err);
 }
 
@@ -267,7 +267,7 @@ async fn info_names_the_cookie_setting_in_a_403_but_never_the_cookie() {
         .mount(&server)
         .await;
     let client = info_client(&server, "reddit_session=SECRET403");
-    let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
+    let err = client.info(&strings(&["t3_a"])).await.unwrap_err();
     let SourceError::ReauthRequired(message) = &err else {
         panic!("a 403 must ask for a new cookie: {err:?}");
     };
@@ -311,7 +311,7 @@ async fn info_maps_a_block_page_to_blocked() {
         .mount(&server)
         .await;
     let client = info_client(&server, "reddit_session=secret");
-    let err = client.info(&["t3_a".to_string()]).await.unwrap_err();
+    let err = client.info(&strings(&["t3_a"])).await.unwrap_err();
     assert!(matches!(err, SourceError::Blocked(_)), "got {err:?}");
 }
 
@@ -330,7 +330,7 @@ async fn info_sends_a_bare_cookie_value_as_reddit_session() {
         .await;
 
     let client = info_client(&server, "bare-value");
-    assert!(client.info(&["t3_a".to_string()]).await.unwrap().is_empty());
+    assert!(client.info(&strings(&["t3_a"])).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -352,7 +352,7 @@ async fn info_sends_cookie_and_returns_entries() {
         .await;
 
     let client = info_client(&server, "reddit_session=secret");
-    let entries = client.info(&["t3_a".to_string()]).await.unwrap();
+    let entries = client.info(&strings(&["t3_a"])).await.unwrap();
     assert_eq!(entries.len(), 1);
     assert!(entries[0].fields.over_18);
 }

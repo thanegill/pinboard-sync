@@ -1,6 +1,6 @@
 use super::*;
 use crate::bookmark::{AccountState, AccountView, CleanupStore};
-use crate::test_support::{stored_at, url as u, FakePinboard, Op, NO_DATING};
+use crate::test_support::{stored_at, strings, url as u, FakePinboard, Op, NO_DATING};
 use anyhow::anyhow;
 
 /// Wrap the fake in the production store so every test exercises the same view
@@ -440,7 +440,7 @@ async fn url_change_updates_and_deletes_old_preserving_privacy() {
     // shared/toread are carried over from the stored bookmark (both off).
     assert!(!updated[0].shared && !updated[0].toread);
     // The old URL is deleted after the rewrite.
-    assert_eq!(*pinboard.deleted.borrow(), vec!["https://old/".to_string()]);
+    assert_eq!(*pinboard.deleted.borrow(), strings(&["https://old/"]));
 }
 
 #[test]
@@ -525,7 +525,7 @@ fn merge_bookmarks_tag_union_is_case_sensitive() {
 
     assert_eq!(
         merge_bookmarks(&[&first, &second]).tags,
-        vec!["Rust".to_string(), "rust".to_string()]
+        strings(&["Rust", "rust"])
     );
 }
 
@@ -538,7 +538,7 @@ fn merge_bookmarks_drops_an_empty_planned_tag() {
 
     assert_eq!(
         merge_bookmarks(&[&first, &second]).tags,
-        vec!["a".to_string(), "b".to_string()]
+        strings(&["a", "b"])
     );
 }
 
@@ -668,13 +668,10 @@ async fn colliding_rewrites_are_field_merged() {
     // B leads the union, not A: B is the record that stays at this URL, so it is the
     // base the others extend. A led only because it happened to come first in the
     // slice, which is an ordering the user has no way to see or control.
-    assert_eq!(updated[0].tags, vec!["y".to_string(), "x".to_string()]);
+    assert_eq!(updated[0].tags, strings(&["y", "x"]));
     assert_eq!(updated[0].extended, "from B\n\nfrom A");
     // Only A's old URL is absorbed; the shared target is not deleted.
-    assert_eq!(
-        *pinboard.deleted.borrow(),
-        vec!["https://old-a/".to_string()]
-    );
+    assert_eq!(*pinboard.deleted.borrow(), strings(&["https://old-a/"]));
 }
 
 #[tokio::test]
@@ -1021,7 +1018,7 @@ async fn a_mismatched_member_drops_out_while_the_rest_of_the_group_merges() {
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].extended, "resident note\n\nok note");
-    assert_eq!(updated[0].tags, vec!["rt".to_string(), "okt".to_string()]);
+    assert_eq!(updated[0].tags, strings(&["rt", "okt"]));
     assert!(updated[0].shared);
     assert!(
         !updated[0].extended.contains("SECRET"),
@@ -1029,7 +1026,7 @@ async fn a_mismatched_member_drops_out_while_the_rest_of_the_group_merges() {
     );
     assert_eq!(
         *pinboard.deleted.borrow(),
-        vec!["https://x/ok".to_string()],
+        strings(&["https://x/ok"]),
         "only the bookmark that actually merged is absorbed"
     );
 }
@@ -1673,10 +1670,7 @@ async fn rewrite_onto_a_resident_outside_the_slice_merges_with_it() {
     assert!(updated[0].tags.contains(&"keepme".to_string()));
     assert!(updated[0].tags.contains(&"moved".to_string()));
     // The mover's old URL is absorbed, so a later run sees one bookmark.
-    assert_eq!(
-        *pinboard.deleted.borrow(),
-        vec!["https://x/mine".to_string()]
-    );
+    assert_eq!(*pinboard.deleted.borrow(), strings(&["https://x/mine"]));
 }
 
 #[tokio::test]
@@ -1707,10 +1701,7 @@ async fn a_rewrite_onto_an_unoccupied_url_still_goes_through() {
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].url, "https://other/vacant");
-    assert_eq!(
-        *pinboard.deleted.borrow(),
-        vec!["https://x/mine".to_string()]
-    );
+    assert_eq!(*pinboard.deleted.borrow(), strings(&["https://x/mine"]));
 }
 
 #[tokio::test]
@@ -1748,10 +1739,7 @@ async fn rewrite_onto_skipped_resident_merges_with_it() {
     assert!(updated[0].extended.contains("from B"), "{updated:?}");
     assert!(updated[0].tags.contains(&"x".to_string()));
     assert!(updated[0].tags.contains(&"y".to_string()));
-    assert_eq!(
-        *pinboard.deleted.borrow(),
-        vec!["https://old-b/".to_string()]
-    );
+    assert_eq!(*pinboard.deleted.borrow(), strings(&["https://old-b/"]));
 }
 
 #[tokio::test]
@@ -1918,7 +1906,7 @@ async fn a_collision_onto_a_stored_bookmark_keeps_its_date_and_reading_state() {
     );
     assert_eq!(
         *pinboard.deleted.borrow(),
-        vec!["https://github.com/old/name".to_string()]
+        strings(&["https://github.com/old/name"])
     );
 }
 
@@ -2038,7 +2026,7 @@ async fn a_group_emptied_by_a_refusal_no_longer_protects_its_url() {
     assert_eq!(outcome.refused, 2, "the disagreeing peers stay put");
     assert_eq!(
         *pinboard.deleted.borrow(),
-        vec!["https://t/".to_string()],
+        strings(&["https://t/"]),
         "and the bookmark that did move must not be left behind at its old URL"
     );
 }

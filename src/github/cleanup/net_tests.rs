@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{stored_at, FakePinboard, NO_DATING};
+use crate::test_support::{stored_at, strings, FakePinboard, NO_DATING};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -195,7 +195,7 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
     // Old URL deleted after the rewrite.
     assert_eq!(
         pinboard.deleted.borrow().as_slice(),
-        &["https://github.com/old/name".to_string()]
+        &strings(&["https://github.com/old/name"])
     );
 }
 
@@ -266,7 +266,7 @@ async fn cleanup_canonicalizes_non_canonical_repo_root() {
     // The non-canonical original was deleted after the rewrite.
     assert_eq!(
         pinboard.deleted.borrow().as_slice(),
-        &["https://github.com/Owner/Repo.git/".to_string()]
+        &strings(&["https://github.com/Owner/Repo.git/"])
     );
 }
 
@@ -304,7 +304,7 @@ async fn cleanup_folds_www_host_onto_github_com() {
     assert_eq!(updated[0].url, "https://github.com/Owner/Repo");
     assert_eq!(
         pinboard.deleted.borrow().as_slice(),
-        &["https://www.github.com/Owner/Repo".to_string()]
+        &strings(&["https://www.github.com/Owner/Repo"])
     );
 }
 
@@ -475,7 +475,7 @@ async fn cleanup_gives_an_unsynced_bookmark_a_note_but_not_a_title_or_tags() {
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].description, "My bookmark");
     assert_eq!(updated[0].extended, "<blockquote>A tool</blockquote>");
-    assert_eq!(updated[0].tags, vec!["tools".to_string()]);
+    assert_eq!(updated[0].tags, strings(&["tools"]));
 }
 
 #[tokio::test]

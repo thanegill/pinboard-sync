@@ -532,7 +532,7 @@ pub fn is_placeholder_title(title: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::url;
+    use crate::test_support::{strings, url};
 
     fn norm(u: &str, domain: &str) -> Option<String> {
         normalize_url(&url(u), domain).map(String::from)
@@ -628,37 +628,27 @@ mod tests {
 
     #[test]
     fn normalize_tags_adds_base_and_subreddit_strips_legacy() {
-        let existing = vec![
-            "rust".to_string(),
-            "subreddit:".to_string(),
-            "subreddit:rust".to_string(),
-        ];
+        let existing = strings(&["rust", "subreddit:", "subreddit:rust"]);
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/rust/comments/x/"),
             &existing,
-            &["reddit".to_string()],
+            &strings(&["reddit"]),
             "subreddit:",
             &["nsfw"],
         );
-        assert_eq!(
-            tags,
-            vec!["reddit".to_string(), "subreddit:rust".to_string()]
-        );
+        assert_eq!(tags, strings(&["reddit", "subreddit:rust"]));
     }
 
     #[test]
     fn normalize_tags_lowercases_all_caps_subreddit() {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/NEWS/comments/x/"),
-            &["subreddit:NEWS".to_string(), "NEWS".to_string()],
-            &["reddit".to_string()],
+            &strings(&["subreddit:NEWS", "NEWS"]),
+            &strings(&["reddit"]),
             "subreddit:",
             &["nsfw"],
         );
-        assert_eq!(
-            tags,
-            vec!["reddit".to_string(), "subreddit:news".to_string()]
-        );
+        assert_eq!(tags, strings(&["reddit", "subreddit:news"]));
     }
 
     #[test]
@@ -666,26 +656,19 @@ mod tests {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/reddit/comments/x/"),
             &[],
-            &["reddit".to_string()],
+            &strings(&["reddit"]),
             "subreddit:",
             &["nsfw"],
         );
-        assert_eq!(
-            tags,
-            vec!["reddit".to_string(), "subreddit:reddit".to_string()]
-        );
+        assert_eq!(tags, strings(&["reddit", "subreddit:reddit"]));
     }
 
     #[test]
     fn normalize_tags_ensures_and_keeps_every_base_tag() {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/rust/comments/x/"),
-            &["rust".to_string()],
-            &[
-                "reddit".to_string(),
-                "rust".to_string(),
-                "saved".to_string(),
-            ],
+            &strings(&["rust"]),
+            &strings(&["reddit", "rust", "saved"]),
             "subreddit:",
             &["nsfw"],
         );
@@ -701,7 +684,7 @@ mod tests {
             "subreddit:",
             &["nsfw"],
         );
-        assert_eq!(tags, vec!["subreddit:rust".to_string()]);
+        assert_eq!(tags, strings(&["subreddit:rust"]));
     }
 
     #[test]
@@ -709,29 +692,29 @@ mod tests {
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/rust/comments/x/"),
             &[],
-            &["reddit".to_string()],
+            &strings(&["reddit"]),
             "",
             &["nsfw"],
         );
-        assert_eq!(tags, vec!["reddit".to_string()]);
+        assert_eq!(tags, strings(&["reddit"]));
 
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/rust/comments/x/"),
-            &["rust".to_string()],
-            &["reddit".to_string()],
+            &strings(&["rust"]),
+            &strings(&["reddit"]),
             "",
             &["nsfw"],
         );
-        assert_eq!(tags, vec!["reddit".to_string(), "rust".to_string()]);
+        assert_eq!(tags, strings(&["reddit", "rust"]));
 
         let tags = normalize_tags(
             &url("https://old.reddit.com/r/nsfw/comments/x/"),
-            &["nsfw".to_string()],
-            &["reddit".to_string()],
+            &strings(&["nsfw"]),
+            &strings(&["reddit"]),
             "",
             &["nsfw"],
         );
-        assert_eq!(tags, vec!["nsfw".to_string(), "reddit".to_string()]);
+        assert_eq!(tags, strings(&["nsfw", "reddit"]));
     }
 
     #[test]

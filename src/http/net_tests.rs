@@ -1,5 +1,6 @@
 use super::tests::assert_error_hides;
 use super::*;
+use crate::test_support::strings;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -77,10 +78,7 @@ async fn client_hello_offers_alpn_h2_and_http1() {
 
     assert!(sent.is_err(), "the listener never completes the handshake");
     let hello = read_hello.join().unwrap();
-    assert_eq!(
-        offered_alpn(&hello),
-        Some(vec!["h2".to_string(), "http/1.1".to_string()])
-    );
+    assert_eq!(offered_alpn(&hello), Some(strings(&["h2", "http/1.1"])));
 }
 
 #[tokio::test]

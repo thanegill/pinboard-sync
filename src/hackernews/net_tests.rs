@@ -639,9 +639,14 @@ async fn a_story_linking_github_is_not_re_added_after_cleanup_github_canonicaliz
     };
     let github_client =
         GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), github.uri());
-    crate::github::cleanup::run(&pinboard.cleanup_store(false), &github_client, NO_DATING)
-        .await
-        .unwrap();
+    crate::github::cleanup::run(
+        &pinboard.cleanup_store(false),
+        &github_client,
+        NO_DATING,
+        &[],
+    )
+    .await
+    .unwrap();
     let cleaned = replay(&synced, &pinboard.ops.borrow());
     assert_eq!(cleaned[0].url.as_str(), "https://github.com/Owner/Repo");
 

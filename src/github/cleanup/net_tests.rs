@@ -28,7 +28,7 @@ async fn cleanup_surfaces_an_expired_token_as_reauth() {
     };
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
 
-    let err = run(&pinboard.cleanup_store(false), &client, NO_DATING)
+    let err = run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
         .await
         .unwrap_err();
 
@@ -91,7 +91,7 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
     };
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
 
-    let err = run(&pinboard.cleanup_store(false), &client, NO_DATING)
+    let err = run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
         .await
         .unwrap_err();
 
@@ -141,7 +141,7 @@ async fn cleanup_survives_a_permanently_blocked_repo() {
     };
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
 
-    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
         .await
         .expect("one dead repo must not fail the whole run");
 
@@ -177,7 +177,7 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
         ..Default::default()
     };
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
-    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -223,7 +223,7 @@ async fn cleanup_leaves_deep_links_and_gists_untouched() {
         ..Default::default()
     };
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
-    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -256,7 +256,7 @@ async fn cleanup_canonicalizes_non_canonical_repo_root() {
         ..Default::default()
     };
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
-    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -295,7 +295,7 @@ async fn cleanup_folds_www_host_onto_github_com() {
         ..Default::default()
     };
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
-    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -334,7 +334,7 @@ async fn cleanup_rewrites_notes_only_to_retrofit_the_blockquote() {
         ..Default::default()
     };
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
-    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -382,12 +382,67 @@ async fn cleanup_leaves_an_hn_story_of_a_repo_as_hn_wrote_it() {
     };
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
 
-    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
         .await
         .unwrap();
 
     assert!(pinboard.updated.borrow().is_empty());
     assert!(pinboard.deleted.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn cleanup_refreshes_the_stars_of_every_configured_account_by_their_own_tags() {
+    let server = MockServer::start().await;
+    for name in ["o/work", "o/home"] {
+        mount_repo(
+            &server,
+            name,
+            json!({ "full_name": name, "html_url": format!("https://github.com/{name}"),
+                    "language": "Rust" }),
+        )
+        .await;
+    }
+    let pinboard = FakePinboard {
+        all: vec![
+            Bookmark {
+                tags: vec!["work-star".into(), "language:go".into()],
+                ..stored_at("https://github.com/o/work")
+            },
+            Bookmark {
+                tags: vec!["github-star".into()],
+                ..stored_at("https://github.com/o/home")
+            },
+        ],
+        ..Default::default()
+    };
+    let work = GitHubConfig {
+        tags: vec!["work-star".into()],
+        lang_prefix: "language:".into(),
+    };
+    let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
+
+    run(
+        &pinboard.cleanup_store(false),
+        &client,
+        NO_DATING,
+        &[GitHubConfig::default(), work],
+    )
+    .await
+    .unwrap();
+
+    let updated = pinboard.updated.borrow();
+    let written = |url: &str| {
+        let call = updated.iter().find(|call| call.url == url).expect(url);
+        (call.description.as_str(), call.tags.clone())
+    };
+    assert_eq!(
+        written("https://github.com/o/work"),
+        ("o/work", vec!["work-star".into(), "language:rust".into()])
+    );
+    assert_eq!(
+        written("https://github.com/o/home"),
+        ("o/home", vec!["github-star".into(), "lang:rust".into()])
+    );
 }
 
 #[tokio::test]
@@ -412,7 +467,7 @@ async fn cleanup_gives_an_unsynced_bookmark_a_note_but_not_a_title_or_tags() {
     };
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
 
-    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -602,7 +657,7 @@ async fn cleanup_redates_only_synced_stars_to_their_star_time() {
         stale_to_now: false,
     };
 
-    run(&pinboard.cleanup_store(false), &client, dates)
+    run(&pinboard.cleanup_store(false), &client, dates, &[])
         .await
         .unwrap();
 
@@ -623,7 +678,7 @@ async fn run_and_store(
         all: seed.clone(),
         ..Default::default()
     };
-    run(&pinboard.cleanup_store(false), client, dates)
+    run(&pinboard.cleanup_store(false), client, dates, &[])
         .await
         .unwrap();
     let mut stored = crate::test_support::replay(&seed, &pinboard.ops.borrow());
@@ -669,7 +724,7 @@ async fn cleanup_keeps_entity_text_in_a_stored_title() {
         ..Default::default()
     };
     let client = GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri());
-    run(&pinboard.cleanup_store(false), &client, NO_DATING)
+    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
         .await
         .unwrap();
 

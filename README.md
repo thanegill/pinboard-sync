@@ -260,9 +260,11 @@ grows. Rare, but if you see a note accumulating `… [truncated]` markers, short
   current location. It refreshes only what `sync github` wrote. Notes are rebuilt from
   the repo's description only when they are empty or in the shape sync writes; any
   other notes are kept. The base tags and the `lang:` tag are refreshed only on
-  bookmarks carrying the first non-empty entry of `tags` (`github-star` by default), and
-  their title only while it is still `owner/repo`. Under `use_post_date` they are
-  re-dated to the star time only while both title and notes are still the tool's. So a
+  bookmarks carrying the first non-empty entry of some `[[github]]` account's `tags`
+  (`github-star` by default), with that account's tag settings (the running account's
+  where two share a base tag), and their title only while it is still `owner/repo`.
+  Under `use_post_date` they are re-dated to the star time only while both title and
+  notes are still the tool's, and only from the running account's stars. So a
   repo saved by hand or bookmarked by `sync hackernews` keeps its title, tags and date.
   A repo that no longer exists (404), is blocked (a DMCA 451 or a Terms of Service 403),
   or sits behind organization SSO the token isn't authorized for keeps just the URL

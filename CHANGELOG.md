@@ -43,6 +43,8 @@ All notable changes to this project are documented here. The format is based on
   `author:reddit:[deleted]` tag.
 - `cleanup github` keeps hand-written notes, and the title, tags and date of repo
   bookmarks `sync github` didn't write.
+- `cleanup github` refreshes the stars of every `[[github]]` account, each by its own
+  tags, not only the selected account's.
 - `cleanup github` skips a repo GitHub refuses with a lasting 403 (a ToS block or
   unauthorized SSO) instead of counting it as a failed lookup every run.
 - A config with two unnamed `[[github]]` accounts is rejected, rather than failing

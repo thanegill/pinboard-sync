@@ -345,7 +345,8 @@ exiting non-zero if any fail. `cleanup --all` runs once per source (reddit, gith
 hackernews), since it normalizes the shared bookmark set. `cleanup github`
 canonicalizes repo-root URLs and looks each repo up via the API to rewrite
 renamed/moved repos. It refreshes only what the tool wrote: notes in `github_note`'s
-shape, the base/language tags of bookmarks carrying the base tag, their title only
+shape, the base/language tags of bookmarks carrying any configured account's base tag
+(refreshed with that account's tag config), their title only
 while it is still `owner/repo`, and their star date only while the notes are the tool's
 too. A repo root is often another source's bookmark (an HN story linking it, or one a
 rename merged a star into), so never widen that.

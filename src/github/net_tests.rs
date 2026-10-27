@@ -567,6 +567,7 @@ async fn cleanup_with_post_dates_reads_every_star_page() {
             max_age_days: 30,
             stale_to_now: false,
         },
+        &[],
     )
     .await
     .unwrap();

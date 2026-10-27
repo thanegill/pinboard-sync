@@ -680,7 +680,7 @@ async fn cleanup_hackernews_account<S: BookmarkStore + AccountState>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::BackupTarget;
+    use crate::cli::{BackupTarget, RedditSyncArgs};
     use crate::jobs::build_job;
     use crate::test_support::lock_on_auth_failure_env;
 
@@ -699,9 +699,7 @@ mod tests {
 
     #[test]
     fn config_check_takes_the_file_as_a_positional() {
-        use clap::Parser;
-        let argv = ["pinboard-sync", "config", "check", "pinboard-sync.toml"];
-        match Cli::try_parse_from(argv).expect("parses").command {
+        match parse("config", &["check", "pinboard-sync.toml"]) {
             Command::Config {
                 action: ConfigAction::Check { file },
             } => assert_eq!(file, Path::new("pinboard-sync.toml")),
@@ -777,15 +775,29 @@ mod tests {
         assert!(error.contains("absent.toml"), "{error}");
     }
 
-    /// Parse `sync <extra>` (no source subcommand) and return the top-level command.
-    fn parse_sync(extra: &[&str]) -> SyncCmd {
+    /// Parse `pinboard-sync <subcommand> <extra>` and return the command.
+    fn parse(subcommand: &str, extra: &[&str]) -> Command {
         use clap::Parser;
-        let mut argv = vec!["pinboard-sync", "sync"];
-        argv.extend_from_slice(extra);
-        match Cli::try_parse_from(argv).expect("parses").command {
-            Command::Sync(cmd) => cmd,
-            _ => panic!("expected `sync` command"),
-        }
+        let argv = ["pinboard-sync", subcommand]
+            .into_iter()
+            .chain(extra.iter().copied());
+        Cli::try_parse_from(argv).expect("parses").command
+    }
+
+    /// Parse `sync <extra>` and return the top-level command.
+    fn parse_sync(extra: &[&str]) -> SyncCmd {
+        let Command::Sync(cmd) = parse("sync", extra) else {
+            panic!("expected `sync` command");
+        };
+        cmd
+    }
+
+    /// The `sync reddit` args of a parsed `sync`.
+    fn reddit_sync_args(cmd: &SyncCmd) -> RedditSyncArgs {
+        let Some(SyncSource::Reddit(args)) = &cmd.source else {
+            panic!("expected `sync reddit` args");
+        };
+        args.clone()
     }
 
     /// Both `--all` forms must carry the accounts they could not build out in
@@ -836,7 +848,7 @@ mod tests {
 
         let overrides = SyncOverrides {
             dry_run: cmd.dry_run,
-            on_auth_failure: cmd.on_auth_failure.clone(),
+            on_auth_failure: cmd.on_auth_failure,
             reddit_username: Some("alice".into()),
             reddit_cookie: Some("reddit_session=x".into()),
             ..SyncOverrides::default()
@@ -860,10 +872,7 @@ mod tests {
 
         let overrides = SyncOverrides {
             dry_run: cmd.dry_run,
-            on_auth_failure: cmd
-                .on_auth_failure
-                .clone()
-                .or_else(on_auth_failure_from_env),
+            on_auth_failure: cmd.on_auth_failure.or_else(on_auth_failure_from_env),
             reddit_username: Some("alice".into()),
             reddit_cookie: Some("reddit_session=x".into()),
             ..SyncOverrides::default()
@@ -889,13 +898,10 @@ mod tests {
             "--reddit-cookie",
             "reddit_session=x",
         ]);
-        let args = match &cmd.source {
-            Some(SyncSource::Reddit(args)) => args.clone(),
-            _ => panic!("expected `sync reddit` args"),
-        };
+        let args = reddit_sync_args(&cmd);
         assert_eq!(args.on_auth_failure, None);
 
-        let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+        let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
         let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("top-hook"));
     }
@@ -913,12 +919,9 @@ mod tests {
             "source-hook",
         ]);
         assert_eq!(cmd.on_auth_failure, None);
-        let args = match &cmd.source {
-            Some(SyncSource::Reddit(args)) => args.clone(),
-            _ => panic!("expected `sync reddit` args"),
-        };
+        let args = reddit_sync_args(&cmd);
 
-        let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+        let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
         let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("source-hook"));
     }
@@ -944,13 +947,10 @@ mod tests {
         // The env only backs the per-source flag, so the top level stays empty and
         // the explicit per-source flag wins over the env value.
         assert_eq!(cmd.on_auth_failure, None);
-        let args = match &cmd.source {
-            Some(SyncSource::Reddit(args)) => args.clone(),
-            _ => panic!("expected `sync reddit` args"),
-        };
+        let args = reddit_sync_args(&cmd);
         assert_eq!(args.on_auth_failure.as_deref(), Some("explicit-hook"));
 
-        let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+        let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
         let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("explicit-hook"));
     }
@@ -972,25 +972,27 @@ mod tests {
         let cmd = parsed.expect("parses");
 
         assert_eq!(cmd.on_auth_failure, None);
-        let args = match &cmd.source {
-            Some(SyncSource::Reddit(args)) => args.clone(),
-            _ => panic!("expected `sync reddit` args"),
-        };
+        let args = reddit_sync_args(&cmd);
 
-        let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure.clone());
+        let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
         let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
         assert_eq!(job.hook.as_deref(), Some("env-hook"));
     }
 
     /// Parse `cleanup <extra>` and return the top-level command.
     fn parse_cleanup(extra: &[&str]) -> CleanupCmd {
-        use clap::Parser;
-        let mut argv = vec!["pinboard-sync", "cleanup"];
-        argv.extend_from_slice(extra);
-        match Cli::try_parse_from(argv).expect("parses").command {
-            Command::Cleanup(cmd) => cmd,
-            _ => panic!("expected `cleanup` command"),
-        }
+        let Command::Cleanup(cmd) = parse("cleanup", extra) else {
+            panic!("expected `cleanup` command");
+        };
+        cmd
+    }
+
+    /// The `cleanup reddit` args of a parsed `cleanup`.
+    fn reddit_cleanup_args(cmd: &CleanupCmd) -> RedditCleanupArgs {
+        let Some(CleanupSource::Reddit(args)) = &cmd.source else {
+            panic!("expected `cleanup reddit` args");
+        };
+        args.clone()
     }
 
     #[test]
@@ -999,10 +1001,7 @@ mod tests {
         // cleanup pass; the per-source `dates` alone only sees a flag placed after.
         let cmd = parse_cleanup(&["--use-post-date", "reddit", "alice"]);
         assert_eq!(cmd.dates.use_post_date, Some(true));
-        let args = match &cmd.source {
-            Some(CleanupSource::Reddit(args)) => args.clone(),
-            _ => panic!("expected `cleanup reddit` args"),
-        };
+        let args = reddit_cleanup_args(&cmd);
         assert_eq!(args.dates.use_post_date, None);
 
         let overrides =
@@ -1016,10 +1015,7 @@ mod tests {
         // top-level `dates` is empty.
         let cmd = parse_cleanup(&["reddit", "alice", "--use-post-date=false"]);
         assert_eq!(cmd.dates.use_post_date, None);
-        let args = match &cmd.source {
-            Some(CleanupSource::Reddit(args)) => args.clone(),
-            _ => panic!("expected `cleanup reddit` args"),
-        };
+        let args = reddit_cleanup_args(&cmd);
         assert_eq!(args.dates.use_post_date, Some(false));
 
         let overrides =
@@ -1068,13 +1064,10 @@ mod tests {
 
     /// Parse `backup <extra>` and return the parsed command.
     fn parse_backup(extra: &[&str]) -> BackupCmd {
-        use clap::Parser;
-        let mut argv = vec!["pinboard-sync", "backup"];
-        argv.extend_from_slice(extra);
-        match Cli::try_parse_from(argv).expect("parses").command {
-            Command::Backup(cmd) => cmd,
-            _ => panic!("expected `backup` args"),
-        }
+        let Command::Backup(cmd) = parse("backup", extra) else {
+            panic!("expected `backup` args");
+        };
+        cmd
     }
 
     #[test]

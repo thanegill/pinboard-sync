@@ -23,7 +23,7 @@ async fn a_merge_reports_the_write_and_every_delete_that_landed() {
 
     assert!(out.wrote);
     assert_eq!(out.deleted, vec![old_a, old_b]);
-    assert!(out.error.is_none());
+    assert!(out.error.is_none(), "{:?}", out.error);
 }
 
 #[tokio::test]
@@ -39,7 +39,7 @@ async fn a_merge_never_deletes_its_own_target() {
         .apply_merge(&at("https://target/", ""), &[&target, &absorbed])
         .await;
 
-    assert!(outcome.error.is_none());
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
     assert_eq!(outcome.deleted, vec![absorbed]);
     assert_eq!(
         *pinboard.deleted.borrow(),
@@ -121,9 +121,13 @@ async fn a_failed_write_reports_nothing_written_and_deletes_nothing() {
         .await;
 
     assert!(!out.wrote);
-    assert!(out.deleted.is_empty());
+    assert!(out.deleted.is_empty(), "{:?}", out.deleted);
     assert!(out.error.is_some());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -158,10 +162,10 @@ async fn a_write_is_visible_to_the_next_read_without_refetching() {
     let out = store
         .apply_update(&at("https://b/", "new"), Some(&url("https://a/")))
         .await;
-    assert!(out.error.is_none());
+    assert!(out.error.is_none(), "{:?}", out.error);
 
     assert_eq!(store.resident(&url("https://b/")).unwrap().note, "new");
-    assert!(store.resident(&url("https://a/")).is_none());
+    assert_eq!(store.resident(&url("https://a/")), None);
     assert_eq!(fake.updated.borrow().len(), 1);
 }
 
@@ -180,10 +184,10 @@ async fn a_dry_run_updates_the_view_but_writes_nothing() {
     let out = store
         .apply_update(&at("https://b/", "new"), Some(&url("https://a/")))
         .await;
-    assert!(out.error.is_none());
+    assert!(out.error.is_none(), "{:?}", out.error);
 
     assert!(store.resident(&url("https://b/")).is_some());
-    assert!(store.resident(&url("https://a/")).is_none());
+    assert_eq!(store.resident(&url("https://a/")), None);
     assert!(fake.updated.borrow().is_empty(), "dry run must not write");
     assert!(fake.deleted.borrow().is_empty(), "dry run must not delete");
 }
@@ -205,7 +209,7 @@ async fn a_failed_write_leaves_the_view_alone() {
         .await;
 
     assert!(!out.wrote);
-    assert!(store.resident(&url("https://b/")).is_none());
+    assert_eq!(store.resident(&url("https://b/")), None);
     assert!(
         store.resident(&url("https://a/")).is_some(),
         "the old URL was never deleted, so it is still there"
@@ -251,7 +255,7 @@ fn insert_upserts_and_remove_drops() {
     view.remove(&url("https://b/"));
 
     assert_eq!(view.get(&url("https://a/")).unwrap().note, "new");
-    assert!(view.get(&url("https://b/")).is_none());
+    assert_eq!(view.get(&url("https://b/")), None);
     assert_eq!(view.iter().count(), 1);
 }
 
@@ -307,5 +311,5 @@ fn diff_ignores_privacy_flags() {
         read_later: true,
         ..bookmark()
     };
-    assert!(stored.diff(&planned).is_empty());
+    assert_eq!(stored.diff(&planned), []);
 }

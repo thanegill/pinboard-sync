@@ -410,7 +410,7 @@ fn backup_pinboard_without_a_token_names_every_setting_it_can_come_from() {
 #[test]
 fn backup_dir_prefers_the_flag_then_the_config_then_errors() {
     let mut config = Config::default();
-    assert!(resolve_backup_dir([None, None], &config).is_err());
+    resolve_backup_dir([None, None], &config).unwrap_err();
 
     config.backup.directory = Some("/from-config".into());
     assert_eq!(

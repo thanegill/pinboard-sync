@@ -203,6 +203,6 @@ mod tests {
     fn a_hit_is_an_item_only_when_its_object_id_is_a_number() {
         let item = HackerNewsItem::try_from(hit("42")).expect("a numeric objectID");
         assert_eq!(item.id, 42);
-        assert!(HackerNewsItem::try_from(hit("story-42")).is_err());
+        HackerNewsItem::try_from(hit("story-42")).unwrap_err();
     }
 }

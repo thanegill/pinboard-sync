@@ -311,7 +311,7 @@ async fn a_reset_stream_or_killed_h2_connection_does_not_count_against_its_host(
         ))
         .await;
 
-        assert!(sent.is_err());
+        sent.unwrap_err();
         assert_eq!(waits, [H2_LINEAR_DELAY, H2_LINEAR_DELAY * 2]);
         let state = budget.host(&addr.to_string()).state();
         assert_eq!((state.failing_since, state.given_up), (None, None));

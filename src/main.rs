@@ -251,7 +251,7 @@ mod tests {
         let text = "[pinboard]\ntoken_file = \"/nonexistent/pinboard-token\"\n\
                     [[reddit]]\ncookie_file = \"/nonexistent/reddit-cookie\"\n\
                     [[github]]\ntoken_file = \"/nonexistent/github-token\"\n";
-        assert!(check_config_text(text).is_ok());
+        check_config_text(text).unwrap();
     }
 
     #[test]

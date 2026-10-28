@@ -76,7 +76,8 @@ async fn sends_a_bare_cookie_value_as_reddit_session() {
         .await;
 
     let client = RedditClient::with_base_url(Some("bare-value\n".into()), "psophis", server.uri());
-    assert!(client.fetch_saved().await.unwrap().is_empty());
+    let saved = client.fetch_saved().await.unwrap();
+    assert!(saved.is_empty(), "{saved:?}");
 }
 
 /// Reddit's answer to a request without a session it accepts, as `curl` saw it for a
@@ -191,7 +192,8 @@ async fn fetch_errors_when_a_non_empty_listing_yields_no_drafts() {
         .await;
 
     let client = reddit_client(&server);
-    assert!(matches!(client.fetch().await, Err(SourceError::Other(_))));
+    let result = client.fetch().await;
+    assert!(matches!(result, Err(SourceError::Other(_))), "{result:?}");
 }
 
 #[tokio::test]
@@ -235,7 +237,8 @@ async fn fetch_empty_listing_is_ok() {
         .await;
 
     let client = reddit_client(&server);
-    assert!(client.fetch().await.unwrap().is_empty());
+    let drafts = client.fetch().await.unwrap();
+    assert!(drafts.is_empty(), "{drafts:?}");
 }
 
 #[tokio::test]
@@ -246,10 +249,11 @@ async fn fetch_saved_maps_403_to_reauth() {
         .mount(&server)
         .await;
     let client = reddit_client(&server);
-    assert!(matches!(
-        client.fetch_saved().await,
-        Err(SourceError::Halted(Halt::Reauth(_)))
-    ));
+    let result = client.fetch_saved().await;
+    assert!(
+        matches!(result, Err(SourceError::Halted(Halt::Reauth(_)))),
+        "{result:?}"
+    );
 }
 
 #[tokio::test]
@@ -329,7 +333,8 @@ async fn info_sends_a_bare_cookie_value_as_reddit_session() {
         .await;
 
     let client = info_client(&server, "bare-value");
-    assert!(client.info(&strings(&["t3_a"])).await.unwrap().is_empty());
+    let entries = client.info(&strings(&["t3_a"])).await.unwrap();
+    assert!(entries.is_empty(), "{entries:?}");
 }
 
 #[tokio::test]
@@ -372,7 +377,8 @@ async fn info_pauses_only_between_batches() {
     let client = info_client(&server, "reddit_session=secret");
     let fullnames: Vec<String> = (0..250).map(|n| format!("t3_{n}")).collect();
     let (entries, waits) = crate::http::recording_waits(client.info(&fullnames)).await;
-    assert!(entries.unwrap().is_empty());
+    let entries = entries.unwrap();
+    assert!(entries.is_empty(), "{entries:?}");
     assert_eq!(
         waits, [REQUEST_PAUSE; 2],
         "one pause between each pair of batches"
@@ -557,10 +563,13 @@ async fn cleanup_looks_up_comments_by_their_own_fullname_in_the_post_batch() {
             .map(|u| u.tags.clone())
             .unwrap()
     };
-    assert!(tags_of("https://old.reddit.com/r/rust/comments/a/x/")
-        .contains(&"author:reddit:alice".to_string()));
-    assert!(tags_of("https://old.reddit.com/r/rust/comments/a/x/c/")
-        .contains(&"author:reddit:bob".to_string()));
+    let tags = tags_of("https://old.reddit.com/r/rust/comments/a/x/");
+    assert!(
+        tags.contains(&"author:reddit:alice".to_string()),
+        "{tags:?}"
+    );
+    let tags = tags_of("https://old.reddit.com/r/rust/comments/a/x/c/");
+    assert!(tags.contains(&"author:reddit:bob".to_string()), "{tags:?}");
 }
 
 fn truncated_client(

@@ -97,7 +97,7 @@ async fn debug_logged_body_is_whole_escaped_and_has_no_token() {
         .await;
 
     let (result, logs) = capturing_logs(leak_client(&server).all()).await;
-    assert!(result.is_err());
+    result.unwrap_err();
     for line in &logs {
         assert!(!line.contains(LEAK_SECRET), "token logged: {line}");
     }

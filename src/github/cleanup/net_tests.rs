@@ -190,10 +190,26 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
     // Hand-written notes are kept: only a note in the tool's shape is rebuilt.
     assert_eq!(updated[0].extended, "notes");
     // Language tag refreshed (python → rust), base + user tags kept.
-    assert!(updated[0].tags.contains(&"lang:rust".to_string()));
-    assert!(!updated[0].tags.contains(&"lang:python".to_string()));
-    assert!(updated[0].tags.contains(&"github-star".to_string()));
-    assert!(updated[0].tags.contains(&"mine".to_string()));
+    assert!(
+        updated[0].tags.contains(&"lang:rust".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        !updated[0].tags.contains(&"lang:python".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"github-star".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"mine".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
     // Old URL deleted after the rewrite.
     assert_eq!(
         pinboard.deleted.borrow().as_slice(),
@@ -230,8 +246,16 @@ async fn cleanup_leaves_deep_links_untouched() {
         .await
         .unwrap();
 
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -345,7 +369,11 @@ async fn cleanup_rewrites_notes_only_to_retrofit_the_blockquote() {
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].extended, "<blockquote>A thing</blockquote>");
     // Nothing else changed, so no delete (URL is unchanged).
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 /// Mount `/repos/{owner}/{name}` answering with `repo`.
@@ -389,8 +417,16 @@ async fn cleanup_leaves_an_hn_story_of_a_repo_as_hn_wrote_it() {
         .await
         .unwrap();
 
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -913,7 +949,11 @@ async fn a_failed_starred_gist_read_fails_the_gist_pass() {
             _ => "unexpected",
         };
         assert_eq!(variant, expected, "{err:?}");
-        assert!(pinboard.updated.borrow().is_empty());
+        assert!(
+            pinboard.updated.borrow().is_empty(),
+            "{:?}",
+            pinboard.updated.borrow()
+        );
     }
 }
 

@@ -126,7 +126,11 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
     assert_eq!(updated[0].url, "https://example.com/x");
     assert_eq!(updated[0].description, "Cool");
     // Existing tags are preserved and augmented.
-    assert!(updated[0].tags.contains(&"mine".to_string()));
+    assert!(
+        updated[0].tags.contains(&"mine".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
     // The old HN item URL is deleted after the rewrite.
     assert_eq!(
         pinboard.deleted.borrow().as_slice(),
@@ -180,8 +184,16 @@ async fn cleanup_preserves_existing_note_on_text_post() {
     // the user wrote is kept verbatim rather than replaced by the reconstructed one.
     assert_eq!(updated[0].url, "https://news.ycombinator.com/item?id=7");
     assert_eq!(updated[0].extended, stored_note);
-    assert!(updated[0].tags.contains(&"hackernews:ask-hn".to_string()));
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        updated[0].tags.contains(&"hackernews:ask-hn".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -230,10 +242,26 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
     // URL unchanged (in-place), notes gain the HN link, marker tag swapped for
     // the base HN tag, existing tags kept.
     assert_eq!(updated[0].url, "https://example.com/x");
-    assert!(updated[0].tags.contains(&"hackernews".to_string()));
-    assert!(!updated[0].tags.contains(&"find-hn".to_string()));
-    assert!(updated[0].tags.contains(&"reading".to_string()));
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        updated[0].tags.contains(&"hackernews".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        !updated[0].tags.contains(&"find-hn".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"reading".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 /// The link pass looks up only articles carrying the marker tag: neither an untagged
@@ -276,7 +304,11 @@ async fn link_discussions_searches_only_tagged_articles() {
         .await
         .unwrap();
 
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 /// Two `find-hn` articles and, unless `with_item` is false, one HN story bookmark whose

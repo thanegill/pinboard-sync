@@ -179,9 +179,9 @@ fn a_star_is_dated_in_utc_at_whole_seconds() {
 #[test]
 fn into_draft_skips_repo_with_unparseable_url() {
     // A repo whose `html_url` doesn't parse is dropped rather than producing a draft.
-    assert!(repo(json!({ "full_name": "o/r", "html_url": "not a url" }))
-        .into_draft(&GitHubConfig::default())
-        .is_none());
+    let draft = repo(json!({ "full_name": "o/r", "html_url": "not a url" }))
+        .into_draft(&GitHubConfig::default());
+    assert!(draft.is_none(), "{draft:?}");
 }
 
 #[test]
@@ -334,7 +334,7 @@ fn dedup_key_only_matches_github() {
         c.dedup_key(&url("https://github.com/o/r")).as_deref(),
         Some("github.com/o/r")
     );
-    assert!(c.dedup_key(&url("https://example.com/o/r")).is_none());
+    assert_eq!(c.dedup_key(&url("https://example.com/o/r")), None);
     // The www. alias folds onto the bare host so it dedups against a github.com
     // star with the same owner/repo.
     assert_eq!(

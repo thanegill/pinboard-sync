@@ -12,6 +12,7 @@ use time::OffsetDateTime;
 use crate::bookmark::{Bookmark, BookmarkStore, WriteMode};
 use crate::config::SyncLimit;
 use crate::source::{BookmarkDraft, UrlKey};
+use crate::stdout::outln;
 use crate::timefmt::DateOpts;
 
 /// The drafts not already present on Pinboard, matching each existing bookmark URL
@@ -119,14 +120,14 @@ pub async fn write_drafts<P: BookmarkStore>(
                 .timestamp
                 .and_then(crate::timefmt::to_pinboard_dt)
                 .unwrap_or_default();
-            println!("[dry-run] {}", bm.url);
-            println!("          title: {}", bm.title);
+            outln!("[dry-run] {}", bm.url);
+            outln!("          title: {}", bm.title);
             if !bm.note.is_empty() {
-                println!("          notes: {}", crate::htmltext::preview(&bm.note));
+                outln!("          notes: {}", crate::htmltext::preview(&bm.note));
             }
-            println!("          tags:  [{}]", bm.tags.joined());
+            outln!("          tags:  [{}]", bm.tags.joined());
             if !dt.is_empty() {
-                println!("          date:  {dt}");
+                outln!("          date:  {dt}");
             }
             continue;
         }

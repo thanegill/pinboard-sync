@@ -20,6 +20,7 @@ mod reddit;
 mod secrets;
 mod settings;
 mod source;
+mod stdout;
 mod sync;
 mod tags;
 #[cfg(test)]
@@ -63,20 +64,17 @@ async fn main() -> ExitCode {
                 log_start("backup");
                 run_backup(cmd, &load_config(cli.config)?).await
             }
-            Command::Completions { shell } => {
-                print_completions(shell);
-                Ok(())
-            }
+            Command::Completions { shell } => print_completions(shell),
             Command::Man => print_man(),
             Command::Config {
                 action: ConfigAction::Example,
-            } => {
-                print!("{}", include_str!("config.example.toml"));
-                Ok(())
-            }
+            } => stdout::write(include_str!("config.example.toml"))
+                .context("writing the example config"),
             Command::Config {
                 action: ConfigAction::Check { file },
-            } => check_config(&file).map(|summary| println!("{summary}")),
+            } => check_config(&file).and_then(|summary| {
+                stdout::write(format!("{summary}\n")).context("writing the config check")
+            }),
         }
     }
     .await;
@@ -114,24 +112,21 @@ fn log_start(command: &str) {
 }
 
 /// Write a shell completion script for `shell` to stdout.
-fn print_completions(shell: Shell) {
+fn print_completions(shell: Shell) -> Result<()> {
     let mut cmd = Cli::command();
     let name = cmd.get_name().to_string();
-    clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+    let mut buf = Vec::new();
+    clap_complete::generate(shell, &mut cmd, name, &mut buf);
+    stdout::write(buf).context("writing the completion script")
 }
 
 /// Write a roff man page for the CLI to stdout.
 fn print_man() -> Result<()> {
-    use std::io::Write;
     let mut buf = Vec::new();
     clap_mangen::Man::new(Cli::command())
         .render(&mut buf)
-        .context("rendering man page")?;
-    // A closed pipe (e.g. `pinboard-sync man | head`) is not an error.
-    match std::io::stdout().write_all(&buf) {
-        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
-        r => r.context("writing man page"),
-    }
+        .context("rendering the man page")?;
+    stdout::write(buf).context("writing the man page")
 }
 
 /// Load the config from `--config` / `$PINBOARD_SYNC_CONFIG` (a direct path to the

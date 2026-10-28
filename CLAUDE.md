@@ -407,6 +407,11 @@ Nothing needs to follow one: `saved.json` pagination only changes query paramete
   `Cargo.toml`, `Cargo.lock` and `src/` ([`nix/package.nix`](nix/package.nix)'s fileset), so
   a file the build reads from anywhere else has to be added there too.
 - The User-Agent (`http::USER_AGENT`) derives from `CARGO_PKG_NAME`/`CARGO_PKG_VERSION`.
+- **Command output goes through [`src/stdout.rs`](src/stdout.rs), never `println!`**,
+  which panics when stdout is a closed pipe (`config example | head`). `stdout::write`
+  writes a whole document (`config`, `completions`, `man`) and returns any other error;
+  `outln!` writes the line-by-line output (the dry-run previews, `doctor`), which carries
+  on after a closed pipe.
 - **Service-specific, API-shaped structs carry a service prefix** (`GitHubRepo`,
   `HackerNewsItem`, `RedditSavedItem`, `AlgoliaSearchResponse`) — not bare `Repo`/`Item`.
   GitHub is spelled `GitHub` and HackerNews `HackerNews` in type names (e.g. `GitHubConfig`,

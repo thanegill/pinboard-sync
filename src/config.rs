@@ -325,18 +325,18 @@ impl Config {
             bail!("backup.directory must not be empty");
         }
         const NAME_OR_USERNAME: &str = "`name` (or, with no `name`, `username`)";
-        check_unique_names("reddit", &self.reddit)?;
-        check_distinct_slugs("reddit", &self.reddit, NAME_OR_USERNAME)?;
-        check_unique_names("github", &self.github)?;
-        check_distinct_slugs("github", &self.github, "`name`")?;
-        check_unique_names("hackernews", &self.hackernews)?;
-        check_distinct_slugs("hackernews", &self.hackernews, NAME_OR_USERNAME)?;
-        self.check_stale_to_now_cap("reddit", &self.reddit, &self.defaults.reddit)?;
-        self.check_stale_to_now_cap("github", &self.github, &self.defaults.github.common)?;
-        self.check_stale_to_now_cap("hackernews", &self.hackernews, &self.defaults.hackernews)?;
+        check_unique_names(&self.reddit)?;
+        check_distinct_slugs(&self.reddit, NAME_OR_USERNAME)?;
+        check_unique_names(&self.github)?;
+        check_distinct_slugs(&self.github, "`name`")?;
+        check_unique_names(&self.hackernews)?;
+        check_distinct_slugs(&self.hackernews, NAME_OR_USERNAME)?;
+        self.check_stale_to_now_cap(&self.reddit)?;
+        self.check_stale_to_now_cap(&self.github)?;
+        self.check_stale_to_now_cap(&self.hackernews)?;
 
         for (index, account) in self.reddit.iter().enumerate() {
-            let at = |field: &str| format!("reddit[{index}].{field}");
+            let at = |field: &str| format!("{}[{index}].{field}", RedditAccount::SOURCE);
             check_domain(&at("reddit_domain"), account.reddit_domain.as_deref())?;
             check_tags(&at("tags"), account.tags.as_deref())?;
             check_tag(
@@ -353,7 +353,7 @@ impl Config {
             check_tag(&at("tag_media_prefix"), account.tag_media_prefix.as_deref())?;
         }
         for (index, account) in self.github.iter().enumerate() {
-            let at = |field: &str| format!("github[{index}].{field}");
+            let at = |field: &str| format!("{}[{index}].{field}", GitHubAccount::SOURCE);
             check_tags(&at("tags"), account.tags.as_deref())?;
             check_tag(&at("tag_lang_prefix"), account.tag_lang_prefix.as_deref())?;
             check_tag(
@@ -371,7 +371,7 @@ impl Config {
             )?;
         }
         for (index, account) in self.hackernews.iter().enumerate() {
-            let at = |field: &str| format!("hackernews[{index}].{field}");
+            let at = |field: &str| format!("{}[{index}].{field}", HackerNewsAccount::SOURCE);
             check_tags(&at("tags"), account.tags.as_deref())?;
             check_tag(&at("tag_comment"), account.tag_comment.as_deref())?;
             check_tag(
@@ -391,17 +391,13 @@ impl Config {
     /// zero age cap with `cleanup_stale_to_now`: every date is then outside the cap, so
     /// cleanup would re-date each stale bookmark on every run. With no accounts the
     /// source's implicit CLI/env account is checked instead.
-    fn check_stale_to_now_cap<T: Account>(
-        &self,
-        source: &str,
-        accounts: &[T],
-        defaults: &SourceDefaults,
-    ) -> Result<()> {
+    fn check_stale_to_now_cap<T: Account>(&self, accounts: &[T]) -> Result<()> {
+        let source = T::SOURCE;
         let check = |account: Option<&T>, scope: String| {
             crate::settings::resolve_dates(
                 &crate::cli::DateFlags::default(),
                 account,
-                defaults,
+                T::defaults(self),
                 self,
             )
             .check_redating(&format!("config: {scope}"), source)
@@ -498,7 +494,8 @@ fn check_tags(field: &str, values: Option<&[String]>) -> Result<()> {
 /// would set a distinct one. The error names positions, never the names.
 ///
 /// [`slug`]: crate::backup::slug
-fn check_distinct_slugs<T: Named>(source: &str, accounts: &[T], remedy: &str) -> Result<()> {
+fn check_distinct_slugs<T: Account>(accounts: &[T], remedy: &str) -> Result<()> {
+    let source = T::SOURCE;
     let mut first_with_slug = HashMap::new();
     for (index, account) in accounts.iter().enumerate() {
         let slug = crate::backup::slug(account.account_name());
@@ -523,7 +520,8 @@ fn check_distinct_slugs<T: Named>(source: &str, accounts: &[T], remedy: &str) ->
 
 /// Error if two accounts of a source share a `name` (the second would be
 /// unreachable by name in `sync <source> <name>`).
-fn check_unique_names<T: Named>(source: &str, accounts: &[T]) -> Result<()> {
+fn check_unique_names<T: Account>(accounts: &[T]) -> Result<()> {
+    let source = T::SOURCE;
     let mut first_with_name = HashMap::new();
     for (index, account) in accounts.iter().enumerate() {
         let Some(name) = account.account_name() else {

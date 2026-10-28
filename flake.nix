@@ -40,6 +40,8 @@
               rustc
               rustfmt
               clippy
+              cargo-deny
+              cargo-machete
               rust-analyzer
               cargo-mutants
             ];

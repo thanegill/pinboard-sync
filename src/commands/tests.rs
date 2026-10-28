@@ -517,8 +517,8 @@ fn backup_source_all_backs_up_the_rest_when_one_account_cannot_be_built() {
     assert_eq!(skipped_labels(&plan.skipped), ["github[tokenless]"]);
 }
 
-/// `cleanup <argv>`'s error against `config_text`, with no Pinboard token: the date
-/// refusal if it fires, else the missing token `posts/all` would need.
+/// `cleanup <argv>`'s error against `config_text`, with no Pinboard token: the first
+/// refusal it hits, else the missing Pinboard token `posts/all` would need.
 async fn cleanup_error(config_text: &str, argv: &[&str]) -> String {
     let config = Config::parse(config_text).expect("valid config");
     let error = run_cleanup(parse_cleanup(argv), &config)
@@ -565,7 +565,7 @@ async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() 
         );
     }
 
-    let every_source = "[[github]]\nname = \"a\"\n[[reddit]]\nusername = \"u\"\n\
+    let every_source = "[[github]]\nname = \"a\"\ntoken = \"t\"\n[[reddit]]\nusername = \"u\"\n\
                         [[hackernews]]\nusername = \"u\"\n";
     assert_eq!(
         cleanup_error(every_source, &[&["--all"][..], &both].concat()).await,
@@ -594,6 +594,33 @@ async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() 
             "{argv:?}: {error}"
         );
     }
+}
+
+#[tokio::test]
+async fn cleanup_refuses_a_bad_source_input_before_reading_pinboard() {
+    // With no Pinboard token either, reaching `posts/all` first would fail on that token
+    // instead, so each source's own error proves the rate-limited read was never made.
+    for (argv, missing) in [
+        (&["github"][..], "missing GitHub token"),
+        (&["reddit"], "missing Reddit cookie"),
+        (&["reddit", "--no-nsfw"], "missing Reddit cookie"),
+        (&["reddit", "--no-titles"], "missing Reddit cookie"),
+        (
+            &["reddit", "--no-nsfw", "--no-titles", "--use-post-date"],
+            "missing Reddit cookie",
+        ),
+        (
+            &["reddit", "--no-nsfw", "--no-titles"],
+            "missing Pinboard token",
+        ),
+    ] {
+        let error = cleanup_error("", argv).await;
+        assert!(error.starts_with(missing), "{argv:?}: {error}");
+    }
+    assert_eq!(
+        cleanup_error("", &["hackernews", "--tag-link", "find hn"]).await,
+        "`--tag-link` must not contain whitespace"
+    );
 }
 
 mod net_tests {

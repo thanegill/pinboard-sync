@@ -111,6 +111,8 @@ All notable changes to this project are documented here. The format is based on
   built, and record it as failed.
 - `sync <source> --all` syncs the other accounts when one can't be built, as `sync --all`
   does.
+- `cleanup <source>` checks the GitHub token, Reddit cookie or `--tag-link` before
+  reading `posts/all`, so a bad one no longer spends that rate-limited call.
 - A Pinboard delete retried after a lost response no longer fails on `item not found`.
 - A `reddit_domain` with a port or another form that isn't a bare host is rejected.
 - A HackerNews favorite linking a Reddit `over18` page or the bare Reddit root is no longer

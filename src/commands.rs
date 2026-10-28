@@ -368,10 +368,25 @@ async fn run_cleanup_github(
         &config.defaults.github.common,
         config,
     )?;
+    let client = github_cleanup_client(account, args.github_token, config)?;
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
-    cleanup_github_account(&store, account, args.github_token, dates, config).await
+    cleanup_github_with_client(&store, &client, account, dates, config).await
+}
+
+/// The GitHub API client a cleanup pass runs with, from the flag/account/env token.
+fn github_cleanup_client(
+    account: Option<&GitHubAccount>,
+    token_flag: Option<String>,
+    config: &Config,
+) -> Result<GitHubClient> {
+    let token = resolve_github_token(token_flag, account)
+        .with_context(|| SecretSpec::GITHUB_TOKEN.missing())?;
+    GitHubClient::new(
+        token,
+        GitHubConfig::resolve(account, &config.defaults.github),
+    )
 }
 
 /// Run github cleanup: build an API client from the account/env token and refresh
@@ -383,16 +398,11 @@ async fn cleanup_github_account<S: BookmarkStore + AccountState>(
     dates: DateOpts,
     config: &Config,
 ) -> Result<()> {
-    let token = resolve_github_token(token_flag, account)
-        .with_context(|| SecretSpec::GITHUB_TOKEN.missing())?;
-    let client = GitHubClient::new(
-        token,
-        GitHubConfig::resolve(account, &config.defaults.github),
-    )?;
+    let client = github_cleanup_client(account, token_flag, config)?;
     cleanup_github_with_client(store, &client, account, dates, config).await
 }
 
-/// [`cleanup_github_account`] with its client built, which a test points at a fake API.
+/// Run github cleanup with `client` already built.
 async fn cleanup_github_with_client<S: BookmarkStore + AccountState>(
     store: &S,
     client: &GitHubClient,
@@ -429,16 +439,10 @@ async fn run_cleanup_reddit(
         &config.defaults.reddit,
         config,
     )?;
+    let reddit = RedditCleanup::build(account, RedditCleanupOverrides::from(&args), dates, config)?;
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
-    cleanup_reddit_account(
-        account,
-        RedditCleanupOverrides::from(&args),
-        dates,
-        &store,
-        config,
-    )
-    .await
+    reddit.run(&store, account, config).await
 }
 
 async fn cleanup_reddit_account<S: BookmarkStore + AccountState>(
@@ -448,28 +452,55 @@ async fn cleanup_reddit_account<S: BookmarkStore + AccountState>(
     store: &S,
     config: &Config,
 ) -> Result<()> {
-    let opts = reddit::cleanup::RedditCleanupOpts {
-        mark_nsfw: overrides.mark_nsfw,
-        fix_titles: overrides.fix_titles,
-        config: account.map(RedditConfig::from).unwrap_or_default(),
-        dates,
-        configured: config.reddit.iter().map(RedditConfig::from).collect(),
-    };
-
-    // Reddit (for /api/info) is needed when marking NSFW, fixing titles, or dating by
-    // the source post (the post's created_utc comes from /api/info too).
-    let reddit = if opts.mark_nsfw || opts.fix_titles || opts.dates.use_post_date {
-        let cookie =
-            resolve_reddit_cookie(overrides.cookie, account).with_context(missing_reddit_cookie)?;
-        Some(RedditClient::for_info(Some(cookie))?)
-    } else {
-        None
-    };
-
-    let hook = cleanup_hook(account, config);
-    reddit::cleanup::run(store, reddit.as_ref(), &opts)
+    RedditCleanup::build(account, overrides, dates, config)?
+        .run(store, account, config)
         .await
-        .map_err(|e| handle_source_err(e, hook.as_deref()))
+}
+
+/// A reddit cleanup pass's options, and the `/api/info` client when a step needs one.
+struct RedditCleanup {
+    opts: reddit::cleanup::RedditCleanupOpts,
+    client: Option<RedditClient>,
+}
+
+impl RedditCleanup {
+    fn build(
+        account: Option<&RedditAccount>,
+        overrides: RedditCleanupOverrides,
+        dates: DateOpts,
+        config: &Config,
+    ) -> Result<Self> {
+        let opts = reddit::cleanup::RedditCleanupOpts {
+            mark_nsfw: overrides.mark_nsfw,
+            fix_titles: overrides.fix_titles,
+            config: account.map(RedditConfig::from).unwrap_or_default(),
+            dates,
+            configured: config.reddit.iter().map(RedditConfig::from).collect(),
+        };
+
+        // Reddit (for /api/info) is needed when marking NSFW, fixing titles, or dating by
+        // the source post (the post's created_utc comes from /api/info too).
+        let client = if opts.mark_nsfw || opts.fix_titles || opts.dates.use_post_date {
+            let cookie = resolve_reddit_cookie(overrides.cookie, account)
+                .with_context(missing_reddit_cookie)?;
+            Some(RedditClient::for_info(Some(cookie))?)
+        } else {
+            None
+        };
+        Ok(Self { opts, client })
+    }
+
+    async fn run<S: BookmarkStore + AccountState>(
+        &self,
+        store: &S,
+        account: Option<&RedditAccount>,
+        config: &Config,
+    ) -> Result<()> {
+        let hook = cleanup_hook(account, config);
+        reddit::cleanup::run(store, self.client.as_ref(), &self.opts)
+            .await
+            .map_err(|e| handle_source_err(e, hook.as_deref()))
+    }
 }
 
 async fn run_cleanup_hackernews(
@@ -489,10 +520,11 @@ async fn run_cleanup_hackernews(
         &config.defaults.hackernews,
         config,
     )?;
+    let hn = hackernews_cleanup_client(account, args.link_tag)?;
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
-    cleanup_hackernews_account(account, args.link_discussions, args.link_tag, dates, &store).await
+    cleanup_hackernews_with_client(&store, &hn, args.link_discussions, dates).await
 }
 
 /// Build the HackerNews tag config for a cleanup run, letting `--tag-link` override the
@@ -510,6 +542,15 @@ fn resolve_hackernews_cleanup_config(
     Ok(hn_config)
 }
 
+/// The HackerNews client for a cleanup pass, built on the tag config
+/// [`resolve_hackernews_cleanup_config`] gives.
+fn hackernews_cleanup_client(
+    account: Option<&HackerNewsAccount>,
+    link_tag: Option<String>,
+) -> Result<HackerNewsClient> {
+    HackerNewsClient::for_cleanup(resolve_hackernews_cleanup_config(account, link_tag)?)
+}
+
 async fn cleanup_hackernews_account<S: BookmarkStore + AccountState>(
     account: Option<&HackerNewsAccount>,
     link_discussions: bool,
@@ -517,11 +558,19 @@ async fn cleanup_hackernews_account<S: BookmarkStore + AccountState>(
     dates: DateOpts,
     store: &S,
 ) -> Result<()> {
-    let hn_config = resolve_hackernews_cleanup_config(account, link_tag)?;
-    let hn = HackerNewsClient::for_cleanup(hn_config)?;
+    let hn = hackernews_cleanup_client(account, link_tag)?;
+    cleanup_hackernews_with_client(store, &hn, link_discussions, dates).await
+}
+
+async fn cleanup_hackernews_with_client<S: BookmarkStore + AccountState>(
+    store: &S,
+    hn: &HackerNewsClient,
+    link_discussions: bool,
+    dates: DateOpts,
+) -> Result<()> {
     hackernews::cleanup::run(
         store,
-        &hn,
+        hn,
         &HackerNewsCleanupOpts {
             link_discussions,
             dates,

@@ -848,12 +848,15 @@ fn emit_preview(preview: &mut Vec<String>, url: &Url, detail: &[(&str, String)])
     push(format!("[dry-run] {url}"));
     for (label, value) in detail {
         push(if label.is_empty() {
-            format!("          {value}")
+            format!("{PREVIEW_INDENT}{value}")
         } else {
-            format!("          {label:<6}-> {value}")
+            format!("{PREVIEW_INDENT}{label:<6}-> {value}")
         });
     }
 }
+
+/// The indent of a preview's detail lines, under its `[dry-run] <url>` line.
+const PREVIEW_INDENT: &str = "          ";
 
 /// Close `untouchable` under "a group whose target is untouchable doesn't move, so its
 /// members keep their own URLs occupied". Iterated to a fixpoint because each refusal can

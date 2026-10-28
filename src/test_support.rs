@@ -350,8 +350,8 @@ pub struct FakePinboard {
     /// Trim a note too long for a `posts/add` URL as the Pinboard client does, both in
     /// [`BookmarkStore::fit`] and in what `add` and `update` record.
     pub trims_notes: bool,
-    /// The client whose fit `trims_notes` applies, built on first use. Public only so a
-    /// test can build the fake with `..Default::default()`.
+    /// The client `fit` and `kept_of_cut` delegate to when `trims_notes` is set, built on
+    /// first use. Public only so a test can build the fake with `..Default::default()`.
     pub trimmer: std::cell::OnceCell<PinboardClient>,
 }
 
@@ -374,6 +374,13 @@ impl FakePinboard {
     pub fn dry_cleanup_store(&self) -> CleanupStore<'_, Self> {
         CleanupStore::new(self, AccountView::new(self.all.clone()), WriteMode::DryRun)
     }
+
+    fn trimming_client(&self) -> &PinboardClient {
+        self.trimmer.get_or_init(|| {
+            PinboardClient::with_base_url("user:tok".into(), "http://pinboard.invalid".into())
+                .unwrap()
+        })
+    }
 }
 
 impl BookmarkStore for FakePinboard {
@@ -381,16 +388,12 @@ impl BookmarkStore for FakePinboard {
         if !self.trims_notes {
             return b;
         }
-        let pinboard = self.trimmer.get_or_init(|| {
-            PinboardClient::with_base_url("user:tok".into(), "http://pinboard.invalid".into())
-                .unwrap()
-        });
-        pinboard.fit(b)
+        self.trimming_client().fit(b)
     }
 
     fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str> {
         self.trims_notes
-            .then(|| note.strip_suffix(crate::pinboard::TRUNCATION_MARKER))
+            .then(|| self.trimming_client().kept_of_cut(note))
             .flatten()
     }
 

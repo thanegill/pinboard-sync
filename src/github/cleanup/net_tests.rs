@@ -1,4 +1,5 @@
 use super::*;
+use crate::github::gists::GistPostDate;
 use crate::test_support::{stored_at, strings, FakePinboard, NO_DATING};
 use serde_json::json;
 use wiremock::matchers::{method, path};
@@ -200,7 +201,7 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
 }
 
 #[tokio::test]
-async fn cleanup_leaves_deep_links_and_gists_untouched() {
+async fn cleanup_leaves_deep_links_untouched() {
     fn stored(url: &str) -> Bookmark {
         Bookmark {
             title: "title".into(),
@@ -218,7 +219,8 @@ async fn cleanup_leaves_deep_links_and_gists_untouched() {
         all: vec![
             stored("https://github.com/rust-lang/rust/issues/12345"),
             stored("https://github.com/rust-lang/rust/tree/master/library"),
-            stored("https://gist.github.com/user/abcd1234"),
+            stored("https://gist.github.com/user"),
+            stored("https://gist.github.com/user/aa5a315d61ae9438b18d/0123abc"),
         ],
         ..Default::default()
     };
@@ -418,6 +420,8 @@ async fn cleanup_refreshes_the_stars_of_every_configured_account_by_their_own_ta
     let work = GitHubConfig {
         tags: vec!["work-star".into()],
         lang_prefix: "language:".into(),
+        author_prefix: "owner:".into(),
+        ..GitHubConfig::default()
     };
     let client = github_client(&server);
 
@@ -437,11 +441,17 @@ async fn cleanup_refreshes_the_stars_of_every_configured_account_by_their_own_ta
     };
     assert_eq!(
         written("https://github.com/o/work"),
-        ("o/work", vec!["work-star".into(), "language:rust".into()])
+        (
+            "o/work",
+            strings(&["work-star", "language:rust", "owner:o"])
+        )
     );
     assert_eq!(
         written("https://github.com/o/home"),
-        ("o/home", vec!["github-star".into(), "lang:rust".into()])
+        (
+            "o/home",
+            strings(&["github-star", "lang:rust", "author:github:o"])
+        )
     );
 }
 
@@ -740,4 +750,448 @@ async fn cleanup_keeps_entity_text_in_a_stored_title() {
 
 fn github_client(server: &MockServer) -> GitHubClient {
     GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri())
+}
+
+const GIST_ID: &str = "aa5a315d61ae9438b18d";
+
+fn gist_url(owner: Option<&str>) -> String {
+    match owner {
+        Some(owner) => format!("https://gist.github.com/{owner}/{GIST_ID}"),
+        None => format!("https://gist.github.com/{GIST_ID}"),
+    }
+}
+
+/// The gist `{GIST_ID}` by `someone` described "Fresh", with one Rust file and the dates
+/// `created_at`/`updated_at`.
+fn fresh_gist(created_at: &str) -> serde_json::Value {
+    json!({
+        "id": GIST_ID,
+        "html_url": gist_url(None),
+        "description": "Fresh",
+        "files": { "main.rs": { "filename": "main.rs", "language": "Rust" } },
+        "owner": { "login": "someone" },
+        "created_at": created_at,
+        "updated_at": "2024-05-06T07:08:09Z",
+    })
+}
+
+/// Mounts `/gists/starred` answering `response`.
+async fn mount_starred(server: &MockServer, response: ResponseTemplate) {
+    Mock::given(method("GET"))
+        .and(path("/gists/starred"))
+        .respond_with(response)
+        .mount(server)
+        .await;
+}
+
+/// Mounts [`fresh_gist`] as a gist the account hasn't starred: absent from
+/// `/gists/starred`, so the pass looks it up at `/gists/{GIST_ID}`.
+async fn mount_gist(server: &MockServer, created_at: &str) {
+    mount_starred(server, ResponseTemplate::new(200).set_body_json(json!([]))).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/gists/{GIST_ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fresh_gist(created_at)))
+        .mount(server)
+        .await;
+}
+
+/// A starred gist is planned from the one `/gists/starred` read, with no lookup of its own.
+#[tokio::test]
+async fn cleanup_plans_a_starred_gist_from_the_starred_list() {
+    let server = MockServer::start().await;
+    let starred = json!([fresh_gist("2020-01-02T03:04:05Z")]);
+    mount_starred(&server, ResponseTemplate::new(200).set_body_json(starred)).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/gists/{GIST_ID}")))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let seed = vec![Bookmark {
+        title: "main.rs".into(),
+        tags: strings(&["github-star", "github-gist"]),
+        ..stored_at(&gist_url(None))
+    }];
+
+    let (writes, stored) = run_and_store(seed, &github_client(&server), NO_DATING).await;
+    assert_eq!(writes, 1);
+    assert_eq!(stored[0].url.as_str(), gist_url(Some("someone")));
+    assert_eq!(stored[0].title, "Fresh");
+}
+
+#[tokio::test]
+async fn cleanup_with_gists_off_leaves_gists_alone() {
+    let server = MockServer::start().await;
+    for gist_path in ["/gists/starred".to_string(), format!("/gists/{GIST_ID}")] {
+        Mock::given(method("GET"))
+            .and(path(gist_path))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(0)
+            .mount(&server)
+            .await;
+    }
+    let seed = vec![Bookmark {
+        title: "Stale".into(),
+        tags: strings(&["github-star", "github-gist"]),
+        ..stored_at(&gist_url(None))
+    }];
+    let client =
+        GitHubClient::with_base_url("tok".into(), GitHubConfig::stars_only(), server.uri());
+
+    let (writes, stored) = run_and_store(seed.clone(), &client, NO_DATING).await;
+    assert_eq!(writes, 0);
+    assert_eq!(stored, seed);
+}
+
+/// The starred gists are read only when there is a gist to plan.
+#[tokio::test]
+async fn cleanup_without_gist_bookmarks_reads_no_gists() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/gists/starred"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let pinboard = FakePinboard {
+        all: vec![stored_at(&format!(
+            "https://gist.github.com/someone/{GIST_ID}/0123abc"
+        ))],
+        ..Default::default()
+    };
+
+    run(
+        &pinboard.cleanup_store(false),
+        &github_client(&server),
+        NO_DATING,
+        &[],
+    )
+    .await
+    .unwrap();
+}
+
+/// A failed read of the starred gists fails the pass before anything is planned, so it
+/// can't let the gists look reached; a rate limit there stays a rate limit.
+#[tokio::test]
+async fn a_failed_starred_gist_read_fails_the_gist_pass() {
+    let refusals = [
+        (ResponseTemplate::new(500), "other"),
+        (
+            ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
+            "rate limited",
+        ),
+    ];
+    for (response, expected) in refusals {
+        let server = MockServer::start().await;
+        mount_starred(&server, response).await;
+        Mock::given(method("GET"))
+            .and(path(format!("/gists/{GIST_ID}")))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let pinboard = FakePinboard {
+            all: vec![Bookmark {
+                tags: strings(&["github-star", "github-gist"]),
+                ..stored_at(&gist_url(None))
+            }],
+            ..Default::default()
+        };
+
+        let (result, _) = crate::http::recording_waits(run(
+            &pinboard.cleanup_store(false),
+            &github_client(&server),
+            NO_DATING,
+            &[],
+        ))
+        .await;
+        let err = result.unwrap_err();
+        let variant = match err {
+            SourceError::RateLimited(_) => "rate limited",
+            SourceError::Other(_) => "other",
+            _ => "unexpected",
+        };
+        assert_eq!(variant, expected, "{err:?}");
+        assert!(pinboard.updated.borrow().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn cleanup_canonicalizes_a_synced_gist_and_refreshes_what_sync_wrote() {
+    let server = MockServer::start().await;
+    mount_gist(&server, "2020-01-02T03:04:05Z").await;
+    let seed = vec![Bookmark {
+        title: "Stale".into(),
+        note: "<blockquote>Stale</blockquote>\n\nFiles: old.go".into(),
+        tags: strings(&["github-star", "github-gist", "lang:go", "mine"]),
+        ..stored_at(&gist_url(None))
+    }];
+
+    let (writes, stored) = run_and_store(seed, &github_client(&server), NO_DATING).await;
+    assert_eq!(writes, 1);
+    let [gist] = &stored[..] else {
+        panic!("one bookmark, moved: {stored:?}");
+    };
+    assert_eq!(gist.url.as_str(), gist_url(Some("someone")));
+    assert_eq!(gist.title, "Fresh");
+    assert_eq!(
+        gist.note,
+        "<blockquote>Fresh</blockquote>\n\nFiles: main.rs"
+    );
+    assert_eq!(
+        gist.tags,
+        strings(&[
+            "github-star",
+            "github-gist",
+            "mine",
+            "lang:rust",
+            "author:github:someone"
+        ])
+    );
+
+    let (second_writes, _) = run_and_store(stored, &github_client(&server), NO_DATING).await;
+    assert_eq!(second_writes, 0, "settles after one run");
+}
+
+/// A gist saved by hand and tagged like a star, as one might have before sync wrote
+/// gists, is not a synced gist: the inherited `github-star` is not the gist's marker, so
+/// only its URL is canonicalized.
+#[tokio::test]
+async fn cleanup_leaves_a_hand_saved_gist_tagged_like_a_star_as_it_was() {
+    let server = MockServer::start().await;
+    mount_gist(&server, "2020-01-02T03:04:05Z").await;
+    let seed = vec![
+        Bookmark {
+            title: "my gist".into(),
+            note: "my notes".into(),
+            tags: strings(&["github-star", "lang:go"]),
+            ..stored_at(&gist_url(None))
+        },
+        Bookmark {
+            title: "Show HN: Fresh".into(),
+            note: "HN Link: https://news.ycombinator.com/item?id=7".into(),
+            tags: strings(&["hackernews"]),
+            ..stored_at(&format!("http://gist.github.com/other/{GIST_ID}.git"))
+        },
+    ];
+
+    let (_, stored) = run_and_store(seed, &github_client(&server), NO_DATING).await;
+    let [gist] = &stored[..] else {
+        panic!("both forms of the gist fold into one: {stored:?}");
+    };
+    assert_eq!(gist.url.as_str(), gist_url(Some("someone")));
+    assert_eq!(gist.title, "my gist");
+    assert!(gist.note.starts_with("my notes"), "{:?}", gist.note);
+    assert!(gist.note.contains("HN Link:"), "{:?}", gist.note);
+    let mut tags = gist.tags.clone();
+    tags.sort();
+    assert_eq!(tags, strings(&["github-star", "hackernews", "lang:go"]));
+}
+
+/// Two accounts with default gist tags both tag their gists `github-gist`; running as one
+/// must not add its star tag to the other's gist.
+#[tokio::test]
+async fn cleanup_refreshes_another_accounts_gist_by_its_own_tags() {
+    let server = MockServer::start().await;
+    mount_gist(&server, "2020-01-02T03:04:05Z").await;
+    let config = crate::config::Config::parse(
+        "[[github]]\nname = \"home\"\n[[github]]\nname = \"work\"\ntags = [\"work-star\"]\n",
+    )
+    .unwrap();
+    let configured: Vec<GitHubConfig> = config
+        .github
+        .iter()
+        .map(|account| GitHubConfig::resolve(Some(account), &config.defaults.github))
+        .collect();
+    let pinboard = FakePinboard {
+        all: vec![Bookmark {
+            title: "Fresh".into(),
+            note: "<blockquote>Fresh</blockquote>\n\nFiles: main.rs".into(),
+            tags: strings(&["work-star", "github-gist", "lang:go"]),
+            ..stored_at(&gist_url(Some("someone")))
+        }],
+        ..Default::default()
+    };
+    let client = GitHubClient::with_base_url("tok".into(), configured[0].clone(), server.uri());
+
+    run(
+        &pinboard.cleanup_store(false),
+        &client,
+        NO_DATING,
+        &configured,
+    )
+    .await
+    .unwrap();
+
+    let updated = pinboard.updated.borrow();
+    assert_eq!(updated.len(), 1, "{updated:?}");
+    assert_eq!(
+        updated[0].tags,
+        [
+            "work-star",
+            "github-gist",
+            "lang:rust",
+            "author:github:someone"
+        ]
+    );
+}
+
+/// A deleted gist keeps its URL, and one 404 doesn't fail the run.
+#[tokio::test]
+async fn cleanup_keeps_a_deleted_gist_where_it_is() {
+    let server = MockServer::start().await;
+    mount_starred(&server, ResponseTemplate::new(200).set_body_json(json!([]))).await;
+    let seed = vec![Bookmark {
+        tags: strings(&["github-star", "github-gist"]),
+        ..stored_at(&gist_url(None))
+    }];
+
+    let (writes, stored) = run_and_store(seed.clone(), &github_client(&server), NO_DATING).await;
+    assert_eq!(writes, 0);
+    assert_eq!(stored, seed);
+}
+
+#[tokio::test]
+async fn cleanup_redates_a_synced_gist_by_its_gist_post_date() {
+    let server = MockServer::start().await;
+    mount_gist(&server, "2020-01-02T03:04:05Z").await;
+    Mock::given(method("GET"))
+        .and(path("/user/starred"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let stored = Bookmark {
+        title: "Fresh".into(),
+        note: "<blockquote>Fresh</blockquote>\n\nFiles: main.rs".into(),
+        tags: strings(&[
+            "github-star",
+            "github-gist",
+            "lang:rust",
+            "author:github:someone",
+        ]),
+        timestamp: crate::timefmt::parse_rfc3339("2025-01-01T00:00:00Z"),
+        ..stored_at(&gist_url(Some("someone")))
+    };
+    let dates = crate::timefmt::DateOpts {
+        use_post_date: true,
+        max_age_days: 365 * 100,
+        stale_to_now: false,
+    };
+    for (post_date, expected) in [
+        (GistPostDate::Now, None),
+        (GistPostDate::Created, Some("2020-01-02T03:04:05Z")),
+        (GistPostDate::Updated, Some("2024-05-06T07:08:09Z")),
+    ] {
+        let mut config = GitHubConfig::default();
+        config.gists.post_date = post_date;
+        let client = GitHubClient::with_base_url("tok".into(), config, server.uri());
+        let pinboard = FakePinboard {
+            all: vec![stored.clone()],
+            ..Default::default()
+        };
+        run(&pinboard.cleanup_store(false), &client, dates, &[])
+            .await
+            .unwrap();
+        let updated = pinboard.updated.borrow();
+        let dt: Option<&str> = updated.first().map(|call| call.dt.as_str());
+        assert_eq!(dt, expected, "{post_date}");
+    }
+}
+
+/// A dead token stops the repo pass, and the gist pass then makes no doomed lookup.
+#[tokio::test]
+async fn a_dead_token_on_the_repos_skips_the_gists() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/o/r"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/gists/starred"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let pinboard = FakePinboard {
+        all: vec![
+            stored_at("https://github.com/o/r"),
+            stored_at(&gist_url(None)),
+        ],
+        ..Default::default()
+    };
+
+    let err = run(
+        &pinboard.cleanup_store(false),
+        &github_client(&server),
+        NO_DATING,
+        &[],
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, SourceError::ReauthRequired(_)), "{err:?}");
+}
+
+/// A dead token on the lookup of a gist that isn't starred halts the gist pass as a
+/// re-auth, as one on a repo lookup does.
+#[tokio::test]
+async fn a_dead_token_on_a_gist_lookup_is_a_reauth() {
+    let server = MockServer::start().await;
+    mount_starred(&server, ResponseTemplate::new(200).set_body_json(json!([]))).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/gists/{GIST_ID}")))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    let pinboard = FakePinboard {
+        all: vec![stored_at(&gist_url(None))],
+        ..Default::default()
+    };
+
+    let err = run(
+        &pinboard.cleanup_store(false),
+        &github_client(&server),
+        NO_DATING,
+        &[],
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, SourceError::ReauthRequired(_)), "{err:?}");
+}
+
+/// The gist pass's own dead token fires the hook too, and a failed repo pass ahead of it
+/// is still reported.
+#[tokio::test]
+async fn a_dead_token_on_the_gists_is_a_reauth_even_after_failed_repos() {
+    let server = MockServer::start().await;
+    for repo in ["/repos/o/r", "/repos/o/s"] {
+        Mock::given(method("GET"))
+            .and(path(repo))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+    }
+    mount_starred(&server, ResponseTemplate::new(401)).await;
+    let pinboard = FakePinboard {
+        // Two failed lookups and none answered: a majority, which fails the repo pass.
+        all: vec![
+            stored_at("https://github.com/o/r"),
+            stored_at("https://github.com/o/s"),
+            stored_at(&gist_url(None)),
+        ],
+        ..Default::default()
+    };
+
+    let (result, _) = crate::http::recording_waits(run(
+        &pinboard.cleanup_store(false),
+        &github_client(&server),
+        NO_DATING,
+        &[],
+    ))
+    .await;
+    let err = result.unwrap_err();
+    let SourceError::ReauthRequired(message) = &err else {
+        panic!("expected reauth, got {err:?}");
+    };
+    assert!(message.contains("and for repos:"), "{message}");
 }

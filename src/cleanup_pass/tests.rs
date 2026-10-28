@@ -350,9 +350,9 @@ async fn a_reauth_does_not_hide_lookups_that_already_failed() {
 #[tokio::test]
 async fn bookmarks_a_pass_skipped_do_not_count_as_reaching_the_source() {
     // A skipped bookmark never touched the source, so it must not dilute the ratio:
-    // `cleanup github` skips deep links and gists without an API call, and those must
-    // not vouch for a source that is actually down. Two failures, to clear the
-    // one-failure floor and isolate what's being tested here.
+    // `cleanup github` skips deep links without an API call, and those must not vouch for a
+    // source that is actually down. Two failures, to clear the one-failure floor and
+    // isolate what's being tested here.
     let books = vec![
         bookmark("https://x/not-mine-1"),
         bookmark("https://x/not-mine-2"),

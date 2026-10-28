@@ -144,7 +144,10 @@ fn draft_maps_fields_and_language_tag() {
         d.bookmark.note,
         "<blockquote>A thing</blockquote>\n\nProject homepage: https://example.com"
     );
-    assert_eq!(d.bookmark.tags, vec!["github-star", "lang:rust"]);
+    assert_eq!(
+        d.bookmark.tags,
+        vec!["github-star", "lang:rust", "author:github:owner"]
+    );
     assert_eq!(d.dedup_key, "github.com/owner/repo");
 }
 
@@ -185,7 +188,7 @@ fn language_with_spaces_is_slugged() {
     .unwrap();
     assert_eq!(
         d.bookmark.tags,
-        vec!["github-star", "lang:jupyter-notebook"]
+        vec!["github-star", "lang:jupyter-notebook", "author:github:o"]
     );
 }
 
@@ -199,7 +202,7 @@ fn draft_without_description_or_language() {
     .unwrap();
     // Missing description falls back to the URL; no language → no lang tag.
     assert_eq!(d.bookmark.note, "https://github.com/o/r");
-    assert_eq!(d.bookmark.tags, vec!["github-star"]);
+    assert_eq!(d.bookmark.tags, vec!["github-star", "author:github:o"]);
 }
 
 #[test]
@@ -211,7 +214,27 @@ fn tags_list_replaces_the_default_base() {
     let d = repo(json!({ "full_name": "o/r", "html_url": "https://github.com/o/r" }))
         .into_draft(&cfg)
         .unwrap();
-    assert_eq!(d.bookmark.tags, vec!["github-star", "account:work"]);
+    assert_eq!(
+        d.bookmark.tags,
+        vec!["github-star", "account:work", "author:github:o"]
+    );
+}
+
+#[test]
+fn the_owner_tag_follows_its_prefix_and_an_empty_one_disables_it() {
+    let draft = |author_prefix: &str| {
+        let cfg = GitHubConfig {
+            author_prefix: author_prefix.into(),
+            ..GitHubConfig::default()
+        };
+        repo(json!({ "full_name": "Some-Org/r", "html_url": "https://github.com/Some-Org/r" }))
+            .into_draft(&cfg)
+            .unwrap()
+            .bookmark
+            .tags
+    };
+    assert_eq!(draft("owner:"), vec!["github-star", "owner:Some-Org"]);
+    assert_eq!(draft(""), vec!["github-star"]);
 }
 
 #[test]

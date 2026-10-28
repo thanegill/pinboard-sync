@@ -1,9 +1,11 @@
 //! The GitHub source: reads the authenticated user's starred repositories
-//! (`/user/starred`, token-authenticated) and shapes each into a Pinboard draft.
+//! (`/user/starred`, token-authenticated) and, unless turned off, starred gists
+//! (`/gists/starred`), and shapes each into a Pinboard draft.
 
 pub mod cleanup;
+pub mod gists;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -20,33 +22,82 @@ use crate::source::{
     deserialize_lenient, page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey,
 };
 use crate::tags::{push_prefixed, push_tags};
+use gists::{GistConfig, GitHubGist};
 use url::Url;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
-/// The most stars `/user/starred` returns per page; GitHub's default is 30.
-const STARRED_PER_PAGE: &str = "100";
+/// The most items a GitHub listing returns per page; GitHub's default is 30.
+const PER_PAGE: &str = "100";
 /// Backstop against a malformed `Link: rel="next"` chain that never terminates.
-/// At [`STARRED_PER_PAGE`] results per page this covers a million stars,
-/// far beyond any real account -- it is only a backstop against a `Link` header that
-/// increments forever; the per-page repeat case is caught by the `visited` guard.
-const MAX_STARRED_PAGES: u32 = 10_000;
+/// At [`PER_PAGE`] results per page this covers a million stars, far beyond any real
+/// account -- it is only a backstop against a `Link` header that increments forever; the
+/// per-page repeat case is caught by the `visited` guard.
+const MAX_PAGES: u32 = 10_000;
+
+/// One `Link`-paged GitHub listing, walked by [`GitHubClient::walk`].
+#[derive(Clone, Copy)]
+struct PagedStream {
+    /// Names the stream in messages and the request label.
+    label: &'static str,
+    /// The `backup` stream its pages are captured under (`""` is the primary).
+    raw_stream: &'static str,
+    path: &'static str,
+    accept: &'static str,
+    /// Sent with every page, besides `page` itself.
+    query: &'static [(&'static str, &'static str)],
+}
+
+/// `/user/starred`. The star+json media type makes each element `{ starred_at, repo }`,
+/// so each bookmark can be dated by when it was starred, and the sort is pinned rather
+/// than left to GitHub's default because the incremental read depends on
+/// newest-starred-first.
+const STARS: PagedStream = PagedStream {
+    label: "github starred",
+    raw_stream: "",
+    path: "/user/starred",
+    accept: "application/vnd.github.star+json",
+    query: &[
+        ("sort", "created"),
+        ("direction", "desc"),
+        ("per_page", PER_PAGE),
+    ],
+};
+
+/// `/gists/starred`. GitHub documents no sort order or sort parameter for it; the
+/// incremental read assumes newest-starred-first, as every other stream lists.
+const STARRED_GISTS: PagedStream = PagedStream {
+    label: "github starred gists",
+    raw_stream: "gists",
+    path: "/gists/starred",
+    accept: "application/vnd.github+json",
+    query: &[("per_page", PER_PAGE)],
+};
 
 /// Tag vocabulary for GitHub stars. `tags` are applied to every bookmark
-/// (defaulting to `["github-star"]`); `lang_prefix` defaults to its built-in value,
-/// and an empty string disables that tag.
+/// (defaulting to `["github-star"]`); the prefixes default to their built-in values, and
+/// an empty string disables that tag.
 #[derive(Debug, Clone)]
 pub struct GitHubConfig {
     pub tags: Vec<String>,
     pub lang_prefix: String,
+    /// Prefix for the tag naming the repo's owner.
+    pub author_prefix: String,
+    /// The starred gists' settings.
+    pub gists: GistConfig,
 }
 
 impl Default for GitHubConfig {
     fn default() -> Self {
+        let tags = vec!["github-star".to_string()];
+        let lang_prefix = "lang:";
+        let author_prefix = "author:github:";
         Self {
-            tags: vec!["github-star".into()],
-            lang_prefix: "lang:".into(),
+            gists: GistConfig::inheriting(&tags, lang_prefix, author_prefix),
+            tags,
+            lang_prefix: lang_prefix.into(),
+            author_prefix: author_prefix.into(),
         }
     }
 }
@@ -97,6 +148,11 @@ fn github_note(description: Option<&str>, homepage: Option<&str>, html_url: &str
 }
 
 impl GitHubRepo {
+    /// The repo's owner: the part of `full_name` before the `/`.
+    fn owner(&self) -> &str {
+        self.full_name.split('/').next().unwrap_or_default()
+    }
+
     /// Shape the repo into a Pinboard draft (no source date). Test-only convenience;
     /// the production path dates each draft via [`GitHubStarredRepo::into_draft`].
     #[cfg(test)]
@@ -131,9 +187,10 @@ impl GitHubRepo {
 
         let mut tags = Vec::new();
         push_tags(&mut tags, &cfg.tags);
-        if let Some(lang) = self.language.filter(|s| !s.is_empty()) {
+        if let Some(lang) = self.language.as_deref().filter(|s| !s.is_empty()) {
             push_prefixed(&mut tags, &cfg.lang_prefix, &lang.to_lowercase());
         }
+        push_prefixed(&mut tags, &cfg.author_prefix, self.owner());
 
         Some(BookmarkDraft {
             bookmark: Bookmark {
@@ -338,11 +395,40 @@ impl GitHubClient {
     /// inaccessible — deleted or private (404), or refused for good
     /// ([`permanent_refusal`]: blocked, or behind SSO this token isn't authorized for).
     async fn repo(&self, owner: &str, name: &str) -> Result<Option<GitHubRepo>, SourceError> {
-        let endpoint = format!("{}/repos/{}/{}", self.base, owner, name);
-        let resp = self
-            .http
-            .send("github repo", || self.http.get(&endpoint))
-            .await?;
+        let endpoint = format!("{}/repos/{owner}/{name}", self.base);
+        self.lookup(
+            "github repo",
+            &endpoint,
+            &format!("{owner}/{name}"),
+            "its stored title, notes and tags",
+        )
+        .await
+    }
+
+    /// Look up a gist via `/gists/{id}`. `None` if it is permanently inaccessible: deleted
+    /// (404), or refused for good ([`permanent_refusal`]).
+    async fn gist(&self, id: &str) -> Result<Option<GitHubGist>, SourceError> {
+        let endpoint = format!("{}/gists/{id}", self.base);
+        self.lookup(
+            "github gist",
+            &endpoint,
+            id,
+            "its stored URL, title, notes and tags",
+        )
+        .await
+    }
+
+    /// GET the `label` (`github repo`) at `endpoint`. `None` for a 404 or a
+    /// [`permanent_refusal`]; the latter is logged naming `subject` and what is `kept`,
+    /// since unlike a 404 the thing does still exist.
+    async fn lookup<T: serde::de::DeserializeOwned>(
+        &self,
+        label: &str,
+        endpoint: &str,
+        subject: &str,
+        kept: &str,
+    ) -> Result<Option<T>, SourceError> {
+        let resp = self.http.send(label, || self.http.get(endpoint)).await?;
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(self.token_refused());
@@ -353,19 +439,17 @@ impl GitHubClient {
         if !status.is_success() {
             let headers = resp.headers().clone();
             let body = resp.text().await.unwrap_or_default();
-            // Unlike a 404 the repo does still exist, so say so rather than skipping
-            // silently.
             if let Some(why) = permanent_refusal(status, &headers, &body) {
-                warn!(
-                    "github repo {owner}/{name} {why}; keeping its stored title, notes \
-                     and tags"
-                );
+                warn!("{label} {subject} {why}; keeping {kept}");
                 return Ok(None);
             }
-            return Err(self.refusal_of("github repo", status, &headers, &body));
+            return Err(self.refusal_of(label, status, &headers, &body));
         }
-        let repo: GitHubRepo = resp.json().await.context("parsing github repo response")?;
-        Ok(Some(repo))
+        let found = resp
+            .json()
+            .await
+            .with_context(|| format!("parsing {label} response"))?;
+        Ok(Some(found))
     }
 }
 
@@ -374,8 +458,8 @@ impl Source for GitHubClient {
         self.fetch_capturing(None, &mut RawSink::disabled()).await
     }
 
-    /// Stars list newest first, so paging stops at the first page that would give `sync`
-    /// nothing to write.
+    /// Stars and gists list newest first, so each stream stops paging at its first page
+    /// that would give `sync` nothing to write.
     async fn fetch_incremental(
         &self,
         existing: &[Bookmark],
@@ -386,48 +470,132 @@ impl Source for GitHubClient {
 }
 
 impl GitHubClient {
-    /// [`Source::fetch`], pushing each `/user/starred` page body to `sink` as it arrives
-    /// so `backup` gets the verbatim response — including the ~75 repo fields
-    /// [`GitHubStarredRepo`] doesn't keep — out of the same traversal. With
-    /// `synced_keys`, it stops at the first page with nothing new ([`page_is_caught_up`]).
+    /// [`Source::fetch`], pushing each page body to `sink` as it arrives so `backup` gets
+    /// the verbatim responses -- including the ~75 repo fields [`GitHubStarredRepo`]
+    /// doesn't keep -- out of the same traversal. With `synced_keys`, each stream stops at
+    /// its own first page with nothing new ([`page_is_caught_up`]). The stars come before
+    /// the gists, so a numeric `limit` writes the stars first.
     async fn fetch_capturing(
         &self,
         synced_keys: Option<&HashSet<String>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
-        let endpoint = format!("{}/user/starred", self.base);
-        let mut out = Vec::new();
+        let mut drafts = self.fetch_stars(synced_keys, sink).await?;
+        if self.config.gists.enabled {
+            drafts.extend(self.fetch_gists(synced_keys, sink).await?);
+        } else {
+            // Without it a backup would keep last run's gists file beside a gist-less
+            // normalized half.
+            sink.push(STARRED_GISTS.raw_stream, RawKind::Json, "[]");
+        }
+        Ok(drafts)
+    }
+
+    /// The starred gists, a second stream: it stops at its own caught-up page.
+    async fn fetch_gists(
+        &self,
+        synced_keys: Option<&HashSet<String>>,
+        sink: &mut RawSink,
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        self.walk_drafts(&STARRED_GISTS, synced_keys, sink, |gist: GitHubGist| {
+            gist.into_draft(&self.config.gists)
+        })
+        .await
+    }
+
+    /// Every starred gist itself, keyed by its (lowercase) id, for `cleanup github` to plan
+    /// from with one paged read rather than a lookup per bookmark.
+    async fn starred_gists(&self) -> Result<HashMap<String, GitHubGist>, SourceError> {
+        let mut gists = HashMap::new();
+        self.walk(
+            &STARRED_GISTS,
+            &mut RawSink::disabled(),
+            |page: Vec<GitHubGist>| {
+                gists.extend(
+                    page.into_iter()
+                        .map(|gist| (gist.id.to_ascii_lowercase(), gist)),
+                );
+                false
+            },
+        )
+        .await?;
+        Ok(gists)
+    }
+
+    /// The starred repos, each dated by its star time.
+    async fn fetch_stars(
+        &self,
+        synced_keys: Option<&HashSet<String>>,
+        sink: &mut RawSink,
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        self.walk_drafts(&STARS, synced_keys, sink, |starred: GitHubStarredRepo| {
+            starred.into_draft(&self.config)
+        })
+        .await
+    }
+
+    /// [`Self::walk`] `stream`, shaping each element into a draft with `shape` and, with
+    /// `synced_keys`, stopping at the first page with nothing new ([`page_is_caught_up`]).
+    async fn walk_drafts<T: serde::de::DeserializeOwned>(
+        &self,
+        stream: &PagedStream,
+        synced_keys: Option<&HashSet<String>>,
+        sink: &mut RawSink,
+        shape: impl Fn(T) -> Option<BookmarkDraft>,
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        let mut drafts = Vec::new();
+        self.walk(stream, sink, |items: Vec<T>| {
+            let page_len = items.len();
+            let page_drafts: Vec<BookmarkDraft> = items.into_iter().filter_map(&shape).collect();
+            let caught_up =
+                synced_keys.is_some_and(|keys| page_is_caught_up(page_len, &page_drafts, keys));
+            drafts.extend(page_drafts);
+            caught_up
+        })
+        .await?;
+        Ok(drafts)
+    }
+
+    /// Walk `stream`'s `Link: rel="next"` pages, handing each page's elements to `on_page`,
+    /// which says whether the walk is caught up and should stop there. An element that
+    /// fails to deserialize is skipped with a warning rather than discarding its page (and
+    /// every earlier one); a body that isn't a JSON array still fails the walk, and so does
+    /// a non-empty page where every element fails, a schema break (see
+    /// [`deserialize_lenient`]).
+    async fn walk<T: serde::de::DeserializeOwned>(
+        &self,
+        stream: &PagedStream,
+        sink: &mut RawSink,
+        mut on_page: impl FnMut(Vec<T>) -> bool,
+    ) -> Result<(), SourceError> {
+        let PagedStream {
+            label,
+            raw_stream,
+            path,
+            accept,
+            query,
+        } = *stream;
+        let endpoint = format!("{}{path}", self.base);
         let mut page: u32 = 1;
         let mut visited = HashSet::new();
 
         loop {
-            if page > MAX_STARRED_PAGES {
-                warn!(
-                    "github starred: hit the {MAX_STARRED_PAGES}-page cap; \
-                     stopping (some stars may be missing)"
-                );
-                sink.mark_truncated(format!(
-                    "github starred stopped at the {MAX_STARRED_PAGES}-page cap"
-                ));
+            if page > MAX_PAGES {
+                warn!("{label}: hit the {MAX_PAGES}-page cap; stopping (some may be missing)");
+                sink.mark_truncated(format!("{label} stopped at the {MAX_PAGES}-page cap"));
                 break;
             }
             if !visited.insert(page) {
-                warn!("github starred: 'next' link looped back to page {page}; stopping");
+                warn!("{label}: 'next' link looped back to page {page}; stopping");
                 break;
             }
             let resp = self
                 .http
-                .send("github starred", || {
-                    // The star+json media type makes each element `{ starred_at, repo }`, so
-                    // we can date each bookmark by when it was starred.
+                .send(label, || {
                     self.http
                         .get(&endpoint)
-                        .header(reqwest::header::ACCEPT, "application/vnd.github.star+json")
-                        .query(&[
-                            ("sort", "created"),
-                            ("direction", "desc"),
-                            ("per_page", STARRED_PER_PAGE),
-                        ])
+                        .header(reqwest::header::ACCEPT, accept)
+                        .query(query)
                         .query(&[("page", page)])
                 })
                 .await?;
@@ -442,37 +610,25 @@ impl GitHubClient {
                 .and_then(|v| v.to_str().ok())
                 .and_then(parse_link_next);
             if !status.is_success() {
-                return Err(self.refusal("github starred", resp).await);
+                return Err(self.refusal(label, resp).await);
             }
 
-            // Deserialize element-by-element so one malformed repo is skipped with a
-            // warning rather than discarding this page (and every earlier one). A body
-            // that isn't a JSON array at all still fails the whole page; a non-empty page
-            // where every element fails is a schema break (see `deserialize_lenient`).
             let body = resp
                 .text()
                 .await
-                .context("reading github starred response")?;
-            sink.push("", RawKind::Json, &body);
+                .with_context(|| format!("reading {label} response"))?;
+            sink.push(raw_stream, RawKind::Json, &body);
             let elements: Vec<serde_json::Value> =
-                serde_json::from_str(&body).context("parsing github starred response")?;
-            let repos: Vec<GitHubStarredRepo> =
-                deserialize_lenient(elements, "github starred element", |count| {
+                serde_json::from_str(&body).with_context(|| format!("parsing {label} response"))?;
+            let items: Vec<T> =
+                deserialize_lenient(elements, &format!("{label} element"), |count| {
                     SourceError::Other(anyhow::anyhow!(
-                        "github starred page {page}: all {count} element(s) failed to \
+                        "{label} page {page}: all {count} element(s) failed to \
                          deserialize — the API response shape may have changed"
                     ))
                 })?;
-            let page_len = repos.len();
-            let page_drafts: Vec<BookmarkDraft> = repos
-                .into_iter()
-                .filter_map(|starred| starred.into_draft(&self.config))
-                .collect();
-            let caught_up =
-                synced_keys.is_some_and(|keys| page_is_caught_up(page_len, &page_drafts, keys));
-            out.extend(page_drafts);
-            if caught_up {
-                debug!("github starred: page {page} has nothing new; stopping");
+            if on_page(items) {
+                debug!("{label}: page {page} has nothing new; stopping");
                 break;
             }
 
@@ -481,7 +637,7 @@ impl GitHubClient {
                 None => break,
             }
         }
-        Ok(out)
+        Ok(())
     }
 }
 
@@ -513,6 +669,16 @@ fn parse_link_next(link: &str) -> Option<u32> {
 
 #[cfg(test)]
 const TEST_TOKEN_SOURCE: &str = "$GITHUB_TOKEN_FILE";
+
+#[cfg(test)]
+impl GitHubConfig {
+    /// The defaults with the gists off, for a test that mocks only the stars.
+    pub(crate) fn stars_only() -> Self {
+        let mut config = Self::default();
+        config.gists.enabled = false;
+        config
+    }
+}
 
 #[cfg(test)]
 impl GitHubClient {

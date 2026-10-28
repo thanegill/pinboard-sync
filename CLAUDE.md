@@ -122,10 +122,11 @@ turn. The `Refusal` and `propagate_refusals` docs give the rest.
 or `Plan::Skipped` (not this pass's bookmark — no lookup made). Only the first two count
 toward `PassOutcome::reached`, as the last two mean opposite things about the source's
 health. Without that split, the every-lookup-failed guard is worthless: `cleanup github`
-skips deep links and gists locally, and if those counted as successes a genuinely
-unreachable GitHub would look fine. HackerNews' `search_by_url` finding nothing is
-`Unchanged`: the query ran. When a source runs several passes, each reaches its **own**
-verdict rather than pooling tallies, so a pass that can't fail can't vouch for one that can.
+skips deep links locally (and a deleted gist is `Unchanged`: the lookup answered), and if
+those counted as successes a genuinely unreachable GitHub would look fine. HackerNews'
+`search_by_url` finding nothing is `Unchanged`: the query ran. When a source runs several
+passes, each reaches its **own** verdict rather than pooling tallies, so a pass that can't
+fail can't vouch for one that can.
 
 The per-source planners are each source's `cleanup.rs`: [reddit](src/reddit/cleanup.rs),
 [github](src/github/cleanup.rs) and [hackernews](src/hackernews/cleanup.rs).
@@ -159,15 +160,18 @@ source overrides to stop paging at the first page that would give `sync` nothing
 run writes only the newest drafts and an incremental read would never reach the rest.
 **`prepare_new_drafts` returns drafts oldest first**, which is what keeps an interrupted
 `auto` run recoverable (its doc says why). `backup`, `doctor` and `cleanup github`'s star
-dates call `fetch()`. Known gaps, all recovered by `--limit all`: an older item deleted from
-Pinboard is not re-added, a failed write followed by a full page of newer successes is never
-retried, and a page whose items all reached Pinboard another way stops the read early.
+dates read every page (the star dates through `fetch_stars`, the stars stream alone). Known
+gaps, all recovered by `--limit all`: an older item deleted from Pinboard is not re-added, a
+failed write followed by a full page of newer successes is never retried, and a page whose
+items all reached Pinboard another way stops the read early.
 
 **Sources:** Reddit ([`reddit.rs`](src/reddit.rs) — cookie-authenticated
 `saved.json`/`api/info.json`, plus the `PostInfo` port for cleanup;
 [`model.rs`](src/reddit/model.rs) shapes bookmarks and tags), GitHub
 ([`github.rs`](src/github.rs) — `/user/starred`, `sort=created&direction=desc` pinned
-because the incremental read depends on newest-starred-first), and HackerNews
+because the incremental read depends on newest-starred-first, then unless `gists = false`
+`/gists/starred` as a second stream, shaped in [`gists.rs`](src/github/gists.rs); both go
+through `GitHubClient::walk`, and each stops at its own caught-up page), and HackerNews
 ([`hackernews.rs`](src/hackernews.rs) — scrapes `/favorites` for item IDs in
 [`favorites.rs`](src/hackernews/favorites.rs), then batch-reads them from Algolia in
 [`algolia.rs`](src/hackernews/algolia.rs)). **HackerNews' caught-up test checks drafts, not
@@ -230,11 +234,18 @@ source when one would apply to several accounts, using the resolver's own accept
 else the first, else an implicit CLI/env account). `--all` runs every configured account,
 exiting non-zero if any fail (`AllRun`); `cleanup --all` runs once per source, since it
 normalizes the shared bookmark set. `cleanup github` (see its module doc) refreshes only
-what the tool wrote: notes in `github_note`'s shape, the base/language tags of bookmarks
-carrying any configured account's base tag (with that account's tag config), their title
-only while it is still `owner/repo`, and their star date only while the notes are the tool's
-too. A repo root is often another source's bookmark (an HN story linking it, or one a rename
-merged a star into), so never widen that.
+what the tool wrote: notes in `github_note`'s shape, the base/language/owner tags of
+bookmarks carrying any configured account's base tag (with that account's tag config), their
+title only while it is still `owner/repo`, and their star date only while the notes are the
+tool's too. A repo root is often another source's bookmark (an HN story linking it, or one a
+rename merged a star into), so never widen that. Gists follow the same rules in their own
+pass ([`src/github/cleanup/gists.rs`](src/github/cleanup/gists.rs)), skipped when the
+running account has gists off, keyed on carrying up to two marker tags of an account
+(`markers`; the first `gist_tags` entry alone when every entry is also in `tags`): the
+default `gist_tags` inherit `github-star`, so no single tag tells a synced gist from a
+hand-saved one or one account's gist from another's. The pass plans from one read of
+`/gists/starred` and looks up only the gists missing from it; a failed read fails the pass
+before anything is planned, so it can't count every gist as reached.
 
 **`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
 `SyncJob { client: SourceClient, hook, settings }` (`SourceClient` an enum over the three
@@ -253,9 +264,9 @@ consumes; `config check <file>` runs `Config::parse` without resolving a secret.
 401/403 that isn't the "blocked by network security" page, a Reddit redirect to `/login`,
 GitHub 401) fires the `--on-auth-failure` hook and exits non-zero; `SourceError::Other`
 (transient/parse) doesn't. HackerNews never re-auths. **`cleanup` fires it too**, for every
-re-auth-capable read: GitHub's `repo()` mid-pass (via `Halt`), GitHub's `fetch()` for star
-dates, and Reddit's `/api/info`, whose expired cookie is by far the most common case. That
-is why the three `cleanup` entry points return `Result<(), SourceError>` rather than
+re-auth-capable read: GitHub's `repo()` mid-pass (via `Halt`), GitHub's `fetch_stars()` for
+star dates, and Reddit's `/api/info`, whose expired cookie is by far the most common case.
+That is why the three `cleanup` entry points return `Result<(), SourceError>` rather than
 `anyhow::Result`: flattening the variant would lose the hook. [`src/hook.rs`](src/hook.rs)'s
 `handle_source_err` is the single place the hook is fired; `cleanup` resolves the command
 through `PINBOARD_SYNC_ON_AUTH_FAILURE` → account → `[defaults.<source>]` → `[hooks]` (it

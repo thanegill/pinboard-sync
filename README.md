@@ -5,7 +5,7 @@ A small Rust CLI that syncs the things you save across the web into a single
 there. It currently knows three sources:
 
 - **Reddit** — your saved posts and comments.
-- **GitHub** — your starred repositories.
+- **GitHub** — your starred repositories and starred gists.
 - **HackerNews** — your favorited stories and comments.
 
 Each run is a single pass: read what you've saved from a source, skip anything
@@ -20,23 +20,25 @@ sensible, fully-configurable tags:
 | Source | URL | Title | Tags (defaults) |
 | --- | --- | --- | --- |
 | Reddit | the `old.reddit.com` permalink | post/comment title | `reddit`, `subreddit:<sub>`, `reddit-comment`, `nsfw`, `author:reddit:<u>`, `reddit-flair:<f>`, `type:image`/`type:video` |
-| GitHub | the repo URL | `owner/repo` | `github-star`, `lang:<language>` |
+| GitHub | the repo URL | `owner/repo` | `github-star`, `lang:<language>`, `author:github:<owner>` |
+| GitHub gist | `gist.github.com/<owner>/<id>` | the description, else the first filename | `github-star`, `github-gist`, `lang:<language>` per file language, `author:github:<owner>` |
 | HackerNews | the article (or HN permalink) | story title | `hackernews`, `hackernews-comment`, `author:hackernews:<u>`, `hackernews:show-hn` (and `ask-hn`/`tell-hn`/`launch-hn`) |
 
-A favorited HN *story* is bookmarked as the linked article with the discussion in
-the notes; a favorited *comment* keeps the HN permalink. Dedup is by URL, so the
-same item saved under any subdomain (or already bookmarked from elsewhere) is left
-alone. `--limit N` is an optional per-run write cap, not correctness — Reddit also
-caps any listing at ~1000 items.
+A favorited HN *story* is bookmarked as the linked article with the discussion in the
+notes; a favorited *comment* keeps the HN permalink. A starred gist's notes quote its
+description and list its files; `gists = false` on a `[[github]]` account stops syncing
+them. Dedup is by URL, so the same item saved under any subdomain (or already bookmarked
+from elsewhere) is left alone. `--limit N` is an optional per-run write cap, not
+correctness — Reddit also caps any listing at ~1000 items.
 
 Every source lists what you saved newest first, so by default (`limit = "auto"`) `sync`
 stops reading a source at the first page with nothing new to write. Once an account is
-caught up, a run reads one page per source (one each for HN stories and comments)
-instead of every page: Reddit and GitHub return 100 items a page, so an account with
-about 600 saves and 1,100 stars drops from 7 and 11 requests to 1 each. New items are
-written oldest first, so a run interrupted partway leaves the newest unwritten, and the
-next run reads down to the ones already written and writes the rest. This has three
-known limits:
+caught up, a run reads one page per source (one each for HN stories and comments, and
+for GitHub stars and gists) instead of every page: Reddit and GitHub return 100 items a
+page, so an account with about 600 saves and 1,100 stars drops from 7 and 11 requests to
+1 each. New items are written oldest first, so a run interrupted partway leaves the
+newest unwritten, and the next run reads down to the ones already written and writes the
+rest. This has four known limits:
 
 - An older saved item you deleted from Pinboard is not added back.
 - If a write fails and at least a page's worth of newer items in the same run succeed,
@@ -44,6 +46,8 @@ known limits:
 - A page whose items are all already on Pinboard stops the read, even when older items
   below it are missing. That happens on a first sync whose newest items you saved by hand
   or with another tool, or when such items shift above an unwritten one between runs.
+- GitHub doesn't document the order of starred gists, so the gists are assumed to list
+  newest first too. Under 100 starred gists fit on one page, where order doesn't matter.
 
 `sync <source> --limit all` reads every page once and writes whatever is missing.
 
@@ -81,7 +85,9 @@ Per source:
   about a year; when it expires the tool exits non-zero and runs the optional
   auth-failure hook so you can re-copy it.
 - **GitHub** needs a **personal access token** (`public_repo`/`read` scope is
-  plenty — it only reads `/user/starred`).
+  plenty — it only reads `/user/starred` and `/gists/starred`). The starred gists need
+  nothing more than the stars: GitHub's docs give `/gists/starred` no required
+  permission for a fine-grained token, and a classic token reads gists with no scope.
 - **HackerNews** needs only your **username**; favorites are public.
 
 ### Environment variables
@@ -151,7 +157,7 @@ pinboard-sync sync reddit --dry-run
 
 # Normalize existing bookmarks
 pinboard-sync cleanup reddit          # URLs → configured domain, tags, NSFW, titles
-pinboard-sync cleanup github          # canonicalize repo URLs + refresh renamed repos
+pinboard-sync cleanup github          # canonicalize repo + gist URLs, refresh renames
 pinboard-sync cleanup hackernews      # rewrite HN item URLs to the linked article
 
 # Validate the Pinboard token + every configured account's credentials
@@ -257,22 +263,36 @@ grows. Rare, but if you see a note accumulating `… [truncated]` markers, short
 
 - **GitHub** (`cleanup github`) — canonicalizes repo bookmark URLs to
   `https://github.com/<owner>/<repo>` (forcing https, lowercasing the host, dropping a
-  `.git` suffix, trailing slash, and any query/fragment); deeper links like
-  `/tree/...` or `/issues` are left alone. It then looks each repo up via the GitHub
-  API, which follows **renames and transfers**, and rewrites a moved repo's URL to its
-  current location. It refreshes only what `sync github` wrote. Notes are rebuilt from
-  the repo's description only when they are empty or in the shape sync writes; any
-  other notes are kept. The base tags and the `lang:` tag are refreshed only on
+  `.git` suffix, trailing slash, and any query/fragment); deeper links like `/tree/...`
+  or `/issues` are left alone. It then looks each repo up via the GitHub API, which
+  follows **renames and transfers**, and rewrites a moved repo's URL to its current
+  location. It refreshes only what `sync github` wrote. Notes are rebuilt from the
+  repo's description only when they are empty or in the shape sync writes; any other
+  notes are kept. The base tags, the `lang:` tag and the owner tag are refreshed only on
   bookmarks carrying the first non-empty entry of some `[[github]]` account's `tags`
   (`github-star` by default), with that account's tag settings (the running account's
   where two share a base tag), and their title only while it is still `owner/repo`.
   Under `use_post_date` they are re-dated to the star time only while both title and
-  notes are still the tool's, and only from the running account's stars. So a
-  repo saved by hand or bookmarked by `sync hackernews` keeps its title, tags and date.
-  A repo that no longer exists (404), is blocked (a DMCA 451 or a Terms of Service 403),
-  or sits behind organization SSO the token isn't authorized for keeps just the URL
+  notes are still the tool's, and only from the running account's stars. So a repo saved
+  by hand or bookmarked by `sync hackernews` keeps its title, tags and date. A repo that
+  no longer exists (404), is blocked (a DMCA 451 or a Terms of Service 403), or sits
+  behind organization SSO the token isn't authorized for keeps just the URL
   canonicalization, with a warning for the last two. Needs the GitHub token; without
   `use_post_date` the bookmark's creation time is preserved.
+
+  Gist bookmarks get the same treatment in a second pass, unless the running account
+  (the first `[[github]]` one under `cleanup --all`) has `gists = false`. It reads the
+  starred gists once and looks up only the ones not among them. Each is canonicalized to
+  `https://gist.github.com/<owner>/<id>`, folding in the owner-less form, and its notes
+  are rebuilt only when empty or in the shape sync writes. Its tags, and its title while
+  it is still one sync gave it, are refreshed only when it carries some account's
+  markers, with that account's settings. The markers are up to two tags: the first entry
+  of `gist_tags` and the first one `tags` lacks (`github-star` and `github-gist` by
+  default), so a gist you saved by hand and tagged `github-star` keeps its title and
+  tags. When every `gist_tags` entry is also in `tags`, the first entry alone is the
+  marker, and such a gist does count as synced. Under `use_post_date` a gist is re-dated
+  by `gist_post_date` only while both title and notes are still the tool's. A deleted
+  gist keeps its URL.
 
 - **HackerNews** (`cleanup hackernews`) — rewrites favorited *story* bookmarks whose URL
   is the HN item page (`news.ycombinator.com/item?id=…`) to the linked **article**,
@@ -295,6 +315,7 @@ already be truncated to fit its API's URL budget.
 <dir>/raw/pinboard.json                      # posts/all with meta=yes, every field
 <dir>/raw/reddit-main.json                   # every saved.json page envelope
 <dir>/raw/github-personal.json               # every /user/starred entry
+<dir>/raw/github-personal-gists.json         # every /gists/starred entry
 <dir>/raw/hackernews-me.json                 # every Algolia response
 <dir>/raw/hackernews-me-favorites.html       # the scraped favorites pages
 <dir>/normalized/<same stems>.json           # the same items as domain bookmarks
@@ -434,6 +455,9 @@ table accepts the same seven keys, all with the same meaning as their `[pinboard
 `toread`, `public`, `limit`, `on_auth_failure`, `use_post_date`,
 `post_date_max_age_days`, `cleanup_stale_to_now`
 
+`[defaults.github]` also takes `gist_post_date`, which an account's own overrides (see
+[dating](#per-source-defaults-and-dating-by-the-source-post-date)).
+
 #### Account tables
 
 `[[reddit]]`, `[[github]]` and `[[hackernews]]` are arrays — repeat the table for
@@ -448,6 +472,8 @@ multiple accounts of one source. All three accept the per-account override keys
 | `cookie` / `cookie_file` | reddit | string / path | — | `reddit_session` cookie, bare or as `reddit_session=…`, or a file holding it. |
 | `token` / `token_file` | github | string / path | — | Personal access token, or a file holding it. |
 | `on_auth_failure` | reddit, github | string | — | Per-account override of `[hooks].on_auth_failure`. |
+| `gists` | github | bool | `true` | Also sync the account's starred gists. |
+| `gist_post_date` | github | `"now"`, `"created"` or `"updated"` | `"now"` | Which of a gist's dates is its post date. |
 
 ##### Tag keys (config-only — there are no tag CLI flags)
 
@@ -472,6 +498,10 @@ or a comma is rejected at parse time; values interpolated into a prefix are slug
 | `tag_media_types` | reddit | `["image", "video"]` | Which media types get a `type:` tag; `[]` disables. |
 | `tags` | github | `["github-star"]` | On every bookmark. |
 | `tag_lang_prefix` | github | `"lang:"` | `lang:<language>` |
+| `tag_author_prefix` | github | `"author:github:"` | `author:github:<owner>` |
+| `gist_tags` | github | `tags` plus `"github-gist"` | On every gist. |
+| `gist_tag_lang_prefix` | github | `tag_lang_prefix` | `lang:<language>`, one per distinct file language. |
+| `gist_tag_author_prefix` | github | `tag_author_prefix` | `author:github:<owner>` |
 | `tags` | hackernews | `["hackernews"]` | On every bookmark. |
 | `tag_comment` | hackernews | `"hackernews-comment"` | On favorited comments. |
 | `tag_author_prefix` | hackernews | `"author:hackernews:"` | `author:hackernews:<name>` |
@@ -511,9 +541,11 @@ With `use_post_date`, a bookmark's creation date (Pinboard's `dt`) is set to the
 **source post date** rather than the time of the sync. The exact logic:
 
 - **Where the date comes from.** Reddit uses the post's `created_utc`, HackerNews the
-  item's `created_at`, and GitHub the time you *starred* the repo (`starred_at`).
-  `cleanup reddit` reads the date from `/api/info`, so it needs the `reddit_session`
-  cookie when `use_post_date` is on; `cleanup github` reads the star list to map it.
+  item's `created_at`, and GitHub the time you *starred* the repo (`starred_at`). GitHub
+  gives no star time for a gist, so `gist_post_date` picks one: `now` (the default, no
+  post date), the gist's `created` or its `updated` time. `cleanup reddit` reads the
+  date from `/api/info`, so it needs the `reddit_session` cookie when `use_post_date` is
+  on; `cleanup github` reads the star list to map it.
 - **The age cap.** `post_date_max_age_days` (default 30) bounds how far back a bookmark
   is dated. A post **within** the cap is dated to its source time. A post **older** than
   the cap is treated differently by the two commands:
@@ -686,8 +718,7 @@ Planned but not yet implemented:
   ships.
 - **Prune / reconcile mode.** Optionally remove Pinboard bookmarks a source no longer
   has (opt-in, dry-run-first) — sync is additive-only today.
-- **More sources.** Generic RSS/Atom, Mastodon bookmarks, Lobsters; and extending the
-  existing ones (GitHub gists).
+- **More sources.** Generic RSS/Atom, Mastodon bookmarks, Lobsters.
 - **Machine-readable output and a post-run hook.** A `--format json` run summary, and
   a general post-run hook (not just the auth-failure one).
 

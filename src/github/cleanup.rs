@@ -1,7 +1,8 @@
 //! `cleanup github`: canonicalize GitHub repo-root bookmarks and refresh each one from the
-//! API (which follows renames and transfers), rewriting a moved repo's URL. Only what the
-//! tool wrote is refreshed: notes in the shape `sync github` writes, and the title and tags
-//! of bookmarks carrying any configured account's base tag.
+//! API (which follows renames and transfers), rewriting a moved repo's URL, then do the
+//! same for gist bookmarks ([`gists`]). Only what the tool wrote is refreshed: notes in the
+//! shape `sync github` writes, and the title and tags of bookmarks carrying any configured
+//! account's base tag (a gist's marker tag, for a gist).
 
 use std::collections::HashMap;
 
@@ -10,27 +11,30 @@ use time::OffsetDateTime;
 use url::Url;
 
 use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo};
+use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::config::own_then_configured;
 use crate::htmltext::{collapse_whitespace, html_to_plain};
 use crate::keys::url_key;
-use crate::source::{Source, SourceError};
-use crate::tags::{extend_unique, prefixed, push_unique};
+use crate::source::SourceError;
+use crate::tags::{prefixed, push_unique};
 use crate::timefmt::DateOpts;
 use crate::urls::UrlExt;
 
-/// Normalize existing GitHub repo bookmarks. Only genuine repo-root URLs on the bare
-/// `github.com` host (`owner/repo`) are touched; deep links (issues/PRs/blob/tree) and
-/// gist or other subdomains are left alone. For each repo root, look it up via the API
-/// (which follows renames/transfers) and rewrite a moved repo's URL to the current one.
-/// Notes are rebuilt only when the tool wrote them ([`note_is_tool_generated`]); the base
-/// and `lang:` tags only on a bookmark `sync github` wrote ([`is_synced_star`]), its title
-/// only while it is still `owner/repo`, and (under `use_post_date`) its star date only
-/// while its notes are the tool's too. Any other bookmark of a repo -- an HN story linking
-/// it, one saved by hand -- keeps its title, notes, tags and date. A URL change updates
-/// and deletes the old, preserving the creation time. A repo that no longer exists (404)
-/// keeps just the URL canonicalization.
+mod gists;
+
+/// Normalize existing GitHub repo bookmarks, then gist bookmarks, each pass reaching its
+/// own verdict. Only genuine repo-root URLs on the bare `github.com` host (`owner/repo`)
+/// are repos; deep links (issues/PRs/blob/tree) and other subdomains are left to the gist
+/// pass or alone. For each repo root, look it up via the API (which follows
+/// renames/transfers) and rewrite a moved repo's URL to the current one. Notes are rebuilt
+/// only when the tool wrote them ([`note_is_tool_generated`]); the base, `lang:` and owner
+/// tags only on a bookmark `sync github` wrote ([`is_synced_star`]), its title only while
+/// it is still `owner/repo`, and (under `use_post_date`) its star date only while its notes
+/// are the tool's too. Any other bookmark of a repo -- an HN story linking it, one saved by
+/// hand -- keeps its title, notes, tags and date. A URL change updates and deletes the old,
+/// preserving the creation time. A repo that is gone (404) keeps only its canonical URL.
 ///
 /// `configured` holds the tag config of every configured GitHub account. A star carrying
 /// any of their base tags counts as synced, and its tags are refreshed by the config of
@@ -54,7 +58,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
     // (it keeps its existing time).
     let star_dates: HashMap<String, OffsetDateTime> = if dates.use_post_date {
         client
-            .fetch()
+            .fetch_stars(None, &mut RawSink::disabled())
             .await?
             .into_iter()
             .filter_map(|d| Some((url_key(&d.bookmark.url)?, d.bookmark.timestamp?)))
@@ -68,9 +72,40 @@ pub async fn run<S: BookmarkStore + AccountState>(
         star_dates,
         star_configs: star_configs(&client.config, configured),
     };
-    run_pass(store, &gh_bms, "github", dates, &pass)
+    let repos = run_pass(store, &gh_bms, "github", dates, &pass)
         .await
-        .into_result()
+        .into_result();
+    // A halt (dead token, spent quota, edge block) would fail every gist lookup too.
+    if let Err(
+        halt @ (SourceError::ReauthRequired(_)
+        | SourceError::RateLimited(_)
+        | SourceError::Blocked(_)),
+    ) = repos
+    {
+        return Err(halt);
+    }
+    // Each pass reaches its own verdict, so a pass of repo lookups can't vouch for the
+    // gist lookups or the reverse.
+    let gists = gists::run(store, client, dates, configured).await;
+    match (repos, gists) {
+        (Err(repos), Err(gists)) => Err(also_failed(gists, &repos)),
+        (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+/// The gist pass's `error`, noting that the repo pass failed too, as `repos`. Keeps the
+/// gist error's variant, which is what decides the auth-failure hook.
+fn also_failed(error: SourceError, repos: &SourceError) -> SourceError {
+    let note = |message: String| format!("{message}; and for repos: {repos:#}");
+    match error {
+        SourceError::ReauthRequired(message) => SourceError::ReauthRequired(note(message)),
+        SourceError::RateLimited(message) => SourceError::RateLimited(note(message)),
+        SourceError::Blocked(message) => SourceError::Blocked(note(message)),
+        SourceError::Other(error) => {
+            SourceError::Other(anyhow::anyhow!(note(format!("{error:#}"))))
+        }
+    }
 }
 
 /// `own` followed by each of `configured` with a base tag no earlier config has, so every
@@ -281,33 +316,46 @@ fn links_to_repo(text: &str, names: &[(String, String)]) -> bool {
         .is_some_and(|(owner, name)| is_one_of(&owner, &name, names))
 }
 
-/// Refresh the language tags from the current repo under each of `configs`, keeping other
-/// existing tags and ensuring the base tags: drop every old tag under any of their
-/// `lang_prefix`es, then re-add each config's base tags and current `lang:` tag. Dropping
-/// all before adding any keeps the result the same whatever order `configs` come in, even
-/// when one prefix starts another (`lang:` and `lang:work:`).
+/// Refresh the language and owner tags from the current repo under each of `configs`,
+/// keeping other existing tags and ensuring the base tags: drop every old tag under any of
+/// their `lang_prefix`es and `author_prefix`es, then re-add each config's base tags,
+/// current `lang:` tag and owner tag. Dropping all before adding any makes the order of
+/// `configs` irrelevant, even when one prefix starts another (`lang:`, `lang:work:`).
 fn refresh_tags(
     existing: Vec<String>,
     repo: &GitHubRepo,
     configs: &[&GitHubConfig],
 ) -> Vec<String> {
-    let under_a_lang_prefix = |tag: &str| {
-        configs
-            .iter()
-            .any(|cfg| !cfg.lang_prefix.is_empty() && tag.starts_with(&cfg.lang_prefix))
-    };
-    let mut tags: Vec<String> = existing
-        .into_iter()
-        .filter(|tag| !under_a_lang_prefix(tag))
+    let prefixes: Vec<&str> = configs
+        .iter()
+        .flat_map(|cfg| [cfg.lang_prefix.as_str(), cfg.author_prefix.as_str()])
         .collect();
     let lang = repo.language.as_deref().filter(|lang| !lang.is_empty());
-    for cfg in configs {
-        extend_unique(&mut tags, &cfg.tags);
-        if let Some(lang_tag) =
-            lang.and_then(|lang| prefixed(&cfg.lang_prefix, &lang.to_lowercase()))
-        {
-            push_unique(&mut tags, &lang_tag);
-        }
+    let additions = configs.iter().flat_map(|cfg| {
+        let lang_tag = lang.and_then(|lang| prefixed(&cfg.lang_prefix, &lang.to_lowercase()));
+        let owner_tag = prefixed(&cfg.author_prefix, repo.owner());
+        cfg.tags.iter().cloned().chain(lang_tag).chain(owner_tag)
+    });
+    retag(existing, &prefixes, additions)
+}
+
+/// `existing` without any tag under one of `prefixes` (an empty prefix marks none), then
+/// each of `additions` it doesn't already hold, skipping empty ones.
+fn retag(
+    existing: Vec<String>,
+    prefixes: &[&str],
+    additions: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut tags: Vec<String> = existing
+        .into_iter()
+        .filter(|tag| {
+            !prefixes
+                .iter()
+                .any(|prefix| !prefix.is_empty() && tag.starts_with(prefix))
+        })
+        .collect();
+    for tag in additions {
+        push_unique(&mut tags, &tag);
     }
     tags
 }
@@ -484,24 +532,39 @@ mod tests {
 
     #[test]
     fn refreshed_tags_are_the_same_whichever_account_runs() {
-        let cfg = |base: &str, lang_prefix: &str| GitHubConfig {
+        let cfg = |base: &str, lang_prefix: &str, author_prefix: &str| GitHubConfig {
             tags: vec![base.into()],
             lang_prefix: lang_prefix.into(),
+            author_prefix: author_prefix.into(),
+            ..GitHubConfig::default()
         };
-        let (home, work) = (cfg("github-star", "lang:"), cfg("work-star", "lang:work:"));
+        let (home, work) = (
+            cfg("github-star", "lang:", "author:github:"),
+            cfg("work-star", "lang:work:", "author:github:work:"),
+        );
         let rust = GitHubRepo {
             language: Some("Rust".into()),
             ..repo(None)
         };
-        let existing: Vec<String> = ["github-star", "work-star", "lang:go", "lang:work:go", "x"]
-            .map(String::from)
-            .to_vec();
+        let existing: Vec<String> = [
+            "github-star",
+            "work-star",
+            "lang:go",
+            "lang:work:go",
+            "author:github:old",
+            "author:github:work:old",
+            "x",
+        ]
+        .map(String::from)
+        .to_vec();
         let refreshed = |configs: &[&GitHubConfig]| {
             let mut tags = refresh_tags(existing.clone(), &rust, configs);
             tags.sort();
             tags
         };
         let expected = [
+            "author:github:new",
+            "author:github:work:new",
             "github-star",
             "lang:rust",
             "lang:work:rust",
@@ -517,6 +580,7 @@ mod tests {
         let cfg = |tags: &[&str], lang_prefix: &str| GitHubConfig {
             tags: tags.iter().map(|tag| tag.to_string()).collect(),
             lang_prefix: lang_prefix.into(),
+            ..GitHubConfig::default()
         };
         let own = cfg(&["github-star"], "own:");
         let configs = star_configs(

@@ -50,6 +50,7 @@ cleanup_stale_to_now = false             # on cleanup, re-date too-old posts to 
 # use_post_date = true
 [defaults.github]
 # use_post_date = true
+# gist_post_date = "now"                 # a gist's post date: "now", "created" or "updated"
 [defaults.hackernews]
 # use_post_date = true
 
@@ -96,6 +97,14 @@ name = "personal"                        # selector; GitHub has no username to d
 # cleanup_stale_to_now = true            # override cleanup_stale_to_now for this account
 tags = ["github-star"]                   # applied to every bookmark (default ["github-star"])
 tag_lang_prefix = "lang:"                # lang:<language>
+tag_author_prefix = "author:github:"     # author:github:<owner>
+# Starred gists, synced by `sync github` with the stars. Each gist_* tag key defaults
+# to its star counterpart; gist_tags defaults to `tags` plus "github-gist".
+# gists = true                           # false: don't read the starred gists
+# gist_tags = ["github-star", "github-gist"]
+# gist_tag_lang_prefix = "lang:"         # lang:<language>, one per distinct file language
+# gist_tag_author_prefix = "author:github:"
+# gist_post_date = "now"                 # override [defaults.github].gist_post_date
 
 # A HackerNews account (public favorites by username). Repeat [[hackernews]] for
 # multiple accounts; select one with `sync hackernews <name>`, or run them all with

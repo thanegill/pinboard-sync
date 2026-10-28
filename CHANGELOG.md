@@ -46,6 +46,8 @@ All notable changes to this project are documented here. The format is based on
   instead of `error: ...` and bare text.
 - `sync <source> --all` with no account of that source names the source, as `backup
   <source> --all` already did.
+- `sync --help` describes `--on-auth-failure` in one line, naming
+  `PINBOARD_SYNC_ON_AUTH_FAILURE`, instead of printing notes about the code.
 
 ### Deprecated
 

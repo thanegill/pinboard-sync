@@ -12,9 +12,10 @@ use crate::source::{Halt, SourceError};
 
 /// `PINBOARD_SYNC_ON_AUTH_FAILURE`, for every run with no per-source `--on-auth-failure`
 /// flag to carry it: `sync --all`, `backup --all` and `cleanup`. clap binds the variable to
-/// the per-source flags only, so an explicit flag outranks it; these runs read it here. The
-/// NixOS module sets the hook only through this variable, so without it the service's runs
-/// would never fire it.
+/// the per-source flags only, so an explicit flag outranks it, and `sync`'s top-level flag,
+/// which `with_top_level_hook` prefers when given, outranks both; these runs read it here.
+/// The NixOS module sets the hook only through this variable, so without it the service's
+/// runs would never fire it.
 pub fn on_auth_failure_from_env() -> Option<String> {
     crate::secrets::env_var("PINBOARD_SYNC_ON_AUTH_FAILURE").filter(|v| !v.is_empty())
 }

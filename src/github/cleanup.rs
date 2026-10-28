@@ -607,24 +607,32 @@ mod tests {
     }
 
     /// A repo-root URL in any of the forms `cleanup github` canonicalizes: either host,
-    /// either scheme, any case, with or without `.git`, a trailing slash, a query or a
-    /// fragment. The name itself never ends in `.git`: `repo_root` strips one `.git` and
-    /// `GitHubKeys` one more, so `<name>.git.git` and `.git` key differently afterwards.
+    /// either scheme, any case, doubled slashes, with or without `.git` in either case, a
+    /// trailing slash, a query or a fragment. The name may end in `.git`s too, as long as
+    /// stripping them leaves a name, and not `.` or `..`.
     fn stored_repo_root() -> impl Strategy<Value = String> {
         (
             prop::sample::select(vec!["http", "https"]),
             prop::sample::select(vec!["github.com", "www.github.com", "GitHub.com"]),
+            prop::sample::select(vec!["/", "//"]),
             "[A-Za-z0-9]([A-Za-z0-9-]{0,10}[A-Za-z0-9])?",
-            "[A-Za-z0-9._-]{1,20}".prop_filter("a repo name", |name| {
-                !matches!(name.as_str(), "." | "..") && !name.ends_with(".git")
+            prop::sample::select(vec!["/", "//"]),
+            "([A-Za-z0-9._-]{1,12})(\\.[gG][iI][tT]){0,2}".prop_filter("a repo name", |name| {
+                let mut bare = name.to_ascii_lowercase();
+                while bare.ends_with(".git") {
+                    bare.truncate(bare.len() - ".git".len());
+                }
+                !matches!(bare.as_str(), "" | "." | "..")
             }),
-            prop::sample::select(vec!["", ".git"]),
-            prop::sample::select(vec!["", "/"]),
+            prop::sample::select(vec!["", ".git", ".GIT"]),
+            prop::sample::select(vec!["", "/", "//"]),
             prop::sample::select(vec!["", "?tab=readme-ov-file", "#readme"]),
         )
-            .prop_map(|(scheme, host, owner, name, suffix, slash, tail)| {
-                format!("{scheme}://{host}/{owner}/{name}{suffix}{slash}{tail}")
-            })
+            .prop_map(
+                |(scheme, host, lead, owner, separator, name, suffix, slash, tail)| {
+                    format!("{scheme}://{host}{lead}{owner}{separator}{name}{suffix}{slash}{tail}")
+                },
+            )
     }
 
     proptest! {
@@ -635,6 +643,8 @@ mod tests {
             let stored = url(&stored);
             let root = repo_root(&stored).expect("a repo root");
             let canonical = root.canonical_url().expect("a canonical URL");
+            let rerun = repo_root(&canonical);
+            prop_assert_eq!(rerun.as_ref(), Some(&root), "{}", canonical);
             prop_assert!(GitHubKeys.dedup_key(&stored).is_some(), "{} has no key", stored);
             prop_assert_eq!(
                 GitHubKeys.dedup_key(&canonical),

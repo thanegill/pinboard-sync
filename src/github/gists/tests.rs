@@ -122,8 +122,8 @@ fn the_gist_post_date_picks_created_or_updated() {
 #[test]
 fn gist_tags_follow_their_own_config_and_an_empty_prefix_disables_one() {
     let cfg = GistConfig {
-        tags: vec!["gist".into(), "".into()],
-        lang_prefix: "".into(),
+        tags: vec!["gist".into(), String::new()],
+        lang_prefix: String::new(),
         author_prefix: "by:".into(),
         ..default_config()
     };
@@ -133,7 +133,7 @@ fn gist_tags_follow_their_own_config_and_an_empty_prefix_disables_one() {
 
 #[test]
 fn gist_config_inherits_the_stars_tags_with_github_gist_added() {
-    let tags = |list: &[&str]| list.iter().map(|tag| tag.to_string()).collect::<Vec<_>>();
+    let tags = crate::test_support::strings;
     let inherited = GistConfig::inheriting(&tags(&["star", "extra"]), "l:", "a:");
     assert_eq!(inherited.tags, tags(&["star", "extra", "github-gist"]));
     assert_eq!(inherited.lang_prefix, "l:");

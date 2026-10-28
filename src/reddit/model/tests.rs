@@ -95,7 +95,7 @@ fn every_non_empty_base_tag_is_added() {
         ),
     ] {
         let cfg = RedditConfig {
-            tags: tags.iter().map(|t| t.to_string()).collect(),
+            tags: crate::test_support::strings(&tags),
             ..RedditConfig::default()
         };
         assert_eq!(it.tags(&cfg), want, "tags = {tags:?}");

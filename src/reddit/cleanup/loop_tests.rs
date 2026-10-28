@@ -1039,7 +1039,7 @@ async fn logs_and_skips_a_failing_update_then_continues() {
 #[tokio::test]
 async fn plans_the_tags_sync_writes_for_each_tag_config() {
     let with_tags = |tags: &[&str]| RedditConfig {
-        tags: tags.iter().map(|t| t.to_string()).collect(),
+        tags: crate::test_support::strings(tags),
         ..RedditConfig::default()
     };
     let configs = [

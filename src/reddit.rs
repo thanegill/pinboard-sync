@@ -22,7 +22,7 @@ use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::config::own_then_configured;
 use crate::http::{client_builder, RetryingClient, USER_AGENT};
-use crate::keys::reddit_key;
+use crate::keys::RedditKeys;
 use crate::reddit::cookie::{refused_cookie_advice, SessionCookie};
 use crate::reddit::model::{RedditConfig, RedditListing, RedditListingEntry};
 use crate::secrets::ConfiguredSecret;
@@ -350,8 +350,19 @@ impl UrlKey for RedditClient {
     /// Reddit's dedup key is the host-agnostic permalink path, so the same post matches
     /// across `old.`/`www.`/`m.` subdomains and every configured `reddit_domain`.
     fn dedup_key(&self, url: &Url) -> Option<String> {
-        own_then_configured(&self.config.domain, &self.reddit_domains)
-            .find_map(|domain| reddit_key(url, domain))
+        self.keys().dedup_key(url)
+    }
+
+    fn synced_keys(&self, existing: &[Bookmark]) -> HashSet<String> {
+        self.keys().synced_keys(existing)
+    }
+}
+
+impl RedditClient {
+    /// Built per use from `config.domain`, the one place the account's own domain lives.
+    fn keys(&self) -> RedditKeys {
+        let domains = own_then_configured(&self.config.domain, &self.reddit_domains);
+        RedditKeys::new(domains)
     }
 }
 

@@ -143,14 +143,14 @@ doesn't parse is skipped with a warning rather than aborting the run (`all()` an
 plus its `dedup_key`), and the `UrlKey::dedup_key()` supertrait method maps an existing
 Pinboard URL to that source's key, so `sync::prepare_new_drafts` keeps the drafts not
 already synced. **A key must survive cleanup's canonicalization**, or sync re-adds what
-cleanup moved: HN keys a Reddit or GitHub article with `reddit_key` / `github_key`
-([`src/keys.rs`](src/keys.rs)), so a change to either, or to what `cleanup reddit` /
-`cleanup github` rewrite a URL to, has to keep HN converging. To add a source, implement
-`Source`, add its account array to `config.rs`, and implement [`src/jobs.rs`](src/jobs.rs)'s
-`SourceAccount`, the one trait `sync`, `backup` and `doctor` reach every source through.
-Loops are unit-tested against in-memory fakes
-([`src/test_support.rs`](src/test_support.rs)), real clients by `net_tests` against a
-wiremock server via test-only `with_base_url(s)` constructors.
+cleanup moved: each source keys through a `UrlKey` type in [`src/keys.rs`](src/keys.rs), and
+`HackerNewsKeys` keys a Reddit or GitHub article through `RedditKeys` / `GitHubKeys`, so a
+change to either, or to what `cleanup reddit` / `cleanup github` rewrite a URL to, has to
+keep HN converging. To add a source, implement `Source`, add its account array to
+`config.rs`, and implement [`src/jobs.rs`](src/jobs.rs)'s `SourceAccount`, the one trait
+`sync`, `backup` and `doctor` reach every source through. Loops are unit-tested against
+in-memory fakes ([`src/test_support.rs`](src/test_support.rs)), real clients by `net_tests`
+against a wiremock server via test-only `with_base_url(s)` constructors.
 
 **`sync` reads incrementally by default.** `SyncJob::fetch` picks the traversal from the
 job's `config::SyncLimit`: `auto` calls `Source::fetch_incremental(existing)`, which every
@@ -201,7 +201,7 @@ keep them in sync with rule changes. Pinboard tags can't contain whitespace or c
 rejects both in config-supplied tags/prefixes.
 
 **Every configured `reddit_domain` counts as Reddit.** An account's domain is its URL host
-for both sync `bookmark_url` and cleanup's `normalize_url`; `reddit_key` stays host-agnostic
+for both sync `bookmark_url` and cleanup's `normalize_url`; `RedditKeys` stays host-agnostic
 so dedup matches across subdomains, and takes the domain too, so a mirror outside reddit.com
 still keys. Each Reddit client, and HackerNews keying an article on Reddit, match every
 configured account's domain (`Config::reddit_domains`, which is why `SourceAccount::client`

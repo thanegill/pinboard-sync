@@ -459,7 +459,7 @@ fn check_unique_names<T: Named>(source: &str, accounts: &[T]) -> Result<()> {
 }
 
 /// Error if `value` isn't a bare host written as the `url` crate spells it: it's
-/// interpolated as `https://<domain>…` and set as `cleanup reddit`'s host, and `reddit_key`
+/// interpolated as `https://<domain>…` and set as `cleanup reddit`'s host, and `RedditKeys`
 /// compares it to a parsed URL's host, so a scheme, slash, whitespace, port, or any form
 /// the parser rewrites (percent-escapes, non-ASCII) would corrupt the URLs or never match.
 /// A trailing `.` would be set as the host, which `cleanup reddit`'s reddit.com filter

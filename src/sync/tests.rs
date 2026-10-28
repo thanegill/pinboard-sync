@@ -120,7 +120,7 @@ async fn filter_new_skips_present_then_write_adds_the_rest() {
         ],
         ..Default::default()
     };
-    // Post a is already on Pinboard (any reddit host/case matches via reddit_key).
+    // Post a is already on Pinboard (any reddit host/case matches via RedditKeys).
     let existing = vec![bookmark("https://www.reddit.com/r/Rust/comments/a/x/")];
 
     let drafts = reddit.fetch().await.unwrap();

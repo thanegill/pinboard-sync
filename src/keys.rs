@@ -1,11 +1,14 @@
 //! The dedup keys: how each source keys a URL, so `sync` can tell a draft from a bookmark
-//! already on Pinboard. A key must survive `cleanup`'s canonicalization, or `sync`
+//! already on Pinboard. Each source's scheme is a [`UrlKey`] type carrying only what it
+//! needs ([`GitHubKeys`], [`RedditKeys`], [`HackerNewsKeys`]), built on the generic
+//! host+path [`url_key`]. A key must survive `cleanup`'s canonicalization, or `sync`
 //! re-adds what `cleanup` moved.
 
 use url::Url;
 
 use crate::hackernews::HackerNewsItemId;
 use crate::reddit::model::over18_dest;
+use crate::source::UrlKey;
 use crate::urls::{host_matches, UrlExt};
 
 /// A host+path dedup key for a URL: scheme and query/fragment dropped, host lowercased
@@ -25,72 +28,109 @@ pub fn url_key(url: &Url) -> Option<String> {
     Some(key)
 }
 
-/// The GitHub dedup key: [`url_key`], gated to github.com hosts, with the `www.` alias
-/// folded onto the bare host and a repo root's `.git` suffix dropped. Those are the forms
+/// GitHub's key: [`url_key`], gated to github.com hosts, with the `www.` alias folded onto
+/// the bare host and a repo root's `.git` suffix dropped. Those are the forms
 /// `cleanup github` canonicalizes to `github.com/owner/repo`, so a bookmark keys the same
 /// before and after it does. Other subdomains (`gist.`) keep their own host.
-pub fn github_key(url: &Url) -> Option<String> {
-    let key = url_key(url).filter(|_| url.host_is("github.com"))?;
-    let key = match key.strip_prefix("www.") {
-        Some(bare) => bare.to_string(),
-        None => key,
-    };
-    let is_repo_root = key
-        .strip_prefix("github.com/")
-        .is_some_and(|path| path.split('/').count() == 2);
-    Some(match key.strip_suffix(".git") {
-        Some(root) if is_repo_root => root.to_string(),
-        _ => key,
-    })
-}
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GitHubKeys;
 
-/// Build a dedup key from a full Reddit URL: the path, lowercased, with query/fragment
-/// and trailing slash removed. Returns `None` for non-Reddit URLs. Only the path is
-/// used, so the same post saved under any reddit host (`old.`/`www.`/`m.`) maps to the
-/// same key. `domain` is the account's `reddit_domain`, a Reddit host even outside
-/// reddit.com (a mirror), since that is where sync writes the account's bookmarks.
-pub fn reddit_key(url: &Url, domain: &str) -> Option<String> {
-    if !is_reddit_host(url, domain) {
-        return None;
+impl UrlKey for GitHubKeys {
+    fn dedup_key(&self, url: &Url) -> Option<String> {
+        let key = url_key(url).filter(|_| url.host_is("github.com"))?;
+        let key = match key.strip_prefix("www.") {
+            Some(bare) => bare.to_string(),
+            None => key,
+        };
+        let is_repo_root = key
+            .strip_prefix("github.com/")
+            .is_some_and(|path| path.split('/').count() == 2);
+        Some(match key.strip_suffix(".git") {
+            Some(root) if is_repo_root => root.to_string(),
+            _ => key,
+        })
     }
-    let key = url.path().trim_end_matches('/').to_ascii_lowercase();
-    (!key.is_empty()).then_some(key)
 }
 
-/// Whether `url` is on a Reddit host: reddit.com, a subdomain of it, or `domain`, the
-/// account's `reddit_domain`.
-fn is_reddit_host(url: &Url, domain: &str) -> bool {
-    url.host_str()
-        .is_some_and(|host| host_matches(host, "reddit.com") || host.eq_ignore_ascii_case(domain))
+/// Reddit's key: the path, lowercased, with query/fragment and trailing slash removed, or
+/// `None` off Reddit and for the bare root. Only the path is used, so the same post saved
+/// under any Reddit host (`old.`/`www.`/`m.`) maps to the same key. A Reddit host is
+/// reddit.com, a subdomain of it, or one of `domains`, the `reddit_domain`s of the
+/// accounts in play: a mirror outside reddit.com counts too, since that is where sync
+/// writes its account's bookmarks.
+#[derive(Debug, Clone, Default)]
+pub struct RedditKeys {
+    domains: Vec<String>,
 }
 
-/// The key a draft and a stored bookmark at `url` share. An HN item permalink keys on its
-/// id (`hn:<id>`), even as a story's article URL (a meta post), since a host+path key
-/// drops the id query. An article on Reddit (a reddit.com host, or one of
-/// `reddit_domains`, the configured accounts' `reddit_domain`s) or GitHub keys as that
-/// source does, so it still matches once `cleanup reddit` or `cleanup github` has moved it
-/// to its canonical URL. Any other article falls back to the host+path key.
+impl RedditKeys {
+    pub fn new<D: Into<String>>(domains: impl IntoIterator<Item = D>) -> Self {
+        Self {
+            domains: domains.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    fn is_reddit_host(&self, url: &Url) -> bool {
+        url.host_str().is_some_and(|host| {
+            host_matches(host, "reddit.com")
+                || self
+                    .domains
+                    .iter()
+                    .any(|domain| host.eq_ignore_ascii_case(domain))
+        })
+    }
+}
+
+impl UrlKey for RedditKeys {
+    fn dedup_key(&self, url: &Url) -> Option<String> {
+        if !self.is_reddit_host(url) {
+            return None;
+        }
+        let key = url.path().trim_end_matches('/').to_ascii_lowercase();
+        (!key.is_empty()).then_some(key)
+    }
+}
+
+/// HackerNews' key, shared by a draft and a stored bookmark at the same URL. An HN item
+/// permalink keys on its id (`hn:<id>`), even as a story's article URL (a meta post),
+/// since a host+path key drops the id query. An article on Reddit or GitHub keys as that
+/// source's scheme does, so it still matches once `cleanup reddit` or `cleanup github` has
+/// moved it to its canonical URL. Any other article falls back to the host+path key.
 ///
 /// Reddit's `over18` interstitial keys as its `dest`, which `cleanup reddit` unwraps it
-/// to, and the bare Reddit root, which `reddit_key` leaves unkeyed, keys as `/`, the path
-/// cleanup keeps when it moves it onto the account's domain.
-pub fn hackernews_key(url: &Url, reddit_domains: &[String]) -> Option<String> {
-    if let Some(dest) = over18_dest(url) {
-        return hackernews_key(&dest, reddit_domains);
+/// to, and the bare Reddit root, which [`RedditKeys`] leaves unkeyed, keys as `/`, the
+/// path cleanup keeps when it moves it onto the account's domain.
+#[derive(Debug, Clone, Default)]
+pub struct HackerNewsKeys {
+    reddit: RedditKeys,
+    github: GitHubKeys,
+}
+
+impl HackerNewsKeys {
+    /// Keys an article on Reddit by `reddit`, whose domains are the configured Reddit
+    /// accounts' `reddit_domain`s.
+    pub fn new(reddit: RedditKeys) -> Self {
+        Self {
+            reddit,
+            github: GitHubKeys,
+        }
     }
-    HackerNewsItemId::try_from(url)
-        .ok()
-        .map(|id| id.dedup_key())
-        .or_else(|| {
-            let domain = reddit_domains
-                .iter()
-                .map(String::as_str)
-                .chain(["reddit.com"])
-                .find(|domain| is_reddit_host(url, domain))?;
-            Some(reddit_key(url, domain).unwrap_or_else(|| "/".to_string()))
-        })
-        .or_else(|| github_key(url))
-        .or_else(|| url_key(url))
+}
+
+impl UrlKey for HackerNewsKeys {
+    fn dedup_key(&self, url: &Url) -> Option<String> {
+        if let Some(dest) = over18_dest(url) {
+            return self.dedup_key(&dest);
+        }
+        if let Ok(id) = HackerNewsItemId::try_from(url) {
+            return Some(id.dedup_key());
+        }
+        if self.reddit.is_reddit_host(url) {
+            let key = self.reddit.dedup_key(url);
+            return Some(key.unwrap_or_else(|| "/".to_string()));
+        }
+        self.github.dedup_key(url).or_else(|| url_key(url))
+    }
 }
 
 #[cfg(test)]
@@ -125,8 +165,8 @@ mod tests {
     }
 
     #[test]
-    fn github_key_folds_the_forms_cleanup_canonicalizes() {
-        let key = |s: &str| github_key(&url(s));
+    fn github_keys_fold_the_forms_cleanup_canonicalizes() {
+        let key = |s: &str| GitHubKeys.dedup_key(&url(s));
         for alias in [
             "https://github.com/Owner/Repo",
             "https://www.github.com/Owner/Repo",
@@ -151,13 +191,13 @@ mod tests {
         assert_eq!(key("https://example.com/o/r"), None);
     }
 
-    fn key(url: &str) -> Option<String> {
-        reddit_key(&Url::parse(url).unwrap(), "old.reddit.com")
+    fn key(raw: &str) -> Option<String> {
+        RedditKeys::new(["old.reddit.com"]).dedup_key(&url(raw))
     }
 
     #[test]
-    fn reddit_key_treats_the_configured_domain_as_reddit() {
-        let mirror = |url: &str| reddit_key(&Url::parse(url).unwrap(), "redlib.example.org");
+    fn reddit_keys_treat_the_configured_domain_as_reddit() {
+        let mirror = |raw: &str| RedditKeys::new(["redlib.example.org"]).dedup_key(&url(raw));
         let want = Some("/r/rust/comments/abc/title".to_string());
         assert_eq!(
             mirror("https://redlib.example.org/r/rust/comments/abc/title/"),
@@ -169,10 +209,9 @@ mod tests {
         );
         // The URL's host comes back lowercased, whatever case the config spells it in.
         assert_eq!(
-            reddit_key(
-                &Url::parse("https://Redlib.Example.org/r/rust/comments/abc/title/").unwrap(),
-                "Redlib.Example.org"
-            ),
+            RedditKeys::new(["Redlib.Example.org"]).dedup_key(&url(
+                "https://Redlib.Example.org/r/rust/comments/abc/title/"
+            )),
             want
         );
         // Only the configured host itself, not its parent or a sibling.
@@ -187,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn reddit_key_matches_across_subdomains_and_query_and_trailing_slash() {
+    fn reddit_keys_match_across_subdomains_and_query_and_trailing_slash() {
         let want = "/r/rust/comments/abc/title";
         // The same post bookmarked under any host / case / query / no trailing slash.
         for url in [
@@ -201,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn reddit_key_rejects_non_reddit_and_empty() {
+    fn reddit_keys_reject_non_reddit_and_empty() {
         assert_eq!(key("https://example.com/r/rust/comments/abc/"), None);
         // "reddit.com" only in the path of another host must not match.
         assert_eq!(key("https://example.com/reddit.com/x"), None);

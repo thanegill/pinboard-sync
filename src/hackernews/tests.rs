@@ -63,7 +63,7 @@ fn story_with_url_bookmarks_the_article_with_hn_link_in_notes() {
         "id": 42, "type": "story", "by": "alice",
         "title": "Cool thing", "url": "https://example.com/x"
     }))
-    .into_draft(&HackerNewsConfig::default(), &[])
+    .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default())
     .unwrap();
     assert_eq!(d.bookmark.url.as_str(), "https://example.com/x");
     assert_eq!(d.bookmark.title, "Cool thing");
@@ -89,7 +89,7 @@ fn story_whose_article_url_is_an_hn_item_keys_on_the_id() {
         "id": 42, "type": "story", "by": "alice",
         "title": "Meta post", "url": article
     }))
-    .into_draft(&HackerNewsConfig::default(), &[])
+    .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default())
     .unwrap();
     assert_eq!(d.bookmark.url.as_str(), article);
     assert_eq!(d.dedup_key, "hn:999");
@@ -103,7 +103,7 @@ fn text_post_without_url_bookmarks_the_hn_permalink() {
         "id": 7, "type": "story", "by": "bob",
         "title": "Ask HN: How?", "text": "<p>details</p>"
     }))
-    .into_draft(&HackerNewsConfig::default(), &[])
+    .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default())
     .unwrap();
     assert_eq!(
         d.bookmark.url.as_str(),
@@ -122,7 +122,7 @@ fn text_post_without_text_has_empty_notes() {
     let d = item(json!({
         "id": 8, "type": "story", "by": "bob", "title": "Ask HN: empty?"
     }))
-    .into_draft(&HackerNewsConfig::default(), &[])
+    .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default())
     .unwrap();
     assert_eq!(
         d.bookmark.url.as_str(),
@@ -140,7 +140,7 @@ fn html_title_is_plain_and_html_body_becomes_markdown_blockquote() {
         "title": "Rust&#x27;s &amp; more", "url": "https://example.com/a",
         "text": "<p>see <a href=\"https://x.com\">x</a> &gt; y</p>"
     }))
-    .into_draft(&HackerNewsConfig::default(), &[])
+    .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default())
     .unwrap();
     // Title: entities decoded, tags stripped, single line.
     assert_eq!(d.bookmark.title, "Rust's & more");
@@ -157,7 +157,7 @@ fn an_algolia_title_is_entity_decoded_exactly_once() {
         "id": 12, "type": "story", "by": "dave",
         "title": "Tom &amp;amp; Jerry&#x27;s &lt;3", "url": "https://example.com/a"
     }))
-    .into_draft(&HackerNewsConfig::default(), &[])
+    .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default())
     .unwrap();
     assert_eq!(d.bookmark.title, "Tom &amp; Jerry's <3");
 }
@@ -167,7 +167,7 @@ fn comment_bookmarks_permalink_with_comment_tag() {
     let d = item(json!({
         "id": 9, "type": "comment", "by": "carol", "text": "my reply"
     }))
-    .into_draft(&HackerNewsConfig::default(), &[])
+    .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default())
     .unwrap();
     assert_eq!(
         d.bookmark.url.as_str(),
@@ -193,7 +193,7 @@ fn into_draft_skips_story_with_unparseable_article_url() {
     // parses, so only article stories can hit this.)
     assert!(
         item(json!({ "id": 5, "type": "story", "by": "ann", "url": "not a url" }))
-            .into_draft(&HackerNewsConfig::default(), &[])
+            .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default())
             .is_none()
     );
 }

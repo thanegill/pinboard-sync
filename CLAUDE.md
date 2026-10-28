@@ -17,6 +17,7 @@ nix develop --command cargo test
 nix develop --command cargo test <name>      # single test
 nix develop --command cargo clippy --all-targets -- -D warnings
 nix develop --command cargo fmt --check
+nix develop --command cargo mutants --in-diff <diff>  # mutation-tests the lines a diff file changes
 nix flake check                              # builds the package (runs tests) + evaluates the NixOS module and config-checks its TOML + lints the Nix files
 nix fmt                                      # formats the Nix files (nixfmt, via nixfmt-tree)
 ```

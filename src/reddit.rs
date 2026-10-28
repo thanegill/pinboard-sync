@@ -117,6 +117,7 @@ impl RedditClient {
     }
 
     /// Key bookmarks on any of `domains` as Reddit too, besides this account's own.
+    #[must_use]
     pub fn with_reddit_domains(self, domains: Vec<String>) -> Self {
         Self {
             reddit_domains: domains,

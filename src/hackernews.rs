@@ -242,6 +242,7 @@ impl HackerNewsClient {
 
     /// The client keying an article on any of `domains` as Reddit's own dedup key does,
     /// so it still matches once `cleanup reddit` has moved it onto that domain.
+    #[must_use]
     pub fn with_reddit_domains(self, domains: Vec<String>) -> Self {
         Self {
             keys: HackerNewsKeys::new(RedditKeys::new(domains)),

@@ -410,7 +410,7 @@ pub fn cased_subreddit(subreddit: &str) -> String {
 }
 
 /// `url` with every `over18/?dest=` interstitial unwrapped, as `cleanup reddit` moves it
-/// and as [`RedditKeys`](crate::keys::RedditKeys) and `HackerNewsKeys` key it.
+/// and as [`RedditKeys`] and `HackerNewsKeys` key it.
 pub fn unwrap_over18(url: &Url) -> Url {
     let mut current = url.clone();
     while let Some(dest) = over18_dest(&current) {

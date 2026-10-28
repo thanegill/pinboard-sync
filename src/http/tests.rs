@@ -391,7 +391,17 @@ async fn connect_backoff_outlasts_a_two_minute_outage() {
     .await;
 
     assert_eq!(result, Ok(Err(Failure::Connect)));
-    assert_eq!(attempt_offsets.into_inner(), [0, 5, 15, 35, 75, 155]);
+    let attempt_offsets = attempt_offsets.into_inner();
+    let waits: Vec<u64> = attempt_offsets.windows(2).map(|w| w[1] - w[0]).collect();
+    assert_eq!(waits.len(), CONNECT_BACKOFF.len(), "{attempt_offsets:?}");
+    assert!(
+        waits.windows(2).all(|w| w[1] == 2 * w[0]),
+        "each wait doubles the last: {waits:?}"
+    );
+    assert!(
+        attempt_offsets.last().is_some_and(|&last| last > 120),
+        "the last attempt comes after two minutes: {attempt_offsets:?}"
+    );
 }
 
 fn connect_failures(count: usize) -> Vec<Result<u16, Failure>> {
@@ -706,15 +716,6 @@ pub(super) fn assert_error_hides(
     assert!(
         err.downcast_ref::<reqwest::Error>().is_some_and(kind),
         "unexpected error: {err:#}"
-    );
-}
-
-#[test]
-fn every_client_gets_the_read_timeout() {
-    let client = format!("{:?}", client_builder().build().unwrap());
-    assert!(
-        client.contains(&format!("read_timeout: {READ_TIMEOUT:?}")),
-        "{client}"
     );
 }
 

@@ -502,7 +502,7 @@ impl PinboardClient {
             "user:tok".into(),
             Duration::ZERO,
             base,
-            client_builder().read_timeout(read_timeout),
+            crate::http::client_builder_with_read_timeout(read_timeout),
         )
     }
 

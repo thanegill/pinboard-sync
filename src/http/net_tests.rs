@@ -551,9 +551,8 @@ async fn a_body_that_stalls_does_not_count_against_its_host() {
 const SHORT_READ_TIMEOUT: Duration = Duration::from_millis(300);
 
 fn short_read_timeout_client() -> reqwest::Client {
-    client_builder()
+    client_builder_with_read_timeout(SHORT_READ_TIMEOUT)
         .no_proxy()
-        .read_timeout(SHORT_READ_TIMEOUT)
         .build()
         .unwrap()
 }

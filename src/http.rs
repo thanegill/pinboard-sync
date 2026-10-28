@@ -439,9 +439,14 @@ fn retry_after_verdict(
 /// silence by [`READ_TIMEOUT`]. No overall timeout: it would cap a slow but steady
 /// `posts/all`.
 pub fn client_builder() -> reqwest::ClientBuilder {
+    client_builder_with_read_timeout(READ_TIMEOUT)
+}
+
+/// [`client_builder`] with `read_timeout` in place of [`READ_TIMEOUT`], for tests.
+pub(crate) fn client_builder_with_read_timeout(read_timeout: Duration) -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(READ_TIMEOUT)
+        .read_timeout(read_timeout)
         .http2_keep_alive_interval(H2_PING_INTERVAL)
         .http2_keep_alive_timeout(H2_PING_TIMEOUT)
         .http2_keep_alive_while_idle(true)

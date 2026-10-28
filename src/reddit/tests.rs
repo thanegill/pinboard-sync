@@ -406,6 +406,25 @@ fn a_saved_page_is_caught_up_when_its_saves_are_on_pinboard() {
 }
 
 #[test]
+fn a_save_bookmarked_behind_its_over18_interstitial_is_on_pinboard() {
+    use crate::test_support::{listing_entry, stored_at};
+    let post = listing_entry(
+        "t3",
+        serde_json::json!({ "name": "t3_a", "subreddit": "rust",
+                            "permalink": "/r/rust/comments/a/x/", "title": "T" }),
+    );
+    let client = RedditClient::with_base_url(None, "psophis", "http://unused.invalid".into());
+    let synced_keys = client.synced_keys(&[stored_at(
+        "https://www.reddit.com/over18/?dest=https%3A%2F%2Fwww.reddit.com%2Fr%2Frust%2Fcomments%2Fa%2Fx%2F",
+    )]);
+    assert!(page_is_caught_up(
+        1,
+        &client.shape(vec![post]),
+        &synced_keys
+    ));
+}
+
+#[test]
 fn a_mirror_reddit_domain_dedups_against_its_own_and_reddit_com_bookmarks() {
     use crate::test_support::{listing_entry, stored_at};
     let post = |id: &str| {

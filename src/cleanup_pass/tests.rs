@@ -3859,3 +3859,391 @@ fn a_two_pass_verdict_keeps_and_leads_with_a_halt() {
     };
     assert_eq!(message, "spent; and for repos: other trouble");
 }
+
+/// A cut fragment is credited only to the block it was cut from: an `HN Link:` cut short
+/// is not kept by a different link that starts the same way.
+#[test]
+fn a_fragment_is_not_kept_by_another_block_that_starts_alike() {
+    let store = FakePinboard::trimming();
+    let other_link = "a\n\nHN Link: https://news.ycombinator.com/item?id=2";
+    let own_link = "a\n\nHN Link: https://news.ycombinator.com/item?id=1";
+    let alone = format!("a\n\nHN Link: https://news.ycombinat{TRUNCATION_MARKER}");
+    assert!(!holds_what_it_keeps(
+        &store,
+        other_link,
+        [other_link, ""],
+        other_link,
+        own_link,
+        own_link,
+        &alone
+    ));
+}
+
+/// The target is cut inside its own `id=2` link, a little past where the mover's `id=1`
+/// link is cut: the target's cut starts the same way, but comes from another block.
+#[test]
+fn a_fragment_is_not_kept_by_a_target_cut_inside_another_block() {
+    let store = FakePinboard::trimming();
+    let id1 = "HN Link: https://news.ycombinator.com/item?id=1";
+    let id2 = "HN Link: https://news.ycombinator.com/item?id=2";
+    let merged = format!("user text\n\n{id2}\n\nlead extra text");
+    let held = format!("user text\n\n{}{TRUNCATION_MARKER}", &id2[..43]);
+    let mover = format!("user text\n\n{id1}");
+    let alone = format!("user text\n\n{}{TRUNCATION_MARKER}", &id1[..30]);
+    assert!(!holds_what_it_keeps(
+        &store,
+        &held,
+        ["user text", &merged],
+        &merged,
+        &mover,
+        &mover,
+        &alone
+    ));
+}
+
+/// The mover stores a block whole that its plan extends in place. Its lone rewrite is cut
+/// inside that block, and the target earlier: the stored text between the two cuts is the
+/// mover's own, though the lead's plan carries the extended block too.
+#[test]
+fn a_block_the_plan_extends_is_still_the_members_own() {
+    let store = FakePinboard::trimming();
+    let stored = format!("user text\n\n{LONG_USER_TEXT}");
+    let planned = format!("user text\n\n{LONG_USER_TEXT} and more besides");
+    let held = format!("user text\n\n{}{TRUNCATION_MARKER}", &LONG_USER_TEXT[..30]);
+    let alone = format!("user text\n\n{}{TRUNCATION_MARKER}", &LONG_USER_TEXT[..60]);
+    assert!(!holds_what_it_keeps(
+        &store,
+        &held,
+        ["user text", &planned],
+        &planned,
+        &stored,
+        &planned,
+        &alone
+    ));
+}
+
+/// A target cut whose own block isn't known is credited only at the member's block's place:
+/// the same start one block further on is another block.
+#[test]
+fn a_target_cut_of_an_unknown_block_counts_only_in_its_place() {
+    let store = FakePinboard::trimming();
+    let held = format!("abc\n\nxyzw f{TRUNCATION_MARKER}");
+    let alone = format!("xyzw{TRUNCATION_MARKER}");
+    assert!(!holds_what_it_keeps(
+        &store,
+        &held,
+        [&held, ""],
+        "",
+        "",
+        "xyzw full block",
+        &alone
+    ));
+}
+
+/// A stored cut stays the member's own when its plan moves the block it was cut from to
+/// another place: the lead's plan carrying the block doesn't excuse losing the cut.
+#[test]
+fn a_stored_cut_is_the_members_own_wherever_its_plan_puts_the_block() {
+    let store = FakePinboard::trimming();
+    let stored = format!("s\n\nabc{TRUNCATION_MARKER}");
+    let planned = "new\n\ns\n\nabcdef full";
+    assert!(!holds_what_it_keeps(
+        &store,
+        "new\n\ns",
+        ["new\n\ns", ""],
+        planned,
+        &stored,
+        planned,
+        planned
+    ));
+}
+
+/// A fragment cut from a note already cut there is known only by its start, so it is
+/// credited to the target's block at the same place, here cut later inside that block.
+#[test]
+fn a_fragment_known_only_by_its_start_is_kept_by_the_block_in_its_place() {
+    let store = FakePinboard::trimming();
+    let held = format!("x\n\nabcdefgh{TRUNCATION_MARKER}");
+    let mover = format!("x\n\nabcd{TRUNCATION_MARKER}");
+    assert!(holds_what_it_keeps(
+        &store,
+        &held,
+        [&held, ""],
+        &held,
+        &mover,
+        &mover,
+        &mover
+    ));
+    let elsewhere = format!("abcdefgh\n\nx\n\nzz{TRUNCATION_MARKER}");
+    assert!(
+        !holds_what_it_keeps(
+            &store,
+            &elsewhere,
+            [&elsewhere, ""],
+            &elsewhere,
+            &mover,
+            &mover,
+            &mover
+        ),
+        "the same start in another place is not its block"
+    );
+}
+
+/// A stored cut is credited only to the block it was cut from: a one-character cut is not
+/// kept by an unrelated block that starts with the same character.
+#[test]
+fn a_stored_cut_is_not_kept_by_another_block_that_starts_alike() {
+    let store = FakePinboard::trimming();
+    let held = "x\n\n4zzz another block";
+    let carried = "x\n\n4abc the stored block";
+    let stored = format!("x\n\n4{TRUNCATION_MARKER}");
+    assert!(!holds_what_it_keeps(
+        &store,
+        held,
+        [held, ""],
+        carried,
+        &stored,
+        carried,
+        carried
+    ));
+}
+
+/// The base stores an `id=2` link and plans only the text before it; the mover stores an
+/// `id=1` link whole, and the merge carries that link. Under a long planned title the
+/// merge is cut inside the link where both start alike, so the target keeps the base's
+/// stored note, cut inside its `id=2` link: the cut there is the base's block, not the
+/// mover's, and the mover stays with its link.
+#[tokio::test]
+async fn a_target_cut_from_the_stored_note_is_not_credited_to_the_merged_block() {
+    const ID1: &str = "HN Link: https://news.ycombinator.com/item?id=1";
+    const ID2: &str = "HN Link: https://news.ycombinator.com/item?id=2";
+    let pinboard = FakePinboard::trimming();
+    let mut base = bookmark("https://base/");
+    base.note = format!("x\n\n{ID2}");
+    let mut mover = bookmark("https://mover/");
+    mover.note = format!("x\n\n{ID1}");
+    let title = (1..20_000)
+        .map(|len| "T".repeat(len))
+        .find(|title| {
+            let fitted = pinboard.fit(Bookmark {
+                title: title.clone(),
+                url: u("https://target/"),
+                ..mover.clone()
+            });
+            pinboard.kept_of_cut(&fitted.note).is_some_and(|kept| {
+                kept.len() > "x\n\nHN Link: h".len() && kept.len() < "x\n\n".len() + ID1.len() - 3
+            })
+        })
+        .expect("a title that cuts inside the link");
+    let pass = FakePass(move |bookmark: &Bookmark| {
+        let note = if bookmark.url.as_str() == "https://base/" {
+            "x".to_string()
+        } else {
+            bookmark.note.clone()
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u("https://target/"),
+            title: title.clone(),
+            note,
+            ..unchanged_plan(bookmark)
+        }))
+    });
+
+    let outcome = assert_kept(&[base, mover], &pass, ID1).await;
+    assert_eq!(outcome.refused, 1);
+}
+
+/// The mirror of the target's case: the mover's plan swaps its `id=1` link for the base's
+/// `id=2`, and under its long title `fit_plan` keeps its stored note, cut inside `id=1`.
+/// That cut is the stored block's, not the plan's block that starts the same way.
+#[tokio::test]
+async fn a_lone_rewrite_cut_from_the_stored_note_is_not_credited_to_the_plans_block() {
+    const ID1: &str = "HN Link: https://news.ycombinator.com/item?id=1";
+    const ID2: &str = "HN Link: https://news.ycombinator.com/item?id=2";
+    let pinboard = FakePinboard::trimming();
+    let mut base = bookmark("https://base/");
+    base.note = format!("x\n\n{ID2}");
+    let mut mover = bookmark("https://mover/");
+    mover.note = format!("x\n\n{ID1}");
+    let title = (1..20_000)
+        .map(|len| "T".repeat(len))
+        .find(|title| {
+            let fitted = pinboard.fit(Bookmark {
+                title: title.clone(),
+                url: u("https://target/"),
+                ..mover.clone()
+            });
+            pinboard.kept_of_cut(&fitted.note).is_some_and(|kept| {
+                kept.len() > "x\n\nHN Link: h".len() && kept.len() < "x\n\n".len() + ID1.len() - 3
+            })
+        })
+        .expect("a title that cuts inside the link");
+    let pass = FakePass(move |bookmark: &Bookmark| {
+        let is_mover = bookmark.url.as_str() == "https://mover/";
+        Ok(Plan::Bookmark(Bookmark {
+            url: u("https://target/"),
+            title: if is_mover {
+                title.clone()
+            } else {
+                "Title".into()
+            },
+            note: format!("x\n\n{ID2}"),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+
+    let outcome = assert_kept(&[base, mover], &pass, ID1).await;
+    assert_eq!(outcome.refused, 1);
+}
+
+/// A mover storing [`LONG_USER_TEXT`] after an `a` block, planned `edited` after a `b`
+/// block, so the two notes part before the text. Under its short title the lone rewrite
+/// keeps far more of the text than the target, whose base plans the same note under a long
+/// title: the mover's stored text in between is its own, and it stays.
+async fn assert_stored_text_is_kept_after_an_earlier_block_changes(edited: &str) {
+    let pinboard = FakePinboard::trimming();
+    let mut base = bookmark("https://base/");
+    base.note = "a".into();
+    let mut mover = bookmark("https://mover/");
+    mover.note = format!("a\n\n{LONG_USER_TEXT}");
+    let planned = format!("b\n\n{edited}");
+    let template = Bookmark {
+        note: planned.clone(),
+        ..mover.clone()
+    };
+    let short = title_cutting_inside(&pinboard, &template, "https://target/");
+    let long = (short.len()..20_000)
+        .map(|len| "T".repeat(len))
+        .find(|title| {
+            let fitted = pinboard.fit(Bookmark {
+                title: title.clone(),
+                url: u("https://target/"),
+                ..template.clone()
+            });
+            pinboard
+                .kept_of_cut(&fitted.note)
+                .is_some_and(|kept| kept.len() < "b\n\n".len() + 20)
+        })
+        .expect("a title that cuts near the start of the text");
+    let pass = FakePass(move |bookmark: &Bookmark| {
+        let is_mover = bookmark.url.as_str() == "https://mover/";
+        Ok(Plan::Bookmark(Bookmark {
+            url: u("https://target/"),
+            title: if is_mover {
+                short.clone()
+            } else {
+                long.clone()
+            },
+            note: planned.clone(),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+
+    let outcome = assert_kept(&[base, mover], &pass, LONG_USER_TEXT).await;
+    assert_eq!(outcome.refused, 1);
+}
+
+#[tokio::test]
+async fn a_block_the_plan_extends_is_the_members_own_after_an_earlier_block_changes() {
+    assert_stored_text_is_kept_after_an_earlier_block_changes(&format!(
+        "{LONG_USER_TEXT} and more besides"
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn a_block_the_plan_rewrites_is_the_members_own_up_to_the_change_after_an_earlier_one() {
+    assert_stored_text_is_kept_after_an_earlier_block_changes(&format!(
+        "{}X{} and more besides",
+        &LONG_USER_TEXT[..50],
+        &LONG_USER_TEXT[51..]
+    ))
+    .await;
+}
+
+/// Identical cut copies, the mover under a shorter title and both planned the whole note.
+/// A stored block the target holds whole, an `id=1` link, starts later blocks only the
+/// mover's lone rewrite reaches (`id=12`): that doesn't make those blocks its own, and it
+/// is absorbed.
+#[tokio::test]
+async fn a_duplicate_whose_stored_block_starts_a_later_block_is_still_absorbed() {
+    let link = "HN Link: https://news.ycombinator.com/item?id=1";
+    let full = std::iter::once(link.to_string())
+        .chain((1..=300u64).flat_map(|n| {
+            [
+                format!("{:016x} para", n.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ n),
+                format!("{link}{n}"),
+            ]
+        }))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let incumbent = FakePinboard::trimming().fit(Bookmark {
+        title: "A long title that takes room from the note at the target, and then some more room"
+            .into(),
+        note: full.clone(),
+        ..bookmark("https://target/")
+    });
+    for title_len in [1, 10, 30, 50] {
+        let mover = Bookmark {
+            url: u("https://mover/"),
+            title: "T".repeat(title_len),
+            ..incumbent.clone()
+        };
+        let full = full.clone();
+        let pass = FakePass(move |bookmark: &Bookmark| {
+            Ok(Plan::Bookmark(Bookmark {
+                url: u("https://target/"),
+                note: full.clone(),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+
+        let (first, _, after) = run_twice(&[incumbent.clone(), mover], &pass).await;
+        assert_eq!(first.refused, 0, "title of {title_len}");
+        assert_eq!(
+            after,
+            std::slice::from_ref(&incumbent),
+            "title of {title_len}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_block_the_plan_extends_is_the_members_own_wherever_the_plan_moves_it() {
+    assert_stored_text_is_kept_after_an_earlier_block_changes(&format!(
+        "c\n\n{LONG_USER_TEXT} and more besides"
+    ))
+    .await;
+}
+
+/// The mover's plan replaces its stored block with one the incumbent's plan appends too,
+/// past the target's cut. The stored block is one its own plan drops, so it doesn't make
+/// the new block the mover's, and the mover is absorbed.
+#[tokio::test]
+async fn a_stored_block_the_plan_drops_does_not_make_a_carried_block_the_members() {
+    let pinboard = FakePinboard::trimming();
+    let incumbent = with_note_just_under_the_budget(&pinboard, bookmark("https://target/"));
+    let mut mover = bookmark("https://mover/");
+    mover.note = "old user text".into();
+    let pass = FakePass(|bookmark: &Bookmark| {
+        let note = if bookmark.url.as_str() == "https://target/" {
+            format!("{}\n\nnew user text", bookmark.note)
+        } else {
+            "new user text".into()
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u("https://target/"),
+            note,
+            ..unchanged_plan(bookmark)
+        }))
+    });
+
+    let outcome = run(&pinboard, &[incumbent, mover], &pass).await;
+    assert_eq!(outcome.refused, 0);
+    assert_eq!(
+        *pinboard.deleted.borrow(),
+        strings(&["https://mover/"]),
+        "{:?}",
+        pinboard.ops.borrow()
+    );
+}

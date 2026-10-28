@@ -498,8 +498,6 @@ mod tests {
         }
 
         #[test]
-        #[ignore = "a value still quoted once one quote pair is stripped (`\"\"abc==\"\"`, \
-                    `\"abc==\";=`) is sent quoted, and shaping that strips another pair"]
         fn a_quoted_cookie_is_shaped_into_a_well_formed_cookie(
             raw in (configured_cookie([COOKIE_PIECES.as_slice(), &["\""]].concat()), 0..3usize)
                 .prop_map(|(value, quote_pairs)| {

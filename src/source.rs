@@ -154,6 +154,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn into_anyhow_keeps_a_halts_message_without_its_prefix() {
+        let flattened = |error: SourceError| error.into_anyhow().to_string();
+        assert_eq!(
+            flattened(SourceError::ReauthRequired("expired".into())),
+            "expired"
+        );
+        assert_eq!(
+            flattened(SourceError::RateLimited("resets soon".into())),
+            "resets soon"
+        );
+        assert_eq!(flattened(SourceError::Blocked("edge".into())), "edge");
+        assert_eq!(flattened(anyhow::anyhow!("other").into()), "other");
+    }
+
+    #[test]
     fn a_page_is_caught_up_only_when_it_has_no_new_draft() {
         let draft = |key: &str| BookmarkDraft {
             bookmark: crate::test_support::stored_at("https://example.com/"),

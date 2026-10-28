@@ -149,7 +149,7 @@ pub struct HackerNewsBackupArgs {
     #[arg(long)]
     pub all: bool,
     /// HackerNews username whose favorites to back up (env HN_USERNAME, or *_FILE).
-    #[arg(long)]
+    #[arg(long = "hn-username", alias = "username", value_name = "HN_USERNAME")]
     pub username: Option<String>,
     #[command(flatten)]
     pub out: OutFlag,
@@ -256,7 +256,7 @@ pub struct HackerNewsSyncArgs {
     #[arg(long)]
     pub all: bool,
     /// HackerNews username whose favorites to sync (env HN_USERNAME, or *_FILE).
-    #[arg(long)]
+    #[arg(long = "hn-username", alias = "username", value_name = "HN_USERNAME")]
     pub username: Option<String>,
     #[command(flatten)]
     pub flags: SyncFlags,
@@ -278,7 +278,11 @@ pub struct SyncFlags {
     #[arg(long)]
     pub limit: Option<SyncLimit>,
     /// Only backdate posts newer than N days; older use "now" (overrides config).
-    #[arg(long)]
+    #[arg(
+        long = "post-date-max-age-days",
+        alias = "max-age-days",
+        value_name = "POST_DATE_MAX_AGE_DAYS"
+    )]
     pub max_age_days: Option<u64>,
     /// Mark new bookmarks to-read: `--toread` or `--toread=false` (overrides config).
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
@@ -322,13 +326,24 @@ pub enum CleanupSource {
 #[derive(Args, Clone, Copy, Default)]
 pub struct DateFlags {
     /// Only backdate posts newer than N days; older use "now" (overrides config).
-    #[arg(long)]
+    #[arg(
+        long = "post-date-max-age-days",
+        alias = "max-age-days",
+        value_name = "POST_DATE_MAX_AGE_DAYS"
+    )]
     pub max_age_days: Option<u64>,
     /// Date bookmarks by the source post date: `--use-post-date[=BOOL]` (overrides config).
     #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
     pub use_post_date: Option<bool>,
-    /// Re-date too-old posts to now: `--stale-to-now[=BOOL]` (overrides config).
-    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    /// Re-date too-old posts to now: `--cleanup-stale-to-now[=BOOL]` (overrides config).
+    #[arg(
+        long = "cleanup-stale-to-now",
+        alias = "stale-to-now",
+        value_name = "CLEANUP_STALE_TO_NOW",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true"
+    )]
     pub stale_to_now: Option<bool>,
 }
 
@@ -374,7 +389,7 @@ pub struct HackerNewsCleanupArgs {
     #[arg(long)]
     pub link_discussions: bool,
     /// Override the marker tag used by --link-discussions (config: `tag_link`).
-    #[arg(long)]
+    #[arg(long = "tag-link", alias = "link-tag", value_name = "TAG_LINK")]
     pub link_tag: Option<String>,
     #[command(flatten)]
     pub dates: DateFlags,
@@ -578,5 +593,89 @@ mod tests {
         let args = parse_reddit_sync(&["--public=false", "alice"]);
         assert_eq!(args.account.as_deref(), Some("alice"));
         assert_eq!(args.flags.public, Some(false));
+    }
+
+    /// Each renamed flag parses under its new name and, for one release, its old one.
+    #[test]
+    fn each_renamed_flag_takes_its_new_and_its_old_name() {
+        use clap::Parser;
+        let command = |argv: &[&str]| {
+            Cli::try_parse_from([&["pinboard-sync"][..], argv].concat())
+                .expect("parses")
+                .command
+        };
+        for [max_age, stale, link, username] in [
+            [
+                "--post-date-max-age-days",
+                "--cleanup-stale-to-now",
+                "--tag-link",
+                "--hn-username",
+            ],
+            [
+                "--max-age-days",
+                "--stale-to-now",
+                "--link-tag",
+                "--username",
+            ],
+        ] {
+            let Command::Sync(SyncCmd {
+                source: Some(SyncSource::Hackernews(args)),
+                ..
+            }) = command(&["sync", "hackernews", max_age, "5", username, "u"])
+            else {
+                panic!("expected `sync hackernews`");
+            };
+            assert_eq!(args.flags.max_age_days, Some(5), "{max_age}");
+            assert_eq!(args.username.as_deref(), Some("u"), "{username}");
+
+            let Command::Cleanup(CleanupCmd {
+                source: Some(CleanupSource::Hackernews(args)),
+                ..
+            }) = command(&["cleanup", "hackernews", max_age, "5", stale, link, "t"])
+            else {
+                panic!("expected `cleanup hackernews`");
+            };
+            assert_eq!(args.dates.max_age_days, Some(5), "{max_age}");
+            assert_eq!(args.dates.stale_to_now, Some(true), "{stale}");
+            assert_eq!(args.link_tag.as_deref(), Some("t"), "{link}");
+
+            let Command::Backup(BackupCmd {
+                target: Some(BackupTarget::Hackernews(args)),
+                ..
+            }) = command(&["backup", "hackernews", username, "u"])
+            else {
+                panic!("expected `backup hackernews`");
+            };
+            assert_eq!(args.username.as_deref(), Some("u"), "{username}");
+        }
+    }
+
+    /// `--help` offers each renamed flag under its new name only.
+    #[test]
+    fn help_names_each_renamed_flag_by_its_new_name() {
+        use clap::CommandFactory;
+        let help = |path: [&str; 2]| {
+            let mut cli = Cli::command();
+            let [command, source] = path;
+            cli.find_subcommand_mut(command)
+                .and_then(|command| command.find_subcommand_mut(source))
+                .expect("a subcommand")
+                .render_long_help()
+                .to_string()
+        };
+        let cleanup = help(["cleanup", "hackernews"]);
+        let sync = help(["sync", "hackernews"]);
+        let backup = help(["backup", "hackernews"]);
+        for (help, new, old) in [
+            (&cleanup, "--post-date-max-age-days", "--max-age-days"),
+            (&cleanup, "--cleanup-stale-to-now", "--stale-to-now"),
+            (&cleanup, "--tag-link", "--link-tag"),
+            (&sync, "--post-date-max-age-days", "--max-age-days"),
+            (&sync, "--hn-username", "--username"),
+            (&backup, "--hn-username", "--username"),
+        ] {
+            assert!(help.contains(&format!(" {new}")), "{new}");
+            assert!(!help.contains(&format!(" {old}")), "{old}");
+        }
     }
 }

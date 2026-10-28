@@ -66,7 +66,7 @@ name = "main"                            # optional selector; defaults to `usern
 # public = true                          # override [pinboard].public for this account
 # use_post_date = true                   # override use_post_date for this account
 # post_date_max_age_days = 7             # override the backdate window (days)
-# cleanup_stale_to_now = true            # override stale-to-now on cleanup
+# cleanup_stale_to_now = true            # override cleanup_stale_to_now for this account
 
 # Tags (config-only). Each line shows the built-in default; set "" to disable a
 # prefixed/conditional tag. `tags` are applied to every bookmark and fully replace
@@ -93,7 +93,7 @@ name = "personal"                        # selector; GitHub has no username to d
 # public = true                          # override [pinboard].public for this account
 # use_post_date = true                   # override use_post_date for this account
 # post_date_max_age_days = 7             # override the backdate window (days)
-# cleanup_stale_to_now = true            # override stale-to-now on cleanup
+# cleanup_stale_to_now = true            # override cleanup_stale_to_now for this account
 tags = ["github-star"]                   # applied to every bookmark (default ["github-star"])
 tag_lang_prefix = "lang:"                # lang:<language>
 
@@ -108,7 +108,7 @@ name = "me"                              # optional selector; defaults to `usern
 # public = true                          # override [pinboard].public for this account
 # use_post_date = true                   # override use_post_date for this account
 # post_date_max_age_days = 7             # override the backdate window (days)
-# cleanup_stale_to_now = true            # override stale-to-now on cleanup
+# cleanup_stale_to_now = true            # override cleanup_stale_to_now for this account
 tags = ["hackernews"]                    # applied to every bookmark (default ["hackernews"])
 tag_comment = "hackernews-comment"       # added to favorited comments
 tag_author_prefix = "author:hackernews:" # author:hackernews:<name>

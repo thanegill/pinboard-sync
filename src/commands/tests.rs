@@ -13,9 +13,9 @@ fn link_tag_override_rejects_whitespace_and_commas() {
     };
     assert_eq!(
         refused("find hn"),
-        "`--link-tag` must not contain whitespace"
+        "`--tag-link` must not contain whitespace"
     );
-    assert_eq!(refused("find,hn"), "`--link-tag` must not contain a comma");
+    assert_eq!(refused("find,hn"), "`--tag-link` must not contain a comma");
 }
 
 #[test]
@@ -536,8 +536,14 @@ async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() 
              stale bookmarks on every run; raise the cap or turn `cleanup_stale_to_now` off"
         )
     };
-    let flags = |pass: &str| refused(pass, "`--max-age-days`", "`--stale-to-now`");
-    let both = ["--max-age-days", "0", "--stale-to-now"];
+    let flags = |pass: &str| {
+        refused(
+            pass,
+            "`--post-date-max-age-days`",
+            "`--cleanup-stale-to-now`",
+        )
+    };
+    let both = ["--post-date-max-age-days", "0", "--cleanup-stale-to-now"];
     for source in ["github", "reddit", "hackernews"] {
         let pass = format!("`cleanup {source}`");
         assert_eq!(
@@ -548,13 +554,14 @@ async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() 
             cleanup_error("", &[&both[..], &[source]].concat()).await,
             flags(&pass)
         );
+        // The old name, a hidden alias, still names the new flag in the message.
         assert_eq!(
             cleanup_error(
                 "[pinboard]\ncleanup_stale_to_now = true\n",
                 &[source, "--max-age-days", "0"]
             )
             .await,
-            refused(&pass, "`--max-age-days`", "`[pinboard]`")
+            refused(&pass, "`--post-date-max-age-days`", "`[pinboard]`")
         );
     }
 
@@ -567,19 +574,19 @@ async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() 
     assert_eq!(
         cleanup_error(
             &format!("[defaults.reddit]\npost_date_max_age_days = 0\n{every_source}"),
-            &["--all", "--stale-to-now"]
+            &["--all", "--cleanup-stale-to-now"]
         )
         .await,
         refused(
             "`cleanup --all` (reddit pass)",
             "`[defaults.reddit]`",
-            "`--stale-to-now`"
+            "`--cleanup-stale-to-now`"
         )
     );
 
     for argv in [
-        &["github", "--max-age-days", "0"][..],
-        &["--all", "--stale-to-now"],
+        &["github", "--post-date-max-age-days", "0"][..],
+        &["--all", "--cleanup-stale-to-now"],
     ] {
         let error = cleanup_error(every_source, argv).await;
         assert!(

@@ -91,8 +91,12 @@ impl ResolvedDates {
             "{scope} resolves `post_date_max_age_days` to 0 (from {}) with \
              `cleanup_stale_to_now` on (from {}), so cleanup would re-date its stale \
              bookmarks on every run; raise the cap or turn `cleanup_stale_to_now` off",
-            self.max_age_days.from.describe("--max-age-days", source),
-            self.stale_to_now.from.describe("--stale-to-now", source),
+            self.max_age_days
+                .from
+                .describe("--post-date-max-age-days", source),
+            self.stale_to_now
+                .from
+                .describe("--cleanup-stale-to-now", source),
         )
     }
 }

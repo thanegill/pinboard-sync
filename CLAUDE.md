@@ -52,9 +52,9 @@ the sync write loop in [`src/sync.rs`](src/sync.rs).
 **Every `cleanup` source shares one driver**, [`src/cleanup_pass.rs`](src/cleanup_pass.rs),
 whose module doc gives the loop. A source implements `CleanupPass::plan` (one bookmark's
 end-state as a `Plan`, or `Err` for a per-item failure) and `run_pass` does the rest,
-sequencing phases, each its own function: `plan_all`, `group_by_target`, `residents_of`,
-`hold_back_visibility_mismatches`, then per group `refuse_group`, `write_single` or
-`write_merge`, tallying into a `PassOutcome`.
+sequencing phases, each its own function: `plan_all`, `group_by_target`, `write_order`,
+`residents_of`, `hold_back_visibility_mismatches`, then per group `refuse_group`,
+`write_single` or `write_merge`, tallying into a `PassOutcome`.
 [`src/cleanup_pass/merge.rs`](src/cleanup_pass/merge.rs) holds the merge rules
 (`merge_bookmarks`, `incumbent_of`).
 
@@ -97,8 +97,11 @@ plan removed. The survivor's `read_later` and `timestamp` are restored after the
 treatment on purpose**: whether the occupant falls inside the pass's slice is invisible to
 the user, and must not decide whether their bookmark is protected. A target whose occupant
 is planned to move *away* has no record that stays; that is safe only because the occupant's
-own plan moves it, the fixpoint refuses the group heading here if that write is refused, and
-the write loop marks the URL occupied if it *fails*. Keep all three.
+own plan moves it first (`write_order` writes its group before this one), the fixpoint
+refuses the group heading here if that write is refused, and the write loop marks the URL
+occupied if it *fails*. Keep all three. A cycle of moves, such as a swap, has no such
+order, so it stays unprotected: if a later write in the cycle fails, the first has already
+overwritten a record that never moved.
 
 **A merge never decides visibility.** A plan whose `public` doesn't match the record that
 stays drops out of its group, since the merge would either publish a private note or unshare

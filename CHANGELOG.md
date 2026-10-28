@@ -122,6 +122,8 @@ All notable changes to this project are documented here. The format is based on
   no longer as a parse error, changed markup or, for a Reddit 403, an expired cookie.
 - `sync <source> <account> --all` and `backup <source> <account> --all` are refused. They
   used to ignore the account, even one that doesn't exist.
+- `cleanup` moves a bookmark off a URL before writing another over it, so a failed move no
+  longer loses the bookmark. Moves that form a cycle, such as a swap, still can.
 - A Pinboard delete retried after a lost response no longer fails on `item not found`.
 - A `reddit_domain` with a port or another form that isn't a bare host is rejected.
 - A HackerNews favorite linking a Reddit `over18` page or the bare Reddit root is no longer

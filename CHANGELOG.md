@@ -143,6 +143,8 @@ All notable changes to this project are documented here. The format is based on
   where a long note is cut.
 - Output piped to a reader that exits early, such as `config example | head` or a dry-run
   piped to `less`, no longer panics. The command finishes as it otherwise would.
+- A `[backup].directory` of only whitespace is rejected when the config is read, so
+  `config check` no longer passes a config that `backup` then refuses.
 
 ## [0.6.0] - 2026-10-25
 

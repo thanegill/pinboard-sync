@@ -178,6 +178,16 @@ fn validation_error_names_the_field_not_the_value() {
     );
 }
 
+/// A blank directory is refused at parse, as `backup` refuses it, so `config check` can't
+/// pass a config the timer's run then rejects.
+#[test]
+fn a_blank_backup_directory_is_rejected() {
+    for blank in ["", " ", "\t\n"] {
+        let text = format!("[backup]\ndirectory = {blank:?}\n");
+        assert_error_hides(&text, "SECRET", "backup.directory must not be empty");
+    }
+}
+
 #[test]
 fn a_github_name_that_slugs_to_default_counts_as_unnamed() {
     for second_name in ["default", "Default", "!!", " "] {

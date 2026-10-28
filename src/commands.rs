@@ -276,15 +276,30 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), mode);
             let mut run = AllRun::default();
             if let Some(CleanupTarget { account, dates }) = github {
-                run.record(cleanup_github_account(&store, account, None, dates, config).await);
+                let pass = async {
+                    GitHubCleanup::build(account, None, dates, config)?
+                        .run(&store)
+                        .await
+                };
+                run.record(pass.await);
             }
             if let Some(CleanupTarget { account, dates }) = reddit {
                 let overrides = RedditCleanupOverrides::default();
-                run.record(cleanup_reddit_account(account, overrides, dates, &store, config).await);
+                let pass = async {
+                    RedditCleanup::build(account, overrides, dates, config)?
+                        .run(&store)
+                        .await
+                };
+                run.record(pass.await);
             }
             if let Some(CleanupTarget { account, dates }) = hackernews {
                 let overrides = HackerNewsCleanupOverrides::default();
-                run.record(cleanup_hackernews_account(account, overrides, dates, &store).await);
+                let pass = async {
+                    HackerNewsCleanup::build(account, overrides, dates)?
+                        .run(&store)
+                        .await
+                };
+                run.record(pass.await);
             }
             run.finish()
         }
@@ -360,56 +375,62 @@ async fn run_cleanup_github(
         &args.dates.with_top_level(top_overrides),
         config,
     )?;
-    let client = github_cleanup_client(account, args.github_token, config)?;
+    let github = GitHubCleanup::build(account, args.github_token, dates, config)?;
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let mode = WriteMode::from_flags(top_dry_run, args.dry_run);
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), mode);
-    cleanup_github_with_client(&store, &client, account, dates, config).await
+    github.run(&store).await
 }
 
-/// The GitHub API client a cleanup pass runs with, from the flag/account/env token.
-fn github_cleanup_client(
-    account: Option<&GitHubAccount>,
-    token_flag: Option<String>,
-    config: &Config,
-) -> Result<GitHubClient> {
-    let token = require_github_token(token_flag, account)?;
-    GitHubClient::new(
-        token,
-        GitHubConfig::resolve(account, &config.defaults.github),
-    )
-}
-
-/// Run github cleanup: build an API client from the account/env token and refresh
-/// renamed repos / titles / language.
-async fn cleanup_github_account<S: BookmarkStore + AccountState>(
-    store: &S,
-    account: Option<&GitHubAccount>,
-    token_flag: Option<String>,
+/// A GitHub cleanup pass's API client, the tag config of every configured GitHub account,
+/// its dates and its auth-failure hook.
+struct GitHubCleanup {
+    client: GitHubClient,
+    configured: Vec<GitHubConfig>,
     dates: DateOpts,
-    config: &Config,
-) -> Result<()> {
-    let client = github_cleanup_client(account, token_flag, config)?;
-    cleanup_github_with_client(store, &client, account, dates, config).await
+    hook: Option<String>,
 }
 
-/// Run github cleanup with `client` already built.
-async fn cleanup_github_with_client<S: BookmarkStore + AccountState>(
-    store: &S,
-    client: &GitHubClient,
-    account: Option<&GitHubAccount>,
-    dates: DateOpts,
-    config: &Config,
-) -> Result<()> {
-    let hook = cleanup_hook(account, config);
-    let configured: Vec<GitHubConfig> = config
-        .github
-        .iter()
-        .map(|account| GitHubConfig::resolve(Some(account), &config.defaults.github))
-        .collect();
-    github::cleanup::run(store, client, dates, &configured)
-        .await
-        .map_err(|e| handle_source_err(e, hook.as_deref()))
+impl GitHubCleanup {
+    /// The pass for `account`, its client built from the flag/account/env token.
+    fn build(
+        account: Option<&GitHubAccount>,
+        token_flag: Option<String>,
+        dates: DateOpts,
+        config: &Config,
+    ) -> Result<Self> {
+        let token = require_github_token(token_flag, account)?;
+        let client = GitHubClient::new(
+            token,
+            GitHubConfig::resolve(account, &config.defaults.github),
+        )?;
+        Ok(Self::with_client(client, account, dates, config))
+    }
+
+    /// The pass for `account`, with `client` already built.
+    fn with_client(
+        client: GitHubClient,
+        account: Option<&GitHubAccount>,
+        dates: DateOpts,
+        config: &Config,
+    ) -> Self {
+        Self {
+            client,
+            configured: config
+                .github
+                .iter()
+                .map(|account| GitHubConfig::resolve(Some(account), &config.defaults.github))
+                .collect(),
+            dates,
+            hook: cleanup_hook(account, config),
+        }
+    }
+
+    async fn run<S: BookmarkStore + AccountState>(&self, store: &S) -> Result<()> {
+        github::cleanup::run(store, &self.client, self.dates, &self.configured)
+            .await
+            .map_err(|e| handle_source_err(e, self.hook.as_deref()))
+    }
 }
 
 async fn run_cleanup_reddit(
@@ -428,25 +449,15 @@ async fn run_cleanup_reddit(
     let reddit = RedditCleanup::build(account, RedditCleanupOverrides::from(args), dates, config)?;
     let (pinboard, bookmarks) = open_pinboard(pinboard_token, config).await?;
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), mode);
-    reddit.run(&store, account, config).await
+    reddit.run(&store).await
 }
 
-async fn cleanup_reddit_account<S: BookmarkStore + AccountState>(
-    account: Option<&RedditAccount>,
-    overrides: RedditCleanupOverrides,
-    dates: DateOpts,
-    store: &S,
-    config: &Config,
-) -> Result<()> {
-    RedditCleanup::build(account, overrides, dates, config)?
-        .run(store, account, config)
-        .await
-}
-
-/// A reddit cleanup pass's options, and the `/api/info` client when a step needs one.
+/// A Reddit cleanup pass's options, the `/api/info` client when a step needs one, and its
+/// auth-failure hook.
 struct RedditCleanup {
     opts: reddit::cleanup::RedditCleanupOpts,
     client: Option<RedditInfoClient>,
+    hook: Option<String>,
 }
 
 impl RedditCleanup {
@@ -471,19 +482,17 @@ impl RedditCleanup {
         } else {
             None
         };
-        Ok(Self { opts, client })
+        Ok(Self {
+            opts,
+            client,
+            hook: cleanup_hook(account, config),
+        })
     }
 
-    async fn run<S: BookmarkStore + AccountState>(
-        &self,
-        store: &S,
-        account: Option<&RedditAccount>,
-        config: &Config,
-    ) -> Result<()> {
-        let hook = cleanup_hook(account, config);
+    async fn run<S: BookmarkStore + AccountState>(&self, store: &S) -> Result<()> {
         reddit::cleanup::run(store, self.client.as_ref(), &self.opts)
             .await
-            .map_err(|e| handle_source_err(e, hook.as_deref()))
+            .map_err(|e| handle_source_err(e, self.hook.as_deref()))
     }
 }
 
@@ -522,19 +531,9 @@ fn resolve_hackernews_cleanup_config(
     Ok(hn_config)
 }
 
-async fn cleanup_hackernews_account<S: BookmarkStore + AccountState>(
-    account: Option<&HackerNewsAccount>,
-    overrides: HackerNewsCleanupOverrides,
-    dates: DateOpts,
-    store: &S,
-) -> Result<()> {
-    HackerNewsCleanup::build(account, overrides, dates)?
-        .run(store)
-        .await
-}
-
 /// A HackerNews cleanup pass's options, on the tag config
-/// [`resolve_hackernews_cleanup_config`] gives, and its Algolia client.
+/// [`resolve_hackernews_cleanup_config`] gives, and its Algolia client. It has no hook:
+/// HackerNews is public, so nothing here can be a re-auth to act on.
 struct HackerNewsCleanup {
     opts: HackerNewsCleanupOpts,
     client: AlgoliaClient,
@@ -559,7 +558,6 @@ impl HackerNewsCleanup {
     async fn run<S: BookmarkStore + AccountState>(&self, store: &S) -> Result<()> {
         hackernews::cleanup::run(store, &self.client, &self.opts)
             .await
-            // No hook: HackerNews is public, so nothing here can be a re-auth to act on.
             .map_err(SourceError::into_anyhow)
     }
 }

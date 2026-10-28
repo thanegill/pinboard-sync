@@ -23,14 +23,12 @@ async fn a_hackernews_cleanup_refuses_a_bad_link_tag_before_its_pass() {
         link_tag: Some("find hn".into()),
         ..Default::default()
     };
-    let error = cleanup_hackernews_account(
-        None,
-        overrides,
-        crate::test_support::NO_DATING,
-        &pinboard.cleanup_store(),
-    )
-    .await
-    .unwrap_err();
+    let pass = async {
+        HackerNewsCleanup::build(None, overrides, crate::test_support::NO_DATING)?
+            .run(&pinboard.cleanup_store())
+            .await
+    };
+    let error = pass.await.unwrap_err();
     assert_eq!(
         error.to_string(),
         "`--tag-link` must not contain whitespace"
@@ -722,15 +720,10 @@ mod net_tests {
             server.uri(),
         );
 
-        cleanup_github_with_client(
-            &pinboard.cleanup_store(),
-            &client,
-            Some(home),
-            NO_DATING,
-            &config,
-        )
-        .await
-        .unwrap();
+        GitHubCleanup::with_client(client, Some(home), NO_DATING, &config)
+            .run(&pinboard.cleanup_store())
+            .await
+            .unwrap();
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1, "{updated:?}");

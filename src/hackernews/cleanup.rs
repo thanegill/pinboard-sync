@@ -15,7 +15,6 @@ use crate::cleanup_pass::{run_pass, CleanupPass, PassOutcome, Plan};
 use crate::htmltext::collapse_whitespace;
 use crate::keys::HackerNewsKeys;
 use crate::source::SourceError;
-use crate::tags::extend_unique;
 use crate::timefmt::DateOpts;
 
 /// The `cleanup hackernews` choices that are not account settings. The default, which
@@ -190,7 +189,7 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
             return Ok(Plan::Skipped);
         };
         let mut tags = bookmark.tags.clone();
-        extend_unique(&mut tags, &new.tags);
+        tags.extend_unique(&new.tags);
         new.tags = tags;
         new.public = bookmark.public;
         new.read_later = bookmark.read_later;
@@ -235,13 +234,9 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
         let title = collapse_whitespace(&bookmark.title, " ");
 
         // Drop the marker tag, add the base HN tags.
-        let mut tags: Vec<String> = bookmark
-            .tags
-            .iter()
-            .filter(|t| **t != self.config.link_tag)
-            .cloned()
-            .collect();
-        extend_unique(&mut tags, &self.config.tags);
+        let mut tags = bookmark.tags.clone();
+        tags.retain(|t| *t != self.config.link_tag);
+        tags.extend_unique(&self.config.tags);
 
         Ok(Plan::Bookmark(Bookmark {
             url: bookmark.url.clone(),
@@ -259,7 +254,7 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::stored_at;
+    use crate::test_support::{stored_at, tag_list};
     use serde_json::json;
 
     fn item(value: serde_json::Value) -> HackerNewsItem {
@@ -312,7 +307,7 @@ mod tests {
         let stored = Bookmark {
             title: "old title".into(),
             note: "my own thoughts on this".into(),
-            tags: vec!["mine".into()],
+            tags: tag_list(&["mine"]),
             ..stored_at("https://news.ycombinator.com/item?id=42")
         };
         let items = story_pass_items();
@@ -373,7 +368,7 @@ mod tests {
         let stored = Bookmark {
             title: "old title".into(),
             note: "my note\n\nHN Link: https://news.ycombinator.com/item?id=42".into(),
-            tags: vec!["mine".into()],
+            tags: tag_list(&["mine"]),
             ..stored_at("https://news.ycombinator.com/item?id=42")
         };
         let items = story_pass_items();
@@ -401,7 +396,7 @@ mod tests {
         let stored = Bookmark {
             title: "Meta post".into(),
             note: "HN Link: https://news.ycombinator.com/item?id=42".into(),
-            tags: vec!["hackernews".into()],
+            tags: tag_list(&["hackernews"]),
             ..stored_at("https://news.ycombinator.com/item?id=999")
         };
         // The fetched item 999 is a *different* item (an external article) that a
@@ -428,7 +423,7 @@ mod tests {
     async fn plan_uses_generated_note_when_stored_note_empty() {
         let stored = Bookmark {
             title: "old title".into(),
-            tags: vec!["mine".into()],
+            tags: tag_list(&["mine"]),
             ..stored_at("https://news.ycombinator.com/item?id=42")
         };
         let items = story_pass_items();

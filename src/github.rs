@@ -24,7 +24,7 @@ use crate::source::{
     deserialize_lenient, page_is_caught_up, BookmarkDraft, DedupKey, Halt, Source, SourceError,
     UrlKey,
 };
-use crate::tags::{push_prefixed, push_tags};
+use crate::tags::Tags;
 use gists::{GistConfig, GitHubGist};
 use url::Url;
 
@@ -189,12 +189,12 @@ impl GitHubRepo {
             &self.html_url,
         );
 
-        let mut tags = Vec::new();
-        push_tags(&mut tags, &cfg.tags);
+        let mut tags = Tags::default();
+        tags.push_all(&cfg.tags);
         if let Some(lang) = self.language.as_deref().filter(|s| !s.is_empty()) {
-            push_prefixed(&mut tags, &cfg.lang_prefix, &lang.to_lowercase());
+            tags.push_prefixed(&cfg.lang_prefix, &lang.to_lowercase());
         }
-        push_prefixed(&mut tags, &cfg.author_prefix, self.owner());
+        tags.push_prefixed(&cfg.author_prefix, self.owner());
 
         Some(BookmarkDraft {
             bookmark: Bookmark {

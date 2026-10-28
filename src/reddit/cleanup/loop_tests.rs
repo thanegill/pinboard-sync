@@ -1,6 +1,8 @@
 use super::*;
 use crate::source::Halt;
-use crate::test_support::{listing_entry, stored_at, strings, FakePinboard, FakeReddit, NO_DATING};
+use crate::test_support::{
+    listing_entry, stored_at, strings, tag_list, FakePinboard, FakeReddit, NO_DATING,
+};
 use serde_json::json;
 
 fn opts() -> RedditCleanupOpts {
@@ -315,7 +317,7 @@ async fn strips_self_link_notes_from_a_self_post() {
         all: vec![Bookmark {
             title: "A real title".into(),
             note: "https://www.reddit.com/r/rust/comments/a/x/".into(),
-            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            tags: tag_list(&["reddit", "subreddit:rust"]),
             timestamp: crate::timefmt::parse_rfc3339("2023-11-14T22:13:20Z"),
             ..stored_at("https://old.reddit.com/r/rust/comments/a/x/")
         }],
@@ -354,7 +356,7 @@ async fn keeps_external_link_notes_on_a_link_post() {
         all: vec![Bookmark {
             title: "A real title".into(),
             note: "https://example.com/article".into(),
-            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            tags: tag_list(&["reddit", "subreddit:rust"]),
             timestamp: crate::timefmt::parse_rfc3339("2023-11-14T22:13:20Z"),
             ..stored_at("https://www.reddit.com/r/rust/comments/b/y/")
         }],
@@ -392,7 +394,7 @@ async fn retrofits_self_post_notes_with_blockquote() {
         all: vec![Bookmark {
             title: "A real title".into(),
             note: "the body text".into(), // pre-blockquote notes
-            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            tags: tag_list(&["reddit", "subreddit:rust"]),
             ..stored_at("https://old.reddit.com/r/rust/comments/a/x/")
         }],
         ..Default::default()
@@ -435,7 +437,7 @@ async fn preserves_hand_written_note_on_a_self_post() {
         all: vec![Bookmark {
             title: "A real title".into(),
             note: "my own thoughts -- revisit this later".into(),
-            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            tags: tag_list(&["reddit", "subreddit:rust"]),
             ..stored_at("https://www.reddit.com/r/rust/comments/a/x/")
         }],
         ..Default::default()
@@ -467,7 +469,7 @@ async fn retrofits_empty_note_from_authoritative_selftext() {
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "A real title".into(),
-            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            tags: tag_list(&["reddit", "subreddit:rust"]),
             ..stored_at("https://www.reddit.com/r/rust/comments/a/x/")
         }],
         ..Default::default()
@@ -504,11 +506,7 @@ async fn leaves_comment_notes_untouched() {
         all: vec![Bookmark {
             title: "Parent title".into(),
             note: stored.into(),
-            tags: vec![
-                "reddit".into(),
-                "subreddit:rust".into(),
-                "reddit-comment".into(),
-            ],
+            tags: tag_list(&["reddit", "subreddit:rust", "reddit-comment"]),
             ..stored_at("https://old.reddit.com/r/rust/comments/a/x/c/")
         }],
         ..Default::default()
@@ -544,11 +542,7 @@ async fn use_post_date_leaves_comment_timestamp_untouched() {
         all: vec![Bookmark {
             title: "Parent title".into(),
             note: "my comment note".into(),
-            tags: vec![
-                "reddit".into(),
-                "subreddit:rust".into(),
-                "reddit-comment".into(),
-            ],
+            tags: tag_list(&["reddit", "subreddit:rust", "reddit-comment"]),
             timestamp: crate::timefmt::parse_rfc3339("2019-01-01T00:00:00Z"),
             ..stored_at("https://old.reddit.com/r/rust/comments/a/x/c/")
         }],
@@ -935,10 +929,7 @@ async fn a_comment_tag_named_like_the_subreddit_settles_between_accounts_on_one_
         ),
     ];
     let account = settled_by_turns(&accounts, &FakeReddit::default(), &seed).await;
-    let tags: Vec<&[String]> = account
-        .iter()
-        .map(|bookmark| bookmark.tags.as_slice())
-        .collect();
+    let tags: Vec<&[String]> = account.iter().map(|bookmark| &bookmark.tags[..]).collect();
     assert_eq!(
         tags,
         [
@@ -1165,7 +1156,7 @@ async fn plans_the_tags_sync_writes_for_each_tag_config() {
             let mut want = synced.tags.clone();
             want.sort();
 
-            for stored_tags in [vec![], synced.tags.clone()] {
+            for stored_tags in [Tags::default(), synced.tags.clone()] {
                 let stored = Bookmark {
                     tags: stored_tags.clone(),
                     ..synced.clone()

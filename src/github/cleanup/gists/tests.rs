@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{stored_at, strings};
+use crate::test_support::{stored_at, strings, tag_list};
 use serde_json::json;
 
 const ID: &str = "aa5a315d61ae9438b18d";
@@ -172,7 +172,7 @@ fn a_synced_gists_tags_are_refreshed_by_each_config() {
         "author:github:old",
         "x",
     ]);
-    let mut refreshed = refresh_tags(existing, &gist(None), &[&home, &work]);
+    let mut refreshed = refresh_tags(existing.into(), &gist(None), &[&home, &work]);
     refreshed.sort();
     assert_eq!(
         refreshed,
@@ -201,11 +201,11 @@ async fn neither_pass_plans_the_others_bookmarks() {
         "http://unused.invalid".into(),
     );
     let star = Bookmark {
-        tags: strings(&["github-star", "github-gist"]),
+        tags: tag_list(&["github-star", "github-gist"]),
         ..stored_at("https://github.com/o/r")
     };
     let synced_gist = Bookmark {
-        tags: strings(&["github-star", "github-gist"]),
+        tags: tag_list(&["github-star", "github-gist"]),
         ..stored_at(&format!("https://gist.github.com/someone/{ID}"))
     };
 

@@ -1,6 +1,6 @@
 use super::*;
 use crate::bookmark::{AccountState, AccountView, CleanupStore, WriteMode};
-use crate::test_support::{stored_at, strings, url as u, FakePinboard, Op, NO_DATING};
+use crate::test_support::{stored_at, strings, tag_list, url as u, FakePinboard, Op, NO_DATING};
 use anyhow::anyhow;
 
 /// Wrap the fake in the production store so every test exercises the same view
@@ -58,7 +58,7 @@ fn bookmark(url: &str) -> Bookmark {
     Bookmark {
         title: "Title".into(),
         note: "notes".into(),
-        tags: vec!["a".into(), "b".into()],
+        tags: tag_list(&["a", "b"]),
         timestamp: crate::timefmt::from_unix(1_577_836_800), // 2020-01-01T00:00:00Z
         ..stored_at(url)
     }
@@ -466,7 +466,7 @@ async fn url_change_updates_and_deletes_old_preserving_privacy() {
         Ok(Plan::Bookmark(Bookmark {
             url: u("https://new/"),
             title: "New".into(),
-            tags: vec!["x".into()],
+            tags: tag_list(&["x"]),
             ..unchanged_plan(bookmark)
         }))
     });
@@ -489,10 +489,10 @@ async fn colliding_rewrites_are_field_merged() {
     // and B stays put. The driver must field-merge them into one record at that URL and
     // delete A's old URL, rather than clobbering either.
     let mut stored_a = bookmark("https://old-a/");
-    stored_a.tags = vec!["x".into()];
+    stored_a.tags = tag_list(&["x"]);
     stored_a.note = "from A".into();
     let mut stored_b = bookmark("https://collide/");
-    stored_b.tags = vec!["y".into()];
+    stored_b.tags = tag_list(&["y"]);
     stored_b.note = "from B".into();
     let books = vec![stored_a, stored_b];
 
@@ -844,15 +844,15 @@ async fn a_mismatched_member_drops_out_while_the_rest_of_the_group_merges() {
     let mut resident = bookmark("https://other/resident");
     resident.public = true;
     resident.note = "resident note".into();
-    resident.tags = vec!["rt".into()];
+    resident.tags = tag_list(&["rt"]);
     let mut agreeing = bookmark("https://x/ok");
     agreeing.public = true;
     agreeing.note = "ok note".into();
-    agreeing.tags = vec!["okt".into()];
+    agreeing.tags = tag_list(&["okt"]);
     let mut disagreeing = bookmark("https://x/secret");
     disagreeing.public = false;
     disagreeing.note = "SECRET".into();
-    disagreeing.tags = vec!["secrett".into()];
+    disagreeing.tags = tag_list(&["secrett"]);
     let slice = vec![agreeing.clone(), disagreeing.clone()];
     let all = vec![agreeing, disagreeing, resident];
 
@@ -1607,13 +1607,13 @@ async fn a_bookmark_is_not_a_resident_of_its_own_plan() {
     // find *itself* sitting there. Merging with itself would union its stored record
     // back into the plan and resurrect exactly what the plan was computed to remove.
     let mut stored = bookmark("https://x/mine");
-    stored.tags = vec!["keep".into(), "drop-me".into()];
+    stored.tags = tag_list(&["keep", "drop-me"]);
     stored.note = "stale note".into();
     let books = vec![stored];
 
     let pass = FakePass(|bookmark: &Bookmark| {
         Ok(Plan::Bookmark(Bookmark {
-            tags: vec!["keep".into()],
+            tags: tag_list(&["keep"]),
             note: "fresh note".into(),
             ..unchanged_plan(bookmark)
         }))
@@ -1642,10 +1642,10 @@ async fn rewrite_onto_a_resident_outside_the_slice_merges_with_it() {
     // URL, so the end state is one record: merge, keeping what the resident had.
     let mut mover = bookmark("https://x/mine");
     mover.note = "from the mover".into();
-    mover.tags = vec!["moved".into()];
+    mover.tags = tag_list(&["moved"]);
     let mut outsider = bookmark("https://other/resident");
     outsider.note = "hand written".into();
-    outsider.tags = vec!["keepme".into()];
+    outsider.tags = tag_list(&["keepme"]);
     outsider.title = "Resident title".into();
     let slice = vec![mover.clone()];
     let all = vec![mover, outsider];
@@ -1734,10 +1734,10 @@ async fn rewrite_onto_skipped_resident_merges_with_it() {
     // skipped means its stored record is current, so B's plan merges into it rather
     // than replacing A's title/note/tags -- and B's old URL is absorbed.
     let mut stored_a = bookmark("https://collide/");
-    stored_a.tags = vec!["x".into()];
+    stored_a.tags = tag_list(&["x"]);
     stored_a.note = "from A".into();
     let mut stored_b = bookmark("https://old-b/");
-    stored_b.tags = vec!["y".into()];
+    stored_b.tags = tag_list(&["y"]);
     stored_b.note = "from B".into();
     let books = vec![stored_a, stored_b];
 
@@ -2206,7 +2206,7 @@ async fn dry_run_renders_every_field_and_writes_nothing() {
             url: u(&format!("{}new", bookmark.url)),
             title: "New".into(),
             note,
-            tags: vec!["x".into()],
+            tags: tag_list(&["x"]),
             // A datable candidate source time, so the driver re-dates and the
             // `date ->` line renders.
             timestamp: crate::timefmt::from_unix(1_700_000_000),
@@ -2267,10 +2267,10 @@ async fn a_dry_run_previews_a_merge_and_its_absorbed_urls() {
     // where an operator gets to see them coming.
     let mut resident = bookmark("https://target/");
     resident.note = "resident".into();
-    resident.tags = vec!["rt".into()];
+    resident.tags = tag_list(&["rt"]);
     let mut mover = bookmark("https://mover/");
     mover.note = "mover".into();
-    mover.tags = vec!["mt".into()];
+    mover.tags = tag_list(&["mt"]);
     let slice = vec![mover.clone()];
     let all = vec![mover, resident];
 

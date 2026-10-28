@@ -655,7 +655,7 @@ async fn cleanup_refuses_a_bad_source_input_before_reading_pinboard() {
 
 mod net_tests {
     use super::*;
-    use crate::test_support::{stored_at, FakePinboard, NO_DATING};
+    use crate::test_support::{stored_at, tag_list, FakePinboard, NO_DATING};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -681,7 +681,7 @@ mod net_tests {
         .unwrap();
         let pinboard = FakePinboard {
             all: vec![Bookmark {
-                tags: vec!["work-star".into()],
+                tags: tag_list(&["work-star"]),
                 ..stored_at("https://github.com/o/r")
             }],
             ..Default::default()

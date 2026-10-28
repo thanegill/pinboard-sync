@@ -124,7 +124,7 @@ pub async fn write_drafts<P: BookmarkStore>(
             if !bm.note.is_empty() {
                 println!("          notes: {}", crate::htmltext::preview(&bm.note));
             }
-            println!("          tags:  [{}]", bm.tags.join(" "));
+            println!("          tags:  [{}]", bm.tags.joined());
             if !dt.is_empty() {
                 println!("          date:  {dt}");
             }
@@ -136,7 +136,7 @@ pub async fn write_drafts<P: BookmarkStore>(
         match pinboard.add(bm).await {
             Ok(()) => {
                 outcome.written += 1;
-                debug!("added {}  [{}]", bm.url, bm.tags.join(" "));
+                debug!("added {}  [{}]", bm.url, bm.tags.joined());
             }
             // Log and skip -- one bad bookmark shouldn't abort the rest of the run.
             Err(e) => {

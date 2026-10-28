@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::{
-    assert_quotes_capped_excerpt, capturing_logs, long_error_page, stored_at, strings,
+    assert_quotes_capped_excerpt, capturing_logs, long_error_page, stored_at, tag_list,
     ERROR_PAGE_TAIL,
 };
 use serde_json::json;
@@ -11,7 +11,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn post() -> Bookmark {
     Bookmark {
         title: "Title".into(),
-        tags: vec!["reddit".into()],
+        tags: tag_list(&["reddit"]),
         ..stored_at("https://old.reddit.com/r/x/")
     }
 }
@@ -180,7 +180,7 @@ async fn add_sends_each_field_under_its_pinboard_name() {
     let bookmark = |url: &str, public: bool, read_later: bool| Bookmark {
         title: "Title".into(),
         note: "Some notes".into(),
-        tags: strings(&["reddit", "subreddit:rust"]),
+        tags: tag_list(&["reddit", "subreddit:rust"]),
         public,
         read_later,
         ..stored_at(url)

@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{stored_at, strings, FakePinboard, NO_DATING};
+use crate::test_support::{stored_at, strings, tag_list, FakePinboard, NO_DATING};
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -101,7 +101,7 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "old title".into(),
-            tags: vec!["hackernews".into(), "mine".into()],
+            tags: tag_list(&["hackernews", "mine"]),
             timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
             ..stored_at("https://news.ycombinator.com/item?id=42")
         }],
@@ -158,7 +158,7 @@ async fn cleanup_preserves_existing_note_on_text_post() {
         all: vec![Bookmark {
             title: "Ask HN: How?".into(),
             note: stored_note.into(),
-            tags: vec!["hackernews".into()],
+            tags: tag_list(&["hackernews"]),
             timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
             ..stored_at("https://news.ycombinator.com/item?id=7")
         }],
@@ -217,7 +217,7 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
         all: vec![Bookmark {
             title: "An article".into(),
             note: "my notes".into(),
-            tags: vec!["find-hn".into(), "reading".into()],
+            tags: tag_list(&["find-hn", "reading"]),
             timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
             ..stored_at("https://example.com/x")
         }],
@@ -283,7 +283,7 @@ async fn link_discussions_searches_only_tagged_articles() {
         .mount(&algolia)
         .await;
     let tagged = |url: &str| Bookmark {
-        tags: strings(&["find-hn"]),
+        tags: tag_list(&["find-hn"]),
         ..stored_at(url)
     };
     let pinboard = FakePinboard {
@@ -335,7 +335,7 @@ async fn run_with_failing_lookups(with_item: bool) -> String {
         .mount(&algolia)
         .await;
     let article = |url: &str| Bookmark {
-        tags: strings(&["find-hn"]),
+        tags: tag_list(&["find-hn"]),
         ..stored_at(url)
     };
     let mut all = vec![
@@ -400,7 +400,7 @@ async fn link_pass_counts_an_article_without_a_discussion_as_an_answer() {
     };
 
     let article = Bookmark {
-        tags: strings(&["find-hn"]),
+        tags: tag_list(&["find-hn"]),
         ..stored_at("https://example.com/x")
     };
     assert_eq!(pass.plan(&article).await.unwrap(), Plan::Unchanged);
@@ -421,7 +421,7 @@ async fn link_discussions_keeps_entity_text_in_the_stored_title() {
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "Use  &amp;amp; to escape".into(),
-            tags: vec!["find-hn".into()],
+            tags: tag_list(&["find-hn"]),
             ..stored_at("https://example.com/x")
         }],
         ..Default::default()

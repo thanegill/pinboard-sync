@@ -12,7 +12,7 @@ use log::warn;
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::tags::tags_differ;
+use crate::tags::Tags;
 
 /// A bookmark in service-agnostic domain form. The field names are the domain's
 /// (`title`/`note`/`public`/`read_later`), not Pinboard's wire names
@@ -24,7 +24,7 @@ pub struct Bookmark {
     pub url: Url,
     pub title: String,
     pub note: String,
-    pub tags: Vec<String>,
+    pub tags: Tags,
     /// Creation time, or `None` when none was set (an empty wire `time`) or a non-empty
     /// `time` that won't parse (logged on read). It stays `None` rather than dropping the
     /// whole bookmark so the record remains visible to sync's dedup set (see the `TryFrom`
@@ -64,8 +64,8 @@ impl Bookmark {
             };
             changes.push(("notes", value));
         }
-        if tags_differ(&self.tags, &new.tags) {
-            changes.push(("tags", format!("[{}]", new.tags.join(" "))));
+        if self.tags.differs_from(&new.tags) {
+            changes.push(("tags", format!("[{}]", new.tags.joined())));
         }
         if new.timestamp != self.timestamp {
             let value = new

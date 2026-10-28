@@ -201,11 +201,12 @@ domain `Bookmark`: the snapshot format is a stable output contract, and a domain
 not silently change an operator's files.
 
 **All tags are config-driven; there are no tag CLI flags.** Each source's tag config
-(`RedditConfig`, `GitHubConfig`, `HackerNewsConfig`) has defaulted fields, rendered by
-`push_tag`/`push_prefixed` in [`src/tags.rs`](src/tags.rs) (empty string disables a tag).
-The tag tests in [`src/reddit/model/tests.rs`](src/reddit/model/tests.rs) are the spec —
-keep them in sync with rule changes. Pinboard tags can't contain whitespace or commas, so
-`push_prefixed` slugs them in the value (`lang:jupyter-notebook`) and `Config::parse`
+(`RedditConfig`, `GitHubConfig`, `HackerNewsConfig`) has defaulted fields, rendered into a
+bookmark's `Tags` by `Tags::push`/`Tags::push_prefixed` in [`src/tags.rs`](src/tags.rs)
+(empty string disables a tag). The tag tests in
+[`src/reddit/model/tests.rs`](src/reddit/model/tests.rs) are the spec — keep them in sync
+with rule changes. Pinboard tags can't contain whitespace or commas, so
+`Tags::push_prefixed` slugs them in the value (`lang:jupyter-notebook`) and `Config::parse`
 rejects both in config-supplied tags/prefixes.
 
 **Every configured `reddit_domain` counts as Reddit.** An account's domain is its URL host

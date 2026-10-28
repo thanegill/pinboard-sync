@@ -18,7 +18,7 @@ use crate::config::own_then_configured;
 use crate::htmltext::{collapse_whitespace, html_to_plain};
 use crate::keys::url_key;
 use crate::source::SourceError;
-use crate::tags::{prefixed, push_unique};
+use crate::tags::{prefixed, Tags};
 use crate::timefmt::DateOpts;
 use crate::urls::UrlExt;
 
@@ -324,11 +324,7 @@ fn links_to_repo(text: &str, names: &[RepoName]) -> bool {
 /// their `lang_prefix`es and `author_prefix`es, then re-add each config's base tags,
 /// current `lang:` tag and owner tag. Dropping all before adding any makes the order of
 /// `configs` irrelevant, even when one prefix starts another (`lang:`, `lang:work:`).
-fn refresh_tags(
-    existing: Vec<String>,
-    repo: &GitHubRepo,
-    configs: &[&GitHubConfig],
-) -> Vec<String> {
+fn refresh_tags(existing: Tags, repo: &GitHubRepo, configs: &[&GitHubConfig]) -> Tags {
     let prefixes: Vec<&str> = configs
         .iter()
         .flat_map(|cfg| [cfg.lang_prefix.as_str(), cfg.author_prefix.as_str()])
@@ -344,21 +340,14 @@ fn refresh_tags(
 
 /// `existing` without any tag under one of `prefixes` (an empty prefix marks none), then
 /// each of `additions` it doesn't already hold, skipping empty ones.
-fn retag(
-    existing: Vec<String>,
-    prefixes: &[&str],
-    additions: impl IntoIterator<Item = String>,
-) -> Vec<String> {
-    let mut tags: Vec<String> = existing
-        .into_iter()
-        .filter(|tag| {
-            !prefixes
-                .iter()
-                .any(|prefix| !prefix.is_empty() && tag.starts_with(prefix))
-        })
-        .collect();
+fn retag(mut tags: Tags, prefixes: &[&str], additions: impl IntoIterator<Item = String>) -> Tags {
+    tags.retain(|tag| {
+        !prefixes
+            .iter()
+            .any(|prefix| !prefix.is_empty() && tag.starts_with(prefix))
+    });
     for tag in additions {
-        push_unique(&mut tags, &tag);
+        tags.push_unique(&tag);
     }
     tags
 }
@@ -517,7 +506,7 @@ mod tests {
             ..GitHubConfig::default()
         };
         let tagged = |tags: &[&str]| Bookmark {
-            tags: crate::test_support::strings(tags),
+            tags: crate::test_support::tag_list(tags),
             ..crate::test_support::stored_at("https://github.com/o/r")
         };
         assert!(is_synced_star(
@@ -562,7 +551,7 @@ mod tests {
         .map(String::from)
         .to_vec();
         let refreshed = |configs: &[&GitHubConfig]| {
-            let mut tags = refresh_tags(existing.clone(), &rust, configs);
+            let mut tags = refresh_tags(existing.clone().into(), &rust, configs);
             tags.sort();
             tags
         };

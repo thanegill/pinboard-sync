@@ -19,7 +19,7 @@ use crate::reddit::model::{
 };
 use crate::reddit::PostInfo;
 use crate::source::{DedupKey, SourceError, UrlKey};
-use crate::tags::{push_prefixed, push_tags, push_unique};
+use crate::tags::Tags;
 use crate::timefmt::DateOpts;
 use crate::urls::{host_matches, UrlExt};
 use url::Url;
@@ -212,11 +212,11 @@ impl CleanupPass for RedditCleanupPass<'_> {
         let post = post_fullname(&new_url).and_then(|f| self.info.posts.get(&f));
 
         if opts.mark_nsfw && post.is_some_and(|p| p.over_18) {
-            push_unique(&mut tags, &owner.nsfw);
+            tags.push_unique(&owner.nsfw);
         }
 
         let own_fullname = if is_comment_url(&new_url) {
-            push_unique(&mut tags, &owner.comment);
+            tags.push_unique(&owner.comment);
             comment_fullname(&new_url)
         } else {
             post_fullname(&new_url)
@@ -224,7 +224,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
         if let Some(item) = own_fullname.and_then(|f| self.info.items.get(&f)) {
             for (prefix, tag) in item.detail_tags(owner) {
                 if !tags.iter().any(|t| t.starts_with(prefix)) {
-                    tags.push(tag);
+                    tags.push(&tag);
                 }
             }
         }
@@ -474,10 +474,10 @@ pub fn normalize_tags(
     base_tags: &[String],
     prefix: &str,
     kept: &[&str],
-) -> Vec<String> {
+) -> Tags {
     let mut set: BTreeSet<String> = existing.iter().cloned().collect();
-    let mut ensured = Vec::new();
-    push_tags(&mut ensured, base_tags);
+    let mut ensured = Tags::default();
+    ensured.push_all(base_tags);
     let bare_prefixes = [prefix, prefix.strip_suffix(':').unwrap_or(prefix)];
     for bare_prefix in bare_prefixes {
         if !kept.contains(&bare_prefix) {
@@ -503,9 +503,9 @@ pub fn normalize_tags(
             }
             set.remove(&format!("{prefix}{form}"));
         }
-        push_prefixed(&mut ensured, prefix, &cased);
+        ensured.push_prefixed(prefix, &cased);
     }
-    set.extend(ensured);
+    set.extend(ensured.iter().cloned());
     set.into_iter().collect()
 }
 

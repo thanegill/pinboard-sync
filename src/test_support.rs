@@ -18,6 +18,7 @@ use crate::keys::RedditKeys;
 use crate::reddit::model::{RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
+use crate::tags::Tags;
 use crate::timefmt::DateOpts;
 
 tokio::task_local! {
@@ -183,7 +184,7 @@ pub fn stored_at(url: &str) -> Bookmark {
         url: Url::parse(url).unwrap(),
         title: String::new(),
         note: String::new(),
-        tags: Vec::new(),
+        tags: Tags::default(),
         timestamp: None,
         public: false,
         read_later: false,
@@ -193,6 +194,11 @@ pub fn stored_at(url: &str) -> Bookmark {
 /// `items` as owned strings, for a tag list or any other `Vec<String>` a test spells out.
 pub fn strings(items: &[&str]) -> Vec<String> {
     items.iter().map(|item| item.to_string()).collect()
+}
+
+/// [`strings`] as a bookmark's [`Tags`].
+pub fn tag_list(items: &[&str]) -> Tags {
+    strings(items).into()
 }
 
 /// The titles of `drafts`, in order.
@@ -348,7 +354,7 @@ impl BookmarkStore for FakePinboard {
         }
         self.added.borrow_mut().push(AddCall {
             url: b.url.to_string(),
-            tags: b.tags.clone(),
+            tags: b.tags.to_vec(),
             toread: b.read_later,
             shared: b.public,
             dt: bookmark_dt(b),
@@ -364,7 +370,7 @@ impl BookmarkStore for FakePinboard {
             url: b.url.to_string(),
             description: b.title.clone(),
             extended: b.note.clone(),
-            tags: b.tags.clone(),
+            tags: b.tags.to_vec(),
             shared: b.public,
             toread: b.read_later,
             dt: bookmark_dt(b),

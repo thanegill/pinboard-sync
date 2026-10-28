@@ -281,6 +281,22 @@ mod tests {
         assert_eq!(ensure_hn_link_note(&with_marker, link), with_marker);
     }
 
+    #[test]
+    fn the_marker_id_is_read_from_a_whole_marker_line_only() {
+        let id = |note: &str| hn_link_marker_id(note).map(|id| id.to_string());
+        assert_eq!(
+            id("my note\n\n  HN Link:   https://news.ycombinator.com/item?id=42  "),
+            Some("42".to_string())
+        );
+        assert_eq!(
+            id("see the HN Link: https://news.ycombinator.com/item?id=42"),
+            None
+        );
+        assert_eq!(id("HN Link: https://example.com/elsewhere"), None);
+        assert_eq!(id("HN Link: not a url"), None);
+        assert_eq!(id("hn link: https://news.ycombinator.com/item?id=42"), None);
+    }
+
     fn story_pass_items() -> HashMap<HackerNewsItemId, HackerNewsItem> {
         let mut items = HashMap::new();
         items.insert(

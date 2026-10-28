@@ -18,28 +18,22 @@ rustPlatform.buildRustPackage (finalAttrs: {
     ];
   };
   cargoLock.lockFile = ../Cargo.lock;
-  # reqwest uses native-tls (see Cargo.toml): on Linux that's OpenSSL via
-  # openssl-sys, which needs pkg-config + openssl at build time. On darwin
-  # native-tls uses the Security framework (provided by the stdenv).
-  # installShellFiles provides `installShellCompletion` for postInstall.
+  # native-tls (see Cargo.toml) is OpenSSL on Linux, found through pkg-config; darwin
+  # uses the Security framework from the stdenv.
   nativeBuildInputs = [
     pkg-config
     installShellFiles
   ];
   buildInputs = [ openssl ];
-  # The `net_tests` integration tests spin up a mock HTTP server, which
-  # can't bind a socket in the build sandbox. They run under `cargo test`
-  # in the dev shell / CI; the sandboxed build runs everything else.
+  # The `net_tests` modules bind a socket, which the build sandbox forbids; they run
+  # under `cargo test` in the dev shell and CI.
   checkFlags = [ "--skip=net_tests" ];
-  # Generate shell completions, a man page, and the example config from the
-  # built binary.
   postInstall = ''
     installShellCompletion --cmd pinboard-sync \
       --bash <($out/bin/pinboard-sync completions bash) \
       --zsh <($out/bin/pinboard-sync completions zsh) \
       --fish <($out/bin/pinboard-sync completions fish)
-    # installManPage reads the section from the filename suffix, so write to
-    # a `.1` file rather than a process substitution.
+    # installManPage reads the section from the file name, so no process substitution.
     $out/bin/pinboard-sync man > pinboard-sync.1
     installManPage pinboard-sync.1
     mkdir -p $out/share/pinboard-sync

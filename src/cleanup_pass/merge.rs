@@ -48,8 +48,7 @@ pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
     let mut note = lead.note.clone();
     for b in rest {
         for block in b.note.split("\n\n") {
-            let candidate = block.trim();
-            if candidate.is_empty() || note.split("\n\n").any(|have| have.trim() == candidate) {
+            if holds_block(&note, block) {
                 continue;
             }
             if !note.is_empty() {
@@ -79,6 +78,13 @@ pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
         public: group().all(|b| b.public),
         read_later: group().any(|b| b.read_later),
     }
+}
+
+/// Whether `block` is blank or already a block of `note`, compared trimmed, as
+/// [`merge_bookmarks`] compares them.
+pub(super) fn holds_block(note: &str, block: &str) -> bool {
+    let candidate = block.trim();
+    candidate.is_empty() || note.split("\n\n").any(|have| have.trim() == candidate)
 }
 
 #[cfg(test)]

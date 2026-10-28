@@ -7,7 +7,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use log::warn;
 
 use super::{
-    build_job, job_label, pinboard_client_for_token, warn_shared_env_secrets, Selection,
+    build_every, build_job, build_selected, pinboard_client_for_token, Built, Selection,
     SkippedTarget, SourceAccount, SourceClient, SyncOverrides,
 };
 use crate::backup::{self, BackupSource};
@@ -65,15 +65,23 @@ pub fn build_backup_plan(cmd: BackupCmd, config: &Config) -> Result<BackupPlan> 
                 on_auth_failure: on_auth_failure_from_env(),
                 ..SyncOverrides::default()
             };
+            let sources = build_every::<RedditAccount, _>(&overrides, config, build_backup_job)
+                .and(build_every::<GitHubAccount, _>(
+                    &overrides,
+                    config,
+                    build_backup_job,
+                ))
+                .and(build_every::<HackerNewsAccount, _>(
+                    &overrides,
+                    config,
+                    build_backup_job,
+                ));
             let mut plan = BackupPlan {
-                jobs: Vec::new(),
-                skipped: Vec::new(),
+                jobs: sources.targets,
+                skipped: sources.skipped,
                 out: None,
                 dry_run: false,
             };
-            build_every_backup_job::<RedditAccount>(&overrides, config, &mut plan);
-            build_every_backup_job::<GitHubAccount>(&overrides, config, &mut plan);
-            build_every_backup_job::<HackerNewsAccount>(&overrides, config, &mut plan);
             let has_source_targets = !plan.jobs.is_empty() || !plan.skipped.is_empty();
             match build_pinboard_backup_job(None, config)? {
                 Some(job) => plan.jobs.push(job),
@@ -154,48 +162,14 @@ fn build_source_backup_plan<A: SourceAccount>(
     dry_run: bool,
     config: &Config,
 ) -> Result<BackupPlan> {
-    let mut plan = BackupPlan {
-        jobs: Vec::new(),
-        skipped: Vec::new(),
+    let Built { targets, skipped } =
+        build_selected(selection, overrides, config, build_backup_job::<A>)?;
+    Ok(BackupPlan {
+        jobs: targets,
+        skipped,
         out,
         dry_run,
-    };
-    match selection {
-        Selection::All => {
-            if A::configured(config).is_empty() {
-                bail!(
-                    "--all requires a --config with at least one configured {} account",
-                    A::SOURCE
-                );
-            }
-            build_every_backup_job::<A>(overrides, config, &mut plan);
-        }
-        Selection::One(name) => {
-            let account = config::select_account(A::configured(config), name)?;
-            plan.jobs
-                .push(build_backup_job(account, overrides, config)?);
-        }
-    }
-    Ok(plan)
-}
-
-/// A backup job for every configured account of one source, with each account that fails
-/// to build recorded in `plan.skipped` instead, so the healthy ones are still backed up.
-fn build_every_backup_job<A: SourceAccount>(
-    overrides: &SyncOverrides,
-    config: &Config,
-    plan: &mut BackupPlan,
-) {
-    warn_shared_env_secrets::<A>(overrides, config);
-    for account in A::configured(config) {
-        match build_backup_job(Some(account), overrides, config) {
-            Ok(job) => plan.jobs.push(job),
-            Err(reason) => plan.skipped.push(SkippedTarget {
-                label: job_label(Some(account)),
-                reason,
-            }),
-        }
-    }
+    })
 }
 
 /// Wrap one account's `SyncJob` as a backup job, keeping its client and auth hook and

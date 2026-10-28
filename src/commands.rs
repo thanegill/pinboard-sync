@@ -59,7 +59,7 @@ struct SyncPlan {
 }
 
 fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<SyncPlan> {
-    let (jobs, overrides, skipped) = match (cmd.all, cmd.source) {
+    let (built, overrides) = match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
             if !config.has_accounts() {
@@ -70,36 +70,41 @@ fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<SyncPlan> {
                 on_auth_failure: cmd.on_auth_failure.or_else(on_auth_failure_from_env),
                 ..SyncOverrides::default()
             };
-            let (jobs, skipped) = build_all_jobs(config, &overrides);
-            (jobs, overrides, skipped)
+            (build_all_jobs(config, &overrides), overrides)
         }
         (false, Some(SyncSource::Reddit(mut args))) => {
             let (account, all) = (args.account.take(), args.all);
             let selection = Selection::new(account.as_deref(), all)?;
             let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
-            let (jobs, skipped) = build_jobs::<RedditAccount>(selection, &overrides, config)?;
-            (jobs, overrides, skipped)
+            (
+                build_jobs::<RedditAccount>(selection, &overrides, config)?,
+                overrides,
+            )
         }
         (false, Some(SyncSource::Github(mut args))) => {
             let (account, all) = (args.account.take(), args.all);
             let selection = Selection::new(account.as_deref(), all)?;
             let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
-            let (jobs, skipped) = build_jobs::<GitHubAccount>(selection, &overrides, config)?;
-            (jobs, overrides, skipped)
+            (
+                build_jobs::<GitHubAccount>(selection, &overrides, config)?,
+                overrides,
+            )
         }
         (false, Some(SyncSource::Hackernews(mut args))) => {
             let (account, all) = (args.account.take(), args.all);
             let selection = Selection::new(account.as_deref(), all)?;
             let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
-            let (jobs, skipped) = build_jobs::<HackerNewsAccount>(selection, &overrides, config)?;
-            (jobs, overrides, skipped)
+            (
+                build_jobs::<HackerNewsAccount>(selection, &overrides, config)?,
+                overrides,
+            )
         }
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),
     };
     Ok(SyncPlan {
-        jobs,
+        jobs: built.targets,
         overrides,
-        skipped,
+        skipped: built.skipped,
     })
 }
 

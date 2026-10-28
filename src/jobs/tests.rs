@@ -162,7 +162,10 @@ fn build_all_jobs_isolates_a_failing_account() {
         github: vec![GitHubAccount::default()],
         ..Default::default()
     };
-    let (jobs, skipped) = build_all_jobs(&config, &SyncOverrides::default());
+    let Built {
+        targets: jobs,
+        skipped,
+    } = build_all_jobs(&config, &SyncOverrides::default());
     assert_eq!(jobs.len(), 1, "healthy reddit account still builds");
     assert_eq!(jobs[0].label, "reddit[alice]");
     let skipped: Vec<&str> = skipped.iter().map(|target| target.label.as_str()).collect();
@@ -189,9 +192,11 @@ fn build_jobs_for_every_account_of_a_source_isolates_a_failing_account() {
         ],
         ..Default::default()
     };
-    let (jobs, skipped) =
-        build_jobs::<GitHubAccount>(Selection::All, &SyncOverrides::default(), &config)
-            .expect("a failing account does not abort the source");
+    let Built {
+        targets: jobs,
+        skipped,
+    } = build_jobs::<GitHubAccount>(Selection::All, &SyncOverrides::default(), &config)
+        .expect("a failing account does not abort the source");
     let labels: Vec<&str> = jobs.iter().map(|job| job.label.as_str()).collect();
     assert_eq!(labels, ["github[main]"]);
     let skipped: Vec<&str> = skipped.iter().map(|target| target.label.as_str()).collect();
@@ -237,7 +242,7 @@ async fn an_env_secret_shared_by_several_accounts_is_warned_about_once() {
         ..Default::default()
     };
 
-    let ((jobs, _), logs) = crate::test_support::capturing_logs(async {
+    let (Built { targets: jobs, .. }, logs) = crate::test_support::capturing_logs(async {
         build_all_jobs(&config, &SyncOverrides::default())
     })
     .await;

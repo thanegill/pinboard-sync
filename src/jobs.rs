@@ -35,39 +35,92 @@ pub struct SkippedTarget {
     pub reason: anyhow::Error,
 }
 
-/// Build one job per configured account across every source for `sync --all`, isolating
-/// build failures: an account whose required secret won't resolve is returned as a
-/// [`SkippedTarget`] rather than aborting the run, so the healthy accounts still sync.
-pub fn build_all_jobs(
-    config: &Config,
-    overrides: &SyncOverrides,
-) -> (Vec<SyncJob>, Vec<SkippedTarget>) {
-    let mut jobs = Vec::new();
-    let mut skipped = Vec::new();
-    build_every_job::<RedditAccount>(config, overrides, &mut jobs, &mut skipped);
-    build_every_job::<GitHubAccount>(config, overrides, &mut jobs, &mut skipped);
-    build_every_job::<HackerNewsAccount>(config, overrides, &mut jobs, &mut skipped);
-    (jobs, skipped)
+/// The targets built for some accounts, and the accounts that could not be built.
+pub struct Built<T> {
+    pub targets: Vec<T>,
+    pub skipped: Vec<SkippedTarget>,
 }
 
-/// [`build_all_jobs`] for one source: a job for each of its configured accounts, with each
-/// account that fails to build added to `skipped` instead.
-fn build_every_job<A: SourceAccount>(
-    config: &Config,
+impl<T> Built<T> {
+    fn none() -> Self {
+        Self {
+            targets: Vec::new(),
+            skipped: Vec::new(),
+        }
+    }
+
+    fn one(target: T) -> Self {
+        Self {
+            targets: vec![target],
+            skipped: Vec::new(),
+        }
+    }
+
+    /// `self` followed by `more`.
+    #[must_use]
+    pub fn and(mut self, more: Built<T>) -> Self {
+        self.targets.extend(more.targets);
+        self.skipped.extend(more.skipped);
+        self
+    }
+}
+
+/// A target per configured account of `A`, made by `build`. An account that fails to build
+/// is skipped rather than aborting the rest, so the healthy ones still run.
+pub fn build_every<A: SourceAccount, T>(
     overrides: &SyncOverrides,
-    jobs: &mut Vec<SyncJob>,
-    skipped: &mut Vec<SkippedTarget>,
-) {
+    config: &Config,
+    build: impl Fn(Option<&A>, &SyncOverrides, &Config) -> Result<T>,
+) -> Built<T> {
     warn_shared_env_secrets::<A>(overrides, config);
+    let mut every = Built::none();
     for account in A::configured(config) {
-        match build_job(Some(account), overrides, config) {
-            Ok(job) => jobs.push(job),
-            Err(reason) => skipped.push(SkippedTarget {
+        match build(Some(account), overrides, config) {
+            Ok(target) => every.targets.push(target),
+            Err(reason) => every.skipped.push(SkippedTarget {
                 label: job_label(Some(account)),
                 reason,
             }),
         }
     }
+    every
+}
+
+/// A target per account `selection` picks, made by `build`. Under [`Selection::All`] that
+/// is [`build_every`], and a source with no accounts is refused.
+pub fn build_selected<A: SourceAccount, T>(
+    selection: Selection,
+    overrides: &SyncOverrides,
+    config: &Config,
+    build: impl Fn(Option<&A>, &SyncOverrides, &Config) -> Result<T>,
+) -> Result<Built<T>> {
+    let accounts = A::configured(config);
+    match selection {
+        Selection::All => {
+            if accounts.is_empty() {
+                bail!(
+                    "--all requires a --config with at least one configured {} account",
+                    A::SOURCE
+                );
+            }
+            Ok(build_every(overrides, config, build))
+        }
+        Selection::One(name) => {
+            let account = config::select_account(accounts, name)?;
+            Ok(Built::one(build(account, overrides, config)?))
+        }
+    }
+}
+
+/// One job per configured account across every source, for `sync --all`.
+pub fn build_all_jobs(config: &Config, overrides: &SyncOverrides) -> Built<SyncJob> {
+    build_every::<RedditAccount, _>(overrides, config, build_job)
+        .and(build_every::<GitHubAccount, _>(
+            overrides, config, build_job,
+        ))
+        .and(build_every::<HackerNewsAccount, _>(
+            overrides, config, build_job,
+        ))
 }
 
 /// Warn when an environment secret would stand in for the own value of every configured
@@ -111,33 +164,13 @@ impl<'a> Selection<'a> {
     }
 }
 
-/// Build one job per selected account. Under [`Selection::All`], as in [`build_all_jobs`],
-/// an account that fails to build is returned as a [`SkippedTarget`] rather than aborting
-/// the rest.
+/// One job per account `selection` picks, through [`build_selected`].
 pub fn build_jobs<A: SourceAccount>(
     selection: Selection,
     overrides: &SyncOverrides,
     config: &Config,
-) -> Result<(Vec<SyncJob>, Vec<SkippedTarget>)> {
-    let accounts = A::configured(config);
-    match selection {
-        Selection::All => {
-            if accounts.is_empty() {
-                bail!(
-                    "--all requires a --config with at least one configured {} account",
-                    A::SOURCE
-                );
-            }
-            let mut jobs = Vec::new();
-            let mut skipped = Vec::new();
-            build_every_job::<A>(config, overrides, &mut jobs, &mut skipped);
-            Ok((jobs, skipped))
-        }
-        Selection::One(name) => {
-            let account = config::select_account(accounts, name)?;
-            Ok((vec![build_job(account, overrides, config)?], Vec::new()))
-        }
-    }
+) -> Result<Built<SyncJob>> {
+    build_selected(selection, overrides, config, build_job::<A>)
 }
 
 #[derive(Default)]

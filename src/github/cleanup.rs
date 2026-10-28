@@ -109,12 +109,13 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         // Only genuine repo-root URLs on the bare github.com host are normalized;
         // deep links (issues/PRs/blob/tree) and gist/other subdomains are left untouched
         // without an API call, so they say nothing about whether GitHub is reachable.
-        let Some(RepoName { owner, name: repo }) = repo_root(&bookmark.url) else {
+        let Some(root) = repo_root(&bookmark.url) else {
             return Ok(Plan::Skipped);
         };
         // Default to the canonicalization, then refresh from the API when the repo still
         // exists (a 404 keeps just the canonical URL).
-        let mut url = Url::parse(&format!("https://github.com/{owner}/{repo}"))
+        let mut url = root
+            .canonical_url()
             .context("building the canonical github URL")?;
         let mut title = collapse_whitespace(&bookmark.title, " ");
         let mut note = bookmark.note.clone();
@@ -127,7 +128,7 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         let synced = !syncing.is_empty();
         // A failed lookup is surfaced to the driver, which logs and counts it (or, for a
         // dead credential, aborts the pass).
-        let lookup = self.client.repo(&owner, &repo).await?;
+        let lookup = self.client.repo(&root.owner, &root.name).await?;
         let names = repo_names(&bookmark.url, lookup.as_ref());
         // A rename can merge a star into another source's bookmark of the repo, leaving a
         // record with the base tag but that source's title or notes: it is not the star's
@@ -187,6 +188,12 @@ impl RepoName {
     /// Whether this is `owner/name`, compared as GitHub does, ignoring case.
     fn is(&self, owner: &str, name: &str) -> bool {
         self.owner.eq_ignore_ascii_case(owner) && self.name.eq_ignore_ascii_case(name)
+    }
+
+    /// `https://github.com/<owner>/<name>`: what `cleanup github` writes when the API
+    /// has no such repo, and replaces with the API's `html_url` when it has.
+    fn canonical_url(&self) -> Result<Url, url::ParseError> {
+        Url::parse(&format!("https://github.com/{}/{}", self.owner, self.name))
     }
 }
 

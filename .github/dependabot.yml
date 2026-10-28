@@ -1,7 +1,9 @@
 # Weekly version updates. The workflow actions are pinned to commit SHAs, and Dependabot
 # keeps them pinned, moving the SHA and its version comment together. The nix ecosystem
-# updates each flake.lock input in its own PR. Each update takes a release (for a flake
-# input, a commit) at least a week old, so one pulled within days never lands.
+# updates each flake.lock input in its own PR. Semver-compatible crate updates (by
+# Cargo's rule: 0.4.1 -> 0.4.2 is compatible, 0.4 -> 0.5 is not) arrive as one grouped
+# PR, and each breaking bump as its own. Each update takes a release (for a flake input,
+# a commit) at least a week old, so one pulled within days never lands.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -16,3 +18,14 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      cargo-compatible:
+        update-types:
+          - minor
+          - patch

@@ -74,6 +74,8 @@ All notable changes to this project are documented here. The format is based on
 - `cleanup github` leaves a `github.com/<owner>/.git` bookmark alone, and any whose repo
   name is `.` or `..` once `.git` is dropped. It used to move them to the owner's
   profile or to GitHub's home page.
+- `cleanup github` drops a repo URL's `.git` suffix in any case (`Repo.GIT`), and leaves
+  `owner/.GIT` alone as it does `owner/.git`.
 - A missing Reddit or HackerNews username or Pinboard token names every setting it can come
   from, `$REDDIT_USERNAME_FILE`, `$HN_USERNAME_FILE` and `$PINBOARD_TOKEN_FILE` included,
   as the cookie and GitHub token messages already did.

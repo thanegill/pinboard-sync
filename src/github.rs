@@ -136,16 +136,22 @@ impl GitHubStarredRepo {
 }
 
 /// The repo name a repo-root URL's last path segment spells: the segment less one `.git`
-/// suffix. `None` when that leaves no name, or a dot segment (`.` or `..`, raw or
-/// percent-encoded), which a URL parser drops, so a URL built from it names the owner or
-/// the site rather than a repo.
+/// suffix, in any case, as `GitHubKeys`, which lowercases, does. `None` when that leaves no
+/// name, or a dot segment (`.` or `..`, raw or percent-encoded), which a URL parser drops,
+/// so a URL built from it names the owner or the site rather than a repo.
 pub(crate) fn repo_name(segment: &str) -> Option<&str> {
-    let name = segment.strip_suffix(".git").unwrap_or(segment);
+    let name = strip_git_suffix(segment).unwrap_or(segment);
     let is_dot_segment = matches!(
         name.to_ascii_lowercase().as_str(),
         "." | ".." | "%2e" | ".%2e" | "%2e." | "%2e%2e"
     );
     (!name.is_empty() && !is_dot_segment).then_some(name)
+}
+
+fn strip_git_suffix(segment: &str) -> Option<&str> {
+    let split = segment.len().checked_sub(".git".len())?;
+    let (name, suffix) = (segment.get(..split)?, segment.get(split..)?);
+    suffix.eq_ignore_ascii_case(".git").then_some(name)
 }
 
 /// What sets a repo note's homepage line apart from the rest, which `cleanup` reads back.

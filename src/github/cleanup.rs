@@ -367,6 +367,7 @@ mod tests {
             "https://github.com/o/.git",
             "https://github.com/o/..git",
             "https://github.com/o/%2E%2E.git",
+            "https://github.com/o/.GIT",
         ] {
             let (plan, waits) = crate::http::recording_waits(pass.plan(&stored_at(stored))).await;
             assert_eq!(plan.unwrap(), Plan::Skipped, "{stored}");
@@ -384,6 +385,10 @@ mod tests {
         assert_eq!(repo_root(&url("https://github.com/Owner/Repo")), owner_repo);
         assert_eq!(
             repo_root(&url("https://github.com/Owner/Repo.git")),
+            owner_repo
+        );
+        assert_eq!(
+            repo_root(&url("https://github.com/Owner/Repo.GIT")),
             owner_repo
         );
         assert_eq!(
@@ -413,6 +418,7 @@ mod tests {
             "https://github.com/o/...git",
             "https://github.com/o/%2e.git",
             "https://github.com/o/%2E%2E.git",
+            "https://github.com/o/.GIT",
         ] {
             assert_eq!(repo_root(&url(stored)), None, "{stored}");
         }

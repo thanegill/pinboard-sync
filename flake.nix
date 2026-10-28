@@ -41,17 +41,12 @@
               rustfmt
               clippy
               rust-analyzer
-              cargo-llvm-cov
               cargo-mutants
             ];
             # native-tls (reqwest) needs OpenSSL on Linux; pkg-config locates it.
             # No-op on darwin, which links the Security framework instead.
             nativeBuildInputs = [ pkgs.pkg-config ];
             buildInputs = [ pkgs.openssl ];
-            # cargo-llvm-cov needs llvm-tools matching rustc's LLVM. `rustc.llvmPackages.llvm`
-            # is exactly that LLVM and tracks the toolchain, so there's no version to keep in sync.
-            LLVM_COV = lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-cov";
-            LLVM_PROFDATA = lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-profdata";
           };
 
           checks = {

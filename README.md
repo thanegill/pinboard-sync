@@ -157,7 +157,7 @@ pinboard-sync sync reddit --dry-run
 
 # Normalize existing bookmarks
 pinboard-sync cleanup reddit          # URLs → configured domain, tags, NSFW, titles
-pinboard-sync cleanup github          # canonicalize repo URLs + refresh renamed repos
+pinboard-sync cleanup github          # canonicalize repo + gist URLs, refresh renames
 pinboard-sync cleanup hackernews      # rewrite HN item URLs to the linked article
 
 # Validate the Pinboard token + every configured account's credentials
@@ -279,6 +279,20 @@ grows. Rare, but if you see a note accumulating `… [truncated]` markers, short
   behind organization SSO the token isn't authorized for keeps just the URL
   canonicalization, with a warning for the last two. Needs the GitHub token; without
   `use_post_date` the bookmark's creation time is preserved.
+
+  Gist bookmarks get the same treatment in a second pass, unless the running account
+  (the first `[[github]]` one under `cleanup --all`) has `gists = false`. It reads the
+  starred gists once and looks up only the ones not among them. Each is canonicalized to
+  `https://gist.github.com/<owner>/<id>`, folding in the owner-less form, and its notes
+  are rebuilt only when empty or in the shape sync writes. Its tags, and its title while
+  it is still one sync gave it, are refreshed only when it carries some account's
+  markers, with that account's settings. The markers are up to two tags: the first entry
+  of `gist_tags` and the first one `tags` lacks (`github-star` and `github-gist` by
+  default), so a gist you saved by hand and tagged `github-star` keeps its title and
+  tags. When every `gist_tags` entry is also in `tags`, the first entry alone is the
+  marker, and such a gist does count as synced. Under `use_post_date` a gist is re-dated
+  by `gist_post_date` only while both title and notes are still the tool's. A deleted
+  gist keeps its URL.
 
 - **HackerNews** (`cleanup hackernews`) — rewrites favorited *story* bookmarks whose URL
   is the HN item page (`news.ycombinator.com/item?id=…`) to the linked **article**,

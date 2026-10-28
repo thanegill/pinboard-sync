@@ -122,10 +122,11 @@ turn. The `Refusal` and `propagate_refusals` docs give the rest.
 or `Plan::Skipped` (not this pass's bookmark — no lookup made). Only the first two count
 toward `PassOutcome::reached`, as the last two mean opposite things about the source's
 health. Without that split, the every-lookup-failed guard is worthless: `cleanup github`
-skips deep links and gists locally, and if those counted as successes a genuinely
-unreachable GitHub would look fine. HackerNews' `search_by_url` finding nothing is
-`Unchanged`: the query ran. When a source runs several passes, each reaches its **own**
-verdict rather than pooling tallies, so a pass that can't fail can't vouch for one that can.
+skips deep links locally (and a deleted gist is `Unchanged`: the lookup answered), and if
+those counted as successes a genuinely unreachable GitHub would look fine. HackerNews'
+`search_by_url` finding nothing is `Unchanged`: the query ran. When a source runs several
+passes, each reaches its **own** verdict rather than pooling tallies, so a pass that can't
+fail can't vouch for one that can.
 
 The per-source planners are each source's `cleanup.rs`: [reddit](src/reddit/cleanup.rs),
 [github](src/github/cleanup.rs) and [hackernews](src/hackernews/cleanup.rs).
@@ -237,7 +238,14 @@ what the tool wrote: notes in `github_note`'s shape, the base/language/owner tag
 bookmarks carrying any configured account's base tag (with that account's tag config), their
 title only while it is still `owner/repo`, and their star date only while the notes are the
 tool's too. A repo root is often another source's bookmark (an HN story linking it, or one a
-rename merged a star into), so never widen that.
+rename merged a star into), so never widen that. Gists follow the same rules in their own
+pass ([`src/github/cleanup/gists.rs`](src/github/cleanup/gists.rs)), skipped when the
+running account has gists off, keyed on carrying up to two marker tags of an account
+(`markers`; the first `gist_tags` entry alone when every entry is also in `tags`): the
+default `gist_tags` inherit `github-star`, so no single tag tells a synced gist from a
+hand-saved one or one account's gist from another's. The pass plans from one read of
+`/gists/starred` and looks up only the gists missing from it; a failed read fails the pass
+before anything is planned, so it can't count every gist as reached.
 
 **`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
 `SyncJob { client: SourceClient, hook, settings }` (`SourceClient` an enum over the three

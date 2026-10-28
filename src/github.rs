@@ -5,7 +5,7 @@
 pub mod cleanup;
 pub mod gists;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -395,11 +395,40 @@ impl GitHubClient {
     /// inaccessible — deleted or private (404), or refused for good
     /// ([`permanent_refusal`]: blocked, or behind SSO this token isn't authorized for).
     async fn repo(&self, owner: &str, name: &str) -> Result<Option<GitHubRepo>, SourceError> {
-        let endpoint = format!("{}/repos/{}/{}", self.base, owner, name);
-        let resp = self
-            .http
-            .send("github repo", || self.http.get(&endpoint))
-            .await?;
+        let endpoint = format!("{}/repos/{owner}/{name}", self.base);
+        self.lookup(
+            "github repo",
+            &endpoint,
+            &format!("{owner}/{name}"),
+            "its stored title, notes and tags",
+        )
+        .await
+    }
+
+    /// Look up a gist via `/gists/{id}`. `None` if it is permanently inaccessible: deleted
+    /// (404), or refused for good ([`permanent_refusal`]).
+    async fn gist(&self, id: &str) -> Result<Option<GitHubGist>, SourceError> {
+        let endpoint = format!("{}/gists/{id}", self.base);
+        self.lookup(
+            "github gist",
+            &endpoint,
+            id,
+            "its stored URL, title, notes and tags",
+        )
+        .await
+    }
+
+    /// GET the `label` (`github repo`) at `endpoint`. `None` for a 404 or a
+    /// [`permanent_refusal`]; the latter is logged naming `subject` and what is `kept`,
+    /// since unlike a 404 the thing does still exist.
+    async fn lookup<T: serde::de::DeserializeOwned>(
+        &self,
+        label: &str,
+        endpoint: &str,
+        subject: &str,
+        kept: &str,
+    ) -> Result<Option<T>, SourceError> {
+        let resp = self.http.send(label, || self.http.get(endpoint)).await?;
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(self.token_refused());
@@ -410,19 +439,17 @@ impl GitHubClient {
         if !status.is_success() {
             let headers = resp.headers().clone();
             let body = resp.text().await.unwrap_or_default();
-            // Unlike a 404 the repo does still exist, so say so rather than skipping
-            // silently.
             if let Some(why) = permanent_refusal(status, &headers, &body) {
-                warn!(
-                    "github repo {owner}/{name} {why}; keeping its stored title, notes \
-                     and tags"
-                );
+                warn!("{label} {subject} {why}; keeping {kept}");
                 return Ok(None);
             }
-            return Err(self.refusal_of("github repo", status, &headers, &body));
+            return Err(self.refusal_of(label, status, &headers, &body));
         }
-        let repo: GitHubRepo = resp.json().await.context("parsing github repo response")?;
-        Ok(Some(repo))
+        let found = resp
+            .json()
+            .await
+            .with_context(|| format!("parsing {label} response"))?;
+        Ok(Some(found))
     }
 }
 
@@ -474,6 +501,25 @@ impl GitHubClient {
             gist.into_draft(&self.config.gists)
         })
         .await
+    }
+
+    /// Every starred gist itself, keyed by its (lowercase) id, for `cleanup github` to plan
+    /// from with one paged read rather than a lookup per bookmark.
+    async fn starred_gists(&self) -> Result<HashMap<String, GitHubGist>, SourceError> {
+        let mut gists = HashMap::new();
+        self.walk(
+            &STARRED_GISTS,
+            &mut RawSink::disabled(),
+            |page: Vec<GitHubGist>| {
+                gists.extend(
+                    page.into_iter()
+                        .map(|gist| (gist.id.to_ascii_lowercase(), gist)),
+                );
+                false
+            },
+        )
+        .await?;
+        Ok(gists)
     }
 
     /// The starred repos, each dated by its star time.

@@ -15,6 +15,8 @@ All notable changes to this project are documented here. The format is based on
   each synced star once to add it; `tag_author_prefix = ""` turns it off.
 - `sync github` also syncs starred gists, **on by default** (`gists = false` opts out),
   tagged like stars plus `github-gist`. The token needs no new permission.
+- `cleanup github` moves gist bookmarks to `gist.github.com/<owner>/<id>` and refreshes
+  the ones `sync github` wrote, as it does stars.
 - A warning when a setting in the environment (`$GITHUB_TOKEN`, `$REDDIT_COOKIE_FILE`,
   `$HN_USERNAME`, ...) applies to several configured accounts of one source, since it
   outranks each account's own value.

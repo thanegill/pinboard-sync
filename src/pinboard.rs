@@ -12,7 +12,8 @@ use url::Url;
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage};
 use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::http::{
-    answered_a_retry, client_builder, error_with_body, redact, RetryingClient, REDACTED, USER_AGENT,
+    answered_a_retry, client_builder, error_with_body, redact, LinearBackoff, RetryingClient,
+    REDACTED, USER_AGENT,
 };
 use crate::source::SourceError;
 use crate::tags::Tags;
@@ -21,8 +22,8 @@ const PINBOARD_BASE: &str = "https://api.pinboard.in/v1";
 
 /// The wait between successful `posts/add` calls (Pinboard asks for ~3s).
 pub const RATE_LIMIT: Duration = Duration::from_secs(3);
-const MAX_RETRIES: u32 = 5;
-const RETRY_DELAY: Duration = Duration::from_secs(3);
+/// 5 tries, each retry waiting at least the ~3s Pinboard asks for between calls.
+const BACKOFF: LinearBackoff = LinearBackoff::new(5, RATE_LIMIT);
 
 /// `posts/add` is a GET, so every field -- notably `extended` (the notes) -- rides in
 /// the request URL. Servers cap the request line (Pinboard answers a long one with
@@ -162,7 +163,7 @@ impl PinboardClient {
             .build()
             .context("building HTTP client")?;
         Ok(Self {
-            http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
+            http: RetryingClient::new(http, BACKOFF),
             auth_token,
             rate_limit,
             wrote: Cell::new(false),

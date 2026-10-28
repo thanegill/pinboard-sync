@@ -7,7 +7,6 @@ pub mod gists;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use log::{debug, warn};
@@ -17,7 +16,7 @@ use time::OffsetDateTime;
 use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_plain};
-use crate::http::{client_builder, RetryingClient, USER_AGENT};
+use crate::http::{client_builder, RetryingClient, DEFAULT_BACKOFF, USER_AGENT};
 use crate::keys::GitHubKeys;
 use crate::secrets::ConfiguredSecret;
 use crate::source::{
@@ -29,8 +28,6 @@ use gists::{GistConfig, GitHubGist};
 use url::Url;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
-const MAX_RETRIES: u32 = 4;
-const RETRY_DELAY: Duration = Duration::from_secs(2);
 /// The most items a GitHub listing returns per page; GitHub's default is 30.
 const PER_PAGE: &str = "100";
 /// Backstop against a malformed `Link: rel="next"` chain that never terminates.
@@ -373,7 +370,7 @@ impl GitHubClient {
             .build()
             .context("building HTTP client")?;
         Ok(Self {
-            http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
+            http: RetryingClient::new(http, DEFAULT_BACKOFF),
             config,
             base,
             token_source: token.source,

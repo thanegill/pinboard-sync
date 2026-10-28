@@ -21,7 +21,7 @@ use url::Url;
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::config::own_then_configured;
-use crate::http::{client_builder, RetryingClient, USER_AGENT};
+use crate::http::{client_builder, RetryingClient, DEFAULT_BACKOFF, USER_AGENT};
 use crate::keys::RedditKeys;
 use crate::reddit::cookie::{refused_cookie_advice, SessionCookie};
 use crate::reddit::model::{RedditConfig, RedditListing, RedditListingEntry};
@@ -38,9 +38,6 @@ const REDDIT_BASE: &str = "https://old.reddit.com";
 const SAVED_PAGE_SIZE: &str = "100";
 /// Fullnames per `/api/info` request: the most Reddit accepts.
 const INFO_BATCH: usize = 100;
-/// Retry budget for transient failures on Reddit requests.
-const MAX_RETRIES: u32 = 4;
-const RETRY_DELAY: Duration = Duration::from_secs(2);
 /// Backstop against a malformed `after` cursor that never nulls out. Reddit caps any
 /// listing near 1000 items at 100 per page, so this covers a full saved listing many
 /// times over -- it only bounds a response that keeps returning a non-null cursor; the
@@ -74,7 +71,7 @@ impl RedditSession {
             .build()
             .context("building HTTP client")?;
         Ok(Self {
-            http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
+            http: RetryingClient::new(http, DEFAULT_BACKOFF),
             cookie: cookie.and_then(|cookie| SessionCookie::try_from(cookie).ok()),
             base,
         })

@@ -301,7 +301,7 @@ never the generated TOML, and runs the `cleanup --all` timer with it, so resolvi
 config alone would leave the hook dead where it matters most.
 
 **Every client sends through its `http::RetryingClient`** ([`src/http.rs`](src/http.rs),
-whose item docs give the mechanics), with its retry settings fixed where the client is
+whose item docs give the mechanics), with its `LinearBackoff` fixed where the client is
 built. It backs off on network errors / 429 / 5xx and returns other statuses as-is. A
 classifier returning an `http::Verdict` decides which responses retry: `send` uses
 `backoff_if_transient`, while the HackerNews favorites pages pass

@@ -663,6 +663,25 @@ async fn cleanup_refuses_a_bad_source_input_before_reading_pinboard() {
     );
 }
 
+/// `cleanup --all`'s Reddit overrides turn on every fix, the ones `--no-nsfw` and
+/// `--no-titles` turn off.
+#[test]
+fn reddit_cleanup_overrides_default_runs_every_fix() {
+    let account = RedditAccount {
+        cookie: Some("reddit_session=x".into()),
+        ..RedditAccount::default()
+    };
+    let reddit = RedditCleanup::build(
+        Some(&account),
+        RedditCleanupOverrides::default(),
+        crate::test_support::NO_DATING,
+        &Config::default(),
+    )
+    .expect("builds");
+    assert!(reddit.opts.mark_nsfw && reddit.opts.fix_titles);
+    assert!(reddit.client.is_some(), "the fixes read /api/info");
+}
+
 mod net_tests {
     use super::*;
     use crate::test_support::{stored_at, tag_list, FakePinboard, NO_DATING};

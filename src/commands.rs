@@ -279,14 +279,8 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                 run.record(cleanup_github_account(&store, account, None, dates, config).await);
             }
             if let Some(CleanupTarget { account, dates }) = reddit {
-                let reddit_overrides = RedditCleanupOverrides {
-                    cookie: None,
-                    mark_nsfw: true,
-                    fix_titles: true,
-                };
-                run.record(
-                    cleanup_reddit_account(account, reddit_overrides, dates, &store, config).await,
-                );
+                let overrides = RedditCleanupOverrides::default();
+                run.record(cleanup_reddit_account(account, overrides, dates, &store, config).await);
             }
             if let Some(CleanupTarget { account, dates }) = hackernews {
                 let overrides = HackerNewsCleanupOverrides::default();

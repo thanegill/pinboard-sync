@@ -587,3 +587,7 @@ impl HackerNewsCleanup {
 
 #[cfg(test)]
 mod tests;
+
+/// Tests that need a socket; the flake skips `net_tests` in the Nix build sandbox.
+#[cfg(test)]
+mod net_tests;

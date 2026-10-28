@@ -15,6 +15,7 @@ use url::Url;
 
 use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore};
 use crate::keys::RedditKeys;
+use crate::pinboard::PinboardClient;
 use crate::reddit::model::{RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
@@ -327,6 +328,12 @@ pub struct FakePinboard {
     pub fail_delete_urls: HashSet<String>,
     /// The successful writes and deletes, interleaved in call order — see [`replay`].
     pub ops: RefCell<Vec<Op>>,
+    /// Trim a note too long for a `posts/add` URL as the Pinboard client does, both in
+    /// [`BookmarkStore::fit`] and in what `add` and `update` record.
+    pub trims_notes: bool,
+    /// The client whose fit `trims_notes` applies, built on first use. Public only so a
+    /// test can build the fake with `..Default::default()`.
+    pub trimmer: std::cell::OnceCell<PinboardClient>,
 }
 
 impl FakePinboard {
@@ -337,7 +344,19 @@ impl FakePinboard {
 }
 
 impl BookmarkStore for FakePinboard {
+    fn fit(&self, b: Bookmark) -> Bookmark {
+        if !self.trims_notes {
+            return b;
+        }
+        let pinboard = self.trimmer.get_or_init(|| {
+            PinboardClient::with_base_url("user:tok".into(), "http://pinboard.invalid".into())
+                .unwrap()
+        });
+        pinboard.fit(b)
+    }
+
     async fn add(&self, b: &Bookmark) -> Result<()> {
+        let b = &self.fit(b.clone());
         if self.fail_add_urls.contains(b.url.as_str()) {
             return Err(anyhow!("simulated add failure for {}", b.url));
         }
@@ -352,6 +371,7 @@ impl BookmarkStore for FakePinboard {
         Ok(())
     }
     async fn update(&self, b: &Bookmark) -> Result<()> {
+        let b = &self.fit(b.clone());
         if self.fail_update_urls.contains(b.url.as_str()) {
             return Err(anyhow!("simulated update failure for {}", b.url));
         }

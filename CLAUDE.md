@@ -143,6 +143,18 @@ that port, converting `posts/all` via `TryFrom` and mapping a write back to API 
 doesn't parse is skipped with a warning rather than aborting the run (`all()` and each
 `fetch()` `filter_map` over the conversion), and consumers never re-parse it.
 
+**The cleanup driver diffs a plan as the store will keep it.** `post_add` cuts a note too
+long for its GET URL, so `write_single` and `write_merge` pass each end-state through
+`BookmarkStore::fit` and skip it when it would store nothing that writing the stored record
+back wouldn't (`stores_nothing_new`: both fitted, `diff` empty). That one test keeps a note
+stored cut from being rewritten every run, and a whole note longer than a write allows from
+being cut when the plan changes only text past the cut. A merge that absorbs a URL still
+writes, and so still cuts such a note. `PinboardClient` implements `fit` with `fitted_note`,
+which `post_add` uses too, so the two can't drift. It measures as if a `dt` were sent, so a
+note `sync` wrote undated cuts the same once `cleanup` writes it back dated. A test models
+the cut with `FakePinboard`'s `trims_notes`, which applies the real `fitted_note` to the
+fit and to each write it records.
+
 **Every source is a `Source`, and one sync loop drives them all.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `BookmarkDraft`s (a `Bookmark`
 plus its `dedup_key`), and the `UrlKey::dedup_key()` supertrait method maps an existing

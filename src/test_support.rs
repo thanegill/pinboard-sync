@@ -192,10 +192,13 @@ pub const NO_DATING: DateOpts = DateOpts {
     stale_to_now: false,
 };
 
+/// The read timeout of a test client that must time out quickly.
+pub const SHORT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// An existing Pinboard bookmark at `url`, with every other field empty.
 pub fn stored_at(url: &str) -> Bookmark {
     Bookmark {
-        url: Url::parse(url).unwrap(),
+        url: self::url(url),
         title: String::new(),
         note: String::new(),
         tags: Tags::default(),
@@ -473,13 +476,12 @@ pub const ROUND_TRIP_DATINGS: [DateOpts; 3] = [
     NO_DATING,
     DateOpts {
         use_post_date: true,
-        max_age_days: 30,
-        stale_to_now: false,
+        ..NO_DATING
     },
     DateOpts {
         use_post_date: true,
-        max_age_days: 30,
         stale_to_now: true,
+        ..NO_DATING
     },
 ];
 

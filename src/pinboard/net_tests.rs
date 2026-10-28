@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_support::{
     assert_quotes_capped_excerpt, capturing_logs, long_error_page, stored_at, tag_list,
-    ERROR_PAGE_TAIL,
+    ERROR_PAGE_TAIL, SHORT_READ_TIMEOUT,
 };
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
@@ -510,8 +510,6 @@ async fn delete_succeeds_on_done() {
 fn item_not_found() -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(json!({"result_code": "item not found"}))
 }
-
-const SHORT_READ_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// The first delete is carried out but its response never arrives within the read
 /// timeout, so the retry finds the bookmark already gone: that is the delete succeeding.

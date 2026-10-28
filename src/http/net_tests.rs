@@ -1,6 +1,6 @@
 use super::tests::assert_error_hides;
 use super::*;
-use crate::test_support::strings;
+use crate::test_support::{strings, SHORT_READ_TIMEOUT};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -539,8 +539,6 @@ async fn a_body_that_stalls_does_not_count_against_its_host() {
     );
     drop(release);
 }
-
-const SHORT_READ_TIMEOUT: Duration = Duration::from_millis(300);
 
 fn short_read_timeout_client() -> reqwest::Client {
     client_builder_with_read_timeout(SHORT_READ_TIMEOUT)

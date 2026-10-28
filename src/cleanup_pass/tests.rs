@@ -3860,6 +3860,53 @@ fn a_two_pass_verdict_keeps_and_leads_with_a_halt() {
     assert_eq!(message, "spent; and for repos: other trouble");
 }
 
+/// A member held back from a group that is then refused whole is counted with the group,
+/// once, not again on its own: `refused` counts abandoned writes.
+#[tokio::test]
+async fn a_member_held_back_from_a_refused_group_is_not_counted_twice() {
+    // `unread` fails its lookup, so `https://y/` is untouchable and the group moving `m`
+    // there is refused, which keeps `m` at the target and refuses the group heading there
+    // too. That group had already held `second` back, whose note won't fit beside
+    // `first`'s.
+    let pinboard = FakePinboard::trimming();
+    let unread = bookmark("https://y/");
+    let m = bookmark("https://target/");
+    let first = bookmark("https://first/");
+    let second = Bookmark {
+        url: u("https://second/"),
+        ..with_note_just_under_the_budget(&pinboard, bookmark("https://target/"))
+    };
+    let books = vec![unread, m, first, second];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        let url = match bookmark.url.as_str() {
+            "https://y/" => return Err(item_error()),
+            "https://target/" => "https://y/",
+            _ => "https://target/",
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(url),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+
+    let (outcome, logs) = crate::test_support::capturing_logs(run(&pinboard, &books, &pass)).await;
+    assert!(
+        pinboard.ops.borrow().is_empty(),
+        "{:?}",
+        pinboard.ops.borrow()
+    );
+    assert_eq!(
+        outcome.refused, 2,
+        "the group at y and the group at the target"
+    );
+    assert!(
+        crate::test_support::warnings(&logs)
+            .iter()
+            .any(|line| line.contains("not merging https://second/ into https://target/")),
+        "the held member's own warning stays: {logs:#?}"
+    );
+}
+
 /// A cut fragment is credited only to the block it was cut from: an `HN Link:` cut short
 /// is not kept by a different link that starts the same way.
 #[test]

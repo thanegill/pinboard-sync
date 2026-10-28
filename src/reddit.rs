@@ -11,6 +11,7 @@ pub mod cookie;
 pub mod model;
 
 use std::collections::HashSet;
+use std::ops::ControlFlow;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -144,19 +145,19 @@ impl RedditClient {
         let mut out: Vec<RedditListingEntry> = Vec::new();
         self.walk_saved(sink, |page| {
             out.extend(page);
-            false
+            ControlFlow::Continue(())
         })
         .await?;
         Ok(out)
     }
 
     /// Follow the saved listing's `after` cursor, handing each page's entries to
-    /// `on_page`, until the listing ends, `on_page` returns true (caught up), the cursor
-    /// loops back, or [`MAX_SAVED_PAGES`] is reached.
+    /// `on_page`, until the listing ends, `on_page` breaks (caught up), the cursor loops
+    /// back, or [`MAX_SAVED_PAGES`] is reached.
     async fn walk_saved(
         &self,
         sink: &mut RawSink,
-        mut on_page: impl FnMut(Vec<RedditListingEntry>) -> bool,
+        mut on_page: impl FnMut(Vec<RedditListingEntry>) -> ControlFlow<()>,
     ) -> Result<(), SourceError> {
         let username = self
             .username
@@ -201,7 +202,7 @@ impl RedditClient {
             let listing: RedditListing =
                 serde_json::from_str(&body).context("parsing saved listing response")?;
             let got = listing.data.children.len();
-            if on_page(listing.data.children) {
+            if on_page(listing.data.children).is_break() {
                 debug!("reddit saved for '{username}': page {page} has nothing new; stopping");
                 break;
             }
@@ -278,7 +279,11 @@ impl Source for RedditClient {
             let page_drafts = self.shape(page);
             let caught_up = page_is_caught_up(page_len, &page_drafts, &synced_keys);
             drafts.extend(page_drafts);
-            caught_up
+            if caught_up {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
         })
         .await?;
         not_all_dropped(entry_count, drafts)

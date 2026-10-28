@@ -1,4 +1,5 @@
 use super::*;
+use crate::source::Halt;
 use crate::test_support::{listing_entry, stored_at, strings, FakePinboard, FakeReddit, NO_DATING};
 use serde_json::json;
 
@@ -963,7 +964,7 @@ async fn an_expired_cookie_surfaces_as_reauth_not_a_flattened_error() {
         ..Default::default()
     };
     let reddit = FakeReddit {
-        info_error: Some(SourceError::ReauthRequired("cookie expired".into())),
+        info_error: Some(SourceError::Halted(Halt::Reauth("cookie expired".into()))),
         ..Default::default()
     };
 
@@ -971,7 +972,7 @@ async fn an_expired_cookie_surfaces_as_reauth_not_a_flattened_error() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, SourceError::ReauthRequired(_)),
+        matches!(err, SourceError::Halted(Halt::Reauth(_))),
         "expected reauth, got {err:?}"
     );
 }
@@ -989,7 +990,7 @@ async fn an_api_info_block_stays_a_block() {
         ..Default::default()
     };
     let reddit = FakeReddit {
-        info_error: Some(SourceError::Blocked("edge block".into())),
+        info_error: Some(SourceError::Halted(Halt::Blocked("edge block".into()))),
         ..Default::default()
     };
 
@@ -997,7 +998,7 @@ async fn an_api_info_block_stays_a_block() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&err, SourceError::Blocked(m) if m == "edge block"),
+        matches!(&err, SourceError::Halted(Halt::Blocked(m)) if m == "edge block"),
         "expected the block unchanged, got {err:?}"
     );
 }

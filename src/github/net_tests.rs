@@ -24,7 +24,7 @@ async fn repo_lookup_reports_an_exhausted_rate_limit_with_its_reset() {
 
     let err = client.repo("o", "r").await.unwrap_err();
     assert!(
-        matches!(err, SourceError::RateLimited(_)),
+        matches!(err, SourceError::Halted(Halt::RateLimited(_))),
         "expected a rate-limit error, got {err:?}"
     );
     let message = err.to_string();
@@ -49,7 +49,7 @@ async fn a_secondary_rate_limit_is_recognised_by_its_message_alone() {
 
     let err = client.repo("o", "r").await.unwrap_err();
     assert!(
-        matches!(err, SourceError::RateLimited(_)),
+        matches!(err, SourceError::Halted(Halt::RateLimited(_))),
         "expected a rate-limit error, got {err:?}"
     );
 }
@@ -94,7 +94,7 @@ async fn a_secondary_rate_limit_is_recognised_by_retry_after() {
 
     let err = client.repo("o", "r").await.unwrap_err();
     assert!(
-        matches!(err, SourceError::RateLimited(_)),
+        matches!(err, SourceError::Halted(Halt::RateLimited(_))),
         "expected a rate-limit error, got {err:?}"
     );
     assert!(err.to_string().contains("60s"), "{err}");
@@ -285,7 +285,7 @@ async fn a_401_names_the_token_setting_but_never_the_token() {
         client.repo("o", "r").await.unwrap_err(),
     ];
     for err in refusals {
-        let SourceError::ReauthRequired(message) = &err else {
+        let SourceError::Halted(Halt::Reauth(message)) = &err else {
             panic!("a 401 must ask for a new token: {err:?}");
         };
         assert!(message.contains(source), "{message}");
@@ -730,9 +730,9 @@ async fn the_gist_stream_stops_once_caught_up_even_when_the_stars_are_not() {
 #[tokio::test]
 async fn the_gist_stream_is_refused_like_the_stars() {
     let variant = |err: &SourceError| match err {
-        SourceError::ReauthRequired(_) => "reauth",
-        SourceError::RateLimited(_) => "rate limited",
-        SourceError::Blocked(_) => "blocked",
+        SourceError::Halted(Halt::Reauth(_)) => "reauth",
+        SourceError::Halted(Halt::RateLimited(_)) => "rate limited",
+        SourceError::Halted(Halt::Blocked(_)) => "blocked",
         SourceError::Other(_) => "other",
     };
     let refusals = [
@@ -880,7 +880,7 @@ async fn a_rate_limit_known_by_its_headers_survives_a_cut_off_body() {
         .await
         .0;
         for result in results {
-            let Err(SourceError::RateLimited(message)) = &result else {
+            let Err(SourceError::Halted(Halt::RateLimited(message))) = &result else {
                 panic!("{status}: the headers mark a rate limit: {result:?}");
             };
             assert!(

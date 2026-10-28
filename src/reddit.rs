@@ -27,7 +27,7 @@ use crate::keys::RedditKeys;
 use crate::reddit::cookie::{refused_cookie_advice, SessionCookie};
 use crate::reddit::model::{RedditConfig, RedditListing, RedditListingEntry};
 use crate::secrets::ConfiguredSecret;
-use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey};
+use crate::source::{page_is_caught_up, BookmarkDraft, Halt, Source, SourceError, UrlKey};
 
 /// Host serving both the saved listing and `/api/info.json`; old.reddit.com
 /// matches the bookmark URLs.
@@ -377,8 +377,8 @@ impl RedditClient {
 }
 
 /// The error for a redirect. A redirect to `/login` means Reddit wants a session it
-/// accepts (seen for a request with no cookie), so that becomes
-/// [`SourceError::ReauthRequired`]; any other target is a plain error.
+/// accepts (seen for a request with no cookie), so that becomes [`Halt::Reauth`]; any
+/// other target is a plain error.
 fn redirect_error(
     resp: &reqwest::Response,
     what: &str,
@@ -397,25 +397,25 @@ fn redirect_error(
         path == "/login" || path.starts_with("/login/")
     });
     if to_login {
-        return SourceError::ReauthRequired(format!(
+        return SourceError::Halted(Halt::Reauth(format!(
             "{what} returned {status}, redirecting to Reddit's login page: Reddit didn't \
              accept the session cookie. {}",
             refused_cookie_advice(cookie_source)
-        ));
+        )));
     }
     anyhow::anyhow!("{what} returned {status}, redirecting to {location:?}").into()
 }
 
 /// The body text of a Reddit response, centralizing status handling. Reddit's
-/// network-security page (see [`edge_page`]) becomes [`SourceError::Blocked`] and any
-/// other 401/403 [`SourceError::ReauthRequired`]; both carry a fixed, actionable message,
-/// since the body is usually a large HTML page and isn't echoed (one that is neither edge
-/// page is logged at debug level instead). Redirects are not followed (see
-/// [`redirect_error`]). Any other non-success status becomes [`SourceError::Other`], as
-/// does a body cut off mid-read on a success or 401/403, since a partial 403 page can't
-/// tell the block from a refused cookie. `what` names the request, and `cookie` is the one
-/// it sent: its setting is named in advice and its [secrets](SessionCookie::secrets) are
-/// redacted from a logged or quoted body.
+/// network-security page (see [`edge_page`]) becomes [`Halt::Blocked`] and any other
+/// 401/403 [`Halt::Reauth`]; both carry a fixed, actionable message, since the body is
+/// usually a large HTML page and isn't echoed (one that is neither edge page is logged at
+/// debug level instead). Redirects are not followed (see [`redirect_error`]). Any other
+/// non-success status becomes [`SourceError::Other`], as does a body cut off mid-read on a
+/// success or 401/403, since a partial 403 page can't tell the block from a refused
+/// cookie. `what` names the request, and `cookie` is the one it sent: its setting is named
+/// in advice and its [secrets](SessionCookie::secrets) are redacted from a logged or
+/// quoted body.
 async fn reddit_body(
     resp: reqwest::Response,
     what: &str,
@@ -457,16 +457,16 @@ async fn reddit_body(
             refused_cookie_advice(cookie_source)
         );
         return Err(match edge_page(status, &content_type, &body) {
-            Some(EdgePage::NetworkSecurity) => SourceError::Blocked(format!(
+            Some(EdgePage::NetworkSecurity) => SourceError::Halted(Halt::Blocked(format!(
                 "{what} returned {status} — Reddit's edge blocked the request with its \
                  network-security page. Re-copying the cookie will not lift the \
                  block; tracked in https://github.com/thanegill/pinboard-sync/issues/78."
-            )),
-            Some(EdgePage::NetworkPolicy) => SourceError::ReauthRequired(format!(
+            ))),
+            Some(EdgePage::NetworkPolicy) => SourceError::Halted(Halt::Reauth(format!(
                 "{reauth} (Reddit answered with its \"network policy\" page, which it \
                  serves for an invalid credential; if the cookie is fresh, the host's IP \
                  may be blocked instead.)"
-            )),
+            ))),
             None => {
                 warn!(
                     "{what} returned {status} ({} bytes of {content_type:?}), not a \
@@ -478,7 +478,7 @@ async fn reddit_body(
                     &body,
                     &secrets,
                 );
-                SourceError::ReauthRequired(reauth)
+                SourceError::Halted(Halt::Reauth(reauth))
             }
         });
     }

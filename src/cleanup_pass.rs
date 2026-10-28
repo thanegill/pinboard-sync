@@ -29,7 +29,7 @@ use time::OffsetDateTime;
 use url::Url;
 
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
-use crate::source::SourceError;
+use crate::source::{Halt, SourceError};
 use crate::timefmt::DateOpts;
 
 mod merge;
@@ -41,6 +41,7 @@ use merge::{incumbent_of, merge_bookmarks};
 /// first is an answer from it, the second is a bookmark the pass never asked about.
 /// Only the first is evidence the source is reachable, which is what lets the driver
 /// tell one dead link apart from an outage.
+#[derive(Debug, PartialEq, Eq)]
 pub enum Plan {
     /// The bookmark's desired end-state; the driver diffs it and writes what changed.
     Bookmark(Bookmark),
@@ -69,8 +70,7 @@ pub trait CleanupPass {
     /// ([`Plan::Skipped`]): how the driver tells one dead link from an unreachable source.
     ///
     /// [`SourceError::Other`] is a per-item failure: logged and counted, and the pass goes
-    /// on. [`SourceError::ReauthRequired`], [`SourceError::RateLimited`] and
-    /// [`SourceError::Blocked`] stop the pass, since each fails every remaining lookup too.
+    /// on. [`SourceError::Halted`] stops the pass, since every remaining lookup fails too.
     ///
     /// A plan's `timestamp` is only the candidate source date: the driver resolves the
     /// final date with the pass's [`DateOpts`] and takes `public`/`read_later` from the
@@ -104,26 +104,10 @@ pub struct PassOutcome {
     pub plan_failed: usize,
     /// Bookmarks whose write to the store failed.
     pub write_failed: usize,
-    /// Set when the source told us to stop partway. See [`Halt`].
+    /// Set when the source told us to stop partway. [`PassOutcome::into_result`] hands it
+    /// back as [`SourceError::Halted`], so the `cleanup` command can tell a dead credential
+    /// from a quota or an edge block.
     pub halted: Option<Halt>,
-}
-
-/// Why a pass stopped planning early: the source said something that makes every
-/// *remaining* lookup fail the same way, so working through them would only spend
-/// requests to collect identical errors.
-///
-/// Variants rather than one message because only one of them is an auth problem:
-/// [`PassOutcome::into_result`] maps each to its own [`SourceError`], which is what lets
-/// the `cleanup` command fire the auth-failure hook for [`Halt::Reauth`] and withhold it
-/// for the others, since no credential change clears a quota or an edge block.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Halt {
-    /// A credential needs refreshing.
-    Reauth(String),
-    /// The service is refusing requests until a reset; no credential change helps.
-    RateLimited(String),
-    /// The service's edge is refusing the request by policy; no credential change helps.
-    Blocked(String),
 }
 
 /// Why a rewrite was left in place rather than written.
@@ -153,29 +137,6 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-/// The halt an error calls for, or the error back when it is a per-item failure. Matched
-/// exhaustively so a new [`SourceError`] variant has to choose a side here.
-impl TryFrom<SourceError> for Halt {
-    type Error = SourceError;
-    fn try_from(error: SourceError) -> Result<Self, Self::Error> {
-        match error {
-            SourceError::ReauthRequired(message) => Ok(Halt::Reauth(message)),
-            SourceError::RateLimited(message) => Ok(Halt::RateLimited(message)),
-            SourceError::Blocked(message) => Ok(Halt::Blocked(message)),
-            other @ SourceError::Other(_) => Err(other),
-        }
-    }
-}
-
-impl Halt {
-    /// The operator-facing explanation, without a variant prefix.
-    fn message(&self) -> &str {
-        match self {
-            Halt::Reauth(message) | Halt::RateLimited(message) | Halt::Blocked(message) => message,
-        }
-    }
-}
-
 impl PassOutcome {
     /// The run's verdict. A link that could not be looked up does not fail the run: it is
     /// logged and skipped, so one dead URL can't wedge a scheduled service. A [`Halt`], a
@@ -188,7 +149,7 @@ impl PassOutcome {
     /// [`SourceError`] so the `cleanup` command fires the auth-failure hook for a halted
     /// credential, and only for that.
     pub fn into_result(self) -> Result<(), SourceError> {
-        if let Some(halt) = &self.halted {
+        if let Some(halt) = self.halted {
             // Why we stopped is the headline, but it must not bury what else went wrong
             // before it: those counts are the only record once this returns.
             let mut also = Vec::new();
@@ -198,16 +159,13 @@ impl PassOutcome {
             if self.write_failed > 0 {
                 also.push(format!("{} write(s)", self.write_failed));
             }
-            let message = if also.is_empty() {
-                halt.message().to_string()
-            } else {
-                format!("{} (also failed: {})", halt.message(), also.join(", "))
-            };
-            return Err(match halt {
-                Halt::Reauth(_) => SourceError::ReauthRequired(message),
-                Halt::RateLimited(_) => SourceError::RateLimited(message),
-                Halt::Blocked(_) => SourceError::Blocked(message),
-            });
+            if also.is_empty() {
+                return Err(halt.into());
+            }
+            let also = also.join(", ");
+            return Err(halt
+                .map_message(|message| format!("{message} (also failed: {also})"))
+                .into());
         }
         if self.write_failed > 0 {
             return Err(anyhow!("{} bookmark(s) failed to write", self.write_failed).into());
@@ -292,9 +250,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // was held back. There is nothing left to refuse *or* write, so this comes before
         // the untouchable check: those plans were already counted as they were held back,
         // and reporting the group again would inflate `refused` past the number of writes
-        // actually abandoned. It also keeps `merge_bookmarks` from being handed an empty
-        // slice to index: the survivor always supplies a first element, but only because
-        // two distant pieces of code agree.
+        // actually abandoned. It is also what guarantees `write_merge` a member to lead.
         if group.is_empty() {
             continue;
         }
@@ -310,8 +266,8 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // which member leads that merge is settled in `write_merge`.
         let resident = residents.get(key);
         let stranded = match (resident, &group[..]) {
-            (None, [(original, planned)]) => {
-                write_single(store, original, planned, &targets, dry_run, &mut outcome).await
+            (None, [Member { stored, planned }]) => {
+                write_single(store, stored, planned, &targets, dry_run, &mut outcome).await
             }
             _ => {
                 write_merge(
@@ -353,8 +309,12 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
 }
 
 /// One member of a collision group, the planned bookmarks heading for one target URL: its
-/// `(stored, planned)` pair. A group holds its members in snapshot order.
-type Member<'p> = (&'p Bookmark, &'p Bookmark);
+/// stored record and its plan. A group holds its members in snapshot order.
+#[derive(Clone, Copy)]
+struct Member<'p> {
+    stored: &'p Bookmark,
+    planned: &'p Bookmark,
+}
 
 /// Phase 1's result: each planned bookmark beside its stored record, and the URLs whose
 /// record this pass could not establish.
@@ -388,30 +348,28 @@ async fn plan_all<'b, C: CleanupPass>(
                 continue;
             }
             Ok(Plan::Skipped) => continue,
-            Err(error) => match Halt::try_from(error) {
-                // Every remaining lookup would fail the same way, so stop planning, but
-                // fall through to write the plans already made rather than discard them.
-                // This one and everything after it goes unplanned, so protect all of them:
-                // a record we never looked at must not be written over.
-                Ok(halt) => {
-                    outcome.halted = Some(halt);
-                    untouchable.extend(
-                        bookmarks[index..]
-                            .iter()
-                            .map(|b| (b.url.clone(), Refusal::Unreadable)),
-                    );
-                    break;
-                }
-                // Log and skip a single failed plan so the rest of the pass still runs. Its
-                // end-state is unknown, which makes it as untouchable as a skipped one:
-                // another bookmark rewriting onto its URL would clobber the record.
-                Err(e) => {
-                    outcome.plan_failed += 1;
-                    untouchable.insert(bookmark.url.clone(), Refusal::Unreadable);
-                    error!("looking up bookmark {}: {e:#}", bookmark.url);
-                    continue;
-                }
-            },
+            // Every remaining lookup would fail the same way, so stop planning, but fall
+            // through to write the plans already made rather than discard them. This one
+            // and everything after it goes unplanned, so protect all of them: a record we
+            // never looked at must not be written over.
+            Err(SourceError::Halted(halt)) => {
+                outcome.halted = Some(halt);
+                untouchable.extend(
+                    bookmarks[index..]
+                        .iter()
+                        .map(|b| (b.url.clone(), Refusal::Unreadable)),
+                );
+                break;
+            }
+            // Log and skip a single failed plan so the rest of the pass still runs. Its
+            // end-state is unknown, which makes it as untouchable as a skipped one: another
+            // bookmark rewriting onto its URL would clobber the record.
+            Err(e @ SourceError::Other(_)) => {
+                outcome.plan_failed += 1;
+                untouchable.insert(bookmark.url.clone(), Refusal::Unreadable);
+                error!("looking up bookmark {}: {e:#}", bookmark.url);
+                continue;
+            }
         };
 
         // Resolve the final creation time here, at the write boundary: the candidate
@@ -436,8 +394,7 @@ fn group_by_target<'p>(
 ) -> (Vec<&'p Url>, HashMap<&'p Url, Vec<Member<'p>>>) {
     let mut group_order: Vec<&Url> = Vec::new();
     let mut groups: HashMap<&Url, Vec<Member<'_>>> = HashMap::new();
-    for pair in pairs {
-        let (original, planned) = (pair.0, &pair.1);
+    for (stored, planned) in pairs {
         let key = &planned.url;
         groups
             .entry(key)
@@ -445,7 +402,7 @@ fn group_by_target<'p>(
                 group_order.push(key);
                 Vec::new()
             })
-            .push((original, planned));
+            .push(Member { stored, planned });
     }
     (group_order, groups)
 }
@@ -463,11 +420,7 @@ fn write_order<'p>(
 ) -> Vec<&'p Url> {
     let leaving_to: HashMap<&Url, &Url> = first_appearance
         .iter()
-        .flat_map(|key| {
-            groups[*key]
-                .iter()
-                .map(|(original, _)| (&original.url, *key))
-        })
+        .flat_map(|key| groups[*key].iter().map(|member| (&member.stored.url, *key)))
         .filter(|(from, to)| from != to)
         .collect();
     let mut placed: HashSet<&Url> = HashSet::with_capacity(first_appearance.len());
@@ -559,29 +512,29 @@ fn hold_back_visibility_mismatches<'p>(
         let staying = residents
             .get(key)
             .map(|resident| resident.public)
-            .or_else(|| incumbent_of(members, key).map(|at| members[at].1.public));
+            .or_else(|| incumbent_of(members, key).map(|at| members[at].planned.public));
         let agreed = match staying {
             Some(public) => Some(public),
             None => members
                 .first()
-                .map(|(_, planned)| planned.public)
-                .filter(|first| members.iter().all(|(_, p)| p.public == *first)),
+                .map(|member| member.planned.public)
+                .filter(|first| members.iter().all(|m| m.planned.public == *first)),
         };
         let members = groups.get_mut(key).expect("key came from group_order");
         let (kept, refused): (Vec<_>, Vec<_>) = match agreed {
             Some(public) => members
                 .iter()
                 .copied()
-                .partition(|(_, planned)| planned.public == public),
+                .partition(|member| member.planned.public == public),
             None => (Vec::new(), members.clone()),
         };
         if refused.is_empty() {
             continue;
         }
-        held_back.extend(refused.iter().map(|(original, planned)| HeldBack {
-            mover: original.url.clone(),
+        held_back.extend(refused.iter().map(|member| HeldBack {
+            mover: member.stored.url.clone(),
             target: key,
-            mover_public: planned.public,
+            mover_public: member.planned.public,
             staying,
         }));
         *members = kept;
@@ -733,21 +686,20 @@ async fn write_merge<S: BookmarkStore>(
     let (survivor, lifted) = match resident {
         Some(resident) => (Some(resident), None),
         None => match incumbent_of(group, key) {
-            Some(at) => (Some(group[at].1), Some(at)),
+            Some(at) => (Some(group[at].planned), Some(at)),
             None => (None, None),
         },
     };
-    let plans: Vec<&Bookmark> = survivor
-        .into_iter()
-        .chain(
-            group
-                .iter()
-                .enumerate()
-                .filter(|(at, _)| Some(*at) != lifted)
-                .map(|(_, (_, planned))| *planned),
-        )
-        .collect();
-    let mut merged = merge_bookmarks(&plans);
+    let mut movers = group
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| Some(*at) != lifted)
+        .map(|(_, member)| member.planned);
+    let lead = survivor
+        .or_else(|| movers.next())
+        .expect("run_pass skips an empty group");
+    let rest: Vec<&Bookmark> = movers.collect();
+    let mut merged = merge_bookmarks(lead, &rest);
     if let Some(survivor) = survivor {
         // The survivor's own record-level state survives the merge's field rules: it is the
         // bookmark that stays here, and cleanup never re-shapes those (see `write_single`).
@@ -767,12 +719,12 @@ async fn write_merge<S: BookmarkStore>(
     // Absorbed URLs to delete: an original that is neither the target nor another planned
     // write's target (deleting the latter would clobber that write's record).
     let mut old_urls: Vec<&Url> = Vec::new();
-    for (original, _) in group {
-        if original.url != *target
-            && !targets.contains(&original.url)
-            && !old_urls.contains(&&original.url)
+    for Member { stored, .. } in group {
+        if stored.url != *target
+            && !targets.contains(&stored.url)
+            && !old_urls.contains(&&stored.url)
         {
-            old_urls.push(&original.url);
+            old_urls.push(&stored.url);
         }
     }
 
@@ -780,7 +732,7 @@ async fn write_merge<S: BookmarkStore>(
     // there is nothing to absorb — otherwise a converged state would rewrite itself every
     // run. Compared against the *stored* record, which for an incumbent is not the plan
     // that led the merge.
-    let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].0));
+    let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].stored));
     if stored_at_target.is_some_and(|stored| stored.diff(&merged).is_empty()) && old_urls.is_empty()
     {
         return Vec::new();
@@ -834,7 +786,7 @@ async fn write_merge<S: BookmarkStore>(
             error!("merging into {target}: {e:#}");
             group
                 .iter()
-                .map(|(original, _)| original.url.clone())
+                .map(|member| member.stored.url.clone())
                 .collect()
         }
     }
@@ -851,12 +803,15 @@ fn emit_preview(preview: &mut Vec<String>, url: &Url, detail: &[(&str, String)])
     push(format!("[dry-run] {url}"));
     for (label, value) in detail {
         push(if label.is_empty() {
-            format!("          {value}")
+            format!("{PREVIEW_INDENT}{value}")
         } else {
-            format!("          {label:<6}-> {value}")
+            format!("{PREVIEW_INDENT}{label:<6}-> {value}")
         });
     }
 }
+
+/// The indent of a preview's detail lines, under its `[dry-run] <url>` line.
+const PREVIEW_INDENT: &str = "          ";
 
 /// Close `untouchable` under "a group whose target is untouchable doesn't move, so its
 /// members keep their own URLs occupied". Iterated to a fixpoint because each refusal can
@@ -878,7 +833,7 @@ fn propagate_refusals(
             .filter(|key| untouchable.contains_key(**key))
             .filter_map(|key| groups.get(*key))
             .flatten()
-            .map(|(original, _)| original.url.clone())
+            .map(|member| member.stored.url.clone())
             .filter(|url| !untouchable.contains_key(url))
             .collect();
         if newly_occupied.is_empty() {

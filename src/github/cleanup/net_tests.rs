@@ -1,11 +1,12 @@
 use super::*;
 use crate::github::gists::GistPostDate;
+use crate::source::Halt;
 use crate::test_support::{stored_at, strings, FakePinboard, NO_DATING};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// An expired token during the pass has to reach the caller as `ReauthRequired`, or the
+/// An expired token during the pass has to reach the caller as `Halt::Reauth`, or the
 /// `cleanup` command cannot tell it apart from any other failure and the auth-failure
 /// hook never fires.
 #[tokio::test]
@@ -34,7 +35,7 @@ async fn cleanup_surfaces_an_expired_token_as_reauth() {
         .unwrap_err();
 
     assert!(
-        matches!(err, SourceError::ReauthRequired(_)),
+        matches!(err, SourceError::Halted(Halt::Reauth(_))),
         "expected reauth, got {err:?}"
     );
 }
@@ -907,7 +908,7 @@ async fn a_failed_starred_gist_read_fails_the_gist_pass() {
         .await;
         let err = result.unwrap_err();
         let variant = match err {
-            SourceError::RateLimited(_) => "rate limited",
+            SourceError::Halted(Halt::RateLimited(_)) => "rate limited",
             SourceError::Other(_) => "other",
             _ => "unexpected",
         };
@@ -1129,7 +1130,10 @@ async fn a_dead_token_on_the_repos_skips_the_gists() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(err, SourceError::ReauthRequired(_)), "{err:?}");
+    assert!(
+        matches!(err, SourceError::Halted(Halt::Reauth(_))),
+        "{err:?}"
+    );
 }
 
 /// A dead token on the lookup of a gist that isn't starred halts the gist pass as a
@@ -1156,7 +1160,10 @@ async fn a_dead_token_on_a_gist_lookup_is_a_reauth() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(err, SourceError::ReauthRequired(_)), "{err:?}");
+    assert!(
+        matches!(err, SourceError::Halted(Halt::Reauth(_))),
+        "{err:?}"
+    );
 }
 
 /// The gist pass's own dead token fires the hook too, and a failed repo pass ahead of it
@@ -1190,7 +1197,7 @@ async fn a_dead_token_on_the_gists_is_a_reauth_even_after_failed_repos() {
     ))
     .await;
     let err = result.unwrap_err();
-    let SourceError::ReauthRequired(message) = &err else {
+    let SourceError::Halted(Halt::Reauth(message)) = &err else {
         panic!("expected reauth, got {err:?}");
     };
     assert!(message.contains("and for repos:"), "{message}");

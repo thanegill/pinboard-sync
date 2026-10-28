@@ -2,6 +2,7 @@ use super::algolia::{ALGOLIA_CHUNK_PAUSE, ITEM_BATCH};
 use super::favorites::MAX_FAVORITES_PAGES;
 use super::*;
 use crate::backup::RawKind;
+use crate::source::Halt;
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -288,7 +289,7 @@ async fn a_favorites_429_without_retry_after_is_not_retried() {
         .await
         .unwrap_err();
 
-    let SourceError::RateLimited(message) = err else {
+    let SourceError::Halted(Halt::RateLimited(message)) = err else {
         panic!("expected RateLimited, got {err:?}");
     };
     assert!(message.contains("hn favorites"), "{message}");
@@ -310,7 +311,7 @@ async fn a_favorites_429_with_a_long_retry_after_is_not_retried() {
         .await
         .unwrap_err();
 
-    let SourceError::RateLimited(message) = err else {
+    let SourceError::Halted(Halt::RateLimited(message)) = err else {
         panic!("expected RateLimited, got {err:?}");
     };
     assert!(message.contains("Retry-After: 3600"), "{message}");
@@ -362,7 +363,10 @@ async fn a_second_favorites_429_stops_the_fetch() {
         crate::http::recording_waits(hackernews_client(hn.uri(), UNUSED.into()).fetch()).await;
 
     let err = result.unwrap_err();
-    assert!(matches!(err, SourceError::RateLimited(_)), "got {err:?}");
+    assert!(
+        matches!(err, SourceError::Halted(Halt::RateLimited(_))),
+        "got {err:?}"
+    );
     assert_eq!(waits, [Duration::from_secs(1)]);
 }
 

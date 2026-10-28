@@ -13,7 +13,7 @@ use url::Url;
 use super::{HackerNewsClient, HackerNewsItemId};
 use crate::backup::{RawKind, RawSink};
 use crate::http::retry_after_up_to;
-use crate::source::{page_is_caught_up, BookmarkDraft, SourceError};
+use crate::source::{page_is_caught_up, BookmarkDraft, Halt, SourceError};
 
 /// The longest `Retry-After` a favorites-page 429 is waited out for, once. A 429 asking
 /// for longer, or for nothing, fails the fetch at once rather than holding the run open.
@@ -92,10 +92,10 @@ impl HackerNewsClient {
                     .and_then(|value| value.to_str().ok())
                     .map(|value| format!(" (Retry-After: {value})"))
                     .unwrap_or_default();
-                return Err(SourceError::RateLimited(format!(
+                return Err(SourceError::Halted(Halt::RateLimited(format!(
                     "hn {stream} for '{}' returned {status}{retry_after}",
                     self.username
-                )));
+                ))));
             }
             if !status.is_success() {
                 return Err(anyhow::anyhow!(
@@ -183,6 +183,7 @@ pub(super) fn is_caught_up(
 /// Outcome of parsing a favorites page. `Unrecognized` means the page had neither
 /// favorite rows nor the favorites-page marker: HN's markup likely changed, so the
 /// scrape should fail loudly rather than silently import nothing.
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum FavoritesPage {
     Recognized {
         ids: Vec<String>,

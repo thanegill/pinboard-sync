@@ -8,7 +8,7 @@ use log::{error, info};
 
 use crate::config::Config;
 use crate::jobs::SourceAccount;
-use crate::source::SourceError;
+use crate::source::{Halt, SourceError};
 
 /// The `--all` path has no per-source `--on-auth-failure` flag to carry the hook,
 /// and the top-level flag deliberately doesn't bind `PINBOARD_SYNC_ON_AUTH_FAILURE`
@@ -24,11 +24,10 @@ pub fn on_auth_failure_from_env() -> Option<String> {
 /// Map a `SourceError` to an `anyhow::Error`, firing the auth-failure hook when
 /// re-authentication is required.
 ///
-/// Only [`SourceError::ReauthRequired`] fires it: no credential change clears a rate limit
-/// or an edge block, so waking the operator to rotate a token would send them after the
-/// wrong problem.
+/// Only [`Halt::Reauth`] fires it: no credential change clears a rate limit or an edge
+/// block, so firing the hook would send the operator after the wrong problem.
 pub fn handle_source_err(e: SourceError, hook: Option<&str>) -> anyhow::Error {
-    if let SourceError::ReauthRequired(msg) = &e {
+    if let SourceError::Halted(Halt::Reauth(msg)) = &e {
         run_auth_failure_hook(hook, msg);
     }
     e.into_anyhow()
@@ -173,13 +172,13 @@ mod tests {
         // A rate limit is not a credential problem: firing here would send the operator
         // to rotate a token when the fix is to wait.
         handle_source_err(
-            SourceError::RateLimited("resets at 14:23".into()),
+            SourceError::Halted(Halt::RateLimited("resets at 14:23".into())),
             Some(&hook),
         );
         assert!(!marker.exists(), "a rate limit must not fire the hook");
 
         handle_source_err(
-            SourceError::Blocked("Reddit's edge blocked the request".into()),
+            SourceError::Halted(Halt::Blocked("Reddit's edge blocked the request".into())),
             Some(&hook),
         );
         assert!(!marker.exists(), "an edge block must not fire the hook");
@@ -191,7 +190,7 @@ mod tests {
         assert!(!marker.exists(), "an ordinary error must not fire the hook");
 
         handle_source_err(
-            SourceError::ReauthRequired("cookie expired".into()),
+            SourceError::Halted(Halt::Reauth("cookie expired".into())),
             Some(&hook),
         );
         assert!(marker.exists(), "a dead credential must fire the hook");

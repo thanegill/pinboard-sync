@@ -76,12 +76,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
         .await
         .into_result();
     // A halt (dead token, spent quota, edge block) would fail every gist lookup too.
-    if let Err(
-        halt @ (SourceError::ReauthRequired(_)
-        | SourceError::RateLimited(_)
-        | SourceError::Blocked(_)),
-    ) = repos
-    {
+    if let Err(halt @ SourceError::Halted(_)) = repos {
         return Err(halt);
     }
     // Each pass reaches its own verdict, so a pass of repo lookups can't vouch for the
@@ -99,9 +94,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
 fn also_failed(error: SourceError, repos: &SourceError) -> SourceError {
     let note = |message: String| format!("{message}; and for repos: {repos:#}");
     match error {
-        SourceError::ReauthRequired(message) => SourceError::ReauthRequired(note(message)),
-        SourceError::RateLimited(message) => SourceError::RateLimited(note(message)),
-        SourceError::Blocked(message) => SourceError::Blocked(note(message)),
+        SourceError::Halted(halt) => halt.map_message(note).into(),
         SourceError::Other(error) => {
             SourceError::Other(anyhow::anyhow!(note(format!("{error:#}"))))
         }
@@ -396,7 +389,7 @@ mod tests {
             "https://github.com/o",
         ] {
             let (plan, waits) = crate::http::recording_waits(pass.plan(&stored_at(stored))).await;
-            assert!(matches!(plan, Ok(Plan::Skipped)), "{stored}");
+            assert_eq!(plan.unwrap(), Plan::Skipped, "{stored}");
             assert!(waits.is_empty(), "{stored} made a request");
         }
     }

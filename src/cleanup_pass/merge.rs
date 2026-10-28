@@ -3,6 +3,7 @@
 
 use url::Url;
 
+use super::Member;
 use crate::bookmark::Bookmark;
 use crate::tags::extend_unique;
 
@@ -12,25 +13,26 @@ use crate::tags::extend_unique;
 /// survive the merge's field rules. A resident is by definition unplanned, so a group has
 /// at most one of the two, and being inside the pass's slice is an implementation detail
 /// that must not decide whether a bookmark is protected.
-pub(super) fn incumbent_of(members: &[(&Bookmark, &Bookmark)], target: &Url) -> Option<usize> {
+pub(super) fn incumbent_of(members: &[Member<'_>], target: &Url) -> Option<usize> {
     members
         .iter()
-        .position(|(original, _)| original.url == *target)
+        .position(|member| member.stored.url == *target)
 }
 
-/// Field-merge the PLANNED bookmarks of a collision group (all sharing `url`, given in
-/// stable order) into one bookmark. Tags are an order-preserving union (first occurrence
-/// wins, case-sensitive, empty tags dropped as by `extend_unique`); the note is the first
-/// member's verbatim, extended with whichever blank-line-separated blocks of the later
-/// members it doesn't already hold; title is the first non-empty; timestamp the earliest
+/// Field-merge the PLANNED bookmarks of a collision group, `lead` then `rest` (all sharing
+/// `lead`'s URL, in stable order), into one bookmark. Tags are an order-preserving union
+/// (first occurrence wins, case-sensitive, empty tags dropped as by `extend_unique`); the
+/// note is `lead`'s verbatim, extended with whichever blank-line-separated blocks of the
+/// rest it doesn't already hold; title is the first non-empty; timestamp the earliest
 /// present. Privacy never widens: the merge is `public` only if every merged member is
 /// public (a single private member keeps it private), and `read_later` if any member is,
 /// so a merge can never republish a private bookmark as public.
-pub(super) fn merge_bookmarks(group: &[&Bookmark]) -> Bookmark {
-    let url = group[0].url.clone();
+pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
+    let group = || std::iter::once(lead).chain(rest.iter().copied());
+    let url = lead.url.clone();
 
     let mut tags: Vec<String> = Vec::new();
-    for b in group {
+    for b in group() {
         extend_unique(&mut tags, &b.tags);
     }
 
@@ -43,8 +45,8 @@ pub(super) fn merge_bookmarks(group: &[&Bookmark]) -> Bookmark {
     // escapes it: a note long enough that `PinboardClient::fit_extended` trims it comes
     // back as a fragment no block matches, and re-merges forever. That is why the trim is
     // warned about rather than silent.
-    let mut note = group[0].note.clone();
-    for b in &group[1..] {
+    let mut note = lead.note.clone();
+    for b in rest {
         for block in b.note.split("\n\n") {
             let candidate = block.trim();
             if candidate.is_empty() || note.split("\n\n").any(|have| have.trim() == candidate) {
@@ -60,14 +62,13 @@ pub(super) fn merge_bookmarks(group: &[&Bookmark]) -> Bookmark {
         }
     }
 
-    let title = group
-        .iter()
+    let title = group()
         .map(|b| b.title.as_str())
         .find(|t| !t.is_empty())
         .unwrap_or_default()
         .to_string();
 
-    let timestamp = group.iter().filter_map(|b| b.timestamp).min();
+    let timestamp = group().filter_map(|b| b.timestamp).min();
 
     Bookmark {
         url,
@@ -75,8 +76,8 @@ pub(super) fn merge_bookmarks(group: &[&Bookmark]) -> Bookmark {
         note,
         tags,
         timestamp,
-        public: group.iter().all(|b| b.public),
-        read_later: group.iter().any(|b| b.read_later),
+        public: group().all(|b| b.public),
+        read_later: group().any(|b| b.read_later),
     }
 }
 
@@ -105,11 +106,11 @@ mod tests {
         let mut mover = bookmark("https://t/");
         mover.note = "M".into();
 
-        let once = merge_bookmarks(&[&resident, &mover]);
+        let once = merge_bookmarks(&resident, &[&mover]);
         assert_eq!(once.note, "R\n\nM");
 
         // Second run: the resident now holds the merged note, the mover still holds "M".
-        let twice = merge_bookmarks(&[&once, &mover]);
+        let twice = merge_bookmarks(&once, &[&mover]);
         assert_eq!(twice.note, "R\n\nM", "the note must not grow on re-merge");
     }
 
@@ -124,12 +125,12 @@ mod tests {
         let mut mover = bookmark("https://t/");
         mover.note = "three".into();
 
-        let once = merge_bookmarks(&[&resident, &mover]);
+        let once = merge_bookmarks(&resident, &[&mover]);
         assert_eq!(once.note, "one\n\n\n\ntwo  \n\nthree");
 
         // And re-merging that unusual shape still has to settle, or the note grows every
         // run for any group whose old URL is never absorbed.
-        let twice = merge_bookmarks(&[&once, &mover]);
+        let twice = merge_bookmarks(&once, &[&mover]);
         assert_eq!(twice.note, once.note, "the note must not grow on re-merge");
     }
 
@@ -144,9 +145,9 @@ mod tests {
         let mut mover = bookmark("https://t/");
         mover.note = "    let x = 1;\n    let y = 2;".into();
 
-        let once = merge_bookmarks(&[&resident, &mover]);
+        let once = merge_bookmarks(&resident, &[&mover]);
         assert_eq!(once.note, "A\n\n    let x = 1;\n    let y = 2;");
-        let twice = merge_bookmarks(&[&once, &mover]);
+        let twice = merge_bookmarks(&once, &[&mover]);
         assert_eq!(twice.note, once.note, "the note must not grow on re-merge");
     }
 
@@ -160,9 +161,9 @@ mod tests {
         let mut mover = bookmark("https://t/");
         mover.note = "extra".into();
 
-        let once = merge_bookmarks(&[&resident, &mover]);
+        let once = merge_bookmarks(&resident, &[&mover]);
         assert_eq!(once.note, "base\n\n\nextra");
-        let twice = merge_bookmarks(&[&once, &mover]);
+        let twice = merge_bookmarks(&once, &[&mover]);
         assert_eq!(twice.note, once.note, "the note must not grow on re-merge");
     }
 
@@ -176,7 +177,7 @@ mod tests {
         second.tags = vec!["rust".into(), "Rust".into()];
 
         assert_eq!(
-            merge_bookmarks(&[&first, &second]).tags,
+            merge_bookmarks(&first, &[&second]).tags,
             strings(&["Rust", "rust"])
         );
     }
@@ -189,7 +190,7 @@ mod tests {
         second.tags = vec!["b".into(), String::new()];
 
         assert_eq!(
-            merge_bookmarks(&[&first, &second]).tags,
+            merge_bookmarks(&first, &[&second]).tags,
             strings(&["a", "b"])
         );
     }
@@ -203,7 +204,7 @@ mod tests {
         let mut has_note = bookmark("https://t/");
         has_note.note = "only note".into();
 
-        assert_eq!(merge_bookmarks(&[&empty, &has_note]).note, "only note");
+        assert_eq!(merge_bookmarks(&empty, &[&has_note]).note, "only note");
     }
 
     #[test]
@@ -239,7 +240,7 @@ mod tests {
             read_later: false,
         };
 
-        let merged = merge_bookmarks(&[&a, &b, &c]);
+        let merged = merge_bookmarks(&a, &[&b, &c]);
         assert_eq!(merged.url.as_str(), "https://collide/");
         // Order-preserving, case-sensitive union across the group.
         assert_eq!(merged.tags, vec!["x", "shared", "y", "z"]);
@@ -265,7 +266,7 @@ mod tests {
             note: String::new(),
             ..bookmark("https://collide/")
         };
-        let merged = merge_bookmarks(&[&a, &b]);
+        let merged = merge_bookmarks(&a, &[&b]);
         assert_eq!(merged.note, "only note");
     }
 
@@ -281,8 +282,8 @@ mod tests {
             public: false,
             ..bookmark("https://collide/")
         };
-        assert!(!merge_bookmarks(&[&public, &private]).public);
+        assert!(!merge_bookmarks(&public, &[&private]).public);
         // Order-independent: private first is equally private.
-        assert!(!merge_bookmarks(&[&private, &public]).public);
+        assert!(!merge_bookmarks(&private, &[&public]).public);
     }
 }

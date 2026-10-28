@@ -106,10 +106,10 @@ async fn mount_login_page(server: &MockServer) {
         .await;
 }
 
-/// Following the redirect would also end in `ReauthRequired` (the login page's 403),
-/// so the message is what tells the two apart.
+/// Following the redirect would also end in `Halt::Reauth` (the login page's 403), so
+/// the message is what tells the two apart.
 fn assert_refused_at_login(err: SourceError) {
-    let SourceError::ReauthRequired(message) = &err else {
+    let SourceError::Halted(Halt::Reauth(message)) = &err else {
         panic!("a login redirect must ask for a new cookie: {err:?}");
     };
     assert!(message.contains("login page"), "{message}");
@@ -255,7 +255,7 @@ async fn fetch_saved_maps_403_to_reauth() {
     let client = reddit_client(&server);
     assert!(matches!(
         client.fetch_saved().await,
-        Err(SourceError::ReauthRequired(_))
+        Err(SourceError::Halted(Halt::Reauth(_)))
     ));
 }
 
@@ -268,7 +268,7 @@ async fn info_names_the_cookie_setting_in_a_403_but_never_the_cookie() {
         .await;
     let client = info_client(&server, "reddit_session=SECRET403");
     let err = client.info(&strings(&["t3_a"])).await.unwrap_err();
-    let SourceError::ReauthRequired(message) = &err else {
+    let SourceError::Halted(Halt::Reauth(message)) = &err else {
         panic!("a 403 must ask for a new cookie: {err:?}");
     };
     assert!(message.contains(TEST_COOKIE_SOURCE), "{message}");
@@ -298,7 +298,10 @@ async fn fetch_saved_maps_a_block_page_to_blocked() {
         server.uri(),
     );
     let err = client.fetch_saved().await.unwrap_err();
-    assert!(matches!(err, SourceError::Blocked(_)), "got {err:?}");
+    assert!(
+        matches!(err, SourceError::Halted(Halt::Blocked(_))),
+        "got {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -312,7 +315,10 @@ async fn info_maps_a_block_page_to_blocked() {
         .await;
     let client = info_client(&server, "reddit_session=secret");
     let err = client.info(&strings(&["t3_a"])).await.unwrap_err();
-    assert!(matches!(err, SourceError::Blocked(_)), "got {err:?}");
+    assert!(
+        matches!(err, SourceError::Halted(Halt::Blocked(_))),
+        "got {err:?}"
+    );
 }
 
 #[tokio::test]

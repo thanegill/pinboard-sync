@@ -215,7 +215,7 @@ async fn neither_pass_plans_the_others_bookmarks() {
         configs: gist_configs(&client.config, &[]),
     };
     let (plan, waits) = crate::http::recording_waits(gist_pass.plan(&star)).await;
-    assert!(matches!(plan, Ok(Plan::Skipped)));
+    assert_eq!(plan.unwrap(), Plan::Skipped);
     assert!(waits.is_empty(), "the gist pass looked a repo up");
 
     let repo_pass = super::super::GitHubCleanupPass {
@@ -224,6 +224,6 @@ async fn neither_pass_plans_the_others_bookmarks() {
         star_configs: super::super::star_configs(&client.config, &[]),
     };
     let (plan, waits) = crate::http::recording_waits(repo_pass.plan(&synced_gist)).await;
-    assert!(matches!(plan, Ok(Plan::Skipped)));
+    assert_eq!(plan.unwrap(), Plan::Skipped);
     assert!(waits.is_empty(), "the repo pass looked a gist up");
 }

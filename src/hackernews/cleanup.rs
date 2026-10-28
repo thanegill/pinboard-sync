@@ -419,7 +419,7 @@ mod tests {
         };
         // Skipped, not Unchanged: the meta-post is filtered out locally, so it is no
         // evidence that Algolia answered.
-        assert!(matches!(pass.plan(&stored).await.unwrap(), Plan::Skipped));
+        assert_eq!(pass.plan(&stored).await.unwrap(), Plan::Skipped);
     }
 
     #[tokio::test]

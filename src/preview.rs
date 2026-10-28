@@ -4,6 +4,7 @@
 use std::fmt::Display;
 
 use crate::htmltext::collapse_whitespace;
+use crate::http::ELLIPSIS;
 use crate::tags::Tags;
 
 /// The indent of a preview's detail lines, under its `[dry-run] <subject>` line.
@@ -45,7 +46,7 @@ pub fn excerpt(text: &str) -> String {
     let one_line = collapse_whitespace(text, " ");
     if one_line.chars().count() > MAX {
         let head: String = one_line.chars().take(MAX).collect();
-        format!("{head}…")
+        format!("{head}{ELLIPSIS}")
     } else {
         one_line
     }

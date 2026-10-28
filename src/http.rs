@@ -611,7 +611,7 @@ fn authority(url: &reqwest::Url) -> String {
 
 /// The longest [`error_excerpt`] returns, in bytes, including [`ELLIPSIS`].
 pub const ERROR_BODY_MAX_BYTES: usize = 300;
-/// Ends an [`error_excerpt`] that was cut.
+/// Ends a text that was cut: an [`error_excerpt`] or a [`crate::preview::excerpt`].
 pub const ELLIPSIS: &str = "…";
 
 /// Stands in for a secret [`redact`] removed.

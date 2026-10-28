@@ -11,6 +11,7 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::bookmark::Bookmark;
+use crate::github::without_git_suffixes;
 use crate::htmltext::{blockquote, collapse_whitespace};
 use crate::keys::GitHubKeys;
 use crate::source::{BookmarkDraft, UrlKey};
@@ -255,8 +256,9 @@ pub(crate) fn gist_note<'a>(
 }
 
 /// The id of a gist-root URL: `gist.github.com/<id>` or `gist.github.com/<owner>/<id>`,
-/// ignoring a trailing slash and a `.git` suffix. `None` for anything else: a deep link (a
-/// revision, `/raw`), an owner's gist list (`gist.github.com/<owner>`), or another host.
+/// ignoring empty segments and every trailing `.git` in any case, as for a repo name.
+/// `None` for anything else: a deep link (a revision, `/raw`), an owner's gist list
+/// (`gist.github.com/<owner>`), or another host.
 pub(crate) fn gist_root_id(url: &Url) -> Option<String> {
     if url.host_str() != Some(GIST_HOST) {
         return None;
@@ -265,7 +267,7 @@ pub(crate) fn gist_root_id(url: &Url) -> Option<String> {
     let ([id] | [_, id]) = segments[..] else {
         return None;
     };
-    let id = id.strip_suffix(".git").unwrap_or(id);
+    let id = without_git_suffixes(id);
     is_gist_id(id).then(|| id.to_ascii_lowercase())
 }
 

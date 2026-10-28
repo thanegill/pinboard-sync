@@ -225,6 +225,7 @@ mod tests {
             format!("https://gist.github.com/Someone/{id}"),
             format!("http://gist.github.com/someone/{id}/"),
             format!("https://gist.github.com/someone/{}.git", id.to_uppercase()),
+            format!("https://gist.github.com/someone/{id}.Git.GIT"),
             format!("https://gist.github.com/someone/{id}?file=x#y"),
         ] {
             assert_eq!(

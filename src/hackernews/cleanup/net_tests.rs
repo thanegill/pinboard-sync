@@ -232,6 +232,48 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
     assert!(pinboard.deleted.borrow().is_empty());
 }
 
+/// The link pass looks up only articles carrying the marker tag: neither an untagged
+/// article nor a tagged HN item costs a URL search.
+#[tokio::test]
+async fn link_discussions_searches_only_tagged_articles() {
+    let algolia = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .and(query_param_is_missing("restrictSearchableAttributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "hits": [] })))
+        .mount(&algolia)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .and(query_param("restrictSearchableAttributes", "url"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "hits": [] })))
+        .expect(1)
+        .mount(&algolia)
+        .await;
+    let tagged = |url: &str| Bookmark {
+        tags: strings(&["find-hn"]),
+        ..stored_at(url)
+    };
+    let pinboard = FakePinboard {
+        all: vec![
+            tagged("https://example.com/tagged"),
+            stored_at("https://example.com/untagged"),
+            tagged("https://news.ycombinator.com/item?id=7"),
+        ],
+        ..Default::default()
+    };
+    let client = algolia_client(&algolia);
+    let opts = HackerNewsCleanupOpts {
+        link_discussions: true,
+        dates: NO_DATING,
+    };
+    run(&pinboard.cleanup_store(false), &client, &opts)
+        .await
+        .unwrap();
+
+    assert!(pinboard.updated.borrow().is_empty());
+}
+
 /// Two `find-hn` articles and, unless `with_item` is false, one HN story bookmark whose
 /// rewrite to its article Pinboard refuses. Algolia answers the item batch but fails
 /// every URL search, so the link pass fails its lookups in the majority. Returns what

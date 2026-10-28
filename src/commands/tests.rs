@@ -99,6 +99,29 @@ fn sync_all_counts_the_accounts_it_could_not_build() {
 }
 
 #[tokio::test]
+async fn a_dry_sync_reports_no_write_tally() {
+    let pinboard = PinboardClient::new("user:token".into(), std::time::Duration::ZERO).unwrap();
+    let (result, logs) = crate::test_support::capturing_logs(run_sync_jobs(
+        Vec::new(),
+        AllRun::default(),
+        &pinboard,
+        &[],
+        true,
+    ))
+    .await;
+
+    result.unwrap();
+    assert!(
+        logs.contains(&"INFO 0 new bookmark(s) to write (dry run)".to_string()),
+        "{logs:?}"
+    );
+    assert!(
+        !logs.iter().any(|line| line.contains("done: wrote")),
+        "{logs:?}"
+    );
+}
+
+#[tokio::test]
 async fn run_sync_jobs_fails_the_run_for_accounts_it_could_not_build() {
     let pinboard = PinboardClient::new("user:token".into(), std::time::Duration::ZERO).unwrap();
     let error = run_sync_jobs(Vec::new(), AllRun { failed: 1 }, &pinboard, &[], false)

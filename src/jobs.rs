@@ -123,7 +123,10 @@ pub fn build_jobs<A: SourceAccount>(
     match selection {
         Selection::All => {
             if accounts.is_empty() {
-                bail!("--all requires a --config with at least one configured account");
+                bail!(
+                    "--all requires a --config with at least one configured {} account",
+                    A::SOURCE
+                );
             }
             let mut jobs = Vec::new();
             let mut skipped = Vec::new();

@@ -44,6 +44,8 @@ All notable changes to this project are documented here. The format is based on
 - An `--all` run's per-account errors and the `--on-auth-failure` hook's messages go
   through the logger, so they read `ERROR ...`/`INFO ...` like a single-account run's
   instead of `error: ...` and bare text.
+- `sync <source> --all` with no account of that source names the source, as `backup
+  <source> --all` already did.
 
 ### Deprecated
 

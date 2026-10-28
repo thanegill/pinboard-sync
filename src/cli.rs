@@ -101,7 +101,7 @@ pub struct RedditBackupArgs {
     /// Account name to select from the config (default: the first reddit account).
     pub account: Option<String>,
     /// Back up every reddit account in the config.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "account")]
     pub all: bool,
     /// Reddit username whose saved items to back up (env REDDIT_USERNAME, or *_FILE).
     #[arg(long)]
@@ -126,7 +126,7 @@ pub struct GitHubBackupArgs {
     /// Account name to select from the config (default: the first github account).
     pub account: Option<String>,
     /// Back up every github account in the config.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "account")]
     pub all: bool,
     /// GitHub personal access token (env GITHUB_TOKEN, or *_FILE).
     #[arg(long)]
@@ -146,7 +146,7 @@ pub struct HackerNewsBackupArgs {
     /// Account name to select from the config (default: the first hackernews account).
     pub account: Option<String>,
     /// Back up every hackernews account in the config.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "account")]
     pub all: bool,
     /// HackerNews username whose favorites to back up (env HN_USERNAME, or *_FILE).
     #[arg(long = "hn-username", alias = "username", value_name = "HN_USERNAME")]
@@ -208,7 +208,7 @@ pub struct RedditSyncArgs {
     /// Account name to select from the config (default: the first reddit account).
     pub account: Option<String>,
     /// Run every reddit account in the config.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "account")]
     pub all: bool,
     /// Reddit username whose saved items to sync (env REDDIT_USERNAME, or *_FILE).
     #[arg(long)]
@@ -233,7 +233,7 @@ pub struct GitHubSyncArgs {
     /// Account name to select from the config (default: the first github account).
     pub account: Option<String>,
     /// Run every github account in the config.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "account")]
     pub all: bool,
     /// GitHub personal access token (env GITHUB_TOKEN, or *_FILE).
     #[arg(long)]
@@ -253,7 +253,7 @@ pub struct HackerNewsSyncArgs {
     /// Account name to select from the config (default: the first hackernews account).
     pub account: Option<String>,
     /// Run every hackernews account in the config.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "account")]
     pub all: bool,
     /// HackerNews username whose favorites to sync (env HN_USERNAME, or *_FILE).
     #[arg(long = "hn-username", alias = "username", value_name = "HN_USERNAME")]
@@ -647,6 +647,32 @@ mod tests {
                 panic!("expected `backup hackernews`");
             };
             assert_eq!(args.username.as_deref(), Some("u"), "{username}");
+        }
+    }
+
+    #[test]
+    fn a_source_all_refuses_an_account_name() {
+        use clap::Parser;
+        for command in ["sync", "backup"] {
+            for source in ["reddit", "github", "hackernews"] {
+                for argv in [
+                    ["pinboard-sync", command, source, "main", "--all"],
+                    ["pinboard-sync", command, source, "--all", "main"],
+                ] {
+                    let Err(error) = Cli::try_parse_from(argv) else {
+                        panic!("{argv:?} must be refused");
+                    };
+                    assert_eq!(
+                        error.kind(),
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "{argv:?}: {error}"
+                    );
+                }
+                assert!(
+                    Cli::try_parse_from(["pinboard-sync", command, source, "--all"]).is_ok(),
+                    "{command} {source} --all"
+                );
+            }
         }
     }
 

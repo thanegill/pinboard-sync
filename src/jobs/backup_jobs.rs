@@ -7,8 +7,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use log::warn;
 
 use super::{
-    build_job, job_label, pinboard_client_for_token, warn_shared_env_secrets, SkippedTarget,
-    SourceAccount, SourceClient, SyncOverrides,
+    build_job, job_label, pinboard_client_for_token, warn_shared_env_secrets, Selection,
+    SkippedTarget, SourceAccount, SourceClient, SyncOverrides,
 };
 use crate::backup::{self, BackupSource};
 use crate::cli::{BackupCmd, BackupTarget, OutFlag};
@@ -102,16 +102,14 @@ pub fn build_backup_plan(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan>
             Ok(plan)
         }
         (false, Some(BackupTarget::Reddit(args))) => build_source_backup_plan::<RedditAccount>(
-            args.account.as_deref(),
-            args.all,
+            Selection::new(args.account.as_deref(), args.all)?,
             &SyncOverrides::from(args.clone()),
             &args.out,
             args.dry_run,
             config,
         ),
         (false, Some(BackupTarget::Github(args))) => build_source_backup_plan::<GitHubAccount>(
-            args.account.as_deref(),
-            args.all,
+            Selection::new(args.account.as_deref(), args.all)?,
             &SyncOverrides::from(args.clone()),
             &args.out,
             args.dry_run,
@@ -119,8 +117,7 @@ pub fn build_backup_plan(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan>
         ),
         (false, Some(BackupTarget::Hackernews(args))) => {
             build_source_backup_plan::<HackerNewsAccount>(
-                args.account.as_deref(),
-                args.all,
+                Selection::new(args.account.as_deref(), args.all)?,
                 &SyncOverrides::from(args.clone()),
                 &args.out,
                 args.dry_run,
@@ -144,8 +141,7 @@ pub fn build_backup_plan(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan>
 /// The backup plan for one source, selecting by name / first / every account. Reuses
 /// `build_job` so account selection and the whole secret ladder behave as in `sync`.
 fn build_source_backup_plan<A: SourceAccount>(
-    name: Option<&str>,
-    all: bool,
+    selection: Selection,
     overrides: &SyncOverrides,
     out: &OutFlag,
     dry_run: bool,
@@ -157,18 +153,21 @@ fn build_source_backup_plan<A: SourceAccount>(
         out: out.out.clone(),
         dry_run,
     };
-    if all {
-        if A::configured(config).is_empty() {
-            bail!(
-                "--all requires a --config with at least one configured {} account",
-                A::SOURCE
-            );
+    match selection {
+        Selection::All => {
+            if A::configured(config).is_empty() {
+                bail!(
+                    "--all requires a --config with at least one configured {} account",
+                    A::SOURCE
+                );
+            }
+            build_every_backup_job::<A>(overrides, config, &mut plan);
         }
-        build_every_backup_job::<A>(overrides, config, &mut plan);
-    } else {
-        let account = config::select_account(A::configured(config), name)?;
-        plan.jobs
-            .push(build_backup_job(account, overrides, config)?);
+        Selection::One(name) => {
+            let account = config::select_account(A::configured(config), name)?;
+            plan.jobs
+                .push(build_backup_job(account, overrides, config)?);
+        }
     }
     Ok(plan)
 }

@@ -18,8 +18,8 @@ use crate::hackernews::{HackerNewsClient, HackerNewsConfig};
 use crate::hook::{cleanup_hook, handle_source_err, on_auth_failure_from_env};
 use crate::jobs::backup_jobs::{build_backup_plan, BackupJob};
 use crate::jobs::{
-    build_all_jobs, build_jobs, open_pinboard, AllRun, SkippedTarget, SourceAccount, SyncJob,
-    SyncOverrides,
+    build_all_jobs, build_jobs, open_pinboard, AllRun, Selection, SkippedTarget, SourceAccount,
+    SyncJob, SyncOverrides,
 };
 use crate::pinboard::PinboardClient;
 use crate::reddit::cleanup::RedditCleanupOverrides;
@@ -80,23 +80,23 @@ fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<SyncPlan> {
         }
         (false, Some(SyncSource::Reddit(args))) => {
             let (account, all) = (args.account.clone(), args.all);
+            let selection = Selection::new(account.as_deref(), all)?;
             let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
-            let (jobs, skipped) =
-                build_jobs::<RedditAccount>(account.as_deref(), all, &overrides, config)?;
+            let (jobs, skipped) = build_jobs::<RedditAccount>(selection, &overrides, config)?;
             (jobs, overrides, skipped)
         }
         (false, Some(SyncSource::Github(args))) => {
             let (account, all) = (args.account.clone(), args.all);
+            let selection = Selection::new(account.as_deref(), all)?;
             let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
-            let (jobs, skipped) =
-                build_jobs::<GitHubAccount>(account.as_deref(), all, &overrides, config)?;
+            let (jobs, skipped) = build_jobs::<GitHubAccount>(selection, &overrides, config)?;
             (jobs, overrides, skipped)
         }
         (false, Some(SyncSource::Hackernews(args))) => {
             let (account, all) = (args.account.clone(), args.all);
+            let selection = Selection::new(account.as_deref(), all)?;
             let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
-            let (jobs, skipped) =
-                build_jobs::<HackerNewsAccount>(account.as_deref(), all, &overrides, config)?;
+            let (jobs, skipped) = build_jobs::<HackerNewsAccount>(selection, &overrides, config)?;
             (jobs, overrides, skipped)
         }
         (false, None) => bail!("specify a source (e.g. `sync reddit`) or pass --all"),

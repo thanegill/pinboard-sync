@@ -72,7 +72,6 @@ impl HackerNewsClient {
         // The scraped page is the only record of a favorite HN's API never exposes, so
         // `backup` keeps it verbatim alongside the Algolia details.
         let stream = favorites.name();
-        let label = format!("hn {stream}");
         let mut out = Vec::new();
         let mut drafts = HashMap::new();
         let mut next = Some(format!(
@@ -106,37 +105,7 @@ impl HackerNewsClient {
             if page > 1 {
                 crate::http::sleep(FAVORITES_PAGE_PAUSE).await;
             }
-            let resp = self
-                .http
-                .send_with(&label, retry_after_up_to(FAVORITES_MAX_RETRY_AFTER), || {
-                    self.http.get(&url)
-                })
-                .await?;
-            let status = resp.status();
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                let retry_after = resp
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|value| value.to_str().ok())
-                    .map(|value| format!(" (Retry-After: {value})"))
-                    .unwrap_or_default();
-                return Err(SourceError::Halted(Halt::RateLimited(format!(
-                    "hn {stream} for '{}' returned {status}{retry_after}",
-                    self.username
-                ))));
-            }
-            if !status.is_success() {
-                return Err(anyhow::anyhow!(
-                    "hn {stream} for '{}' returned {status}",
-                    self.username
-                )
-                .into());
-            }
-            let body = resp
-                .text()
-                .await
-                .map_err(reqwest::Error::without_url)
-                .with_context(|| format!("reading {label} page {page}"))?;
+            let body = self.favorites_page(&url, stream, page).await?;
             sink.push(stream, RawKind::Html, &body);
             let (scraped, more) = match parse_favorite_ids(&body) {
                 FavoritesPage::Recognized { ids, more } => (ids, more),
@@ -192,6 +161,46 @@ impl HackerNewsClient {
             next = more.and_then(|href| self.resolve(&href, stream));
         }
         Ok(FavoriteIds { ids: out, drafts })
+    }
+
+    /// The body of the favorites page at `url`, page `page` of `stream`. A 429 halts the
+    /// walk as [`Halt::RateLimited`], since every later page would draw one too.
+    async fn favorites_page(
+        &self,
+        url: &str,
+        stream: &str,
+        page: usize,
+    ) -> Result<String, SourceError> {
+        let label = format!("hn {stream}");
+        let resp = self
+            .http
+            .send_with(&label, retry_after_up_to(FAVORITES_MAX_RETRY_AFTER), || {
+                self.http.get(url)
+            })
+            .await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| format!(" (Retry-After: {value})"))
+                .unwrap_or_default();
+            return Err(SourceError::Halted(Halt::RateLimited(format!(
+                "hn {stream} for '{}' returned {status}{retry_after}",
+                self.username
+            ))));
+        }
+        if !status.is_success() {
+            return Err(
+                anyhow::anyhow!("hn {stream} for '{}' returned {status}", self.username).into(),
+            );
+        }
+        Ok(resp
+            .text()
+            .await
+            .map_err(reqwest::Error::without_url)
+            .with_context(|| format!("reading {label} page {page}"))?)
     }
 
     /// Resolve an HN "More" href (typically relative, e.g. `favorites?id=u&p=2`)

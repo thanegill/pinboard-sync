@@ -236,7 +236,7 @@ fn build_pinboard_backup_job(flag: Option<String>, config: &Config) -> Result<Op
 mod tests {
     use super::*;
     use crate::cli::OutFlag;
-    use crate::test_support::{lock_on_auth_failure_env, warnings};
+    use crate::test_support::warnings;
 
     fn backup_all() -> BackupCmd {
         BackupCmd {
@@ -257,16 +257,13 @@ mod tests {
 
     #[test]
     fn backup_all_takes_the_hook_from_on_auth_failure_env() {
-        let _env = lock_on_auth_failure_env();
+        let _env =
+            crate::secrets::FakeSecretEnv::set(&[("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook")]);
         let config = Config {
             reddit: vec![reddit_account()],
             ..Default::default()
         };
-        std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
-        let plan = build_backup_plan(backup_all(), &config);
-        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
-
-        let plan = plan.expect("plans");
+        let plan = build_backup_plan(backup_all(), &config).expect("plans");
         assert_eq!(plan.jobs[0].hook.as_deref(), Some("env-hook"));
     }
 

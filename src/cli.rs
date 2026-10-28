@@ -536,10 +536,9 @@ mod tests {
 
     #[test]
     fn limit_flag_takes_auto_all_or_a_count() {
-        use clap::Parser;
         let limit = |value: &str| {
             let argv = ["pinboard-sync", "sync", "hackernews", "--limit", value];
-            match Cli::try_parse_from(argv).map(|cli| cli.command) {
+            match crate::test_support::parse_cli(argv).map(|cli| cli.command) {
                 Ok(Command::Sync(SyncCmd {
                     source: Some(SyncSource::Hackernews(args)),
                     ..
@@ -561,10 +560,12 @@ mod tests {
 
     /// Parse `sync reddit <extra>` and return the parsed source args.
     fn parse_reddit_sync(extra: &[&str]) -> RedditSyncArgs {
-        use clap::Parser;
         let mut argv = vec!["pinboard-sync", "sync", "reddit"];
         argv.extend_from_slice(extra);
-        match Cli::try_parse_from(argv).expect("parses").command {
+        match crate::test_support::parse_cli(argv)
+            .expect("parses")
+            .command
+        {
             Command::Sync(SyncCmd {
                 source: Some(SyncSource::Reddit(args)),
                 ..
@@ -609,9 +610,8 @@ mod tests {
     /// Each renamed flag parses under its new name and, for one release, its old one.
     #[test]
     fn each_renamed_flag_takes_its_new_and_its_old_name() {
-        use clap::Parser;
         let command = |argv: &[&str]| {
-            Cli::try_parse_from([&["pinboard-sync"][..], argv].concat())
+            crate::test_support::parse_cli([&["pinboard-sync"][..], argv].concat())
                 .expect("parses")
                 .command
         };
@@ -663,14 +663,13 @@ mod tests {
 
     #[test]
     fn a_source_all_refuses_an_account_name() {
-        use clap::Parser;
         for command in ["sync", "backup"] {
             for source in ["reddit", "github", "hackernews"] {
                 for argv in [
                     ["pinboard-sync", command, source, "main", "--all"],
                     ["pinboard-sync", command, source, "--all", "main"],
                 ] {
-                    let Err(error) = Cli::try_parse_from(argv) else {
+                    let Err(error) = crate::test_support::parse_cli(argv) else {
                         panic!("{argv:?} must be refused");
                     };
                     assert_eq!(
@@ -680,11 +679,42 @@ mod tests {
                     );
                 }
                 assert!(
-                    Cli::try_parse_from(["pinboard-sync", command, source, "--all"]).is_ok(),
+                    crate::test_support::parse_cli(["pinboard-sync", command, source, "--all"])
+                        .is_ok(),
                     "{command} {source} --all"
                 );
             }
         }
+    }
+
+    /// `PINBOARD_SYNC_ON_AUTH_FAILURE` backs each per-source `--on-auth-failure`, so an
+    /// explicit flag outranks it, but not `sync`'s top-level one: the `--all` path reads
+    /// the variable itself (`hook::on_auth_failure_from_env`).
+    #[test]
+    fn on_auth_failure_env_backs_only_the_per_source_flags() {
+        use clap::CommandFactory;
+        let cli = Cli::command();
+        let env_of = |path: &[&str]| {
+            let command = path.iter().fold(&cli, |command, name| {
+                command.find_subcommand(name).expect("subcommand exists")
+            });
+            let flag = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == "on_auth_failure")
+                .expect("takes --on-auth-failure");
+            flag.get_env().map(|var| var.to_string_lossy().into_owned())
+        };
+        let env = Some("PINBOARD_SYNC_ON_AUTH_FAILURE".to_string());
+
+        for path in [
+            ["sync", "reddit"],
+            ["sync", "github"],
+            ["backup", "reddit"],
+            ["backup", "github"],
+        ] {
+            assert_eq!(env_of(&path), env, "{path:?}");
+        }
+        assert_eq!(env_of(&["sync"]), None);
     }
 
     /// `--help` offers each renamed flag under its new name only.

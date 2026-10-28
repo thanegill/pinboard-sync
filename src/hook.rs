@@ -16,9 +16,7 @@ use crate::source::{Halt, SourceError};
 /// env var here directly -- without it, the NixOS service (`sync --all`, hook via
 /// that env var only) would silently never fire the hook.
 pub fn on_auth_failure_from_env() -> Option<String> {
-    std::env::var("PINBOARD_SYNC_ON_AUTH_FAILURE")
-        .ok()
-        .filter(|v| !v.is_empty())
+    crate::secrets::env_var("PINBOARD_SYNC_ON_AUTH_FAILURE").filter(|v| !v.is_empty())
 }
 
 /// Map a `SourceError` to an `anyhow::Error`, firing the auth-failure hook when
@@ -86,8 +84,11 @@ mod tests {
     use super::*;
     use crate::config::{HackerNewsAccount, RedditAccount};
     use crate::jobs::{build_job, SyncOverrides};
-    use crate::test_support::{lock_on_auth_failure_env, scratch_dir};
+    use crate::secrets::FakeSecretEnv;
+    use crate::test_support::scratch_dir;
     use anyhow::anyhow;
+
+    const ENV_HOOK: &[(&str, &str)] = &[("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook")];
 
     /// A reddit account with its own hook, in a config whose `[defaults.reddit]` has
     /// another: the two config tiers `cleanup_hook` reads below the env var.
@@ -105,12 +106,10 @@ mod tests {
     /// `[hooks]` say.
     #[test]
     fn hackernews_resolves_no_hook_from_any_tier() {
-        let _env = lock_on_auth_failure_env();
-        std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
+        let _env = FakeSecretEnv::set(ENV_HOOK);
         let mut config = Config::default();
         config.hooks.on_auth_failure = Some("global-hook".into());
         let cleanup = cleanup_hook::<HackerNewsAccount>(None, &config);
-        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
         let overrides = SyncOverrides {
             hackernews_username: Some("bob".into()),
             on_auth_failure: Some("flag-hook".into()),
@@ -124,35 +123,29 @@ mod tests {
 
     #[test]
     fn cleanup_falls_back_to_on_auth_failure_env() {
-        let _env = lock_on_auth_failure_env();
         // The NixOS module exports `onAuthFailure` *only* as this env var — it never
         // reaches the generated TOML — and it runs the `cleanup --all` timer with that
         // same environment. Miss this rung and the hook silently never fires for the
         // deployment the whole feature exists for.
-        std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
+        let _env = FakeSecretEnv::set(ENV_HOOK);
         let hook = cleanup_hook::<RedditAccount>(None, &Config::default());
-        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
 
         assert_eq!(hook.as_deref(), Some("env-hook"));
     }
 
     #[test]
     fn cleanup_env_hook_outranks_the_config_tiers() {
-        let _env = lock_on_auth_failure_env();
         // Same precedence as `sync`, whose per-source flag is env-backed: the env var is
         // the top rung, above an account or `[defaults.<source>]` entry.
-        std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
+        let _env = FakeSecretEnv::set(ENV_HOOK);
         let (account, config) = account_and_source_hooks();
         let hook = cleanup_hook(Some(&account), &config);
-        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
 
         assert_eq!(hook.as_deref(), Some("env-hook"));
     }
 
     #[test]
     fn cleanup_uses_the_account_hook_when_no_env_is_set() {
-        let _env = lock_on_auth_failure_env();
-        std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
         let (account, config) = account_and_source_hooks();
         let hook = cleanup_hook(Some(&account), &config);
 

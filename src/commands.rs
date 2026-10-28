@@ -24,7 +24,7 @@ use crate::jobs::{
 use crate::pinboard::PinboardClient;
 use crate::reddit::cleanup::RedditCleanupOverrides;
 use crate::reddit::model::RedditConfig;
-use crate::reddit::RedditClient;
+use crate::reddit::RedditInfoClient;
 use crate::secrets::{
     first_nonempty, missing_reddit_cookie, resolve_github_token, resolve_reddit_cookie, SecretSpec,
 };
@@ -467,7 +467,7 @@ async fn cleanup_reddit_account<S: BookmarkStore + AccountState>(
 /// A reddit cleanup pass's options, and the `/api/info` client when a step needs one.
 struct RedditCleanup {
     opts: reddit::cleanup::RedditCleanupOpts,
-    client: Option<RedditClient>,
+    client: Option<RedditInfoClient>,
 }
 
 impl RedditCleanup {
@@ -488,7 +488,7 @@ impl RedditCleanup {
         let client = if opts.needs_post_info() {
             let cookie = resolve_reddit_cookie(overrides.cookie, account)
                 .with_context(missing_reddit_cookie)?;
-            Some(RedditClient::for_info(Some(cookie))?)
+            Some(RedditInfoClient::new(cookie)?)
         } else {
             None
         };

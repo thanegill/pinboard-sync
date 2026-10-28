@@ -41,10 +41,10 @@ pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
     // blank-line-separated blocks the base doesn't already have. Blocks are compared
     // trimmed so re-merging an already-merged note is a no-op even when the base ends in a
     // newline, which otherwise re-splits as a block the plain comparison can't recognise —
-    // and any group whose old URL is never absorbed re-merges every run. One case still
-    // escapes it: a note long enough that `PinboardClient::fit_extended` trims it comes
-    // back as a fragment no block matches, and re-merges forever. That is why the trim is
-    // warned about rather than silent.
+    // and any group whose old URL is never absorbed re-merges every run. A note long enough
+    // that `PinboardClient::fit_extended` trims it comes back as a fragment no block
+    // matches, so the cut blocks are re-appended here; the driver fits the merged record
+    // before diffing it, which almost always trims them off again.
     let mut note = lead.note.clone();
     for b in rest {
         for block in b.note.split("\n\n") {

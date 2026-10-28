@@ -238,10 +238,12 @@ being public or private, since that would either publish a private note or unsha
 something you chose to share. A refusal leaves both records untouched, so the duplicate
 stays until you resolve it yourself.
 
-One case is not idempotent: if a merged note grows past what Pinboard's API accepts in a
-request URL, it is stored truncated (logged when it happens), and the next run no longer
-recognizes the truncated block — so that bookmark is rewritten every run and its note
-grows. Rare, but if you see a note accumulating `… [truncated]` markers, shorten it.
+A note too long for a Pinboard API request URL is cut short when written, with a marker
+appended (logged when it happens). `cleanup` compares what a write would store with what
+writing the bookmark back unchanged would. So it doesn't rewrite a cut note every run,
+or cut a long note when the only change would be cut off anyway, though a merge that
+absorbs another bookmark still does. The one other exception is a note Pinboard rejects
+even once cut: the client cuts it further on retry, and `cleanup` rewrites it each run.
 
 - **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your
   configured `reddit_domain` (default `old.reddit.com`), unwrapping `over18`

@@ -34,7 +34,9 @@ const MAX_URL_BYTES: usize = 4000;
 /// error rather than writing a bookmark with essentially no notes in an endless loop.
 const MIN_URL_BYTES: usize = 500;
 /// Appended to a trimmed `extended` so the truncation is visible in the bookmark.
-const TRUNCATION_MARKER: &str = "… [truncated]";
+pub(crate) const TRUNCATION_MARKER: &str = "… [truncated]";
+/// A `dt` of the length every `dt` has, for measuring a write that sends none.
+const DT_PLACEHOLDER: &str = "1970-01-01T00:00:00Z";
 
 #[derive(Deserialize)]
 struct AddResponse {
@@ -293,6 +295,11 @@ impl BookmarkStore for PinboardClient {
     async fn update(&self, b: &Bookmark) -> Result<()> {
         self.post_add(b).await
     }
+
+    fn fit(&self, mut b: Bookmark) -> Bookmark {
+        b.note = self.fitted_note(&b, MAX_URL_BYTES);
+        b
+    }
 }
 
 impl PinboardClient {
@@ -310,22 +317,7 @@ impl PinboardClient {
             .and_then(crate::timefmt::to_pinboard_dt)
             .unwrap_or_default();
         let endpoint = self.url("posts/add");
-
-        // Every param except `extended` — these are fixed (never trimmed) and set the
-        // budget that `extended` has to fit within.
-        let mut fixed = vec![
-            ("url", b.url.as_str()),
-            ("description", b.title.as_str()),
-            ("tags", tags.as_str()),
-            ("replace", "yes"),
-            ("shared", if b.public { "yes" } else { "no" }),
-            ("toread", if b.read_later { "yes" } else { "no" }),
-            ("auth_token", self.auth_token.as_str()),
-            ("format", "json"),
-        ];
-        if !dt.is_empty() {
-            fixed.push(("dt", dt.as_str()));
-        }
+        let fixed = self.add_params(b, &tags, &dt);
 
         // Trim the notes to the budget; if Pinboard still rejects the URL as too long
         // (its limit is undocumented), halve the budget and retry rather than dropping
@@ -333,7 +325,7 @@ impl PinboardClient {
         // `RetryingClient::send`.
         let mut budget = MAX_URL_BYTES;
         loop {
-            let extended = self.fit_extended(&endpoint, &fixed, &b.note, budget);
+            let extended = self.fitted_note(b, budget);
             let mut params = fixed.clone();
             params.push(("extended", extended.as_str()));
 
@@ -357,8 +349,8 @@ impl PinboardClient {
             // Warn once the trim is final, not inside the retry: a note Pinboard keeps
             // rejecting is re-trimmed at each halved budget, and warning per attempt reads
             // like several different notes were cut. Worth saying at all because the stored
-            // note is now shorter than the one `cleanup` planned, so a later merge sees a
-            // block it doesn't recognise and can re-append it.
+            // note is now shorter than the one the caller wrote. `cleanup` hands over notes
+            // `fit` already cut and says so itself, so this fires for them only on a 414.
             if extended.len() < b.note.len() {
                 warn!(
                     "note trimmed to fit the request URL for {}: {} bytes -> {}",
@@ -369,6 +361,46 @@ impl PinboardClient {
             }
             return Ok(());
         }
+    }
+
+    /// Every `posts/add` param except `extended`: these are never trimmed, and set the
+    /// budget `extended` has to fit within. `tags` and `dt` are `b`'s, rendered for the
+    /// wire; an empty `dt` is left out.
+    fn add_params<'a>(
+        &'a self,
+        b: &'a Bookmark,
+        tags: &'a str,
+        dt: &'a str,
+    ) -> Vec<(&'a str, &'a str)> {
+        let mut fixed = vec![
+            ("url", b.url.as_str()),
+            ("description", b.title.as_str()),
+            ("tags", tags),
+            ("replace", "yes"),
+            ("shared", if b.public { "yes" } else { "no" }),
+            ("toread", if b.read_later { "yes" } else { "no" }),
+            ("auth_token", self.auth_token.as_str()),
+            ("format", "json"),
+        ];
+        if !dt.is_empty() {
+            fixed.push(("dt", dt));
+        }
+        fixed
+    }
+
+    /// `b`'s notes as a `posts/add` within `budget` stores them ([`Self::fit_extended`]).
+    /// Measured as if a `dt` were sent even when `b` has none: every `dt` is the same
+    /// length, so the trim doesn't depend on whether the write dates the bookmark. Without
+    /// that, a note `sync` trimmed undated would trim differently once `cleanup` writes it
+    /// back with the date Pinboard gave it, and be rewritten for that alone.
+    fn fitted_note(&self, b: &Bookmark, budget: usize) -> String {
+        let tags = b.tags.join(" ");
+        let dt = b
+            .timestamp
+            .and_then(crate::timefmt::to_pinboard_dt)
+            .unwrap_or_else(|| DT_PLACEHOLDER.to_string());
+        let fixed = self.add_params(b, &tags, &dt);
+        self.fit_extended(&self.url("posts/add"), &fixed, &b.note, budget)
     }
 
     /// Trim `extended` so the encoded `posts/add` URL stays within `budget` bytes.
@@ -505,6 +537,34 @@ mod tests {
 
     fn test_client() -> PinboardClient {
         PinboardClient::with_base_url("user:tok".into(), PINBOARD_BASE.to_string()).unwrap()
+    }
+
+    /// A bookmark whose note is too long for a `posts/add` URL, dated `timestamp`.
+    fn long_note_bookmark(timestamp: Option<time::OffsetDateTime>) -> Bookmark {
+        Bookmark {
+            note: "a long note ".repeat(400),
+            timestamp,
+            ..crate::test_support::stored_at("https://example.com/long")
+        }
+    }
+
+    #[test]
+    fn a_fitted_note_is_cut_once_and_then_left_alone() {
+        let c = test_client();
+        let once = c.fit(long_note_bookmark(None));
+        assert!(once.note.ends_with(TRUNCATION_MARKER), "{}", once.note);
+        assert_eq!(c.fit(once.clone()), once);
+    }
+
+    #[test]
+    fn a_note_is_cut_the_same_whether_or_not_the_write_is_dated() {
+        let c = test_client();
+        let dated = long_note_bookmark(crate::timefmt::from_unix(1_700_000_000));
+        assert_eq!(
+            c.fit(long_note_bookmark(None)).note,
+            c.fit(dated).note,
+            "a dated cleanup write must not cut a note an undated sync wrote any further"
+        );
     }
 
     /// A realistic set of fixed params (URL, title, tags, auth, …).

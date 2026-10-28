@@ -130,6 +130,10 @@ All notable changes to this project are documented here. The format is based on
 - A `reddit_domain` with a port or another form that isn't a bare host is rejected.
 - A HackerNews favorite linking a Reddit `over18` page or the bare Reddit root is no longer
   re-added after `cleanup reddit` rewrites it.
+- `cleanup` no longer rewrites a bookmark every run because its notes were cut to fit
+  Pinboard's request URL, such as a starred gist with hundreds of files. An undated `sync`
+  now cuts such a note a few bytes shorter. If `cleanup` rebuilds a note an earlier
+  undated `sync` cut, it rewrites it once to match.
 
 ## [0.6.0] - 2026-10-25
 

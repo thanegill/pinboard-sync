@@ -2,15 +2,16 @@
 //! [`CleanupPass`]); [`run_pass`] owns the loop common to all of them: plan every
 //! bookmark's end-state, group the plans by target URL, and write each group.
 //!
-//! A lone plan is diffed against its stored bookmark, skipped when nothing changed, and
+//! A lone plan is fitted to what the store would keep ([`BookmarkStore::fit`]), skipped
+//! when it would store nothing that writing its stored bookmark back wouldn't, otherwise
 //! written via [`BookmarkStore::apply_update`], deleting the old URL on a rewrite. Plans
 //! landing on one URL, with any record already stored there, are field-merged
-//! ([`merge_bookmarks`]) into one record written via [`BookmarkStore::apply_merge`], which
-//! deletes the absorbed URLs: Pinboard holds one record per URL. A plan that disagrees
-//! about visibility with the record staying at its target is refused and left where it is;
-//! with no record staying, plans that disagree with each other about `public` are all
-//! refused, since a merge never picks a visibility. A bookmark planned to move *away* from
-//! a target neither leads that merge nor blocks it.
+//! ([`merge_bookmarks`]) into one record, checked and written the same way via
+//! [`BookmarkStore::apply_merge`], which deletes the absorbed URLs: Pinboard holds one
+//! record per URL. A plan that disagrees about visibility with the record staying at its
+//! target is refused and left where it is; with no record staying, plans that disagree with
+//! each other about `public` are all refused, since a merge never picks a visibility. A
+//! bookmark planned to move *away* from a target neither leads that merge nor blocks it.
 //!
 //! A rewrite never deletes an old URL that another plan targets, so chained rewrites can't
 //! clobber each other. Every refusal decided before the first write is closed under
@@ -598,10 +599,10 @@ fn refuse_group(key: &Url, reason: Refusal, dry_run: bool, outcome: &mut PassOut
     }
 }
 
-/// Write a lone plan with nothing stored at its target: skip it when nothing a write would
-/// change differs, else rewrite it (deleting the old URL when it moved and no other plan
-/// targets it) and tally the result. Returns the stored URLs a failed write left occupied,
-/// for the caller to protect: empty unless the write failed.
+/// Write a lone plan with nothing stored at its target: skip it when it would store nothing
+/// new ([`stores_nothing_new`]), else rewrite it (deleting the old URL when it moved and no
+/// other plan targets it) and tally the result. Returns the stored URLs a failed write left
+/// occupied, for the caller to protect: empty unless the write failed.
 async fn write_single<S: BookmarkStore>(
     store: &S,
     original: &Bookmark,
@@ -610,11 +611,13 @@ async fn write_single<S: BookmarkStore>(
     dry_run: bool,
     outcome: &mut PassOutcome,
 ) -> Vec<Url> {
-    // The written fields that differ; empty means nothing a write would change.
-    let changes = original.diff(planned);
-    if changes.is_empty() {
+    let fitted = store.fit(planned.clone());
+    if stores_nothing_new(store, original, &fitted) {
         return Vec::new();
     }
+    let changes = original.diff(&fitted);
+    warn_if_cut(planned, &fitted);
+    let planned = &fitted;
     // Delete the old URL only when it changed and no other planned write targets it;
     // otherwise that write's record lives there and must not be removed.
     let delete_old = planned.url != original.url && !targets.contains(&original.url);
@@ -714,7 +717,8 @@ async fn write_merge<S: BookmarkStore>(
         // now. Keep the earliest date the merge found instead of losing the record's age.
         merged.timestamp = survivor.timestamp.or(merged.timestamp);
     }
-    let target = &merged.url;
+    let fitted = store.fit(merged.clone());
+    let target = &fitted.url;
 
     // Absorbed URLs to delete: an original that is neither the target nor another planned
     // write's target (deleting the latter would clobber that write's record).
@@ -733,10 +737,13 @@ async fn write_merge<S: BookmarkStore>(
     // run. Compared against the *stored* record, which for an incumbent is not the plan
     // that led the merge.
     let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].stored));
-    if stored_at_target.is_some_and(|stored| stored.diff(&merged).is_empty()) && old_urls.is_empty()
-    {
+    let converged =
+        stored_at_target.is_some_and(|stored| stores_nothing_new(store, stored, &fitted));
+    if converged && old_urls.is_empty() {
         return Vec::new();
     }
+    warn_if_cut(&merged, &fitted);
+    let merged = &fitted;
 
     if dry_run {
         let note_value = if merged.note.is_empty() {
@@ -759,7 +766,7 @@ async fn write_merge<S: BookmarkStore>(
     }
 
     // Always through the store — see `write_single`.
-    let write = store.apply_merge(&merged, &old_urls).await;
+    let write = store.apply_merge(merged, &old_urls).await;
     match write.error {
         None => {
             outcome.changed += 1;
@@ -789,6 +796,28 @@ async fn write_merge<S: BookmarkStore>(
                 .map(|member| member.stored.url.clone())
                 .collect()
         }
+    }
+}
+
+/// Whether writing `fitted`, a plan as the store would keep it, would store nothing that
+/// writing `stored` back wouldn't: both, fitted, differ in nothing a write changes. That
+/// covers a plan identical to the stored record, a note already stored cut (a cut note
+/// fits as it is), and a change that lies wholly past the cut, which a write would lose
+/// while cutting a whole note the user saved, longer than a write allows, for nothing.
+fn stores_nothing_new<S: BookmarkStore>(store: &S, stored: &Bookmark, fitted: &Bookmark) -> bool {
+    store.fit(stored.clone()).diff(fitted).is_empty()
+}
+
+/// Log that `fitted`, about to be written, cuts `planned`'s note to fit the request URL.
+/// The store's own warning can't see it, since it is handed the note already cut.
+fn warn_if_cut(planned: &Bookmark, fitted: &Bookmark) {
+    if fitted.note != planned.note {
+        warn!(
+            "note trimmed to fit the request URL for {}: {} bytes -> {}",
+            planned.url,
+            planned.note.len(),
+            fitted.note.len()
+        );
     }
 }
 

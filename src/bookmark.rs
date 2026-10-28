@@ -91,6 +91,13 @@ pub trait BookmarkStore {
     /// Delete a bookmark by URL.
     async fn delete(&self, url: &Url) -> Result<()>;
 
+    /// `b` as a write would store it: the Pinboard client trims a note too long for the
+    /// request URL. The cleanup driver diffs in this form, so a note already stored trimmed
+    /// reads as unchanged rather than rewritten, and trimmed again, every run.
+    fn fit(&self, b: Bookmark) -> Bookmark {
+        b
+    }
+
     /// The cleanup re-write step: `update` the bookmark, then `delete` the old URL when it
     /// changed (`old_url`). Any inter-write pacing is the store's own concern (the Pinboard
     /// client spaces its `posts/add` calls internally).
@@ -335,6 +342,10 @@ impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
         }
         self.view.borrow_mut().remove(url);
         Ok(())
+    }
+
+    fn fit(&self, b: Bookmark) -> Bookmark {
+        self.inner.fit(b)
     }
 }
 

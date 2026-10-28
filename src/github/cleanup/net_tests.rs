@@ -1,6 +1,7 @@
 use super::*;
 use crate::github::gists::GistPostDate;
-use crate::source::Halt;
+use crate::pinboard::TRUNCATION_MARKER;
+use crate::source::{Halt, Source};
 use crate::test_support::{stored_at, strings, FakePinboard, NO_DATING};
 use serde_json::json;
 use wiremock::matchers::{method, path};
@@ -1201,4 +1202,126 @@ async fn a_dead_token_on_the_gists_is_a_reauth_even_after_failed_repos() {
         panic!("expected reauth, got {err:?}");
     };
     assert!(message.contains("and for repos:"), "{message}");
+}
+
+/// A server whose one starred gist, described `description`, has so many files that the
+/// notes `sync` gives it are too long for a `posts/add` URL. No repo is starred.
+async fn many_file_gist_server(description: &str) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/starred"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let files: serde_json::Map<String, serde_json::Value> = (0..200)
+        .map(|n| {
+            let name = format!("file_number_{n:03}.txt");
+            (
+                name.clone(),
+                json!({ "filename": name, "language": "Text" }),
+            )
+        })
+        .collect();
+    let gist = json!({
+        "id": GIST_ID,
+        "html_url": gist_url(None),
+        "description": description,
+        "files": files,
+        "owner": { "login": "octocat" },
+    });
+    mount_starred(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!([gist])),
+    )
+    .await;
+    server
+}
+
+/// The account after `sync github` writes what `server` lists to a Pinboard that trims
+/// long notes, each bookmark dated as Pinboard dates an undated write.
+async fn synced_trimmed(server: &MockServer) -> Vec<Bookmark> {
+    let drafts = crate::http::recording_waits(github_client(server).fetch())
+        .await
+        .0
+        .unwrap();
+    let pinboard = FakePinboard {
+        trims_notes: true,
+        ..Default::default()
+    };
+    let new = crate::sync::prepare_new_drafts(
+        &github_client(server),
+        drafts,
+        &[],
+        &crate::sync::JobSettings {
+            limit: crate::config::SyncLimit::All,
+            read_later: false,
+            public: false,
+            dates: NO_DATING,
+        },
+        time::OffsetDateTime::now_utc(),
+    );
+    let tally = crate::sync::write_drafts(&pinboard, &new, false).await;
+    assert_eq!(tally.failed, 0);
+    let mut synced = crate::test_support::replay(&[], &pinboard.ops.take());
+    for bookmark in &mut synced {
+        bookmark.timestamp = crate::timefmt::parse_rfc3339("2024-05-06T07:08:09Z");
+    }
+    synced
+}
+
+/// One cleanup run over `account` on a Pinboard that trims long notes, returning how many
+/// bookmarks it wrote and the account after it.
+async fn clean_trimmed(account: Vec<Bookmark>, server: &MockServer) -> (usize, Vec<Bookmark>) {
+    let pinboard = FakePinboard {
+        all: account.clone(),
+        trims_notes: true,
+        ..Default::default()
+    };
+    run(
+        &pinboard.cleanup_store(false),
+        &github_client(server),
+        NO_DATING,
+        &[GitHubConfig::default()],
+    )
+    .await
+    .unwrap();
+    let writes = pinboard.updated.borrow().len();
+    let cleaned = crate::test_support::replay(&account, &pinboard.ops.take());
+    (writes, cleaned)
+}
+
+#[tokio::test]
+async fn cleanup_leaves_a_gist_note_pinboard_trimmed_as_it_is() {
+    let server = many_file_gist_server("Many files").await;
+    let synced = synced_trimmed(&server).await;
+    assert!(
+        synced[0].note.ends_with(TRUNCATION_MARKER),
+        "the fixture's note must be trimmed: {:?}",
+        synced[0].note
+    );
+
+    let (writes, _) = clean_trimmed(synced, &server).await;
+    assert_eq!(
+        writes, 0,
+        "a trimmed note that is otherwise current is no change"
+    );
+}
+
+#[tokio::test]
+async fn cleanup_refreshes_an_edited_gist_with_a_trimmed_note_once() {
+    let synced = synced_trimmed(&many_file_gist_server("Many files").await).await;
+
+    let edited = many_file_gist_server("Many more files").await;
+    let (first_writes, cleaned) = clean_trimmed(synced, &edited).await;
+    assert_eq!(first_writes, 1);
+    assert!(
+        cleaned[0]
+            .note
+            .starts_with("<blockquote>Many more files</blockquote>")
+            && cleaned[0].note.ends_with(TRUNCATION_MARKER),
+        "{:?}",
+        cleaned[0].note
+    );
+    let (second_writes, _) = clean_trimmed(cleaned, &edited).await;
+    assert_eq!(second_writes, 0, "the refreshed note settles");
 }

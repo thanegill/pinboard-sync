@@ -1,7 +1,7 @@
 //! In-memory fakes implementing the client ports ([`Source`], [`PostInfo`] and
 //! [`BookmarkStore`]) so the `sync` and `cleanup` loops can be tested without
-//! any network, plus per-test scratch directories and log capture. Compiled only under
-//! `#[cfg(test)]`.
+//! any network, plus per-test scratch directories, log capture and the sync-then-cleanup
+//! round trip. Compiled only under `#[cfg(test)]`.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -11,14 +11,17 @@ use std::sync::Once;
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use tempfile::TempDir;
+use time::OffsetDateTime;
 use url::Url;
 
 use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore};
+use crate::config::SyncLimit;
 use crate::keys::RedditKeys;
-use crate::pinboard::PinboardClient;
+use crate::pinboard::{PinboardBookmark, PinboardClient};
 use crate::reddit::model::{RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
+use crate::sync::{prepare_new_drafts, write_drafts, JobSettings};
 use crate::timefmt::DateOpts;
 
 tokio::task_local! {
@@ -395,6 +398,92 @@ impl BookmarkStore for FakePinboard {
         self.ops.borrow_mut().push(Op::Delete(url.clone()));
         Ok(())
     }
+}
+
+/// The dating policies a sync-then-cleanup round trip is run under: off, on, and on with
+/// stale posts re-dated to now. The cap is the default 30 days.
+pub const ROUND_TRIP_DATINGS: [DateOpts; 3] = [
+    NO_DATING,
+    DateOpts {
+        use_post_date: true,
+        max_age_days: 30,
+        stale_to_now: false,
+    },
+    DateOpts {
+        use_post_date: true,
+        max_age_days: 30,
+        stale_to_now: true,
+    },
+];
+
+/// The account one `sync` run of `source` leaves on an empty account under `dates`, each
+/// bookmark read back as `posts/all` returns it. Pinboard dates a bookmark sent without a
+/// `dt` when it lands, so such a bookmark reads back dated to the run. Not modelled:
+/// Pinboard's limits, such as a note cut to fit the request URL or a long title.
+pub async fn synced_account<S: Source>(source: &S, dates: DateOpts) -> Vec<Bookmark> {
+    let drafts = crate::http::recording_waits(source.fetch())
+        .await
+        .0
+        .unwrap();
+    let now = OffsetDateTime::now_utc().truncate_to_second();
+    let settings = JobSettings {
+        limit: SyncLimit::All,
+        read_later: false,
+        public: false,
+        dates,
+    };
+    let new = prepare_new_drafts(source, drafts, &[], &settings, now);
+    let pinboard = FakePinboard::default();
+    let tally = write_drafts(&pinboard, &new, false).await;
+    assert_eq!(tally.failed, 0);
+    replay(&[], &pinboard.ops.take())
+        .into_iter()
+        .map(|written| read_back(written, now))
+        .collect()
+}
+
+/// `written` as `posts/all` returns it after a `posts/add` that landed at `landed`.
+fn read_back(written: Bookmark, landed: OffsetDateTime) -> Bookmark {
+    let flag = |set: bool| if set { "yes" } else { "no" }.to_string();
+    let wire = PinboardBookmark {
+        url: written.url.to_string(),
+        description: written.title,
+        extended: written.note,
+        tags: written.tags.join(" "),
+        time: crate::timefmt::to_pinboard_dt(written.timestamp.unwrap_or(landed))
+            .unwrap_or_default(),
+        shared: flag(written.public),
+        toread: flag(written.read_later),
+    };
+    Bookmark::try_from(wire).unwrap()
+}
+
+/// Runs `cleanup` over `account` and asserts it changed nothing: no write, merge or delete,
+/// and no warning or error. The run forgives a lookup failing in the minority, which would
+/// leave that bookmark untouched and the test passing for the wrong reason.
+pub async fn assert_cleanup_changes_nothing(
+    account: Vec<Bookmark>,
+    cleanup: impl AsyncFnOnce(&CleanupStore<'_, FakePinboard>) -> Result<(), SourceError>,
+) {
+    let pinboard = FakePinboard {
+        all: account,
+        ..Default::default()
+    };
+    let (result, logs) = capturing_logs(cleanup(&pinboard.cleanup_store(false))).await;
+    result.unwrap();
+    let complaints: Vec<&String> = logs
+        .iter()
+        .filter(|line| line.starts_with("WARN") || line.starts_with("ERROR"))
+        .collect();
+    assert!(complaints.is_empty(), "{complaints:#?}");
+    let updated = pinboard.updated.borrow();
+    assert!(
+        updated.is_empty(),
+        "cleanup rewrote what sync wrote: {updated:#?}\nas sync stored it: {:#?}",
+        pinboard.all
+    );
+    assert!(pinboard.added.borrow().is_empty());
+    assert!(pinboard.deleted.borrow().is_empty());
 }
 
 /// Parse `argv` as the binary does, but with no flag falling back to an environment

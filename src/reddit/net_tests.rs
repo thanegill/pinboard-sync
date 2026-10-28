@@ -1,5 +1,7 @@
 use super::*;
-use crate::test_support::{strings, titles};
+use crate::test_support::{
+    assert_cleanup_changes_nothing, strings, synced_account, titles, ROUND_TRIP_DATINGS,
+};
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -620,4 +622,154 @@ async fn a_403_cut_off_mid_body_does_not_ask_for_a_new_cookie() {
         message.starts_with("reading saved listing response (403 Forbidden): "),
         "{message}"
     );
+}
+
+/// Answers `/api/info.json` with the entries of its pool whose fullnames the request asks
+/// for, as Reddit does, and with a 400 when it asks for one the pool lacks, so a test
+/// can't pass on lookups that found nothing.
+struct RedditInfoAnswers(Vec<serde_json::Value>);
+
+impl wiremock::Respond for RedditInfoAnswers {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let asked: Vec<String> = request
+            .url
+            .query_pairs()
+            .find(|(key, _)| key == "id")
+            .map(|(_, ids)| ids.split(',').map(String::from).collect())
+            .unwrap_or_default();
+        let children: Vec<&serde_json::Value> = self
+            .0
+            .iter()
+            .filter(|entry| {
+                entry["data"]["name"]
+                    .as_str()
+                    .is_some_and(|name| asked.iter().any(|fullname| fullname == name))
+            })
+            .collect();
+        if children.len() < asked.len() {
+            return ResponseTemplate::new(400);
+        }
+        ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": null, "children": children }
+        }))
+    }
+}
+
+/// `psophis`'s saves, newest first: an NSFW image post with a flair, a comment in an NSFW
+/// thread, a self post, an empty self post and a video. Those made at `recent` fall within
+/// the default 30-day dating cap, those at `stale` long before it.
+fn round_trip_saves(recent: f64, stale: f64) -> Vec<serde_json::Value> {
+    vec![
+        json!({ "kind": "t3", "data": {
+            "name": "t3_pic1", "subreddit": "AskReddit",
+            "permalink": "/r/AskReddit/comments/pic1/a_picture/", "title": "A   picture",
+            "url": "https://i.redd.it/pic1.png", "is_self": false, "over_18": true,
+            "author": "alice", "link_flair_text": "Help, Question", "post_hint": "image",
+            "created_utc": recent } }),
+        json!({ "kind": "t1", "data": {
+            "name": "t1_cmt1", "subreddit": "NEWS",
+            "permalink": "/r/NEWS/comments/thread1/big_story/cmt1/",
+            "link_title": "Big story",
+            "link_permalink": "https://www.reddit.com/r/NEWS/comments/thread1/big_story/",
+            "body": "I **agree**", "over_18": true, "author": "bob",
+            "link_flair_text": "Politics", "created_utc": recent } }),
+        json!({ "kind": "t3", "data": {
+            "name": "t3_self1", "subreddit": "rust",
+            "permalink": "/r/rust/comments/self1/why_rust/", "title": "Why Rust?",
+            "url": "https://www.reddit.com/r/rust/comments/self1/why_rust/", "is_self": true,
+            "selftext": "Because *speed*.", "author": "dave", "created_utc": stale } }),
+        json!({ "kind": "t3", "data": {
+            "name": "t3_empty1", "subreddit": "ExplainLikeImFive",
+            "permalink": "/r/ExplainLikeImFive/comments/empty1/eli5_tides/",
+            "title": "ELI5: tides",
+            "url": "https://www.reddit.com/r/ExplainLikeImFive/comments/empty1/eli5_tides/",
+            "is_self": true, "selftext": "", "author": "erin", "created_utc": recent } }),
+        json!({ "kind": "t3", "data": {
+            "name": "t3_vid1", "subreddit": "videos",
+            "permalink": "/r/videos/comments/vid1/a_video/", "title": "A video",
+            "url": "https://v.redd.it/vid1", "is_self": false, "is_video": true,
+            "post_hint": "hosted:video", "author": "frank", "created_utc": stale } }),
+    ]
+}
+
+/// The comment's thread, which `/api/info` knows though `psophis` never saved it, made at
+/// `created`, before the comment, so dating the comment by its thread would show.
+fn round_trip_thread(created: f64) -> serde_json::Value {
+    json!({ "kind": "t3", "data": {
+        "name": "t3_thread1", "subreddit": "NEWS",
+        "permalink": "/r/NEWS/comments/thread1/big_story/", "title": "Big story",
+        "url": "https://news.example/big", "is_self": false, "over_18": true,
+        "author": "carol", "link_flair_text": "Politics", "created_utc": created } })
+}
+
+/// The defaults, and a config with another domain, an extra base tag, renamed NSFW, author
+/// and media tags, no subreddit, comment or flair tags, and media tags on images only.
+fn round_trip_configs() -> [RedditConfig; 2] {
+    [
+        RedditConfig::default(),
+        RedditConfig {
+            domain: "www.reddit.com".into(),
+            tags: strings(&["reddit", "saved"]),
+            subreddit_prefix: String::new(),
+            comment: String::new(),
+            nsfw: "adult".into(),
+            author_prefix: "by:".into(),
+            flair_prefix: String::new(),
+            media_prefix: "media:".into(),
+            media_types: strings(&["image"]),
+        },
+    ]
+}
+
+#[tokio::test]
+async fn cleanup_leaves_what_sync_wrote_as_it_is() {
+    use crate::reddit::cleanup::{run, RedditCleanupOpts};
+
+    let now = time::OffsetDateTime::now_utc().unix_timestamp() as f64;
+    let (recent, stale) = (now - 2.0 * 86_400.0, 1_600_000_000.0);
+    let saves = round_trip_saves(recent, stale);
+    let mut known = saves.clone();
+    known.push(round_trip_thread(recent - 86_400.0));
+
+    for config in round_trip_configs() {
+        for dates in ROUND_TRIP_DATINGS {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/user/psophis/saved.json"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "kind": "Listing",
+                    "data": { "after": null, "children": saves }
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/info.json"))
+                .respond_with(RedditInfoAnswers(known.clone()))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let mut client = RedditClient::with_base_url(
+                Some("reddit_session=secret".into()),
+                Some("psophis".into()),
+                server.uri(),
+            );
+            client.config = config.clone();
+
+            let account = synced_account(&client, dates).await;
+            assert_eq!(account.len(), saves.len(), "{} {dates:?}", config.domain);
+            let opts = RedditCleanupOpts {
+                mark_nsfw: true,
+                fix_titles: true,
+                config: config.clone(),
+                dates,
+                configured: vec![config.clone()],
+            };
+            assert_cleanup_changes_nothing(account, async |store| {
+                run(store, Some(&client), &opts).await
+            })
+            .await;
+        }
+    }
 }

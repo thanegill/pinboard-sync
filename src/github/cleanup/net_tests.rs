@@ -2,9 +2,12 @@ use super::*;
 use crate::github::gists::GistPostDate;
 use crate::pinboard::TRUNCATION_MARKER;
 use crate::source::{Halt, Source};
-use crate::test_support::{stored_at, strings, FakePinboard, NO_DATING};
+use crate::test_support::{
+    assert_cleanup_changes_nothing, stored_at, strings, synced_account, FakePinboard, NO_DATING,
+    ROUND_TRIP_DATINGS,
+};
 use serde_json::json;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// An expired token during the pass has to reach the caller as `Halt::Reauth`, or the
@@ -1324,4 +1327,166 @@ async fn cleanup_refreshes_an_edited_gist_with_a_trimmed_note_once() {
     );
     let (second_writes, _) = clean_trimmed(cleaned, &edited).await;
     assert_eq!(second_writes, 0, "the refreshed note settles");
+}
+
+/// `days` days before now, at whole seconds, as GitHub dates things.
+fn days_ago(days: i64) -> String {
+    let instant = time::OffsetDateTime::now_utc() - time::Duration::days(days);
+    crate::timefmt::to_pinboard_dt(instant).unwrap()
+}
+
+/// A date long outside the default 30-day dating cap.
+const LONG_AGO: &str = "2020-09-13T12:26:40Z";
+
+/// Stars as `/user/starred` lists them, newest first: a repo with a language that slugs,
+/// one with no description, homepage or language, and one starred long ago.
+fn round_trip_stars() -> Vec<serde_json::Value> {
+    vec![
+        json!({ "starred_at": days_ago(2), "repo": {
+            "full_name": "jupyter/notebook", "html_url": "https://github.com/jupyter/notebook",
+            "description": "Jupyter   Interactive Notebook",
+            "homepage": "https://jupyter-notebook.readthedocs.io/",
+            "language": "Jupyter Notebook" } }),
+        json!({ "starred_at": days_ago(3), "repo": {
+            "full_name": "someone/dotfiles", "html_url": "https://github.com/someone/dotfiles",
+            "description": null, "homepage": "", "language": null } }),
+        json!({ "starred_at": LONG_AGO, "repo": {
+            "full_name": "tokio-rs/tokio", "html_url": "https://github.com/tokio-rs/tokio",
+            "description": "A runtime for writing reliable asynchronous applications & more",
+            "homepage": "https://tokio.rs", "language": "Rust" } }),
+    ]
+}
+
+/// The defaults with gists off, and a config that adds a base tag, renames the language
+/// tag and turns off the owner tag.
+fn round_trip_star_configs() -> [GitHubConfig; 2] {
+    let custom = GitHubConfig {
+        tags: strings(&["github-star", "starred"]),
+        lang_prefix: "language:".into(),
+        author_prefix: String::new(),
+        ..GitHubConfig::stars_only()
+    };
+    [GitHubConfig::stars_only(), custom]
+}
+
+#[tokio::test]
+async fn cleanup_leaves_the_stars_sync_wrote_as_they_are() {
+    let stars = round_trip_stars();
+    for config in round_trip_star_configs() {
+        for dates in ROUND_TRIP_DATINGS {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/user/starred"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&stars))
+                .expect(if dates.use_post_date { 2 } else { 1 })
+                .mount(&server)
+                .await;
+            for star in &stars {
+                let repo = &star["repo"];
+                Mock::given(method("GET"))
+                    .and(path(format!(
+                        "/repos/{}",
+                        repo["full_name"].as_str().unwrap()
+                    )))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(repo))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+            }
+            let client = GitHubClient::with_base_url("tok".into(), config.clone(), server.uri());
+
+            let account = synced_account(&client, dates).await;
+            assert_eq!(account.len(), stars.len(), "{config:?} {dates:?}");
+            let configured = [config.clone()];
+            assert_cleanup_changes_nothing(account, async |store| {
+                run(store, &client, dates, &configured).await
+            })
+            .await;
+        }
+    }
+}
+
+/// Starred gists as `/gists/starred` lists them: one by `octocat` in three languages, made
+/// recently, and an undescribed one-file gist by `someone`, made long ago.
+fn round_trip_gists() -> Vec<serde_json::Value> {
+    vec![
+        json!({
+            "id": "aa5a315d61ae9438b18d",
+            "html_url": "https://gist.github.com/aa5a315d61ae9438b18d",
+            "description": "Hello   world helpers ",
+            "files": {
+                "hello.rb": { "filename": "hello.rb", "language": "Ruby" },
+                "hello.py": { "filename": "hello.py", "language": "Python" },
+                "README.md": { "filename": "README.md", "language": "Markdown" },
+            },
+            "owner": { "login": "octocat" },
+            "created_at": days_ago(5),
+            "updated_at": days_ago(1),
+        }),
+        json!({
+            "id": "0123456789abcdef0123",
+            "html_url": "https://gist.github.com/0123456789abcdef0123",
+            "description": "",
+            "files": { "notes.txt": { "filename": "notes.txt", "language": null } },
+            "owner": { "login": "someone" },
+            "created_at": LONG_AGO,
+            "updated_at": LONG_AGO,
+        }),
+    ]
+}
+
+/// The defaults dating gists by `post_date`, and the same with gist tags of their own, a
+/// renamed language tag and no owner tag.
+fn round_trip_gist_configs(post_date: GistPostDate) -> [GitHubConfig; 2] {
+    let mut default = GitHubConfig::default();
+    default.gists.post_date = post_date;
+    let mut custom = default.clone();
+    custom.gists.tags = strings(&["gist", "saved"]);
+    custom.gists.lang_prefix = "language:".into();
+    custom.gists.author_prefix = String::new();
+    [default, custom]
+}
+
+#[tokio::test]
+async fn cleanup_leaves_the_gists_sync_wrote_as_they_are() {
+    let gists = round_trip_gists();
+    for post_date in [
+        GistPostDate::Now,
+        GistPostDate::Created,
+        GistPostDate::Updated,
+    ] {
+        for config in round_trip_gist_configs(post_date) {
+            for dates in ROUND_TRIP_DATINGS {
+                let server = MockServer::start().await;
+                Mock::given(method("GET"))
+                    .and(path("/user/starred"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+                    .mount(&server)
+                    .await;
+                Mock::given(method("GET"))
+                    .and(path("/gists/starred"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(&gists))
+                    .expect(2)
+                    .mount(&server)
+                    .await;
+                // Every gist is planned from the starred list, never looked up on its own.
+                Mock::given(method("GET"))
+                    .and(path_regex("^/gists/[0-9a-f]+$"))
+                    .respond_with(ResponseTemplate::new(404))
+                    .expect(0)
+                    .mount(&server)
+                    .await;
+                let client =
+                    GitHubClient::with_base_url("tok".into(), config.clone(), server.uri());
+
+                let account = synced_account(&client, dates).await;
+                assert_eq!(account.len(), gists.len(), "{config:?} {dates:?}");
+                let configured = [config.clone()];
+                assert_cleanup_changes_nothing(account, async |store| {
+                    run(store, &client, dates, &configured).await
+                })
+                .await;
+            }
+        }
+    }
 }

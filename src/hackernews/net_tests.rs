@@ -3,6 +3,9 @@ use super::favorites::{FavoritesStream, MAX_FAVORITES_PAGES};
 use super::*;
 use crate::backup::RawKind;
 use crate::source::Halt;
+use crate::test_support::{
+    assert_cleanup_changes_nothing, strings, synced_account, ROUND_TRIP_DATINGS,
+};
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -645,4 +648,119 @@ async fn a_favorites_page_cut_off_mid_body_is_a_read_error() {
         message.starts_with("reading hn favorites page 1: "),
         "{message}"
     );
+}
+
+/// Answers an Algolia `objectID:<id> OR ...` item search with the hits of its pool the
+/// filter names, as Algolia does, and with a 400 when it names one the pool lacks, so a
+/// test can't pass on lookups that found nothing.
+struct AlgoliaAnswers(Vec<serde_json::Value>);
+
+impl wiremock::Respond for AlgoliaAnswers {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let filters: String = request
+            .url
+            .query_pairs()
+            .find(|(key, _)| key == "filters")
+            .map(|(_, filters)| filters.into_owned())
+            .unwrap_or_default();
+        let asked: Vec<&str> = filters
+            .split(" OR ")
+            .filter_map(|clause| clause.strip_prefix("objectID:"))
+            .collect();
+        let hits: Vec<&serde_json::Value> = self
+            .0
+            .iter()
+            .filter(|hit| {
+                hit["objectID"]
+                    .as_str()
+                    .is_some_and(|id| asked.contains(&id))
+            })
+            .collect();
+        if hits.len() < asked.len() {
+            return ResponseTemplate::new(400);
+        }
+        ResponseTemplate::new(200).set_body_json(json!({ "hits": hits }))
+    }
+}
+
+/// `psophis`'s favorites on Algolia: a Show HN story linking an article, an Ask HN text
+/// post and a comment. Those made at `recent` fall within the default 30-day dating cap,
+/// the one at `stale` long before it. `cleanup hackernews` reshapes only bookmarks still
+/// at an HN item URL, so the story is there to show it leaves one at its article alone.
+fn round_trip_favorites(recent: i64, stale: i64) -> Vec<serde_json::Value> {
+    vec![
+        json!({ "objectID": "101", "title": "Show HN: A   thing &amp; more",
+                "url": "https://example.com/thing", "author": "alice",
+                "_tags": ["story", "author_alice", "story_101", "show_hn"],
+                "created_at_i": recent }),
+        json!({ "objectID": "102", "title": "Ask HN: How do you back up?", "url": null,
+                "story_text": "<p>I use <i>rsync</i>.<p>And you?",
+                "author": "bob", "_tags": ["story", "author_bob", "story_102", "ask_hn"],
+                "created_at_i": stale }),
+        json!({ "objectID": "201",
+                "comment_text": "Great <a href=\"https://x.example/\">point</a>.",
+                "author": "carol", "_tags": ["comment", "author_carol", "story_100"],
+                "created_at_i": recent }),
+    ]
+}
+
+/// The defaults, and a config that adds a base tag, renames the author tag and turns off
+/// the comment and special-type tags.
+fn round_trip_configs() -> [HackerNewsConfig; 2] {
+    let custom = HackerNewsConfig {
+        tags: strings(&["hackernews", "saved"]),
+        comment: String::new(),
+        author_prefix: "by:".into(),
+        special_prefix: String::new(),
+        ..HackerNewsConfig::default()
+    };
+    [HackerNewsConfig::default(), custom]
+}
+
+#[tokio::test]
+async fn cleanup_leaves_what_sync_wrote_as_it_is() {
+    use super::cleanup::{run, HackerNewsCleanupOpts};
+
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let favorites = round_trip_favorites(now - 2 * 86_400, 1_600_000_000);
+    for config in round_trip_configs() {
+        for dates in ROUND_TRIP_DATINGS {
+            let (hn, algolia) = (MockServer::start().await, MockServer::start().await);
+            Mock::given(method("GET"))
+                .and(path("/favorites"))
+                .and(query_param_is_missing("comments"))
+                .respond_with(favorites_page(&[101, 102], None))
+                .expect(1)
+                .mount(&hn)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/favorites"))
+                .and(query_param("comments", "t"))
+                .respond_with(favorites_page(&[201], None))
+                .expect(1)
+                .mount(&hn)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/search"))
+                .respond_with(AlgoliaAnswers(favorites.clone()))
+                .expect(2)
+                .mount(&algolia)
+                .await;
+            let client = HackerNewsClient::with_base_urls(
+                "psophis".into(),
+                config.clone(),
+                hn.uri(),
+                algolia.uri(),
+            );
+
+            let account = synced_account(&client, dates).await;
+            assert_eq!(account.len(), favorites.len(), "{config:?} {dates:?}");
+            let opts = HackerNewsCleanupOpts {
+                link_discussions: false,
+                dates,
+            };
+            assert_cleanup_changes_nothing(account, async |store| run(store, &client, &opts).await)
+                .await;
+        }
+    }
 }

@@ -535,7 +535,10 @@ pub fn is_placeholder_title(title: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+    use crate::keys::HackerNewsKeys;
     use crate::test_support::{strings, url};
 
     fn norm(u: &str, domain: &str) -> Option<String> {
@@ -726,6 +729,127 @@ mod tests {
         assert!(is_placeholder_title("Reddit - Dive into anything"));
         assert!(is_placeholder_title("  reddit.com: over 18?  "));
         assert!(!is_placeholder_title("Some real title : r/rust"));
+    }
+
+    /// The configured accounts' `reddit_domain`s: two reddit.com hosts and a mirror.
+    const DOMAINS: [&str; 3] = ["old.reddit.com", "www.reddit.com", "redlib.example"];
+
+    /// A post, comment or subreddit URL on any Reddit host or configured mirror, in any
+    /// scheme and case, with or without a trailing slash, a query or a fragment.
+    fn reddit_url() -> impl Strategy<Value = String> {
+        let path = prop_oneof![
+            ("[A-Za-z0-9_]{3,21}", "[a-z0-9]{5,7}", "[a-z0-9_]{1,30}")
+                .prop_map(|(sub, id, slug)| format!("/r/{sub}/comments/{id}/{slug}")),
+            ("[A-Za-z0-9_]{3,21}", "[a-z0-9]{5,7}", "[a-z0-9]{7}")
+                .prop_map(|(sub, id, comment)| format!("/r/{sub}/comments/{id}/x/{comment}")),
+            "[A-Za-z0-9_]{3,21}".prop_map(|sub| format!("/r/{sub}")),
+            "[a-z0-9]{5,7}".prop_map(|id| format!("/comments/{id}")),
+        ];
+        (
+            prop::sample::select(vec!["http", "https"]),
+            prop::sample::select(vec![
+                "reddit.com",
+                "www.reddit.com",
+                "old.reddit.com",
+                "m.reddit.com",
+                "OLD.Reddit.com",
+                "redlib.example",
+            ]),
+            path,
+            prop::sample::select(vec!["", "/"]),
+            prop::sample::select(vec!["", "?utm_source=share", "?context=3#thing"]),
+        )
+            .prop_map(|(scheme, host, path, slash, tail)| {
+                format!("{scheme}://{host}{path}{slash}{tail}")
+            })
+    }
+
+    /// [`reddit_url`], or that URL behind one or two `over18` interstitials.
+    fn stored_reddit_url() -> impl Strategy<Value = String> {
+        (reddit_url(), 0..3usize).prop_map(|(mut stored, wraps)| {
+            for _ in 0..wraps {
+                let dest: String =
+                    url::form_urlencoded::byte_serialize(stored.as_bytes()).collect();
+                stored = format!("https://www.reddit.com/over18/?dest={dest}");
+            }
+            stored
+        })
+    }
+
+    /// `cleanup reddit` run as the account on `own`, with one on each of [`DOMAINS`].
+    fn opts_on(own: &str) -> RedditCleanupOpts {
+        let account = |domain: &str| RedditConfig {
+            domain: domain.into(),
+            ..RedditConfig::default()
+        };
+        RedditCleanupOpts {
+            mark_nsfw: false,
+            fix_titles: false,
+            config: account(own),
+            dates: crate::test_support::NO_DATING,
+            configured: DOMAINS.iter().map(|domain| account(domain)).collect(),
+        }
+    }
+
+    /// Asserts that `keys` keys `stored` as it does the URL `plan` moves it to: its
+    /// [`RedditCleanupOpts::natural_url`], then onto `collapse_onto` if its copies on
+    /// several hosts collapse there.
+    fn assert_keys_survive_cleanup(
+        keys: &impl UrlKey,
+        opts: &RedditCleanupOpts,
+        stored: &str,
+        collapse_onto: Option<&str>,
+    ) -> Result<(), TestCaseError> {
+        let stored = url(stored);
+        prop_assert!(keys.dedup_key(&stored).is_some(), "{} has no key", stored);
+        let natural = opts.natural_url(&stored);
+        let moved = collapse_onto
+            .and_then(|host| with_host(&natural, host))
+            .unwrap_or(natural);
+        prop_assert_eq!(
+            keys.dedup_key(&moved),
+            keys.dedup_key(&stored),
+            "{} -> {}",
+            stored,
+            moved
+        );
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config())]
+
+        #[test]
+        fn a_reddit_url_keys_the_same_once_cleaned_up(
+            stored in reddit_url(),
+            own in prop::sample::select(DOMAINS.to_vec()),
+            collapse_onto in proptest::option::of(prop::sample::select(DOMAINS.to_vec())),
+        ) {
+            let opts = opts_on(own);
+            assert_keys_survive_cleanup(&opts.reddit_keys(), &opts, &stored, collapse_onto)?;
+        }
+
+        #[test]
+        #[ignore = "RedditKeys keys every over18 interstitial as `/over18`, not as its dest"]
+        fn an_over18_url_keys_the_same_once_cleaned_up(
+            stored in stored_reddit_url(),
+            own in prop::sample::select(DOMAINS.to_vec()),
+            collapse_onto in proptest::option::of(prop::sample::select(DOMAINS.to_vec())),
+        ) {
+            let opts = opts_on(own);
+            assert_keys_survive_cleanup(&opts.reddit_keys(), &opts, &stored, collapse_onto)?;
+        }
+
+        #[test]
+        fn hackernews_keys_a_reddit_article_the_same_once_cleaned_up(
+            stored in stored_reddit_url(),
+            own in prop::sample::select(DOMAINS.to_vec()),
+            collapse_onto in proptest::option::of(prop::sample::select(DOMAINS.to_vec())),
+        ) {
+            let opts = opts_on(own);
+            let keys = HackerNewsKeys::new(opts.reddit_keys());
+            assert_keys_survive_cleanup(&keys, &opts, &stored, collapse_onto)?;
+        }
     }
 }
 

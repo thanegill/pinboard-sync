@@ -109,12 +109,13 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         // Only genuine repo-root URLs on the bare github.com host are normalized;
         // deep links (issues/PRs/blob/tree) and gist/other subdomains are left untouched
         // without an API call, so they say nothing about whether GitHub is reachable.
-        let Some(RepoName { owner, name: repo }) = repo_root(&bookmark.url) else {
+        let Some(root) = repo_root(&bookmark.url) else {
             return Ok(Plan::Skipped);
         };
         // Default to the canonicalization, then refresh from the API when the repo still
         // exists (a 404 keeps just the canonical URL).
-        let mut url = Url::parse(&format!("https://github.com/{owner}/{repo}"))
+        let mut url = root
+            .canonical_url()
             .context("building the canonical github URL")?;
         let mut title = collapse_whitespace(&bookmark.title, " ");
         let mut note = bookmark.note.clone();
@@ -127,7 +128,7 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         let synced = !syncing.is_empty();
         // A failed lookup is surfaced to the driver, which logs and counts it (or, for a
         // dead credential, aborts the pass).
-        let lookup = self.client.repo(&owner, &repo).await?;
+        let lookup = self.client.repo(&root.owner, &root.name).await?;
         let names = repo_names(&bookmark.url, lookup.as_ref());
         // A rename can merge a star into another source's bookmark of the repo, leaving a
         // record with the base tag but that source's title or notes: it is not the star's
@@ -187,6 +188,12 @@ impl RepoName {
     /// Whether this is `owner/name`, compared as GitHub does, ignoring case.
     fn is(&self, owner: &str, name: &str) -> bool {
         self.owner.eq_ignore_ascii_case(owner) && self.name.eq_ignore_ascii_case(name)
+    }
+
+    /// `https://github.com/<owner>/<name>`: what `cleanup github` writes when the API
+    /// has no such repo, and replaces with the API's `html_url` when it has.
+    fn canonical_url(&self) -> Result<Url, url::ParseError> {
+        Url::parse(&format!("https://github.com/{}/{}", self.owner, self.name))
     }
 }
 
@@ -331,7 +338,11 @@ fn retag(mut tags: Tags, prefixes: &[&str], additions: impl IntoIterator<Item = 
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+    use crate::keys::{GitHubKeys, HackerNewsKeys};
+    use crate::source::UrlKey;
     use crate::test_support::{stored_at, url};
 
     /// A deep link, a gist or a bare owner is not this pass's bookmark: it is skipped
@@ -570,6 +581,54 @@ mod tests {
             kept,
             [(Some("github-star"), "own:"), (Some("work-star"), "work:")]
         );
+    }
+
+    /// A repo-root URL in any of the forms `cleanup github` canonicalizes: either host,
+    /// either scheme, any case, with or without `.git`, a trailing slash, a query or a
+    /// fragment. The name itself never ends in `.git`: `repo_root` strips one `.git` and
+    /// `GitHubKeys` one more, so `<name>.git.git` and `.git` key differently afterwards.
+    fn stored_repo_root() -> impl Strategy<Value = String> {
+        (
+            prop::sample::select(vec!["http", "https"]),
+            prop::sample::select(vec!["github.com", "www.github.com", "GitHub.com"]),
+            "[A-Za-z0-9]([A-Za-z0-9-]{0,10}[A-Za-z0-9])?",
+            "[A-Za-z0-9._-]{1,20}".prop_filter("a repo name", |name| {
+                !matches!(name.as_str(), "." | "..") && !name.ends_with(".git")
+            }),
+            prop::sample::select(vec!["", ".git"]),
+            prop::sample::select(vec!["", "/"]),
+            prop::sample::select(vec!["", "?tab=readme-ov-file", "#readme"]),
+        )
+            .prop_map(|(scheme, host, owner, name, suffix, slash, tail)| {
+                format!("{scheme}://{host}/{owner}/{name}{suffix}{slash}{tail}")
+            })
+    }
+
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config())]
+
+        #[test]
+        fn a_repo_root_keys_the_same_once_canonicalized(stored in stored_repo_root()) {
+            let stored = url(&stored);
+            let root = repo_root(&stored).expect("a repo root");
+            let canonical = root.canonical_url().expect("a canonical URL");
+            prop_assert!(GitHubKeys.dedup_key(&stored).is_some(), "{} has no key", stored);
+            prop_assert_eq!(
+                GitHubKeys.dedup_key(&canonical),
+                GitHubKeys.dedup_key(&stored),
+                "{} -> {}",
+                stored,
+                canonical
+            );
+            let hackernews = HackerNewsKeys::default();
+            prop_assert_eq!(
+                hackernews.dedup_key(&canonical),
+                hackernews.dedup_key(&stored),
+                "{} -> {}",
+                stored,
+                canonical
+            );
+        }
     }
 }
 

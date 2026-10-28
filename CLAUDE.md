@@ -15,6 +15,7 @@ Run all tooling through the Nix dev shell so versions match the flake:
 nix develop --command cargo build
 nix develop --command cargo test
 nix develop --command cargo test <name>      # single test
+PROPTEST_CASES=10000 nix develop --command cargo test  # property tests past test_support::proptest_config's 64 cases
 nix develop --command cargo clippy --all-targets -- -D warnings
 nix develop --command cargo fmt --check
 nix develop --command cargo mutants --in-diff <diff>  # mutation-tests the lines a diff file changes

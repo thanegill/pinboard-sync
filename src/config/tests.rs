@@ -1,3 +1,5 @@
+use proptest::prelude::*;
+
 use super::*;
 use crate::keys::RedditKeys;
 use crate::source::UrlKey;
@@ -60,6 +62,52 @@ fn limit_takes_auto_all_or_a_positive_count() {
     );
     assert_eq!(Config::parse("").unwrap().pinboard.limit, None);
     assert_eq!(SyncLimit::default(), SyncLimit::Auto);
+}
+
+proptest! {
+    #![proptest_config(crate::test_support::proptest_config())]
+
+    #[test]
+    fn a_count_reads_the_same_as_a_number_or_a_string(
+        count in prop_oneof![1..=10_000i64, 1..=i64::MAX],
+    ) {
+        let limit = |value: &str| {
+            Config::parse(&format!("[pinboard]\nlimit = {value}\n"))
+                .unwrap()
+                .pinboard
+                .limit
+        };
+        let expected = usize::try_from(count)
+            .ok()
+            .and_then(NonZeroUsize::new)
+            .map(SyncLimit::Max);
+        prop_assert_eq!(limit(&count.to_string()), expected);
+        prop_assert_eq!(limit(&format!("\"{count}\"")), expected);
+        prop_assert_eq!(limit(&format!("\" {count} \"")), expected);
+    }
+
+    #[test]
+    fn a_bad_limit_never_echoes_the_value(value in "[A-Za-z][A-Za-z0-9_]{7,39}") {
+        assert_error_hides(
+            &format!("[pinboard]\nlimit = \"{value}\"\n"),
+            &value,
+            "`limit` must be `auto`",
+        );
+    }
+
+    /// Negative counts, and counts too large for a `usize` (and for TOML), bare or quoted.
+    #[test]
+    fn a_bad_numeric_limit_never_echoes_the_value(
+        value in prop_oneof!["-[1-9][0-9]{7,12}", "[1-9][0-9]{20,29}"],
+        quoted in any::<bool>(),
+    ) {
+        let written = if quoted { format!("\"{value}\"") } else { value.clone() };
+        let error = Config::parse(&format!("[pinboard]\nlimit = {written}\n"))
+            .expect_err("an out-of-range limit must not parse");
+        for rendered in [format!("{error}"), format!("{error:#}"), format!("{error:?}")] {
+            prop_assert!(!rendered.contains(&value), "leaked {}: {}", value, rendered);
+        }
+    }
 }
 
 #[test]

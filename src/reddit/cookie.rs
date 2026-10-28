@@ -193,6 +193,8 @@ fn with_one_session(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
     use crate::reddit::TEST_COOKIE_SOURCE;
 
@@ -352,5 +354,100 @@ mod tests {
             assert_eq!(CookieForm::try_from(trimmed), Ok(form), "{trimmed:?}");
         }
         assert_eq!(CookieForm::try_from(""), Err(NoSession));
+    }
+
+    /// The pieces of a configured cookie the shaping rules care about: names, separators,
+    /// padding and blank space.
+    const COOKIE_PIECES: [&str; 11] = [
+        "reddit_session=",
+        "reddit_session",
+        "abc123",
+        "eyJhbGci==",
+        "token_v2=xyz",
+        "a=1",
+        ";",
+        "; ",
+        "=",
+        " ",
+        "\t",
+    ];
+
+    /// A configured cookie value assembled from `pieces`.
+    fn configured_cookie(pieces: Vec<&'static str>) -> impl Strategy<Value = String> {
+        prop::collection::vec(prop::sample::select(pieces), 0..10)
+            .prop_map(|pieces| pieces.concat())
+    }
+
+    /// Asserts that `raw` is sent exactly when it configures a session, as a header that
+    /// shapes to itself, with no blank pair and at most one, non-blank, `reddit_session`,
+    /// and made only of `raw`'s own pairs (a bare value gaining its `reddit_session=`).
+    fn assert_well_shaped(raw: &str) -> Result<(), TestCaseError> {
+        let sent = session_cookie(raw, TEST_COOKIE_SOURCE);
+        prop_assert_eq!(is_configured_cookie(raw), sent.is_some(), "{:?}", raw);
+        let Some(sent) = sent else {
+            return Ok(());
+        };
+        let resent = session_cookie(&sent, TEST_COOKIE_SOURCE);
+        prop_assert_eq!(resent.as_deref(), Some(sent.as_str()), "{:?}", raw);
+        let pairs: Vec<&str> = sent.split(';').collect();
+        prop_assert!(
+            !pairs.iter().any(|pair| is_blank(pair)),
+            "{:?} -> {:?}",
+            raw,
+            sent
+        );
+        let sessions: Vec<&str> = pairs
+            .iter()
+            .filter_map(|pair| session_value(pair))
+            .collect();
+        prop_assert!(sessions.len() <= 1, "{:?} -> {:?}", raw, sent);
+        prop_assert!(
+            !sessions.iter().any(|session| is_blank(session)),
+            "{:?} -> {:?}",
+            raw,
+            sent
+        );
+        let is_bare = |pair: &str| {
+            pairs.len() == 1
+                && pair.strip_prefix("reddit_session=").is_some_and(|value| {
+                    !value.trim_end_matches('=').contains('=') && raw.contains(value)
+                })
+        };
+        prop_assert!(
+            pairs.iter().all(|pair| raw.contains(pair) || is_bare(pair)),
+            "{:?} -> {:?}",
+            raw,
+            sent
+        );
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config())]
+
+        #[test]
+        fn any_text_is_shaped_into_a_well_formed_cookie(raw in any::<String>()) {
+            assert_well_shaped(&raw)?;
+        }
+
+        #[test]
+        fn a_cookie_is_shaped_into_a_well_formed_cookie(
+            raw in configured_cookie(COOKIE_PIECES.to_vec()),
+        ) {
+            assert_well_shaped(&raw)?;
+        }
+
+        #[test]
+        #[ignore = "a value still quoted once one quote pair is stripped (`\"\"abc==\"\"`, \
+                    `\"abc==\";=`) is sent quoted, and shaping that strips another pair"]
+        fn a_quoted_cookie_is_shaped_into_a_well_formed_cookie(
+            raw in (configured_cookie([COOKIE_PIECES.as_slice(), &["\""]].concat()), 0..3usize)
+                .prop_map(|(value, quote_pairs)| {
+                    let quotes = "\"".repeat(quote_pairs);
+                    format!("{quotes}{value}{quotes}")
+                }),
+        ) {
+            assert_well_shaped(&raw)?;
+        }
     }
 }

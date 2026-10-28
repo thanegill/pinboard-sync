@@ -4,14 +4,12 @@
 //!
 //! "Every field", not "every byte": merging the pages of one service into a single file
 //! means re-serializing, and `serde_json` here has no `preserve_order`, so object keys
-//! come out sorted. Nothing is dropped -- but the file is not the server's bytes, and the
-//! docs must not claim it is.
+//! come out sorted. Nothing is dropped, but the file is not the server's bytes.
 //!
-//! Three stages, deliberately separated so only the last touches the filesystem:
-//! a client [`dump`](BackupSource::dump)s (async), [`layout`] turns that payload into
-//! named files (pure), and [`write_files`] puts them on disk. The clients therefore
-//! know how to produce their data and nothing about where it goes -- the same split
-//! `cleanup_pass::run_pass` makes for `cleanup`.
+//! Backing up runs in three stages: a client [`dump`](BackupSource::dump)s (async),
+//! [`layout`] turns that payload into named files (pure), and [`write_files`] puts them on
+//! disk, the only stage that touches the filesystem. The clients know how to produce their
+//! data and nothing about where it goes, the same split `cleanup_pass::run_pass` makes.
 //!
 //! Raw fidelity matters because every wire struct in this crate deserializes only the
 //! fields it needs, with no catch-all: `GitHubStarredRepo` keeps a handful of GitHub's
@@ -250,12 +248,10 @@ pub fn slug(name: Option<&str>) -> String {
 ///
 /// So GitHub and Pinboard produce a flat array of items while Reddit and HackerNews
 /// produce an array of page envelopes. Always pushing envelopes would make GitHub an
-/// array-of-arrays, which is worse to consume; the asymmetry is documented in the README.
+/// array-of-arrays, which is worse to consume.
 ///
-/// **Every field survives, but the bytes are not the server's.** Merging means
-/// re-serializing, and `serde_json` is built without `preserve_order`, so object keys come
-/// back out sorted. Two JSON documents with the same fields, not the same file -- say
-/// "every field preserved", never "byte-for-byte".
+/// Every field survives, but object keys come back out sorted (`serde_json` is built
+/// without `preserve_order`), so the result holds the server's fields, not its bytes.
 ///
 /// Returns the [`Count`] alongside, since the classification (were all the bodies arrays?)
 /// falls out of the same walk -- recomputing it would mean parsing every body twice, and

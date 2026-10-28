@@ -852,6 +852,7 @@ async fn a_403_or_429_cut_off_mid_body_is_a_read_error() {
                 message.starts_with(&format!("reading {what} response ({status}): ")),
                 "{message}"
             );
+            assert!(!message.contains("127.0.0.1"), "{message}");
         }
     }
 }

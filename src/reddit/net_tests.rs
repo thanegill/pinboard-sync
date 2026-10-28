@@ -601,6 +601,7 @@ async fn a_saved_page_cut_off_mid_body_is_a_read_error() {
         message.starts_with("reading saved listing response: "),
         "{message}"
     );
+    assert!(!message.contains("127.0.0.1"), "{message}");
 }
 
 #[tokio::test]

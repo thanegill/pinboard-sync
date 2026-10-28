@@ -124,6 +124,16 @@ pub fn truncated_body_server(
     content_type: &'static str,
     body: &'static str,
 ) -> String {
+    truncated_body_server_with(status, vec![("Content-Type", content_type)], body)
+}
+
+/// [`truncated_body_server`] answering with every one of `headers`, each a name and a
+/// value, where that one sends only a `Content-Type`.
+pub fn truncated_body_server_with(
+    status: &'static str,
+    headers: Vec<(&'static str, &'static str)>,
+    body: &'static str,
+) -> String {
     use std::io::{Read, Write};
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -139,9 +149,13 @@ pub fn truncated_body_server(
                     Ok(read) => request.extend_from_slice(&chunk[..read]),
                 }
             }
+            let header_lines: String = headers
+                .iter()
+                .map(|(name, value)| format!("{name}: {value}\r\n"))
+                .collect();
             let head = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n\
-                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 {status}\r\n{header_lines}Content-Length: {}\r\n\
+                 Connection: close\r\n\r\n",
                 body.len() + 1000
             );
             let _ = socket.write_all(head.as_bytes());

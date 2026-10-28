@@ -139,6 +139,8 @@ All notable changes to this project are documented here. The format is based on
 - `cleanup` no longer cuts a whole note just under the URL limit when what a plan appends
   to it would be cut off anyway. The rest of the plan is still written, over the note kept
   whole if it still fits.
+- A bookmark's tags are sent to Pinboard once each, so a repeated tag no longer shifts
+  where a long note is cut.
 
 ## [0.6.0] - 2026-10-25
 

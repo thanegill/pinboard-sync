@@ -361,6 +361,15 @@ impl FakePinboard {
         CleanupStore::new(self, AccountView::new(self.all.clone()), WriteMode::Live)
     }
 
+    /// `b` as the Pinboard client sends it: fitted, and each tag once.
+    fn as_sent(&self, b: &Bookmark) -> Bookmark {
+        let fitted = self.fit(b.clone());
+        Bookmark {
+            tags: Tags::parse(&fitted.tags.joined()),
+            ..fitted
+        }
+    }
+
     /// [`Self::cleanup_store`] for a dry run.
     pub fn dry_cleanup_store(&self) -> CleanupStore<'_, Self> {
         CleanupStore::new(self, AccountView::new(self.all.clone()), WriteMode::DryRun)
@@ -386,7 +395,7 @@ impl BookmarkStore for FakePinboard {
     }
 
     async fn add(&self, b: &Bookmark) -> Result<()> {
-        let b = &self.fit(b.clone());
+        let b = &self.as_sent(b);
         if self.fail_add_urls.contains(b.url.as_str()) {
             return Err(anyhow!("simulated add failure for {}", b.url));
         }
@@ -401,7 +410,7 @@ impl BookmarkStore for FakePinboard {
         Ok(())
     }
     async fn update(&self, b: &Bookmark) -> Result<()> {
-        let b = &self.fit(b.clone());
+        let b = &self.as_sent(b);
         if self.fail_update_urls.contains(b.url.as_str()) {
             return Err(anyhow!("simulated update failure for {}", b.url));
         }

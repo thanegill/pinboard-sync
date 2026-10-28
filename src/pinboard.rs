@@ -587,6 +587,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_note_is_cut_the_same_whatever_tags_repeat() {
+        let c = test_client();
+        let tagged = |tags: &[&str]| Bookmark {
+            tags: crate::test_support::tag_list(tags),
+            ..long_note_bookmark(None)
+        };
+        assert_eq!(
+            c.fit(tagged(&["reddit", "rust", "reddit", "rust"])).note,
+            c.fit(tagged(&["reddit", "rust"])).note,
+            "the same tag set must cut the same, as `diff` compares tags as a set"
+        );
+    }
+
     /// A realistic set of fixed params (URL, title, tags, auth, ...).
     const FIXED: &[(&str, &str)] = &[
         (

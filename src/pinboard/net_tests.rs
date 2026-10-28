@@ -196,6 +196,27 @@ async fn add_sends_each_field_under_its_pinboard_name() {
         .unwrap();
 }
 
+/// The tag set, as cleanup's `diff` compares it and `fit` measures it.
+#[tokio::test]
+async fn add_sends_each_tag_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/add"))
+        .and(query_param("tags", "reddit rust"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client(&server)
+        .add(&Bookmark {
+            tags: tag_list(&["reddit", "rust", "reddit"]),
+            ..post()
+        })
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn add_sends_dt_in_utc_at_whole_seconds() {
     let server = MockServer::start().await;

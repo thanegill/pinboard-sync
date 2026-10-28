@@ -17,9 +17,17 @@ impl Tags {
         Self(stored.split_whitespace().map(String::from).collect())
     }
 
-    /// Pinboard's space-separated form, the inverse of [`Tags::parse`].
+    /// Pinboard's space-separated form, the inverse of [`Tags::parse`], with each tag once
+    /// in first-seen order: the set [`Tags::differs_from`] compares, so a repeat can't make
+    /// a write, or the URL budget it is measured against, differ from that set.
     pub fn joined(&self) -> String {
-        self.0.join(" ")
+        let mut seen = BTreeSet::new();
+        self.0
+            .iter()
+            .filter(|tag| seen.insert(tag.as_str()))
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Append `tag` unless it is empty (empty = the tag is disabled).
@@ -132,6 +140,11 @@ mod tests {
 
     fn tags(tags: &[&str]) -> Tags {
         strings(tags).into()
+    }
+
+    #[test]
+    fn joined_keeps_each_tag_once_in_first_seen_order() {
+        assert_eq!(tags(&["b", "a", "b", "c", "a"]).joined(), "b a c");
     }
 
     #[test]

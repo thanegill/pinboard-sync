@@ -3069,3 +3069,18 @@ async fn a_dry_run_previews_an_absorb_without_fields() {
         ]
     );
 }
+
+#[tokio::test]
+async fn a_repeated_tag_is_stored_once() {
+    let books = vec![bookmark("https://tagged/")];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            tags: tag_list(&["a", "b", "a", "c"]),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let pinboard = FakePinboard::default();
+
+    assert_eq!(run(&pinboard, &books, &pass).await.changed, 1);
+    assert_eq!(pinboard.updated.borrow()[0].tags, ["a", "b", "c"]);
+}

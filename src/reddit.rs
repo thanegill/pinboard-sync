@@ -401,10 +401,11 @@ fn redirect_error(
 /// other 401/403 [`SourceError::ReauthRequired`]; both carry a fixed, actionable message,
 /// since the body is usually a large HTML page and isn't echoed (one that is neither edge
 /// page is logged at debug level instead). Redirects are not followed (see
-/// [`redirect_error`]). Any other non-success status becomes [`SourceError::Other`].
-/// `what` names the request, and `cookie` is the one it sent: its setting is named in
-/// advice and its [secrets](SessionCookie::secrets) are redacted from a logged or quoted
-/// body.
+/// [`redirect_error`]). Any other non-success status becomes [`SourceError::Other`], as
+/// does a body cut off mid-read on a success or 401/403, since a partial 403 page can't
+/// tell the block from a refused cookie. `what` names the request, and `cookie` is the one
+/// it sent: its setting is named in advice and its [secrets](SessionCookie::secrets) are
+/// redacted from a logged or quoted body.
 async fn reddit_body(
     resp: reqwest::Response,
     what: &str,
@@ -425,8 +426,22 @@ async fn reddit_body(
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_string();
-    let body = resp.text().await.unwrap_or_default();
-    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+    let refused = status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN;
+    let body = match resp.text().await {
+        Ok(body) => body,
+        Err(read_error) if status.is_success() || refused => {
+            let doing = if refused {
+                format!("reading {what} response ({status})")
+            } else {
+                format!("reading {what} response")
+            };
+            return Err(anyhow::Error::new(read_error.without_url())
+                .context(doing)
+                .into());
+        }
+        Err(_) => String::new(),
+    };
+    if refused {
         let reauth = format!(
             "{what} returned {status}. {}",
             refused_cookie_advice(cookie_source)

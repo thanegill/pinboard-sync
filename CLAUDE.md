@@ -322,7 +322,9 @@ is known only by its body (its `retry-after: 0` must not be read as a rate limit
 page, which Reddit also serves for a junk cookie. A block arrives with a valid cookie (#78),
 so the hook would send the operator to re-copy a credential that isn't the problem. It
 shares `RateLimited`'s handling (no hook; a pass halts via `Halt::Blocked`) but keeps its
-own variant so the message names a block, which no reset is known to lift.
+own variant so the message names a block, which no reset is known to lift. A 401/403 whose
+body is cut off mid-read is `Other`, since without the whole page a block and a refused
+cookie look alike.
 
 **The Reddit client never follows a redirect.** Reddit answers a request without a session
 it accepts with a 302 to `/login`, and following it can land on a login page that answers

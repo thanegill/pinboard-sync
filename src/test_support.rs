@@ -115,6 +115,42 @@ pub fn scratch_dir(label: &str) -> TempDir {
         .unwrap()
 }
 
+/// The base URL of a local HTTP/1.1 server whose every response is cut off: it answers
+/// with `status` (e.g. `"200 OK"`), `content_type` and `body`, declares a
+/// `Content-Length` longer than `body`, and closes the connection. Binds a socket, so only
+/// a `net_tests` case may call it.
+pub fn truncated_body_server(
+    status: &'static str,
+    content_type: &'static str,
+    body: &'static str,
+) -> String {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for socket in listener.incoming() {
+            let Ok(mut socket) = socket else { return };
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match socket.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&chunk[..read]),
+                }
+            }
+            let head = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len() + 1000
+            );
+            let _ = socket.write_all(head.as_bytes());
+            let _ = socket.write_all(body.as_bytes());
+        }
+    });
+    base
+}
+
 /// `s` parsed as a URL, which a test supplies and knows to be valid.
 pub fn url(s: &str) -> Url {
     Url::parse(s).unwrap()

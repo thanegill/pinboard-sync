@@ -113,6 +113,8 @@ All notable changes to this project are documented here. The format is based on
   does.
 - `cleanup <source>` checks the GitHub token, Reddit cookie or `--tag-link` before
   reading `posts/all`, so a bad one no longer spends that rate-limited call.
+- A Reddit or HackerNews favorites response cut off mid-body is reported as a read error,
+  no longer as a parse error, changed markup or, for a Reddit 403, an expired cookie.
 - A Pinboard delete retried after a lost response no longer fails on `item not found`.
 - A `reddit_domain` with a port or another form that isn't a bare host is rejected.
 - A HackerNews favorite linking a Reddit `over18` page or the bare Reddit root is no longer

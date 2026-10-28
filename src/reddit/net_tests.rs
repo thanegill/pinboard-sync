@@ -563,3 +563,55 @@ async fn cleanup_looks_up_comments_by_their_own_fullname_in_the_post_batch() {
     assert!(tags_of("https://old.reddit.com/r/rust/comments/a/x/c/")
         .contains(&"author:reddit:bob".to_string()));
 }
+
+fn truncated_client(
+    status: &'static str,
+    content_type: &'static str,
+    body: &'static str,
+) -> RedditClient {
+    RedditClient::with_base_url(
+        Some("reddit_session=secret".into()),
+        Some("psophis".into()),
+        crate::test_support::truncated_body_server(status, content_type, body),
+    )
+}
+
+#[tokio::test]
+async fn a_saved_page_cut_off_mid_body_is_a_read_error() {
+    let client = truncated_client("200 OK", "application/json", r#"{"kind": "Listing", "#);
+    let err = crate::http::recording_waits(client.fetch_saved())
+        .await
+        .0
+        .unwrap_err();
+    let SourceError::Other(error) = &err else {
+        panic!("a cut-off body is a transient failure: {err:?}");
+    };
+    let message = format!("{error:#}");
+    assert!(
+        message.starts_with("reading saved listing response: "),
+        "{message}"
+    );
+}
+
+#[tokio::test]
+async fn a_403_cut_off_mid_body_does_not_ask_for_a_new_cookie() {
+    // Without the whole page there is no telling the block (whose cookie is fine) from a
+    // refused cookie, so the hook must not send the operator after the cookie.
+    let client = truncated_client(
+        "403 Forbidden",
+        "text/html; charset=utf-8",
+        "<html><body>You've been blocked by network security.",
+    );
+    let err = crate::http::recording_waits(client.fetch_saved())
+        .await
+        .0
+        .unwrap_err();
+    let SourceError::Other(error) = &err else {
+        panic!("a cut-off 403 must not be read as a dead cookie: {err:?}");
+    };
+    let message = format!("{error:#}");
+    assert!(
+        message.starts_with("reading saved listing response (403 Forbidden): "),
+        "{message}"
+    );
+}

@@ -20,8 +20,10 @@ nix develop --command cargo fmt --check
 nix develop --command cargo mutants --in-diff <diff>  # mutation-tests the lines a diff file changes
 nix flake check                              # builds the package (runs tests) + evaluates the NixOS module and config-checks its TOML + lints the Nix files
 nix fmt                                      # formats the Nix files (nixfmt, via nixfmt-tree)
-RUSTDOCFLAGS='-D warnings' nix develop --command cargo doc --document-private-items --no-deps
+RUSTDOCFLAGS='-D warnings' nix develop --command cargo doc --document-private-items --no-deps  # fails on a rustdoc warning
 nix develop --command typos                  # spell-checks the tree; false positives go in _typos.toml
+nix develop --command actionlint             # lints the workflows, with shellcheck on their scripts
+nix develop --command zizmor --offline .github/  # audits the workflows and dependabot.yml for security problems
 ```
 
 `nix flake check` runs the flake's `checks` for the host system only: `checks.package`
@@ -42,9 +44,12 @@ runs `nix flake check` on x86_64-linux, in its `flake` job.
 Commit often: each working feature or structural piece, with its tests, keeping the
 gate green.
 
-CI's `lint` job runs typos and builds the docs with rustdoc warnings as errors, so a
-broken intra-doc link fails it. A word typos gets wrong (an identifier, an API's
-spelling) goes in `_typos.toml`, matched as narrowly as it can be.
+CI's `lint` job is part of the gate too: it runs typos, actionlint and zizmor and builds
+the docs with rustdoc warnings as errors, so a broken intra-doc link fails it. A word
+typos gets wrong (an identifier, an API's spelling) goes in `_typos.toml`, matched as
+narrowly as it can be. CI runs zizmor online, with the job's token, so it also checks
+that each pinned action SHA belongs to its repository and has no known advisory;
+`--offline` skips those audits.
 
 ## Architecture
 

@@ -4,7 +4,8 @@ name: CI
 # three parallel jobs: `gate` runs fmt + clippy + the full test suite (incl. net_tests),
 # `flake` runs `nix flake check` (the sandboxed package build and its tests, the Nix
 # lint, and the NixOS module evaluated with `config check` run on its rendered TOML),
-# and `lint` spell-checks the tree with typos and builds the docs, private items
+# and `lint` spell-checks the tree with typos, lints the workflows with actionlint,
+# audits them and dependabot.yml with zizmor, and builds the docs, private items
 # included, with rustdoc warnings as errors. A push to a PR's branch runs once, as the
 # PR; a branch with no PR doesn't run.
 
@@ -65,6 +66,16 @@ jobs:
 
       - name: typos
         run: nix develop --command typos
+
+      - name: actionlint
+        if: ${{ !cancelled() }}
+        run: nix develop --command actionlint
+
+      - name: zizmor
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: nix develop --command zizmor .github/
 
       - name: cargo doc -D warnings
         if: ${{ !cancelled() }}

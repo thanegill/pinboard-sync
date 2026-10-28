@@ -9,7 +9,7 @@ use log::{debug, warn};
 use serde::Deserialize;
 use url::Url;
 
-use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage};
+use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage, PRIMARY_STREAM};
 use crate::bookmark::{Bookmark, BookmarkStore};
 use crate::http::{
     answered_a_retry, client_builder, error_with_body, redact, LinearBackoff, RetryingClient,
@@ -432,7 +432,7 @@ impl BackupSource for PinboardClient {
             });
         Ok(BackupDump {
             raw: vec![RawPage {
-                stream: "",
+                stream: PRIMARY_STREAM,
                 kind: RawKind::Json,
                 body,
             }],

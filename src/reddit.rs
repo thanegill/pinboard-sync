@@ -18,7 +18,7 @@ use log::{debug, warn};
 use serde::de::DeserializeOwned;
 use url::Url;
 
-use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
+use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink, PRIMARY_STREAM};
 use crate::bookmark::Bookmark;
 use crate::config::own_then_configured;
 use crate::http::{client_builder, read_body, RetryingClient, DEFAULT_BACKOFF, USER_AGENT};
@@ -204,7 +204,7 @@ impl RedditClient {
                 })
                 .await?;
             let body = reddit_body(resp, "saved listing", session.cookie.as_ref()).await?;
-            sink.push("", RawKind::Json, &body);
+            sink.push(PRIMARY_STREAM, RawKind::Json, &body);
             let listing: RedditListing =
                 serde_json::from_str(&body).context("parsing saved listing response")?;
             let got = listing.data.children.len();

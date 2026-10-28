@@ -8,7 +8,9 @@ use anyhow::anyhow;
 use log::debug;
 use url::Url;
 
-use super::{AlgoliaClient, HackerNewsConfig, HackerNewsItem, HackerNewsItemId};
+use super::{
+    hn_link_line, AlgoliaClient, HackerNewsConfig, HackerNewsItem, HackerNewsItemId, HN_LINK,
+};
 use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, PassOutcome, Plan};
@@ -44,13 +46,8 @@ pub async fn run<S: BookmarkStore + AccountState>(
     client: &AlgoliaClient,
     opts: &HackerNewsCleanupOpts,
 ) -> Result<(), SourceError> {
-    // Taken from the run's live view, so an earlier source's writes are already
-    // reflected.
-    let hackernews_bookmarks: Vec<Bookmark> = store
-        .snapshot()
-        .into_iter()
-        .filter(|bookmark| HackerNewsItemId::try_from(&bookmark.url).is_ok())
-        .collect();
+    let hackernews_bookmarks =
+        store.snapshot(|bookmark| HackerNewsItemId::try_from(&bookmark.url).is_ok());
 
     // Batch-fetch every referenced item once.
     let ids: Vec<HackerNewsItemId> = hackernews_bookmarks
@@ -104,14 +101,10 @@ async fn link_discussions<S: BookmarkStore + AccountState>(
     // Read after the item pass, so a bookmark it merged into is seen as it now stands.
     // A story merged onto a `link_tag`-tagged article carries that tag into the merged
     // record, so this pass picks it up in the same run and the account settles in one.
-    let candidates: Vec<Bookmark> = store
-        .snapshot()
-        .into_iter()
-        .filter(|bookmark| {
-            HackerNewsItemId::try_from(&bookmark.url).is_err()
-                && bookmark.tags.contains(&opts.config.link_tag)
-        })
-        .collect();
+    let candidates = store.snapshot(|bookmark| {
+        HackerNewsItemId::try_from(&bookmark.url).is_err()
+            && bookmark.tags.has(&opts.config.link_tag)
+    });
     let pass = HackerNewsLinkPass {
         client,
         config: &opts.config,
@@ -125,7 +118,7 @@ async fn link_discussions<S: BookmarkStore + AccountState>(
 /// bookmark's URL.
 fn hn_link_marker_id(note: &str) -> Option<HackerNewsItemId> {
     note.lines()
-        .find_map(|line| line.trim().strip_prefix("HN Link:"))
+        .find_map(|line| line.trim().strip_prefix(HN_LINK))
         .and_then(|rest| Url::parse(rest.trim()).ok())
         .and_then(|url| HackerNewsItemId::try_from(&url).ok())
 }
@@ -133,16 +126,23 @@ fn hn_link_marker_id(note: &str) -> Option<HackerNewsItemId> {
 /// Appends the `HN Link: <url>` back-link line to a note, skipping when the note already
 /// carries one. An empty note becomes the bare link.
 fn ensure_hn_link_note(note: &str, hn_link: &str) -> String {
-    if note
-        .lines()
-        .any(|line| line.trim_start().starts_with("HN Link:"))
-    {
+    if note.lines().any(is_hn_link_line) {
         note.to_string()
     } else if note.is_empty() {
         hn_link.to_string()
     } else {
         format!("{note}\n\n{hn_link}")
     }
+}
+
+/// Whether `line` is an `HN Link:` line, indented or not.
+fn is_hn_link_line(line: &str) -> bool {
+    line.trim_start().starts_with(HN_LINK)
+}
+
+/// The `HN Link:` line of a note sync built, which never indents it.
+fn generated_hn_link(note: &str) -> Option<&str> {
+    note.lines().find(|line| line.starts_with(HN_LINK))
 }
 
 /// Re-shapes one favorited HN item bookmark: re-fetch via Algolia and re-derive the
@@ -195,11 +195,7 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         new.read_later = bookmark.read_later;
         // Keep the user's stored note, but make sure the regenerated `HN Link:`
         // back-link survives the re-shape (append it once, never duplicated).
-        let generated_link = new
-            .note
-            .lines()
-            .find(|line| line.starts_with("HN Link:"))
-            .map(str::to_string);
+        let generated_link = generated_hn_link(&new.note).map(str::to_string);
         if !bookmark.note.is_empty() {
             new.note = match generated_link {
                 Some(link) => ensure_hn_link_note(&bookmark.note, &link),
@@ -228,7 +224,7 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
             return Ok(Plan::Unchanged);
         };
 
-        let hn_link = format!("HN Link: {}", Url::from(&id));
+        let hn_link = hn_link_line(Url::from(&id));
         let note = ensure_hn_link_note(&bookmark.note, &hn_link);
 
         let title = collapse_whitespace(&bookmark.title, " ");
@@ -290,6 +286,29 @@ mod tests {
         assert_eq!(ensure_hn_link_note(&with_marker, link), with_marker);
     }
 
+    #[test]
+    fn the_marker_id_is_read_from_a_whole_marker_line_only() {
+        let id = |note: &str| hn_link_marker_id(note).map(|id| id.to_string());
+        assert_eq!(
+            id("my note\n\n  HN Link:   https://news.ycombinator.com/item?id=42  "),
+            Some("42".to_string())
+        );
+        assert_eq!(
+            id("see the HN Link: https://news.ycombinator.com/item?id=42"),
+            None
+        );
+        assert_eq!(id("HN Link: https://example.com/elsewhere"), None);
+        assert_eq!(id("HN Link: not a url"), None);
+        assert_eq!(id("hn link: https://news.ycombinator.com/item?id=42"), None);
+    }
+
+    #[test]
+    fn generated_hn_link_reads_only_an_unindented_line() {
+        let line = "HN Link: https://news.ycombinator.com/item?id=42";
+        assert_eq!(generated_hn_link(&format!("text\n\n{line}")), Some(line));
+        assert_eq!(generated_hn_link(&format!("  {line}")), None);
+    }
+
     fn story_pass_items() -> HashMap<HackerNewsItemId, HackerNewsItem> {
         let mut items = HashMap::new();
         items.insert(
@@ -327,16 +346,8 @@ mod tests {
         // The re-derived url/title still apply and the base tags still merge in.
         assert_eq!(planned.url.as_str(), "https://example.com/x");
         assert_eq!(planned.title, "Cool thing");
-        assert!(
-            planned.tags.contains(&"mine".to_string()),
-            "{:?}",
-            planned.tags
-        );
-        assert!(
-            planned.tags.contains(&"hackernews".to_string()),
-            "{:?}",
-            planned.tags
-        );
+        assert!(planned.tags.has("mine"), "{:?}", planned.tags);
+        assert!(planned.tags.has("hackernews"), "{:?}", planned.tags);
     }
 
     #[tokio::test]

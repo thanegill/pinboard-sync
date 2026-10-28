@@ -10,7 +10,7 @@ use anyhow::Context;
 use time::OffsetDateTime;
 use url::Url;
 
-use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo};
+use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo, HOMEPAGE_SEPARATOR};
 use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
@@ -46,12 +46,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
     dates: DateOpts,
     configured: &[GitHubConfig],
 ) -> Result<(), SourceError> {
-    // Taken from the run's live view, so an earlier source's writes are already reflected.
-    let gh_bms: Vec<Bookmark> = store
-        .snapshot()
-        .into_iter()
-        .filter(|bookmark| bookmark.url.host_is("github.com"))
-        .collect();
+    let gh_bms = store.snapshot(|bookmark| bookmark.url.host_is("github.com"));
 
     // `starred_at` isn't on the per-repo lookup, so for use_post_date fetch the star
     // list once and map url_key -> star time. A repo no longer starred won't be here
@@ -238,7 +233,7 @@ fn repo_root(url: &Url) -> Option<RepoName> {
 /// too while they still look the tool's (see [`run`]). With every base tag disabled
 /// nothing marks a star, so no bookmark qualifies.
 fn is_synced_star(bookmark: &Bookmark, cfg: &GitHubConfig) -> bool {
-    base_tag(cfg).is_some_and(|base| bookmark.tags.iter().any(|tag| tag == base))
+    base_tag(cfg).is_some_and(|base| bookmark.tags.has(base))
 }
 
 /// The tag marking a star `sync github` wrote under `cfg`: the first non-empty entry of
@@ -259,7 +254,7 @@ fn base_tag(cfg: &GitHubConfig) -> Option<&str> {
 /// `synced` star any lone `<blockquote>` counts, so an upstream description edit still
 /// refreshes; elsewhere it may be a passage the user quoted when saving the page.
 fn note_is_tool_generated(note: &str, repo: &GitHubRepo, names: &[RepoName], synced: bool) -> bool {
-    let body = match note.rsplit_once("\n\nProject homepage: ") {
+    let body = match note.rsplit_once(HOMEPAGE_SEPARATOR) {
         Some((body, homepage)) if !homepage.contains('\n') => body,
         _ => note,
     }

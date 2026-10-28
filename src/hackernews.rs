@@ -30,6 +30,14 @@ use url::Url;
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0";
 const HN_BASE: &str = "https://news.ycombinator.com";
 
+/// Starts the note line linking to the HN discussion, which `cleanup` reads back.
+const HN_LINK: &str = "HN Link:";
+
+/// The note line linking to the HN discussion at `url`.
+fn hn_link_line(url: impl std::fmt::Display) -> String {
+    format!("{HN_LINK} {url}")
+}
+
 /// Tag vocabulary for HackerNews favorites. `tags` are applied to every bookmark
 /// (defaulting to `["hackernews"]`); the rest default to their built-in values, and
 /// an empty string disables that tag.
@@ -167,7 +175,7 @@ impl HackerNewsItem {
         // URL already *is* that permalink, so including it would duplicate the URL --
         // skip it and let the notes carry just the post text.
         let mut note = if article.is_some() {
-            format!("HN Link: {hn_url}")
+            hn_link_line(&hn_url)
         } else {
             String::new()
         };

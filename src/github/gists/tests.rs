@@ -119,6 +119,23 @@ fn the_gist_post_date_picks_created_or_updated() {
     );
 }
 
+/// As a star is dated: a fraction would differ from the whole-second date Pinboard stores
+/// and be rewritten on every cleanup; an offset would show in backup's export.
+#[test]
+fn a_gist_is_dated_in_utc_at_whole_seconds() {
+    let gist = gist(json!({
+        "id": ID,
+        "html_url": format!("https://gist.github.com/{ID}"),
+        "created_at": "2020-01-02T03:04:05.678+01:00",
+    }));
+    assert_eq!(
+        gist.post_date(GistPostDate::Created)
+            .and_then(crate::timefmt::to_rfc3339)
+            .as_deref(),
+        Some("2020-01-02T02:04:05Z")
+    );
+}
+
 #[test]
 fn gist_tags_follow_their_own_config_and_an_empty_prefix_disables_one() {
     let cfg = GistConfig {
@@ -148,27 +165,21 @@ fn gist_config_inherits_the_stars_tags_with_github_gist_added() {
 }
 
 #[test]
-fn gist_root_finds_the_id_and_any_owner() {
-    let root = |s: &str| gist_root(&url(s)).map(|(owner, id)| (owner.map(str::to_string), id));
+fn gist_root_id_finds_the_id_with_or_without_an_owner() {
+    let root = |s: &str| gist_root_id(&url(s));
     assert_eq!(
         root(&format!("https://gist.github.com/{ID}")),
-        Some((None, ID.into()))
+        Some(ID.into())
     );
     assert_eq!(
         root(&format!("https://gist.github.com/Someone/{ID}.git/")),
-        Some((Some("Someone".into()), ID.into()))
+        Some(ID.into())
     );
     assert_eq!(
         root("https://gist.github.com/someone/0123456789abcdef0123456789ABCDEF"),
-        Some((
-            Some("someone".into()),
-            "0123456789abcdef0123456789abcdef".into()
-        ))
+        Some("0123456789abcdef0123456789abcdef".into())
     );
-    assert_eq!(
-        root("https://gist.github.com/42"),
-        Some((None, "42".into()))
-    );
+    assert_eq!(root("https://gist.github.com/42"), Some("42".into()));
     for not_a_root in [
         "https://gist.github.com/someone".to_string(),
         "https://gist.github.com/deadbeef".to_string(),

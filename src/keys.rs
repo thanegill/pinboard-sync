@@ -6,7 +6,7 @@
 
 use url::Url;
 
-use crate::github::gists::{gist_root, GIST_HOST};
+use crate::github::gists::{gist_root_id, GIST_HOST};
 use crate::hackernews::HackerNewsItemId;
 use crate::reddit::model::over18_dest;
 use crate::source::{DedupKey, UrlKey};
@@ -40,7 +40,7 @@ pub struct GitHubKeys;
 
 impl UrlKey for GitHubKeys {
     fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
-        if let Some((_, id)) = gist_root(url) {
+        if let Some(id) = gist_root_id(url) {
             return Some(format!("{GIST_HOST}/{id}").into());
         }
         let key = url_key(url).filter(|_| url.host_is("github.com"))?;

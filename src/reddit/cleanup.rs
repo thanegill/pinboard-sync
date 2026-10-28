@@ -155,14 +155,9 @@ pub async fn run<S: BookmarkStore + AccountState, R: PostInfo>(
     reddit: Option<&R>,
     opts: &RedditCleanupOpts,
 ) -> Result<(), SourceError> {
-    // Taken from the run's live view, so an earlier source's writes are already reflected.
-    let reddit_bms: Vec<Bookmark> = store
-        .snapshot()
-        .into_iter()
-        .filter(|bookmark| {
-            bookmark.url.host_is("reddit.com") || opts.is_configured_host(&bookmark.url)
-        })
-        .collect();
+    let reddit_bms = store.snapshot(|bookmark| {
+        bookmark.url.host_is("reddit.com") || opts.is_configured_host(&bookmark.url)
+    });
 
     let info = fetch_post_info(reddit, opts, &reddit_bms).await?;
     let keys = opts.reddit_keys();
@@ -222,9 +217,9 @@ impl CleanupPass for RedditCleanupPass<'_> {
             post_fullname(&new_url)
         };
         if let Some(item) = own_fullname.and_then(|f| self.info.items.get(&f)) {
-            for (prefix, tag) in item.detail_tags(owner) {
-                if !tags.iter().any(|t| t.starts_with(prefix)) {
-                    tags.push(&tag);
+            for detail in item.detail_tags(owner) {
+                if !tags.iter().any(|t| t.starts_with(detail.family)) {
+                    tags.push(&detail.tag);
                 }
             }
         }
@@ -325,11 +320,7 @@ async fn fetch_post_info<R: PostInfo>(
             // <blockquote> shaping retrofits onto existing bookmarks: selftext quoted,
             // empty for an empty self-post, else the external URL.
             let selftext = entry.fields.selftext.clone().unwrap_or_default();
-            let note = crate::reddit::model::post_note(
-                &selftext,
-                entry.fields.url.as_deref().unwrap_or_default(),
-                entry.fields.is_self,
-            );
+            let note = entry.fields.post_note();
             info.posts.insert(
                 name,
                 RedditPostMeta {

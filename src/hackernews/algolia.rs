@@ -9,7 +9,7 @@ use serde::Deserialize;
 use url::Url;
 
 use super::{HackerNewsItem, HackerNewsItemId, HackerNewsItemKind};
-use crate::backup::{RawKind, RawSink};
+use crate::backup::{RawKind, RawSink, PRIMARY_STREAM};
 use crate::http::RetryingClient;
 use crate::keys::url_key;
 use crate::source::SourceError;
@@ -20,6 +20,8 @@ const ALGOLIA_BASE: &str = "https://hn.algolia.com";
 pub(super) const ITEM_BATCH: usize = 100;
 /// The pause before each Algolia item chunk after the first.
 pub(super) const ALGOLIA_CHUNK_PAUSE: Duration = Duration::from_millis(300);
+/// Hits a URL search asks for, each checked for a URL that matches the bookmark's.
+const URL_SEARCH_HITS: &str = "5";
 
 /// An Algolia HN search response.
 #[derive(Debug, Deserialize)]
@@ -133,7 +135,7 @@ impl AlgoliaClient {
                 .await?;
             let resp = algolia_success(resp, "hn algolia").await?;
             let body = resp.text().await.context("reading hn algolia response")?;
-            sink.push("", RawKind::Json, &body);
+            sink.push(PRIMARY_STREAM, RawKind::Json, &body);
             let search: AlgoliaSearchResponse =
                 serde_json::from_str(&body).context("parsing hn algolia response")?;
             let items = search
@@ -158,7 +160,7 @@ impl AlgoliaClient {
                 self.http.get(&endpoint).query(&[
                     ("restrictSearchableAttributes", "url"),
                     ("query", url.as_str()),
-                    ("hitsPerPage", "5"),
+                    ("hitsPerPage", URL_SEARCH_HITS),
                 ])
             })
             .await?;

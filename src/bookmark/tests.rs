@@ -142,10 +142,29 @@ async fn the_snapshot_reflects_this_runs_writes() {
     );
     store.update(&at("https://a/", "written")).await.unwrap();
 
-    let all = store.snapshot();
+    let all = store.snapshot(|_| true);
 
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].note, "written");
+}
+
+#[test]
+fn a_snapshot_holds_only_what_keep_accepts_in_order() {
+    let pinboard = FakePinboard::default();
+    let store = CleanupStore::new(
+        &pinboard,
+        AccountView::new(vec![
+            at("https://c/", "1"),
+            at("https://a/", "2"),
+            at("https://b/", "3"),
+        ]),
+        WriteMode::Live,
+    );
+
+    let kept = store.snapshot(|bookmark| bookmark.note != "2");
+
+    let notes: Vec<&str> = kept.iter().map(|bookmark| bookmark.note.as_str()).collect();
+    assert_eq!(notes, ["1", "3"]);
 }
 
 #[tokio::test]

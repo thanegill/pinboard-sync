@@ -129,7 +129,8 @@ enum CookieForm {
 
 /// The cookie value configures no session: [blank](is_blank), or naming `reddit_session`
 /// only with blank values.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the Reddit cookie sets no session")]
 pub(super) struct NoSession;
 
 /// The shape of a cookie value, or [`NoSession`]. Expects [`without_blank_pairs`]'s

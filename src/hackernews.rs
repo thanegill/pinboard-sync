@@ -391,7 +391,8 @@ impl From<&HackerNewsItemId> for Url {
 }
 
 /// The URL isn't an HN `item?id=<n>` permalink (so it has no [`HackerNewsItemId`]).
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("not a HackerNews item URL")]
 pub struct NotHnItemUrl;
 
 /// The slug for a `Show/Ask/Tell/Launch HN:` title prefix (e.g. `Show HN:` →

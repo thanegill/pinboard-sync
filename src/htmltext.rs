@@ -1,24 +1,44 @@
 //! Shape source-provided text for Pinboard. Titles become single-line plain text
-//! (tags stripped, entities decoded, whitespace collapsed); HackerNews note bodies
-//! (raw Algolia HTML) become Markdown; quoted bodies are wrapped in a literal
-//! `<blockquote>`, which Pinboard renders in the notes field.
+//! (entities decoded, literal angle brackets kept, whitespace collapsed); HackerNews
+//! note bodies (raw Algolia HTML) become Markdown; quoted bodies are wrapped in a
+//! literal `<blockquote>`, which Pinboard renders in the notes field.
+
+use html5ever::tendril::TendrilSink;
+use html5ever::{local_name, ns, ParseOpts, QualName};
+use markup5ever_rcdom::{NodeData, RcDom};
 
 /// Clean a title (`description`): decode HTML entities and collapse all internal
 /// whitespace to single spaces (trimmed). HN titles are documented as HTML (HN's item
 /// API, which Algolia indexes verbatim), so their entities need decoding, but neither
 /// they nor GitHub's descriptions carry markup, so literal angle brackets (`Vec<String>`,
 /// `vector<T>`) are preserved verbatim rather than dropped as HTML tags. Literal `<`/`>`
-/// are escaped before parsing so scraper decodes entities without treating a `<...>`
+/// are escaped before parsing so html5ever decodes entities without treating a `<...>`
 /// span as an element to strip. Not for Reddit titles, which `raw_json=1` already returns
-/// unescaped. Only for source text, decoded once: `cleanup` never runs
-/// a stored Pinboard title through this, since that title is already plain text and a
-/// second decode would rewrite a literal `&amp;` on every run (it only collapses the
-/// whitespace).
+/// unescaped. Only for source text, decoded once: `cleanup` never runs a stored Pinboard
+/// title through this, since that title is already plain text and a second decode would
+/// rewrite a literal `&amp;` on every run (it only collapses the whitespace).
 pub fn html_to_plain(s: &str) -> String {
     let escaped = s.replace('<', "&lt;").replace('>', "&gt;");
-    let fragment = scraper::Html::parse_fragment(&escaped);
-    let text: String = fragment.root_element().text().collect();
-    collapse_whitespace(&text, " ")
+    collapse_whitespace(&body_fragment_text(&escaped), " ")
+}
+
+/// The text of `html` parsed as the contents of a `<body>`: every text node outside a
+/// `<template>`, in document order. For `html_to_plain`'s escaped input, which has no
+/// tags, that is all of it.
+fn body_fragment_text(html: &str) -> String {
+    let body = QualName::new(None, ns!(html), local_name!("body"));
+    let dom =
+        html5ever::parse_fragment(RcDom::default(), ParseOpts::default(), body, vec![], false)
+            .one(html);
+    let mut text = String::new();
+    let mut pending = vec![dom.document.clone()];
+    while let Some(node) = pending.pop() {
+        if let NodeData::Text { contents } = &node.data {
+            text.push_str(&contents.borrow());
+        }
+        pending.extend(node.children.borrow().iter().rev().cloned());
+    }
+    text
 }
 
 /// `text`'s whitespace-separated words joined by `separator`: every run of whitespace

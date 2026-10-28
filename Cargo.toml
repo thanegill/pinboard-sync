@@ -35,7 +35,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower = { version = "0.5", default-features = false, features = ["retry", "util"] }
 toml = "0.8"
-scraper = "0.20"
 url = "2"
 dotenvy = "0.15"
 clap_mangen = "0.2"
@@ -44,8 +43,11 @@ env_logger = { version = "0.11", default-features = false }
 # Source post date -> Pinboard `dt`: epoch <-> RFC3339 conversion + `now`.
 time = { version = "0.3", default-features = false, features = ["std", "formatting", "parsing"] }
 # HN note bodies are raw HTML (Algolia story_text/comment_text); htmd converts them to
-# Markdown. Pure-Rust, depends only on html5ever (already pulled in by scraper).
+# Markdown. Pure-Rust, built on html5ever and markup5ever_rcdom.
 htmd = "0.5"
+# Favorites pages and titles. Keep on htmd's versions, or a second html5ever returns.
+html5ever = "0.38"
+markup5ever_rcdom = "0.38"
 # An insertion-ordered set for a bookmark's tags; already in the build through h2.
 indexmap = "2"
 

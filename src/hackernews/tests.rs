@@ -341,6 +341,22 @@ fn parse_favorite_ids_marker_is_case_sensitive_and_may_come_late() {
 }
 
 #[test]
+fn parse_favorite_ids_reads_foster_parented_elements_in_document_order() {
+    let foster_parented = "<table>
+          <tr class='athing' id='1'><td><a class='morelink' href='p=2'>More</a></td></tr>
+          <a class='morelink' href='p=3'>More</a>
+          <svg><tr class='athing' id='2'></tr></svg>
+        </table>";
+    assert_eq!(
+        parse_favorite_ids(foster_parented),
+        FavoritesPage::Recognized {
+            ids: vec!["2".into(), "1".into()],
+            more: Some("p=3".into()),
+        }
+    );
+}
+
+#[test]
 fn parse_favorite_ids_reads_real_empty_favorites_pages() {
     for (stream, html) in [
         (

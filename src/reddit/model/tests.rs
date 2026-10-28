@@ -153,6 +153,14 @@ fn post_tags_include_author_flair_and_type() {
 }
 
 #[test]
+fn created_at_is_the_second_the_float_falls_in() {
+    let second = crate::timefmt::from_unix(1_700_000_000);
+    assert_eq!(created_at(Some(1_700_000_000.0)), second);
+    assert_eq!(created_at(Some(1_700_000_000.7)), second);
+    assert_eq!(created_at(None), None);
+}
+
+#[test]
 fn flair_commas_are_slugged_like_whitespace() {
     // Pinboard tags may not contain commas any more than whitespace.
     for (flair, want) in [

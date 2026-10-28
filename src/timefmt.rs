@@ -143,17 +143,6 @@ mod tests {
     }
 
     #[test]
-    fn reddit_float_truncates_to_whole_seconds() {
-        // Reddit's created_utc is a float; callers pass `f as i64`.
-        let secs = 1_700_000_000.7_f64 as i64;
-        assert_eq!(secs, 1_700_000_000);
-        assert_eq!(
-            from_unix(secs).and_then(to_rfc3339).unwrap(),
-            "2023-11-14T22:13:20Z"
-        );
-    }
-
-    #[test]
     fn rejects_garbage() {
         assert_eq!(parse_rfc3339("not a date"), None);
     }

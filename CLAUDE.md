@@ -18,6 +18,7 @@ nix develop --command cargo test <name>      # single test
 PROPTEST_CASES=10000 nix develop --command cargo test  # property tests past test_support::proptest_config's 64 cases
 nix develop --command cargo clippy --all-targets -- -D warnings
 nix develop --command cargo fmt --check
+nix develop --command cargo machete          # fails on an unused dependency
 nix develop --command cargo mutants --in-diff <diff>  # mutation-tests the lines a diff file changes
 nix flake check                              # builds the package (runs tests) + evaluates the NixOS module and config-checks its TOML + lints the Nix files
 nix fmt                                      # formats the Nix files (nixfmt, via nixfmt-tree)
@@ -45,12 +46,14 @@ runs `nix flake check` on x86_64-linux, in its `flake` job.
 Commit often: each working feature or structural piece, with its tests, keeping the
 gate green.
 
-CI's `lint` job is part of the gate too: it runs typos, actionlint and zizmor and builds
-the docs with rustdoc warnings as errors, so a broken intra-doc link fails it. A word
-typos gets wrong (an identifier, an API's spelling) goes in `_typos.toml`, matched as
-narrowly as it can be. CI runs zizmor online, with the job's token, so it also checks
-that each pinned action SHA belongs to its repository and has no known advisory;
-`--offline` skips those audits.
+CI's `lint` job is part of the gate too: it runs typos, actionlint, zizmor and
+cargo-machete and builds the docs with rustdoc warnings as errors, so a broken intra-doc
+link fails it. A word typos gets wrong (an identifier, an API's spelling) goes in
+`_typos.toml`, matched as narrowly as it can be. A dependency cargo-machete can't see
+used, like one reached only through a macro, goes in `ignored` under
+`[package.metadata.cargo-machete]`, with a comment saying why. CI runs zizmor online,
+with the job's token, so it also checks that each pinned action SHA belongs to its
+repository and has no known advisory; `--offline` skips those audits.
 
 ## Architecture
 

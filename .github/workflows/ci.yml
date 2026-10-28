@@ -5,9 +5,9 @@ name: CI
 # `flake` runs `nix flake check` (the sandboxed package build and its tests, the Nix
 # lint, and the NixOS module evaluated with `config check` run on its rendered TOML),
 # and `lint` spell-checks the tree with typos, lints the workflows with actionlint,
-# audits them and dependabot.yml with zizmor, and builds the docs, private items
-# included, with rustdoc warnings as errors. A push to a PR's branch runs once, as the
-# PR; a branch with no PR doesn't run.
+# audits them and dependabot.yml with zizmor, builds the docs, private items included,
+# with rustdoc warnings as errors, and runs cargo-machete for unused dependencies. A
+# push to a PR's branch runs once, as the PR; a branch with no PR doesn't run.
 
 on:
   push:
@@ -82,3 +82,7 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: nix develop --command cargo doc --document-private-items --no-deps
+
+      - name: cargo machete
+        if: ${{ !cancelled() }}
+        run: nix develop --command cargo machete

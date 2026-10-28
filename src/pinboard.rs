@@ -691,6 +691,21 @@ mod tests {
         assert!(Bookmark::try_from(bad).is_err());
     }
 
+    #[tokio::test]
+    async fn a_bookmark_with_an_unparseable_url_is_skipped_with_a_warning() {
+        let mut bad = wire("");
+        bad.url = "not a url".into();
+        let (kept, logs) =
+            crate::test_support::capturing_logs(async { wire_to_bookmarks(vec![bad, wire("")]) })
+                .await;
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            crate::test_support::warnings(&logs),
+            ["WARN skipping bookmark with unparseable URL not a url: relative URL without a base"]
+        );
+    }
+
     #[test]
     fn only_a_yes_flag_reads_as_true() {
         // A `shared=yes` read as private would make cleanup write every shared bookmark

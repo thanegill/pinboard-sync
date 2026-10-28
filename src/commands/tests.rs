@@ -446,7 +446,7 @@ fn backup_dir_prefers_the_flag_then_the_config_then_errors() {
     assert_eq!(
         resolve_backup_dir([Some("/after".into()), Some("/before".into())], &config).unwrap(),
         PathBuf::from("/after"),
-        "the `--out` after the target wins"
+        "the `--out` after the target comes first, though the command line gives only one"
     );
     for blank in ["", " "] {
         for flags in [

@@ -234,10 +234,11 @@ async fn back_up(
     run.finish()
 }
 
-/// The snapshot directory: the `--out` after the target, else the one before it, else
-/// `[backup].directory`. There is no built-in default -- writing a snapshot into an
-/// unexpected working directory is worse than an error -- and an empty `--out` in either
-/// place is refused, as an empty `[backup].directory` is, rather than skipped.
+/// The snapshot directory: the `--out` given after the target or before it (the command
+/// line refuses both), else `[backup].directory`. There is no built-in default -- writing
+/// a snapshot into an unexpected working directory is worse than an error -- and an empty
+/// `--out` in either place is refused, as an empty `[backup].directory` is, rather than
+/// skipped.
 fn resolve_backup_dir(flags: [Option<String>; 2], config: &Config) -> Result<PathBuf> {
     if flags.iter().flatten().any(|dir| dir.trim().is_empty()) {
         bail!("`--out` must not be empty");

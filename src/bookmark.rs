@@ -275,7 +275,7 @@ pub enum WriteMode {
 }
 
 impl WriteMode {
-    /// The mode set by `--dry-run`, given before the subcommand, after it, or both.
+    /// The mode set by `--dry-run`, given before the subcommand or after it.
     pub fn from_flags(before: bool, after: bool) -> Self {
         if before || after {
             WriteMode::DryRun

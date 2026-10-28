@@ -586,13 +586,12 @@ pub async fn assert_cleanup_changes_nothing(
 pub fn parse_cli<T: Into<std::ffi::OsString> + Clone>(
     argv: impl IntoIterator<Item = T>,
 ) -> Result<crate::cli::Cli, clap::Error> {
-    use clap::{CommandFactory, FromArgMatches};
+    use clap::CommandFactory;
 
     fn without_env(command: clap::Command) -> clap::Command {
         command
             .mut_args(|arg| arg.env(None))
             .mut_subcommands(without_env)
     }
-    let matches = without_env(crate::cli::Cli::command()).try_get_matches_from(argv)?;
-    crate::cli::Cli::from_arg_matches(&matches)
+    crate::cli::parse_with(without_env(crate::cli::Cli::command()), argv)
 }

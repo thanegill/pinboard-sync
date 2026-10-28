@@ -416,6 +416,10 @@ Nothing needs to follow one: `saved.json` pagination only changes query paramete
   on after a closed pipe. The previews share their layout through
   [`src/preview.rs`](src/preview.rs), and tests read what a command wrote through
   `test_support::capturing_stdout`.
+- **The command line is parsed through `cli::parse_with`, never `Parser::parse`.** It
+  refuses a flag given at two levels (`--dry-run` before and after a source, `--config`
+  anywhere twice) and adds up `-v`, by declaring the globals at every level for the parse.
+  `Cli::parse_args` and `test_support::parse_cli` go through it.
 - **Service-specific, API-shaped structs carry a service prefix** (`GitHubRepo`,
   `HackerNewsItem`, `RedditSavedItem`, `AlgoliaSearchResponse`) — not bare `Repo`/`Item`.
   GitHub is spelled `GitHub` and HackerNews `HackerNews` in type names (e.g. `GitHubConfig`,

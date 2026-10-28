@@ -825,19 +825,23 @@ pub trait Named {
     fn account_name(&self) -> Option<&str>;
 }
 
-/// Implement [`Named`] as `self.name`, optionally falling back to another field
-/// (`=> username`) when `name` is unset.
-macro_rules! impl_named {
-    ($($t:ty $(=> $fallback:ident)?),+ $(,)?) => {
-        $(impl Named for $t {
-            fn account_name(&self) -> Option<&str> {
-                self.name.as_deref()
-                $(.or(self.$fallback.as_deref()))?
-            }
-        })+
-    };
+impl Named for RedditAccount {
+    fn account_name(&self) -> Option<&str> {
+        self.name.as_deref().or(self.username.as_deref())
+    }
 }
-impl_named!(RedditAccount => username, GitHubAccount, HackerNewsAccount => username);
+
+impl Named for GitHubAccount {
+    fn account_name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+}
+
+impl Named for HackerNewsAccount {
+    fn account_name(&self) -> Option<&str> {
+        self.name.as_deref().or(self.username.as_deref())
+    }
+}
 
 /// The per-account settings shared across every source. Each returns the account-level
 /// override, or `None` to fall through to the per-source default and then the
@@ -854,21 +858,83 @@ pub trait Account: Named {
     fn stale_to_now(&self) -> Option<bool>;
 }
 
-/// Implement [`Account`] by reading the identically-purposed fields each account
-/// struct carries (all `Copy` `Option`s).
-macro_rules! impl_account {
-    ($($t:ty),+ $(,)?) => {
-        $(impl Account for $t {
-            fn limit(&self) -> Option<SyncLimit> { self.limit }
-            fn toread(&self) -> Option<bool> { self.toread }
-            fn public(&self) -> Option<bool> { self.public }
-            fn use_post_date(&self) -> Option<bool> { self.use_post_date }
-            fn max_age_days(&self) -> Option<u64> { self.post_date_max_age_days }
-            fn stale_to_now(&self) -> Option<bool> { self.cleanup_stale_to_now }
-        })+
-    };
+impl Account for RedditAccount {
+    fn limit(&self) -> Option<SyncLimit> {
+        self.limit
+    }
+
+    fn toread(&self) -> Option<bool> {
+        self.toread
+    }
+
+    fn public(&self) -> Option<bool> {
+        self.public
+    }
+
+    fn use_post_date(&self) -> Option<bool> {
+        self.use_post_date
+    }
+
+    fn max_age_days(&self) -> Option<u64> {
+        self.post_date_max_age_days
+    }
+
+    fn stale_to_now(&self) -> Option<bool> {
+        self.cleanup_stale_to_now
+    }
 }
-impl_account!(RedditAccount, GitHubAccount, HackerNewsAccount);
+
+impl Account for GitHubAccount {
+    fn limit(&self) -> Option<SyncLimit> {
+        self.limit
+    }
+
+    fn toread(&self) -> Option<bool> {
+        self.toread
+    }
+
+    fn public(&self) -> Option<bool> {
+        self.public
+    }
+
+    fn use_post_date(&self) -> Option<bool> {
+        self.use_post_date
+    }
+
+    fn max_age_days(&self) -> Option<u64> {
+        self.post_date_max_age_days
+    }
+
+    fn stale_to_now(&self) -> Option<bool> {
+        self.cleanup_stale_to_now
+    }
+}
+
+impl Account for HackerNewsAccount {
+    fn limit(&self) -> Option<SyncLimit> {
+        self.limit
+    }
+
+    fn toread(&self) -> Option<bool> {
+        self.toread
+    }
+
+    fn public(&self) -> Option<bool> {
+        self.public
+    }
+
+    fn use_post_date(&self) -> Option<bool> {
+        self.use_post_date
+    }
+
+    fn max_age_days(&self) -> Option<u64> {
+        self.post_date_max_age_days
+    }
+
+    fn stale_to_now(&self) -> Option<bool> {
+        self.cleanup_stale_to_now
+    }
+}
 
 /// `own`, then each of `configured`: the order a source checks its accounts in when it
 /// recognises a bookmark another of them wrote, its own account first.

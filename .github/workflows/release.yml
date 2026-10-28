@@ -10,11 +10,26 @@ name: Release
 # result back to master, builds the binary through the flake (which also runs the
 # test suite), and publishes a GitHub release with the changelog section as its
 # notes. You never hand-edit a version number.
+#
+# A manual run (`gh workflow run release.yml -f rehearse=true`, or "Run workflow"
+# in the Actions tab) rehearses all of that against throwaway refs instead: the
+# bump goes to a `release-rehearsal/<run-id>` branch and the tags to
+# `rehearsal-<run-id>` and `rehearsal-<run-id>-latest`, all deleted again at the
+# end, and the GitHub release and the nixos-config dispatch are skipped. It never
+# touches master, a `v*` tag or `latest`. Every push goes through one helper that
+# sends the job token in a per-command header, and the checkout keeps none.
 
 on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      rehearse:
+        description: Rehearse against throwaway refs (a manual run can only rehearse)
+        type: boolean
+        required: true
+        default: true
 
 permissions:
   contents: write
@@ -26,20 +41,95 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      REHEARSE: ${{ github.event_name == 'workflow_dispatch' }}
     steps:
+      - name: Refuse a manual run that is not a rehearsal
+        if: github.event_name == 'workflow_dispatch' && !inputs.rehearse
+        run: |
+          echo "A release is cut by pushing a v* tag; a manual run can only rehearse." >&2
+          exit 1
+
       # Check out the branch, not the detached tag, so we can commit the bump back.
       - name: Check out master
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: master
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Compute version and date
+      # `git-with-token push ...` and `git-with-token ls-remote ...` send the job token in
+      # a header for that one command, so it is never written to .git/config. In a
+      # rehearsal it runs only those two commands, with no option but --force and
+      # --delete, and accepts only this run's three rehearsal refs. The header's base64
+      # form is masked here in full, once for the job.
+      - name: Set up token-authenticated pushes
+        id: token-helper
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "::add-mask::$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/git-with-token" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          : "${GH_TOKEN:?git-with-token needs GH_TOKEN}"
+          if [[ $REHEARSE == true ]]; then
+            case $1 in
+              push | ls-remote) ;;
+              *)
+                echo "refusing git $1 in a rehearsal" >&2
+                exit 1
+                ;;
+            esac
+            branch="refs/heads/release-rehearsal/$GITHUB_RUN_ID"
+            tag="refs/tags/rehearsal-$GITHUB_RUN_ID"
+            named_refs=0
+            for arg in "${@:2}"; do
+              case $arg in
+                --force | --delete | origin) continue ;;
+              esac
+              case ${arg#HEAD:} in
+                "$branch" | "$tag" | "$tag-latest") named_refs=$((named_refs + 1)) ;;
+                *)
+                  echo "refusing to touch $arg in a rehearsal" >&2
+                  exit 1
+                  ;;
+              esac
+            done
+            if ((named_refs == 0)); then
+              echo "refusing a rehearsal $1 that names no rehearsal ref" >&2
+              exit 1
+            fi
+          fi
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          exec git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" "$@"
+          SCRIPT
+          chmod +x "$RUNNER_TEMP/bin/git-with-token"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # A rehearsal stands in a throwaway version, branch and tags for the real ones.
+      - name: Compute version, date and refs
         id: meta
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+          if [[ $REHEARSE == true ]]; then
+            version="0.0.0-rehearsal.$GITHUB_RUN_ID"
+            bump_ref="refs/heads/release-rehearsal/$GITHUB_RUN_ID"
+            tag="rehearsal-$GITHUB_RUN_ID"
+            latest_tag="rehearsal-$GITHUB_RUN_ID-latest"
+          else
+            version="${GITHUB_REF_NAME#v}"
+            bump_ref=master
+            tag="$GITHUB_REF_NAME"
+            latest_tag=latest
+          fi
+          {
+            echo "version=$version"
+            echo "date=$(date -u +%Y-%m-%d)"
+            echo "bump_ref=$bump_ref"
+            echo "tag=$tag"
+            echo "latest_tag=$latest_tag"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Stamp the version into every manifest
         env:
@@ -102,8 +192,11 @@ jobs:
           cp result/bin/pinboard-sync "dist/pinboard-sync-v$VERSION-x86_64-linux"
 
       # Only after a green build do we publish anything externally.
-      - name: Push the bump to master
-        run: git push origin HEAD:master
+      - name: Push the bump to master (in a rehearsal, its own branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUMP_REF: ${{ steps.meta.outputs.bump_ref }}
+        run: git-with-token push origin "HEAD:$BUMP_REF"
 
       # Point both the version tag and the rolling `latest` tag at the stamped release
       # commit (the bump pushed above), so a consumer tracking `latest` resolves to a
@@ -111,12 +204,17 @@ jobs:
       # can't trigger another workflow run — so re-pointing the `vX.Y.Z` tag here (it does
       # match the release trigger) does not re-run this workflow.
       - name: Point the version tag and `latest` at this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          LATEST_TAG: ${{ steps.meta.outputs.latest_tag }}
         run: |
-          git tag -f "$GITHUB_REF_NAME"
-          git tag -f latest
-          git push --force origin "$GITHUB_REF_NAME" latest
+          git tag -f "$TAG"
+          git tag -f "$LATEST_TAG"
+          git-with-token push --force origin "refs/tags/$TAG" "refs/tags/$LATEST_TAG"
 
       - name: Create the GitHub release
+        if: env.REHEARSE != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -131,9 +229,29 @@ jobs:
       # another workflow — and this runs after the move, so the dispatched
       # `nix flake update pinboard-sync` sees the new `latest`.
       - name: Notify nixos-config to bump the pinboard-sync input
+        if: env.REHEARSE != 'true'
         uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
         with:
           token: ${{ secrets.NIXOS_CONFIG_DISPATCH_TOKEN }}
           repository: thanegill/nixos-config
           event-type: update-input
           client-payload: '{"input": "pinboard-sync"}'
+
+      # Named from the run id rather than the meta step's outputs, so a run that failed
+      # before (or in) that step still cleans up. Every push needs the helper, so with no
+      # helper there is nothing to delete.
+      - name: Delete the rehearsal refs
+        if: always() && env.REHEARSE == 'true' && steps.token-helper.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          refs=(
+            "refs/heads/release-rehearsal/$GITHUB_RUN_ID"
+            "refs/tags/rehearsal-$GITHUB_RUN_ID"
+            "refs/tags/rehearsal-$GITHUB_RUN_ID-latest"
+          )
+          remote=$(git-with-token ls-remote origin "${refs[@]}")
+          mapfile -t present < <(cut -f2 <<<"$remote" | grep -v '^$' || true)
+          if ((${#present[@]})); then
+            git-with-token push origin --delete "${present[@]}"
+          fi

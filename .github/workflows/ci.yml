@@ -1,10 +1,13 @@
 name: CI
 
-# Runs the same gate as the local dev shell on every PR and every push to master, as two
-# parallel jobs: `gate` runs fmt + clippy + the full test suite (incl. net_tests), and
+# Runs the same gate as the local dev shell on every PR and every push to master, as
+# three parallel jobs: `gate` runs fmt + clippy + the full test suite (incl. net_tests),
 # `flake` runs `nix flake check` (the sandboxed package build and its tests, the Nix
-# lint, and the NixOS module evaluated with `config check` run on its rendered TOML). A
-# push to a PR's branch runs once, as the PR; a branch with no PR doesn't run.
+# lint, and the NixOS module evaluated with `config check` run on its rendered TOML),
+# and `lint` spell-checks the tree with typos, lints the workflows with actionlint,
+# audits them and dependabot.yml with zizmor, and builds the docs, private items
+# included, with rustdoc warnings as errors. A push to a PR's branch runs once, as the
+# PR; a branch with no PR doesn't run.
 
 on:
   push:
@@ -23,6 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
@@ -40,9 +45,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - name: nix flake check
         run: nix flake check --print-build-logs
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - name: typos
+        run: nix develop --command typos
+
+      - name: actionlint
+        if: ${{ !cancelled() }}
+        run: nix develop --command actionlint
+
+      - name: zizmor
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: nix develop --command zizmor .github/
+
+      - name: cargo doc -D warnings
+        if: ${{ !cancelled() }}
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: nix develop --command cargo doc --document-private-items --no-deps

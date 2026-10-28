@@ -42,6 +42,9 @@
               clippy
               rust-analyzer
               cargo-mutants
+              typos
+              actionlint
+              zizmor
             ];
             # native-tls (reqwest) needs OpenSSL on Linux; pkg-config locates it.
             # No-op on darwin, which links the Security framework instead.

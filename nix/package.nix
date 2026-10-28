@@ -28,6 +28,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # The `net_tests` modules bind a socket, which the build sandbox forbids; they run
   # under `cargo test` in the dev shell and CI.
   checkFlags = [ "--skip=net_tests" ];
+  # Property tests otherwise draw a random seed each run; a build should test the same
+  # cases every time.
+  preCheck = ''
+    export PROPTEST_RNG_SEED=1
+  '';
   postInstall = ''
     installShellCompletion --cmd pinboard-sync \
       --bash <($out/bin/pinboard-sync completions bash) \

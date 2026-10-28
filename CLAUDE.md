@@ -395,7 +395,10 @@ Nothing needs to follow one: `saved.json` pagination only changes query paramete
   sandbox forbids — the package's `checkFlags = [ "--skip=net_tests" ]` excludes them there;
   they still run under `cargo test`. Keep all *other* tests hermetic (no network/sockets). A
   `net_tests` case that points a real client at a dead port sleeps the real ~2.5-minute
-  `CONNECT_BACKOFF` unless it runs inside `http::recording_waits`.
+  `CONNECT_BACKOFF` unless it runs inside `http::recording_waits`. The package also pins
+  `PROPTEST_RNG_SEED=1`, so property tests draw the same cases in every build, while
+  `cargo test` picks a random seed each run. To reproduce a failure only the build sees, run
+  `PROPTEST_RNG_SEED=1 nix develop --command cargo test --release`.
 - **Large test modules live in their own files**, `src/<module>/tests.rs` (or
   `net_tests.rs`) behind `#[cfg(test)] mod tests;`, so the module path — and the
   `--skip=net_tests` match — is the same as inline. `include_str!` paths in them are

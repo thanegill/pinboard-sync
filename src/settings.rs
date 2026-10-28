@@ -228,7 +228,7 @@ mod tests {
         );
 
         // A `Some(false)` flag is a real value, so it forces a `true` lower tier off --
-        // the behavior a bare clap flag could not express (this is why `--public[=BOOL]`).
+        // the behavior a bare switch could not express (this is why `--public[=BOOL]`).
         assert!(!resolve_setting(Some(false), Some(true), Some(true), true).value);
         assert!(resolve_setting(Some(true), None, None, false).value);
         assert!(resolve_setting(None, None, None, true).value); // global fallback

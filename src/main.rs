@@ -33,11 +33,9 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use clap::CommandFactory;
-use clap_complete::Shell;
 use log::{debug, error, info};
 
-use cli::{Cli, Command, ConfigAction};
+use cli::{Cli, Command, ConfigAction, Shell};
 use commands::{run_backup, run_cleanup, run_sync};
 use config::Config;
 
@@ -124,20 +122,12 @@ fn log_start(command: &str) {
 
 /// Write a shell completion script for `shell` to stdout.
 fn print_completions(shell: Shell) -> Result<()> {
-    let mut cmd = Cli::command();
-    let name = cmd.get_name().to_string();
-    let mut buf = Vec::new();
-    clap_complete::generate(shell, &mut cmd, name, &mut buf);
-    stdout::write(buf).context("writing the completion script")
+    stdout::write(shell.script(cli::NAME)).context("writing the completion script")
 }
 
 /// Write a roff man page for the CLI to stdout.
 fn print_man() -> Result<()> {
-    let mut buf = Vec::new();
-    clap_mangen::Man::new(Cli::command())
-        .render(&mut buf)
-        .context("rendering the man page")?;
-    stdout::write(buf).context("writing the man page")
+    stdout::write(cli::man_page()).context("writing the man page")
 }
 
 /// Load the config from `--config` / `$PINBOARD_SYNC_CONFIG` (a direct path to the
@@ -234,7 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn completions_and_the_man_page_go_to_stdout() {
-        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+        for shell in Shell::ALL {
             let (result, out) = capturing_stdout(async { print_completions(shell) }).await;
             result.expect("writes");
             assert!(out.contains("pinboard-sync"), "{shell}: {out}");

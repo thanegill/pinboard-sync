@@ -7,6 +7,8 @@
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
+const SECS_PER_DAY: i128 = 86_400;
+
 /// Parse an RFC 3339 timestamp into an [`OffsetDateTime`], keeping its offset and any
 /// fractional seconds. `None` if it doesn't parse.
 pub fn parse_rfc3339(s: &str) -> Option<OffsetDateTime> {
@@ -41,7 +43,7 @@ pub fn from_unix(secs: i64) -> Option<OffsetDateTime> {
 /// to `now` (epoch) — the `use_post_date` backdate cap. Shared by
 /// [`DateOpts::sync_date`] and [`DateOpts::cleanup_date`].
 fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
-    now as i128 - timestamp as i128 <= max_age_days as i128 * 86_400
+    i128::from(now) - i128::from(timestamp) <= i128::from(max_age_days) * SECS_PER_DAY
 }
 
 /// The `use_post_date` policy: whether to date bookmarks by the source date, the backdate

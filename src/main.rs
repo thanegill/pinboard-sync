@@ -138,17 +138,13 @@ fn print_man() -> Result<()> {
 /// TOML file); absent = defaults. Unlike secrets, the config takes no `_FILE` form —
 /// it is already a file path.
 fn load_config(flag: Option<String>) -> Result<Config> {
-    match config_path(flag, std::env::var("PINBOARD_SYNC_CONFIG").ok()) {
-        Some(path) => {
-            let config = read_config(Path::new(&path))?;
-            info!("loaded config {path}: {}", account_counts(&config));
-            Ok(config)
-        }
-        None => {
-            debug!("no --config / PINBOARD_SYNC_CONFIG; using built-in defaults");
-            Ok(Config::default())
-        }
-    }
+    let Some(path) = config_path(flag, std::env::var("PINBOARD_SYNC_CONFIG").ok()) else {
+        debug!("no --config / PINBOARD_SYNC_CONFIG; using built-in defaults");
+        return Ok(Config::default());
+    };
+    let config = read_config(Path::new(&path))?;
+    info!("loaded config {path}: {}", account_counts(&config));
+    Ok(config)
 }
 
 /// The config file to load: the `--config` flag, else `$PINBOARD_SYNC_CONFIG`, else none.

@@ -162,15 +162,12 @@ impl RedditListingEntry {
             RedditKind::Other => return None,
         };
         let fields = self.fields;
-        let (subreddit, permalink) = match (fields.subreddit, fields.permalink) {
-            (Some(subreddit), Some(permalink)) => (subreddit, permalink),
-            _ => {
-                log::warn!(
-                    "skipping reddit {wire_kind} entry: missing subreddit/permalink — \
-                     the Reddit response shape may have changed"
-                );
-                return None;
-            }
+        let (Some(subreddit), Some(permalink)) = (fields.subreddit, fields.permalink) else {
+            log::warn!(
+                "skipping reddit {wire_kind} entry: missing subreddit/permalink — \
+                 the Reddit response shape may have changed"
+            );
+            return None;
         };
         let fullname = fields.name.unwrap_or_default();
 
@@ -270,7 +267,7 @@ fn post_media_type(is_video: bool, post_hint: Option<&str>) -> Option<&'static s
     }
     match post_hint {
         Some("image") => Some("image"),
-        Some("hosted:video") | Some("rich:video") => Some("video"),
+        Some("hosted:video" | "rich:video") => Some("video"),
         _ => None,
     }
 }

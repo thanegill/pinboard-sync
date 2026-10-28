@@ -537,7 +537,7 @@ fn shipped_example_config_parses() {
 fn documents_key(example: &str, key: &str) -> bool {
     example.lines().any(|line| {
         let line = line.trim_start();
-        let line = line.strip_prefix('#').map(str::trim_start).unwrap_or(line);
+        let line = line.strip_prefix('#').map_or(line, str::trim_start);
         line.strip_prefix(key)
             .map(str::trim_start)
             .is_some_and(|rest| rest.starts_with('='))

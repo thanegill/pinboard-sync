@@ -390,8 +390,7 @@ impl PinboardClient {
                 .get(endpoint)
                 .query(&params)
                 .build()
-                .map(|r| r.url().as_str().len())
-                .unwrap_or(usize::MAX)
+                .map_or(usize::MAX, |r| r.url().as_str().len())
         };
 
         if url_len(extended) <= budget {

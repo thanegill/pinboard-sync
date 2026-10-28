@@ -372,7 +372,7 @@ impl TryFrom<&Url> for HackerNewsItemId {
             .map(|(_, id)| id.into_owned())
             .ok_or(NotHnItemUrl)?
             .chars()
-            .take_while(|c| c.is_ascii_digit())
+            .take_while(char::is_ascii_digit)
             .collect();
         if id.is_empty() {
             return Err(NotHnItemUrl);

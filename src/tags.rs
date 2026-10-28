@@ -214,6 +214,35 @@ mod tests {
     }
 
     #[test]
+    fn a_repeated_tag_is_written_once_at_its_first_place() {
+        assert_eq!(Tags::parse("a b a").joined(), "a b");
+        let mut held = tags(&["b", "a"]);
+        held.push("b");
+        held.push_all(&strings(&["c", "a"]));
+        assert_eq!(held.joined(), "b a c");
+    }
+
+    #[test]
+    fn sort_orders_the_written_tags() {
+        let mut held = Tags::parse("b c a b");
+        held.sort();
+        assert_eq!(held.joined(), "a b c");
+    }
+
+    #[test]
+    fn retain_drops_every_copy_of_a_tag() {
+        let mut held = Tags::parse("a b a c");
+        held.retain(|tag| tag != "a");
+        assert_eq!(held.joined(), "b c");
+    }
+
+    #[test]
+    fn equality_sees_order() {
+        assert_ne!(tags(&["a", "b"]), tags(&["b", "a"]));
+        assert_eq!(tags(&["a", "b"]), tags(&["a", "b"]));
+    }
+
+    #[test]
     fn parse_and_joined_round_trip_pinboards_tag_string() {
         let parsed = Tags::parse("  reddit  subreddit:rust ");
         assert_eq!(parsed, ["reddit", "subreddit:rust"]);

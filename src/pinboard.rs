@@ -420,26 +420,21 @@ impl PinboardClient {
             .and_then(crate::timefmt::to_pinboard_dt)
             .unwrap_or_else(|| DT_PLACEHOLDER.to_string());
         let fixed = self.add_params(b, &tags, &dt);
-        self.fit_extended(&self.url("posts/add"), &fixed, &b.note, budget)
+        self.fit_extended(&fixed, &b.note, budget)
     }
 
     /// Trim `extended` so the encoded `posts/add` URL stays within `budget` bytes.
     /// Returns `extended` unchanged when the full request already fits; otherwise the
     /// largest char-boundary prefix that fits, with [`TRUNCATION_MARKER`] appended.
     /// `fixed` is every other param (measured alongside, but never trimmed).
-    fn fit_extended(
-        &self,
-        endpoint: &str,
-        fixed: &[(&str, &str)],
-        extended: &str,
-        budget: usize,
-    ) -> String {
+    fn fit_extended(&self, fixed: &[(&str, &str)], extended: &str, budget: usize) -> String {
+        let endpoint = self.url("posts/add");
         // Byte length of the URL reqwest would build with this `extended` value.
         let url_len = |ext: &str| -> usize {
             let mut params = fixed.to_vec();
             params.push(("extended", ext));
             self.http
-                .get(endpoint)
+                .get(&endpoint)
                 .query(&params)
                 .build()
                 .map_or(usize::MAX, |r| r.url().as_str().len())
@@ -691,17 +686,14 @@ mod tests {
     fn short_notes_pass_through_unchanged() {
         let c = test_client();
         let notes = "Thread: https://old.reddit.com/r/x/\n\nA few sentences of body text.";
-        assert_eq!(
-            c.fit_extended(&c.url("posts/add"), FIXED, notes, MAX_URL_BYTES),
-            notes
-        );
+        assert_eq!(c.fit_extended(FIXED, notes, MAX_URL_BYTES), notes);
     }
 
     #[test]
     fn oversized_notes_are_trimmed_within_budget() {
         let c = test_client();
         let huge = "word ".repeat(20_000); // ~100 KB of notes
-        let fitted = c.fit_extended(&c.url("posts/add"), FIXED, &huge, MAX_URL_BYTES);
+        let fitted = c.fit_extended(FIXED, &huge, MAX_URL_BYTES);
         assert!(fitted.len() < huge.len());
         assert!(fitted.ends_with(TRUNCATION_MARKER), "{fitted:?}");
         assert!(url_len(&c, &fitted) <= MAX_URL_BYTES);
@@ -711,7 +703,7 @@ mod tests {
     fn trims_on_a_char_boundary_for_multibyte_notes() {
         let c = test_client();
         let huge = "é".repeat(20_000); // 2 bytes each -- a naive byte cut would panic
-        let fitted = c.fit_extended(&c.url("posts/add"), FIXED, &huge, MAX_URL_BYTES);
+        let fitted = c.fit_extended(FIXED, &huge, MAX_URL_BYTES);
         assert!(fitted.ends_with(TRUNCATION_MARKER), "{fitted:?}");
         assert!(url_len(&c, &fitted) <= MAX_URL_BYTES);
     }
@@ -720,8 +712,8 @@ mod tests {
     fn a_smaller_budget_trims_more() {
         let c = test_client();
         let huge = "word ".repeat(20_000);
-        let big = c.fit_extended(&c.url("posts/add"), FIXED, &huge, MAX_URL_BYTES);
-        let small = c.fit_extended(&c.url("posts/add"), FIXED, &huge, MIN_URL_BYTES);
+        let big = c.fit_extended(FIXED, &huge, MAX_URL_BYTES);
+        let small = c.fit_extended(FIXED, &huge, MIN_URL_BYTES);
         assert!(small.len() < big.len());
         assert!(url_len(&c, &small) <= MIN_URL_BYTES);
     }
@@ -732,23 +724,17 @@ mod tests {
         // A budget the fixed params overrun on their own, so trimming the note can't help.
         let budget = url_len(&c, "").saturating_sub(1);
 
-        assert_eq!(c.fit_extended(&c.url("posts/add"), FIXED, "", budget), "");
+        assert_eq!(c.fit_extended(FIXED, "", budget), "");
 
         let tiny = "hi";
-        assert_eq!(
-            c.fit_extended(&c.url("posts/add"), FIXED, tiny, budget),
-            tiny
-        );
+        assert_eq!(c.fit_extended(FIXED, tiny, budget), tiny);
 
         // A note longer than the 15-byte marker must survive intact too: since the fixed
         // params alone overrun the budget, trimming or marking it can't help, so replacing
         // it with the marker would be silent data loss.
         let long = "A full paragraph of notes that is well past the marker length.";
         assert!(long.len() > TRUNCATION_MARKER.len());
-        assert_eq!(
-            c.fit_extended(&c.url("posts/add"), FIXED, long, budget),
-            long
-        );
+        assert_eq!(c.fit_extended(FIXED, long, budget), long);
     }
 
     fn wire(time: &str) -> PinboardBookmark {

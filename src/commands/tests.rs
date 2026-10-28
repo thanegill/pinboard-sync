@@ -317,6 +317,41 @@ fn parse_backup(extra: &[&str]) -> BackupCmd {
     cmd
 }
 
+#[tokio::test]
+async fn run_sync_refuses_all_with_no_configured_account() {
+    let error = run_sync(parse_sync(&["--all"]), &Config::default())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "--all requires a --config with at least one configured account"
+    );
+}
+
+#[tokio::test]
+async fn run_backup_refuses_an_empty_out() {
+    let cmd = parse_backup(&["pinboard", "--pinboard-token", "u:x", "--out", ""]);
+    let error = run_backup(cmd, &Config::default()).await.unwrap_err();
+    assert_eq!(error.to_string(), "`--out` must not be empty");
+}
+
+/// `--dry-run` before the target counts as much as after it. The run still fails over its
+/// skipped targets, but writes nothing, the manifest included.
+#[tokio::test]
+async fn a_backup_dry_run_given_before_the_target_writes_no_manifest() {
+    let scratch = crate::test_support::scratch_dir("backup-top-dry-run");
+    let out = scratch.path().to_str().unwrap();
+    let config = Config {
+        github: vec![GitHubAccount::default()],
+        ..Default::default()
+    };
+
+    let result = run_backup(parse_backup(&["--dry-run", "--out", out, "--all"]), &config).await;
+
+    assert!(result.is_err(), "the skipped targets fail the run");
+    assert!(!scratch.path().join("manifest.json").exists());
+}
+
 #[test]
 fn backup_accepts_out_before_or_after_the_target() {
     let cmd = parse_backup(&["--all", "--out", "/snap"]);

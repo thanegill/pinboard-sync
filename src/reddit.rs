@@ -1,9 +1,9 @@
 //! The Reddit clients: [`RedditClient`] reads the user's private **saved listing**
-//! (`/user/<name>/saved.json`, for `sync`), and [`RedditInfoClient`] looks up post
-//! metadata via **`/api/info.json`** (for `cleanup`). Both run over the same transport --
-//! a `reddit_session` cookie + native-tls, no OAuth app -- because Reddit's anti-bot edge
-//! refuses cookieless requests *and* rustls's TLS fingerprint (see CLAUDE.md). The cookie
-//! authenticates the saved listing, and the non-secret username picks whose saves to read.
+//! (`/user/<name>/saved.json`, for `sync`), and [`RedditInfoClient`] looks up post metadata
+//! via **`/api/info.json`** (for `cleanup`). Both run over the same transport -- a
+//! `reddit_session` cookie + native-tls, no OAuth app -- because Reddit's anti-bot edge
+//! refuses cookieless requests *and* rustls's TLS fingerprint. The cookie authenticates the
+//! saved listing, and the non-secret username picks whose saves to read.
 
 pub mod cleanup;
 pub mod cookie;
@@ -62,9 +62,7 @@ struct RedditSession {
 
 impl RedditSession {
     fn new(cookie: Option<ConfiguredSecret>, base: String) -> anyhow::Result<Self> {
-        // native-tls is the only TLS backend compiled in (see Cargo.toml), so it's
-        // the default connector -- Reddit's edge rejects rustls's TLS fingerprint, and
-        // a ClientHello without ALPN (see `http::client_builder`).
+        // No redirects: one to `/login` means a dead session (see `redirect_error`).
         let http = client_builder()
             .user_agent(USER_AGENT)
             .redirect(reqwest::redirect::Policy::none())

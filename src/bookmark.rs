@@ -17,8 +17,8 @@ use crate::tags::Tags;
 /// A bookmark in service-agnostic domain form. The field names are the domain's
 /// (`title`/`note`/`public`/`read_later`), not Pinboard's wire names
 /// (`description`/`extended`/`shared`/`toread` -- those stay on
-/// [`PinboardBookmark`](crate::pinboard::PinboardBookmark)). The
-/// URL is a parsed [`Url`], so consumers don't re-parse it.
+/// [`PinboardBookmark`](crate::pinboard::PinboardBookmark)). The URL is a parsed [`Url`],
+/// so consumers don't re-parse it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bookmark {
     pub url: Url,
@@ -100,7 +100,7 @@ pub trait BookmarkStore {
 
     /// The part [`Self::fit`] kept of `note`, a note it returned cut; `None` from a store
     /// that never cuts. Asked only of a note `fit` just shortened, since a whole note may
-    /// end in the same marker text.
+    /// end in the same text as the store's cut marker.
     fn kept_of_cut<'n>(&self, _note: &'n str) -> Option<&'n str> {
         None
     }
@@ -134,9 +134,7 @@ pub trait BookmarkStore {
     /// single bookmark at the target and converge.
     ///
     /// A failed delete does not abandon the rest: the absorbed URLs are independent, and
-    /// stopping early strands duplicate records the store could have cleared. The caller
-    /// gets back what actually happened rather than a bare `Result`, because a merge whose
-    /// write landed but whose delete failed has still changed the account.
+    /// stopping early strands duplicate records the store could have cleared.
     async fn apply_merge(&self, update: &Bookmark, old_urls: &[&Url]) -> WriteOutcome {
         if let Err(e) = self
             .update(update)
@@ -174,7 +172,7 @@ pub trait BookmarkStore {
 #[must_use]
 #[derive(Debug, Default)]
 pub struct WriteOutcome {
-    /// The record was written to its URL.
+    /// The record is at its URL: written there, or already there for an absorb.
     pub wrote: bool,
     /// URLs the store confirmed it removed -- a subset of those asked for.
     pub deleted: Vec<Url>,
@@ -218,11 +216,10 @@ impl WriteOutcome {
 /// updated as passes write and delete, so a later pass never plans against -- or merges
 /// with -- a record an earlier one already changed.
 ///
-/// `cleanup --all` fetches `posts/all` once and runs github, then reddit, then
-/// hackernews, each of which writes; a plain snapshot leaves the later two reasoning
-/// about a state that no longer exists. Order is preserved because a merge takes the
-/// first member's note verbatim, so which bookmark comes first has to be stable rather
-/// than a `HashMap`'s iteration order.
+/// `cleanup --all` fetches `posts/all` once and runs github, then reddit, then hackernews,
+/// each of which writes; a plain snapshot leaves the later two reasoning about a state that
+/// no longer exists. Order is preserved because a merge takes its lead's note verbatim, so
+/// which bookmark leads has to be stable rather than a `HashMap`'s iteration order.
 pub struct AccountView {
     /// Insertion order, so a URL that is re-written keeps its original position.
     order: Vec<Url>,

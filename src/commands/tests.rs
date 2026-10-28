@@ -680,6 +680,37 @@ fn reddit_cleanup_overrides_default_runs_every_fix() {
     assert!(reddit.client.is_some(), "the fixes read /api/info");
 }
 
+/// A Reddit pass with no `/api/info` step still runs: it moves a reddit.com bookmark onto
+/// the account's domain.
+#[tokio::test]
+async fn a_reddit_cleanup_without_post_info_still_normalizes_urls() {
+    let overrides = RedditCleanupOverrides {
+        cookie: None,
+        mark_nsfw: false,
+        fix_titles: false,
+    };
+    let reddit = RedditCleanup::build(
+        None,
+        overrides,
+        crate::test_support::NO_DATING,
+        &Config::default(),
+    )
+    .expect("needs no cookie");
+    let pinboard = crate::test_support::FakePinboard {
+        all: vec![crate::test_support::stored_at(
+            "https://www.reddit.com/r/rust/comments/abc123/a_post/",
+        )],
+        ..Default::default()
+    };
+
+    reddit.run(&pinboard.cleanup_store()).await.expect("runs");
+
+    assert_eq!(
+        pinboard.updated_urls(),
+        ["https://old.reddit.com/r/rust/comments/abc123/a_post/"]
+    );
+}
+
 mod net_tests {
     use super::*;
     use crate::test_support::{stored_at, tag_list, FakePinboard, NO_DATING};

@@ -246,6 +246,36 @@ mod tests {
         assert_eq!(plan.jobs[0].hook.as_deref(), Some("env-hook"));
     }
 
+    /// A source account that could not be built still makes it a run with sources, so a
+    /// missing Pinboard token is counted against it too rather than passing unnoticed.
+    #[test]
+    fn backup_all_with_only_unbuilt_sources_still_counts_the_missing_pinboard_token() {
+        let config = Config {
+            github: vec![GitHubAccount {
+                name: Some("home".into()),
+                ..GitHubAccount::default()
+            }],
+            ..Default::default()
+        };
+        let plan = build_backup_plan(backup_all(), &config).expect("plans");
+        let skipped: Vec<&str> = plan.skipped.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(skipped, ["github[home]", "pinboard"]);
+        assert!(plan.jobs.is_empty(), "nothing could be built");
+    }
+
+    #[test]
+    fn backup_all_with_no_account_and_no_pinboard_token_has_nothing_to_back_up() {
+        let error = build_backup_plan(backup_all(), &Config::default())
+            .err()
+            .expect("nothing to back up");
+        assert!(
+            error
+                .to_string()
+                .starts_with("backup --all found nothing to back up"),
+            "{error}"
+        );
+    }
+
     #[tokio::test]
     async fn backup_all_warns_about_an_env_secret_shared_by_several_accounts() {
         let _env = crate::secrets::FakeSecretEnv::set(&[("GITHUB_TOKEN", "SHAREDVALUE")]);

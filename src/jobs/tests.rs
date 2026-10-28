@@ -76,6 +76,23 @@ fn build_job_wires_github_overrides_to_job_fields() {
     assert_wired(&job);
 }
 
+/// With no flag or env hook, a GitHub job takes the account's own `on_auth_failure`.
+#[test]
+fn a_github_job_takes_its_accounts_hook() {
+    let account = GitHubAccount {
+        token: Some("ghp_test".into()),
+        on_auth_failure: Some("refresh-token".into()),
+        ..GitHubAccount::default()
+    };
+    let job = build_job(
+        Some(&account),
+        &SyncOverrides::default(),
+        &Config::default(),
+    )
+    .expect("builds");
+    assert_eq!(job.hook.as_deref(), Some("refresh-token"));
+}
+
 #[test]
 fn build_job_wires_hackernews_overrides_to_job_fields() {
     let overrides = SyncOverrides {

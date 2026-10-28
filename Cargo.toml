@@ -44,7 +44,8 @@ env_logger = { version = "0.11", default-features = false }
 # Source post date -> Pinboard `dt`: epoch <-> RFC3339 conversion + `now`.
 time = { version = "0.3", default-features = false, features = ["std", "formatting", "parsing"] }
 # HN note bodies are raw HTML (Algolia story_text/comment_text); htmd converts them to
-# Markdown. Pure-Rust, depends only on html5ever (already pulled in by scraper).
+# Markdown. Pure Rust, but on a newer html5ever (0.38) than scraper 0.20's (0.27), so the
+# build carries both and the crates under them.
 htmd = "0.5"
 # An insertion-ordered set for a bookmark's tags; already in the build through h2.
 indexmap = "2"

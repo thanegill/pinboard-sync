@@ -174,17 +174,8 @@ impl SecretSpec {
     /// An unreadable `$VAR_FILE` is left for each account's own resolution to warn about.
     fn env_setting(self) -> Option<&'static str> {
         let read_quietly = |path: &str| try_read_file_secret(path).ok().flatten();
-        let (rung, _) = secret_ladder_reading(read_quietly, None, self.var, None, None)
-            .into_iter()
-            .find(|(_, value)| {
-                value
-                    .as_deref()
-                    .is_some_and(|value| self.accepts(value.trim()))
-            })?;
-        match rung {
-            SecretRung::Env | SecretRung::EnvFile => Some(self.source(rung)),
-            SecretRung::Flag | SecretRung::ConfigInline | SecretRung::ConfigFile => None,
-        }
+        self.first_accepted(secret_ladder_reading(read_quietly, None, self.var, None, None))
+            .map(|secret| secret.source)
     }
 }
 

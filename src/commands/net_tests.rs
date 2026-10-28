@@ -26,10 +26,7 @@ async fn a_hackernews_cleanup_fails_when_algolia_refuses_its_items() {
         client: AlgoliaClient::with_base_url(algolia.uri()),
     };
 
-    let error = cleanup
-        .run(&pinboard.cleanup_store(false))
-        .await
-        .unwrap_err();
+    let error = cleanup.run(&pinboard.cleanup_store()).await.unwrap_err();
     assert!(
         error.to_string().starts_with("hn algolia returned 400"),
         "{error}"

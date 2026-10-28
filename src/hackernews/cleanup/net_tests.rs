@@ -49,7 +49,7 @@ async fn cleanup_merges_a_story_into_a_separately_saved_article() {
 
     let client = algolia_client(&algolia);
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &client,
         &HackerNewsCleanupOpts {
             link_discussions: false,
@@ -110,7 +110,7 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
 
     let client = algolia_client(&algolia);
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &client,
         &HackerNewsCleanupOpts {
             link_discussions: false,
@@ -163,7 +163,7 @@ async fn cleanup_preserves_existing_note_on_text_post() {
 
     let client = algolia_client(&algolia);
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &client,
         &HackerNewsCleanupOpts {
             link_discussions: false,
@@ -214,7 +214,7 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
 
     let client = algolia_client(&algolia);
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &client,
         &HackerNewsCleanupOpts {
             link_discussions: true,
@@ -272,7 +272,7 @@ async fn link_discussions_searches_only_tagged_articles() {
         dates: NO_DATING,
         config: HackerNewsConfig::default(),
     };
-    run(&pinboard.cleanup_store(false), &client, &opts)
+    run(&pinboard.cleanup_store(), &client, &opts)
         .await
         .unwrap();
 
@@ -325,7 +325,7 @@ async fn run_with_failing_lookups(with_item: bool) -> String {
         config: HackerNewsConfig::default(),
     };
     let (result, _) =
-        crate::http::recording_waits(run(&pinboard.cleanup_store(false), &client, &opts)).await;
+        crate::http::recording_waits(run(&pinboard.cleanup_store(), &client, &opts)).await;
     format!("{:#}", result.expect_err("the run fails"))
 }
 
@@ -400,7 +400,7 @@ async fn link_discussions_keeps_entity_text_in_the_stored_title() {
         dates: NO_DATING,
         config: HackerNewsConfig::default(),
     };
-    run(&pinboard.cleanup_store(false), &client, &opts)
+    run(&pinboard.cleanup_store(), &client, &opts)
         .await
         .unwrap();
 

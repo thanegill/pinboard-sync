@@ -13,7 +13,7 @@ use serde_json::Value;
 use tempfile::TempDir;
 use url::Url;
 
-use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore};
+use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore, WriteMode};
 use crate::keys::RedditKeys;
 use crate::reddit::model::{RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
@@ -331,8 +331,13 @@ pub struct FakePinboard {
 
 impl FakePinboard {
     /// The production cleanup store over this fake, its view seeded with `all`.
-    pub fn cleanup_store(&self, dry_run: bool) -> CleanupStore<'_, Self> {
-        CleanupStore::new(self, AccountView::new(self.all.clone()), dry_run)
+    pub fn cleanup_store(&self) -> CleanupStore<'_, Self> {
+        CleanupStore::new(self, AccountView::new(self.all.clone()), WriteMode::Live)
+    }
+
+    /// [`Self::cleanup_store`] for a dry run.
+    pub fn dry_cleanup_store(&self) -> CleanupStore<'_, Self> {
+        CleanupStore::new(self, AccountView::new(self.all.clone()), WriteMode::DryRun)
     }
 }
 

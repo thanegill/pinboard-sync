@@ -52,7 +52,7 @@ async fn normalizes_url_tags_nsfw_and_title() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -109,7 +109,7 @@ async fn marks_nsfw_with_configured_tag_not_literal_nsfw() {
         ..opts()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap();
 
@@ -139,7 +139,7 @@ async fn a_fixed_title_is_the_raw_api_title() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -178,7 +178,7 @@ async fn configured_nsfw_tag_is_idempotent() {
         ..opts()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap();
 
@@ -200,7 +200,7 @@ async fn preserves_markup_in_stored_title() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts())
+    run(&pinboard.cleanup_store(), None::<&FakeReddit>, &opts())
         .await
         .unwrap();
 
@@ -230,7 +230,7 @@ async fn keeps_entity_text_in_a_stored_title() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts())
+    run(&pinboard.cleanup_store(), None::<&FakeReddit>, &opts())
         .await
         .unwrap();
 
@@ -265,7 +265,7 @@ async fn dates_bookmark_by_created_utc_when_use_post_date() {
         ..opts()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap();
 
@@ -300,7 +300,7 @@ async fn strips_self_link_notes_from_a_self_post() {
     };
 
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         Some(&FakeReddit::default()),
         &opts,
     )
@@ -335,7 +335,7 @@ async fn keeps_external_link_notes_on_a_link_post() {
     };
 
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         Some(&FakeReddit::default()),
         &opts,
     )
@@ -375,7 +375,7 @@ async fn retrofits_self_post_notes_with_blockquote() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -414,7 +414,7 @@ async fn preserves_hand_written_note_on_a_self_post() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -446,7 +446,7 @@ async fn retrofits_empty_note_from_authoritative_selftext() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -487,7 +487,7 @@ async fn leaves_comment_notes_untouched() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -530,7 +530,7 @@ async fn use_post_date_leaves_comment_timestamp_untouched() {
         ..opts()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap();
 
@@ -562,7 +562,7 @@ async fn skips_unchanged_and_non_reddit() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
     assert!(pinboard.updated.borrow().is_empty());
@@ -589,7 +589,7 @@ async fn bookmarks_moved_to_a_mirror_domain_still_dedup_for_sync() {
         ..opts()
     };
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         Some(&FakeReddit::default()),
         &opts,
     )
@@ -662,7 +662,7 @@ async fn cleanup_running(
         configured: accounts.to_vec(),
         ..opts()
     };
-    run(&pinboard.cleanup_store(false), Some(reddit), &opts)
+    run(&pinboard.cleanup_store(), Some(reddit), &opts)
         .await
         .unwrap();
     let ops = pinboard.ops.borrow();
@@ -944,7 +944,7 @@ async fn dry_run_writes_nothing() {
         fix_titles: false,
         ..opts()
     };
-    run(&pinboard.cleanup_store(true), Some(&reddit), &opts)
+    run(&pinboard.dry_cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap();
     assert!(pinboard.updated.borrow().is_empty());
@@ -969,7 +969,7 @@ async fn an_expired_cookie_surfaces_as_reauth_not_a_flattened_error() {
         ..Default::default()
     };
 
-    let err = run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    let err = run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap_err();
     assert!(
@@ -995,7 +995,7 @@ async fn an_api_info_block_stays_a_block() {
         ..Default::default()
     };
 
-    let err = run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    let err = run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap_err();
     assert!(
@@ -1025,7 +1025,7 @@ async fn logs_and_skips_a_failing_update_then_continues() {
     };
 
     // The run reports failure (non-zero exit)...
-    let err = run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+    let err = run(&pinboard.cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("1 bookmark(s) failed"));
@@ -1157,7 +1157,7 @@ async fn backfills_a_detail_tag_only_when_its_family_is_absent() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -1235,7 +1235,7 @@ async fn a_comment_missing_from_the_lookup_adds_nothing_and_does_not_fail() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -1254,9 +1254,7 @@ async fn run_and_store(
         all: seed.clone(),
         ..Default::default()
     };
-    run(&pinboard.cleanup_store(false), reddit, opts)
-        .await
-        .unwrap();
+    run(&pinboard.cleanup_store(), reddit, opts).await.unwrap();
     let mut stored = crate::test_support::replay(&seed, &pinboard.ops.borrow());
     for bookmark in &mut stored {
         bookmark.tags = bookmark

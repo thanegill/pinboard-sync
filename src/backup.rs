@@ -28,7 +28,7 @@ use log::warn;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::bookmark::Bookmark;
+use crate::bookmark::{Bookmark, WriteMode};
 use crate::source::{BookmarkDraft, SourceError};
 
 mod fs;
@@ -525,8 +525,8 @@ impl JobOutcome {
     }
 }
 
-/// Back up one target: dump it, lay the payload out, and write it under `dir` — or, under
-/// `dry_run`, render what would be written without touching the filesystem.
+/// Back up one target: dump it, lay the payload out, and write it under `dir` -- or, in
+/// [`WriteMode::DryRun`], render what would be written without touching the filesystem.
 ///
 /// `Err` means nothing was written (the fetch, layout, or a pre-write check failed).
 /// A target that wrote files it can't vouch for returns `Ok` with `unusable` set, so the
@@ -535,7 +535,7 @@ pub async fn run_job<S: BackupSource>(
     source: &S,
     stem: &str,
     dir: &Path,
-    dry_run: bool,
+    mode: WriteMode,
 ) -> Result<JobOutcome, SourceError> {
     let dump = source.dump().await?;
     let files = layout(stem, &dump)?;
@@ -568,7 +568,7 @@ pub async fn run_job<S: BackupSource>(
         ..JobOutcome::default()
     };
 
-    if dry_run {
+    if mode.is_dry_run() {
         for file in &files {
             println!("[dry-run] {}", file_path(dir, file).display());
             let (label, value) = file.count.parts();

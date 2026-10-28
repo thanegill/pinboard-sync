@@ -134,7 +134,7 @@ async fn the_snapshot_reflects_this_runs_writes() {
     let store = CleanupStore::new(
         &pinboard,
         AccountView::new(vec![at("https://a/", "seed")]),
-        false,
+        WriteMode::Live,
     );
     store.update(&at("https://a/", "written")).await.unwrap();
 
@@ -152,7 +152,7 @@ async fn a_write_is_visible_to_the_next_read_without_refetching() {
     let store = CleanupStore::new(
         &fake,
         AccountView::new(vec![at("https://a/", "old")]),
-        false,
+        WriteMode::Live,
     );
 
     let out = store
@@ -171,7 +171,11 @@ async fn a_dry_run_updates_the_view_but_writes_nothing() {
     // pass only makes because an earlier one wrote — so the view moves, the store
     // does not.
     let fake = FakePinboard::default();
-    let store = CleanupStore::new(&fake, AccountView::new(vec![at("https://a/", "old")]), true);
+    let store = CleanupStore::new(
+        &fake,
+        AccountView::new(vec![at("https://a/", "old")]),
+        WriteMode::DryRun,
+    );
 
     let out = store
         .apply_update(&at("https://b/", "new"), Some(&url("https://a/")))
@@ -193,7 +197,7 @@ async fn a_failed_write_leaves_the_view_alone() {
     let store = CleanupStore::new(
         &fake,
         AccountView::new(vec![at("https://a/", "old")]),
-        false,
+        WriteMode::Live,
     );
 
     let out = store

@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use log::{info, warn};
 
-use crate::bookmark::{AccountState, AccountView, Bookmark, BookmarkStore, CleanupStore};
+use crate::bookmark::{
+    AccountState, AccountView, Bookmark, BookmarkStore, CleanupStore, WriteMode,
+};
 use crate::cli::{
     BackupCmd, CleanupCmd, CleanupSource, DateFlags, GitHubCleanupArgs, HackerNewsCleanupArgs,
     RedditCleanupArgs, SyncCmd, SyncSource,
@@ -42,16 +44,8 @@ pub async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     run.record_skipped(plan.skipped, "could not be built");
     let (pinboard, bookmarks) =
         open_pinboard(plan.overrides.flags.pinboard_token.take(), config).await?;
-    // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
-    // after it (per-source); honor either placement. (`--verbose` is global.)
-    run_sync_jobs(
-        plan.jobs,
-        run,
-        &pinboard,
-        &bookmarks,
-        plan.overrides.dry_run || top_dry_run,
-    )
-    .await
+    let mode = WriteMode::from_flags(top_dry_run, plan.overrides.dry_run);
+    run_sync_jobs(plan.jobs, run, &pinboard, &bookmarks, mode).await
 }
 
 /// What a `sync` invocation resolves to: the jobs, the overrides they were built from,
@@ -115,7 +109,7 @@ async fn run_sync_jobs(
     mut run: AllRun,
     pinboard: &PinboardClient,
     bookmarks: &[Bookmark],
-    dry_run: bool,
+    mode: WriteMode,
 ) -> Result<()> {
     info!(
         "syncing {} account(s) against {} existing bookmark(s)",
@@ -152,10 +146,10 @@ async fn run_sync_jobs(
     info!(
         "{} new bookmark(s) to write{}",
         merged.len(),
-        if dry_run { " (dry run)" } else { "" }
+        if mode.is_dry_run() { " (dry run)" } else { "" }
     );
-    let outcome = sync::write_drafts(pinboard, &merged, dry_run).await;
-    if !dry_run {
+    let outcome = sync::write_drafts(pinboard, &merged, mode).await;
+    if !mode.is_dry_run() {
         info!("done: wrote {}, failed {}", outcome.written, outcome.failed);
     }
     // Non-zero exit if any source failed to fetch or any bookmark failed to write,
@@ -176,7 +170,8 @@ pub async fn run_backup(mut cmd: BackupCmd, config: &Config) -> Result<()> {
     let (top_out, top_dry_run) = (cmd.out.out.take(), cmd.dry_run);
     let plan = build_backup_plan(cmd, config)?;
     let dir = resolve_backup_dir([plan.out, top_out], config)?;
-    back_up(plan.jobs, plan.skipped, &dir, plan.dry_run || top_dry_run).await
+    let mode = WriteMode::from_flags(top_dry_run, plan.dry_run);
+    back_up(plan.jobs, plan.skipped, &dir, mode).await
 }
 
 /// Run every job of a backup plan into `dir`, then write the manifest, failing the run
@@ -185,7 +180,7 @@ async fn back_up(
     jobs: Vec<BackupJob>,
     skipped: Vec<SkippedTarget>,
     dir: &Path,
-    dry_run: bool,
+    mode: WriteMode,
 ) -> Result<()> {
     backup::check_stem_collisions(jobs.iter().map(|job| job.stem.as_str()))?;
     backup::check_backup_dir(dir)?;
@@ -198,7 +193,7 @@ async fn back_up(
     // multiply simultaneous API pressure and interleave the dry-run output.
     for job in &jobs {
         info!("{}: backing up", job.label);
-        match backup::run_job(&job.client, &job.stem, dir, dry_run).await {
+        match backup::run_job(&job.client, &job.stem, dir, mode).await {
             Ok(outcome) => {
                 // Recorded whether or not the target is trustworthy: it replaced these
                 // files either way, and leaving them out would let the merged manifest
@@ -224,7 +219,7 @@ async fn back_up(
         }
     }
 
-    if dry_run {
+    if mode.is_dry_run() {
         println!("[dry-run] {} file(s) would be written.", entries.len());
     } else {
         // Written even on a partial run, carrying `complete: false` and the failed
@@ -273,7 +268,8 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             let (pinboard, bookmarks) = open_pinboard(None, config).await?;
             // One view across all three sources: each writes, and the next must plan
             // against what it left rather than the pre-run snapshot.
-            let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), cmd.dry_run);
+            let mode = WriteMode::from_flags(cmd.dry_run, false);
+            let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), mode);
             let mut run = AllRun::default();
             if let Some(CleanupTarget { account, dates }) = github {
                 run.record(cleanup_github_account(&store, account, None, dates, config).await);
@@ -362,13 +358,6 @@ fn cleanup_all_target<'a, A: SourceAccount>(
     cleanup_target(&pass, Some(account), overrides, config).map(Some)
 }
 
-/// A cleanup pass runs dry when `--dry-run` is given either before the source
-/// subcommand (top-level `CleanupCmd::dry_run`) or after it (the per-source args),
-/// mirroring how `run_sync` honors the flag on both sides of the subcommand.
-fn cleanup_dry_run(top_dry_run: bool, source_dry_run: bool) -> bool {
-    top_dry_run || source_dry_run
-}
-
 async fn run_cleanup_github(
     args: GitHubCleanupArgs,
     top_dry_run: bool,
@@ -382,8 +371,8 @@ async fn run_cleanup_github(
     )?;
     let client = github_cleanup_client(account, args.github_token, config)?;
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
-    let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
-    let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
+    let mode = WriteMode::from_flags(top_dry_run, args.dry_run);
+    let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), mode);
     cleanup_github_with_client(&store, &client, account, dates, config).await
 }
 
@@ -439,7 +428,7 @@ async fn run_cleanup_reddit(
     top_overrides: &DateFlags,
     config: &Config,
 ) -> Result<()> {
-    let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
+    let mode = WriteMode::from_flags(top_dry_run, args.dry_run);
     let CleanupTarget { account, dates } = source_cleanup_target::<RedditAccount>(
         args.account.as_deref(),
         &args.dates.with_top_level(top_overrides),
@@ -448,7 +437,7 @@ async fn run_cleanup_reddit(
     let pinboard_token = args.pinboard_token.take();
     let reddit = RedditCleanup::build(account, RedditCleanupOverrides::from(args), dates, config)?;
     let (pinboard, bookmarks) = open_pinboard(pinboard_token, config).await?;
-    let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
+    let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), mode);
     reddit.run(&store, account, config).await
 }
 
@@ -519,12 +508,12 @@ async fn run_cleanup_hackernews(
         &args.dates.with_top_level(top_overrides),
         config,
     )?;
-    let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
+    let mode = WriteMode::from_flags(top_dry_run, args.dry_run);
     let pinboard_token = args.pinboard_token.take();
     let hackernews =
         HackerNewsCleanup::build(account, HackerNewsCleanupOverrides::from(args), dates)?;
     let (pinboard, bookmarks) = open_pinboard(pinboard_token, config).await?;
-    let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
+    let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), mode);
     hackernews.run(&store).await
 }
 

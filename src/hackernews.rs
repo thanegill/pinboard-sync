@@ -457,7 +457,8 @@ impl HackerNewsClient {
             time::OffsetDateTime::UNIX_EPOCH,
         );
         let pinboard = crate::test_support::FakePinboard::default();
-        let tally = crate::sync::write_drafts(&pinboard, &new, false).await;
+        let tally =
+            crate::sync::write_drafts(&pinboard, &new, crate::bookmark::WriteMode::Live).await;
         assert_eq!(tally.failed, 0);
         let ops = pinboard.ops.take();
         crate::test_support::replay(account, &ops)

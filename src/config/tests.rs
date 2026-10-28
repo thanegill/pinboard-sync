@@ -282,10 +282,13 @@ fn debug_of_a_parsed_config_redacts_inline_secrets() {
         assert!(rendered.contains("/run/cookie"), "{rendered}");
     }
     assert_eq!(
-        format!("{:?}", Redacted(&cfg.pinboard.token)),
+        format!("{:?}", Redacted(cfg.pinboard.token.as_deref())),
         "Some(<redacted>)"
     );
-    assert_eq!(format!("{:?}", Redacted(&cfg.reddit[1].cookie)), "None");
+    assert_eq!(
+        format!("{:?}", Redacted(cfg.reddit[1].cookie.as_deref())),
+        "None"
+    );
     assert!(format!("{:?}", cfg.pinboard).contains("token: Some(<redacted>)"));
     assert!(format!("{:?}", cfg.reddit[0]).contains("cookie: Some(<redacted>)"));
     assert!(format!("{:?}", cfg.reddit[1]).contains("cookie: None"));

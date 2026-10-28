@@ -82,10 +82,10 @@ pub fn warn_shared_env_secrets<A: SourceAccount>(overrides: &SyncOverrides, conf
 
 /// The secrets among `flagged` whose CLI flag holds no value the ladder would take, so
 /// that the environment rung is the highest one that can apply.
-fn unflagged(flagged: &[(SecretSpec, &Option<String>)]) -> Vec<SecretSpec> {
+fn unflagged(flagged: &[(SecretSpec, Option<&str>)]) -> Vec<SecretSpec> {
     flagged
         .iter()
-        .filter(|(secret, flag)| !flag.as_deref().is_some_and(|value| secret.accepts(value)))
+        .filter(|(secret, flag)| !flag.is_some_and(|value| secret.accepts(value)))
         .map(|(secret, _)| *secret)
         .collect()
 }
@@ -276,8 +276,14 @@ impl SourceAccount for RedditAccount {
 
     fn env_secrets(overrides: &SyncOverrides) -> Vec<SecretSpec> {
         unflagged(&[
-            (SecretSpec::REDDIT_USERNAME, &overrides.reddit_username),
-            (SecretSpec::REDDIT_COOKIE, &overrides.reddit_cookie),
+            (
+                SecretSpec::REDDIT_USERNAME,
+                overrides.reddit_username.as_deref(),
+            ),
+            (
+                SecretSpec::REDDIT_COOKIE,
+                overrides.reddit_cookie.as_deref(),
+            ),
         ])
     }
 
@@ -319,7 +325,7 @@ impl SourceAccount for GitHubAccount {
     }
 
     fn env_secrets(overrides: &SyncOverrides) -> Vec<SecretSpec> {
-        unflagged(&[(SecretSpec::GITHUB_TOKEN, &overrides.github_token)])
+        unflagged(&[(SecretSpec::GITHUB_TOKEN, overrides.github_token.as_deref())])
     }
 
     fn client(
@@ -353,7 +359,10 @@ impl SourceAccount for HackerNewsAccount {
     }
 
     fn env_secrets(overrides: &SyncOverrides) -> Vec<SecretSpec> {
-        unflagged(&[(SecretSpec::HN_USERNAME, &overrides.hackernews_username)])
+        unflagged(&[(
+            SecretSpec::HN_USERNAME,
+            overrides.hackernews_username.as_deref(),
+        )])
     }
 
     fn client(

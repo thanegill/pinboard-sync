@@ -303,9 +303,8 @@ pub struct UpdateCall {
     pub dt: String,
 }
 
-/// A call that actually changed the account. `added`/`updated`/`deleted` record every
-/// *attempt*; this records only the ones that succeeded, which is what the account can be
-/// rebuilt from.
+/// A call that actually changed the account, in call order, which is what the account can
+/// be rebuilt from. Unlike [`FakePinboard::deleted`], it leaves out a failed delete.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     Write(Bookmark),
@@ -334,8 +333,11 @@ pub fn replay(seed: &[Bookmark], ops: &[Op]) -> Vec<Bookmark> {
 pub struct FakePinboard {
     /// The account a cleanup store over this fake starts from.
     pub all: Vec<Bookmark>,
+    /// Each `add` that succeeded, as sent.
     pub added: RefCell<Vec<AddCall>>,
+    /// Each `update` that succeeded, as sent.
     pub updated: RefCell<Vec<UpdateCall>>,
+    /// Every URL `delete` was asked to remove, including a delete that then failed.
     pub deleted: RefCell<Vec<String>>,
     /// URLs whose `add` should fail, to exercise log-and-skip behavior.
     pub fail_add_urls: HashSet<String>,

@@ -1120,22 +1120,167 @@ async fn a_failed_move_protects_the_record_it_left_behind() {
     // Y fails to move to its new URL, so its record is still sitting at the old one.
     // A is heading there. Refusals are settled before any write, so nothing had marked
     // that URL — and `replace=yes` would overwrite Y with A, losing Y from the account
-    // entirely: never written to its new URL, and clobbered at its old one.
+    // entirely: never written to its new URL, and clobbered at its old one. With A first
+    // in the snapshot its group appears first, and only the write order keeps A from
+    // landing before Y has tried to leave.
+    async fn run_in_order(books: Vec<Bookmark>) {
+        let pass = FakePass(|bookmark: &Bookmark| {
+            let target = match bookmark.url.as_str() {
+                "https://collide/" => "https://elsewhere/",
+                _ => "https://collide/",
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: u(target),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard {
+            fail_update_urls: ["https://elsewhere/".to_string()].into_iter().collect(),
+            ..FakePinboard::default()
+        };
+
+        let outcome = run(&pinboard, &books, &pass).await;
+        assert_eq!(outcome.write_failed, 1);
+        assert_eq!(
+            outcome.refused, 1,
+            "the URL the failed move left occupied must refuse the next rewrite"
+        );
+        assert!(
+            !pinboard
+                .updated
+                .borrow()
+                .iter()
+                .any(|call| call.url == "https://collide/"),
+            "a record stranded by a failed write must not be overwritten"
+        );
+    }
+
     let mut stranded = bookmark("https://collide/");
     stranded.title = "Y original".into();
     let mover = bookmark("https://a/");
-    let books = vec![stranded, mover];
+    run_in_order(vec![stranded.clone(), mover.clone()]).await;
+    run_in_order(vec![mover, stranded]).await;
+}
 
+/// A chain of three rewrites, c -> b -> a -> elsewhere, listed so that each group appears
+/// before the group that moves its target's occupant away.
+fn chain_of_three() -> (Vec<Bookmark>, impl CleanupPass) {
+    let books = vec![
+        bookmark("https://c/"),
+        bookmark("https://b/"),
+        bookmark("https://a/"),
+    ];
     let pass = FakePass(|bookmark: &Bookmark| {
         let target = match bookmark.url.as_str() {
-            "https://collide/" => "https://elsewhere/",
-            _ => "https://collide/",
+            "https://c/" => "https://b/",
+            "https://b/" => "https://a/",
+            _ => "https://elsewhere/",
         };
         Ok(Plan::Bookmark(Bookmark {
             url: u(target),
             ..unchanged_plan(bookmark)
         }))
     });
+    (books, pass)
+}
+
+#[tokio::test]
+async fn a_chain_is_written_from_its_far_end() {
+    let (books, pass) = chain_of_three();
+    let pinboard = FakePinboard::default();
+
+    let outcome = run(&pinboard, &books, &pass).await;
+    assert_eq!(outcome.changed, 3);
+    let written: Vec<String> = pinboard
+        .updated
+        .borrow()
+        .iter()
+        .map(|call| call.url.clone())
+        .collect();
+    assert_eq!(
+        written,
+        strings(&["https://elsewhere/", "https://a/", "https://b/"]),
+        "each URL must be vacated before a record is written over it"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_merge_protects_every_url_its_members_left() {
+    // x1 and x2 merge into k, and z1 and z2 head for x1 and x2. The merge must be written
+    // before either, so its failure can refuse both. Each order of the movers puts a
+    // different member's URL first, so both members must count as leaving.
+    async fn run_in_order(books: Vec<Bookmark>) {
+        let pass = FakePass(|bookmark: &Bookmark| {
+            let target = match bookmark.url.as_str() {
+                "https://z1/" => "https://x1/",
+                "https://z2/" => "https://x2/",
+                _ => "https://k/",
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: u(target),
+                ..unchanged_plan(bookmark)
+            }))
+        });
+        let pinboard = FakePinboard {
+            fail_update_urls: ["https://k/".to_string()].into_iter().collect(),
+            ..FakePinboard::default()
+        };
+
+        let outcome = run(&pinboard, &books, &pass).await;
+        assert_eq!(outcome.write_failed, 1);
+        assert_eq!(
+            outcome.refused, 2,
+            "both rewrites onto the members are refused"
+        );
+        assert!(
+            pinboard.updated.borrow().is_empty(),
+            "nothing may be written over a record that did not move"
+        );
+    }
+
+    let [z1, z2, x1, x2] =
+        ["https://z1/", "https://z2/", "https://x1/", "https://x2/"].map(bookmark);
+    run_in_order(vec![z1.clone(), z2.clone(), x1.clone(), x2.clone()]).await;
+    run_in_order(vec![z2, z1, x1, x2]).await;
+}
+
+#[tokio::test]
+async fn a_swap_still_writes_both_bookmarks() {
+    // A cycle has no safe order, but it must still be written, once each, and neither
+    // URL deleted: each is the other's target.
+    let books = vec![bookmark("https://x/"), bookmark("https://y/")];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        let target = match bookmark.url.as_str() {
+            "https://x/" => "https://y/",
+            _ => "https://x/",
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(target),
+            title: format!("from {}", bookmark.url),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let pinboard = FakePinboard::default();
+
+    let outcome = run(&pinboard, &books, &pass).await;
+    assert_eq!(outcome.changed, 2);
+    let mut written: Vec<String> = pinboard
+        .updated
+        .borrow()
+        .iter()
+        .map(|call| call.url.clone())
+        .collect();
+    written.sort_unstable();
+    assert_eq!(written, strings(&["https://x/", "https://y/"]));
+    assert!(pinboard.deleted.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_move_protects_every_link_of_the_chain_behind_it() {
+    // a fails to leave, so b must not land on it; b then never leaves, so c must not land
+    // on b. In first-appearance order c and b were both written before a even tried, and
+    // a's failure then lost a and b.
+    let (books, pass) = chain_of_three();
     let pinboard = FakePinboard {
         fail_update_urls: ["https://elsewhere/".to_string()].into_iter().collect(),
         ..FakePinboard::default()
@@ -1144,16 +1289,12 @@ async fn a_failed_move_protects_the_record_it_left_behind() {
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.write_failed, 1);
     assert_eq!(
-        outcome.refused, 1,
-        "the URL the failed move left occupied must refuse the next rewrite"
+        outcome.refused, 2,
+        "both rewrites behind the failure are refused"
     );
     assert!(
-        !pinboard
-            .updated
-            .borrow()
-            .iter()
-            .any(|call| call.url == "https://collide/"),
-        "a record stranded by a failed write must not be overwritten"
+        pinboard.updated.borrow().is_empty(),
+        "nothing may be written over a record that did not move"
     );
 }
 

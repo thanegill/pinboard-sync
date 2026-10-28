@@ -15,9 +15,11 @@
 //! A rewrite never deletes an old URL that another plan targets, so chained rewrites can't
 //! clobber each other. Every refusal decided before the first write is closed under
 //! [`propagate_refusals`], which makes it order-independent; a failed write re-closes it
-//! over the groups not yet written, so a failed run is the one case where order shows. The
-//! dry-run lines and the tallies go into a [`PassOutcome`], whose
-//! [`PassOutcome::into_result`] decides whether the run failed.
+//! over the groups not yet written, so a failed run is the one case where order shows.
+//! Groups are written in [`write_order`], each after the group moving its target's occupant
+//! away, so a failed move is protected before anything lands on the record it left behind.
+//! A cycle of moves, such as a swap, has no such order. The dry-run lines and tallies go
+//! into a [`PassOutcome`], and [`PassOutcome::into_result`] decides whether the run failed.
 
 use std::collections::{HashMap, HashSet};
 
@@ -256,7 +258,8 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         pairs,
         mut untouchable,
     } = plan_all(bookmarks, dates, pass, &mut outcome).await;
-    let (group_order, mut groups) = group_by_target(&pairs);
+    let (first_appearance, mut groups) = group_by_target(&pairs);
+    let group_order = write_order(&first_appearance, &groups);
     let residents = residents_of(store, &pairs, &group_order, &untouchable);
     hold_back_visibility_mismatches(
         &group_order,
@@ -445,6 +448,43 @@ fn group_by_target<'p>(
             .push((original, planned));
     }
     (group_order, groups)
+}
+
+/// The groups in the order they are written: each after the group that moves its target's
+/// occupant away, so a URL is vacated before a record lands on it, and a move that fails
+/// leaves its record where [`propagate_refusals`] can still protect it. Otherwise
+/// first-appearance order, which keeps a dry run's preview deterministic.
+///
+/// A cycle, such as two bookmarks swapping URLs, has no safe order: one of its writes lands
+/// on a record that has not left yet and is lost if a later write in the cycle fails.
+fn write_order<'p>(
+    first_appearance: &[&'p Url],
+    groups: &HashMap<&'p Url, Vec<Member<'p>>>,
+) -> Vec<&'p Url> {
+    let leaving_to: HashMap<&Url, &Url> = first_appearance
+        .iter()
+        .flat_map(|key| {
+            groups[*key]
+                .iter()
+                .map(|(original, _)| (&original.url, *key))
+        })
+        .filter(|(from, to)| from != to)
+        .collect();
+    let mut placed: HashSet<&Url> = HashSet::with_capacity(first_appearance.len());
+    let mut order = Vec::with_capacity(first_appearance.len());
+    for key in first_appearance {
+        let mut chain = Vec::new();
+        let mut next = Some(*key);
+        while let Some(url) = next {
+            if !placed.insert(url) {
+                break;
+            }
+            chain.push(url);
+            next = leaving_to.get(url).copied();
+        }
+        order.extend(chain.into_iter().rev());
+    }
+    order
 }
 
 /// Every group's resident, resolved once, before any write. A resident is a record the live

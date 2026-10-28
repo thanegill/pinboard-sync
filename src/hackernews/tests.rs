@@ -276,6 +276,100 @@ fn parse_favorite_ids_flags_markup_break() {
 }
 
 #[test]
+fn parse_favorite_ids_reads_hn_shaped_markup() {
+    let html = r#"<html lang="en" op="favorites"><head>
+        <script>document.write("<table><tr class='athing' id='999'></tr></table>")</script>
+        </head><body><table>
+          <tr class='athing submission' id='4242'><td>a</td></tr>
+          <tr class='spacer'><td></td></tr>
+          <tr class=athing id=5151><td>b</td></tr>
+          <tr class='athingish' id='777'><td>c</td></tr>
+          <tr class='athing'><td>no id</td></tr>
+          <tr><td><span class='athing' id='888'>not a row</span></td></tr>
+          <tr class='comtr  athing' id='31337'><td>d</td></tr>
+          <tr><td><a href='favorites?id=u&amp;p=3' class='morelink' rel='next'>More</a>
+                  <a href='favorites?id=u&amp;p=4' class='morelink'>More</a></td></tr>
+        </table></body></html>"#;
+    assert_eq!(
+        parse_favorite_ids(html),
+        FavoritesPage::Recognized {
+            ids: vec!["4242".into(), "5151".into(), "31337".into()],
+            more: Some("favorites?id=u&p=3".into()),
+        }
+    );
+}
+
+#[test]
+fn parse_favorite_ids_row_matching_edge_cases() {
+    let html = "<table>
+          <TR CLASS='submission athing' ID='1'><td></td></TR>
+          <tr class='ATHING' id='2'><td></td></tr>
+          <tr class='a\u{a0}athing' id='3'><td></td></tr>
+          <template><tr class='athing' id='4'><td></td></tr></template>
+          <tr class='athing' id=''><td></td></tr>
+        </table>";
+    let FavoritesPage::Recognized { ids, more } = parse_favorite_ids(html) else {
+        panic!("expected a recognized favorites page");
+    };
+    assert_eq!(ids, vec!["1", "3", "4", ""]);
+    assert_eq!(more, None);
+}
+
+#[test]
+fn parse_favorite_ids_matches_svg_elements_but_not_xlink_href() {
+    let svg = "<svg><tr class='athing' id='5'></tr>
+          <a class='morelink' xlink:href='favorites?id=u&amp;p=9'>More</a></svg>
+        <a class='morelink' href='favorites?id=u&amp;p=2'>More</a>";
+    assert_eq!(
+        parse_favorite_ids(svg),
+        FavoritesPage::Recognized {
+            ids: vec!["5".into()],
+            more: None,
+        }
+    );
+}
+
+#[test]
+fn parse_favorite_ids_marker_is_case_sensitive_and_may_come_late() {
+    let marker_case = r#"<html op="Favorites"><body></body></html>"#;
+    assert_eq!(parse_favorite_ids(marker_case), FavoritesPage::Unrecognized);
+    let marker_late = r#"<p>x</p><html op="favorites"><body></body></html>"#;
+    assert!(matches!(
+        parse_favorite_ids(marker_late),
+        FavoritesPage::Recognized { .. }
+    ));
+}
+
+#[test]
+fn parse_favorite_ids_reads_real_empty_favorites_pages() {
+    for (stream, html) in [
+        (
+            "stories",
+            include_str!("fixtures/favorites-stories-empty.html"),
+        ),
+        (
+            "comments",
+            include_str!("fixtures/favorites-comments-empty.html"),
+        ),
+    ] {
+        assert_eq!(
+            parse_favorite_ids(html),
+            FavoritesPage::Recognized {
+                ids: vec![],
+                more: None,
+            },
+            "{stream}"
+        );
+        let unmarked = html.replace(r#"op="favorites""#, r#"op="news""#);
+        assert_eq!(
+            parse_favorite_ids(&unmarked),
+            FavoritesPage::Unrecognized,
+            "{stream} without the marker"
+        );
+    }
+}
+
+#[test]
 fn hn_item_id_extracts_only_from_hn_item_urls() {
     let id = HackerNewsItemId::try_from(&url("https://news.ycombinator.com/item?id=42")).unwrap();
     assert_eq!(id.to_string(), "42");

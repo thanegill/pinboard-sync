@@ -68,6 +68,18 @@ mod tests {
     }
 
     #[test]
+    fn plain_decodes_entities_as_html_does() {
+        assert_eq!(html_to_plain("AT&amp T"), "AT& T");
+        assert_eq!(html_to_plain("&notit; &unknown;"), "¬it; &unknown;");
+        assert_eq!(
+            html_to_plain("&#0;&#xD800;&#x80;&#X41;"),
+            "\u{FFFD}\u{FFFD}€A"
+        );
+        assert_eq!(html_to_plain("a\0b"), "ab");
+        assert_eq!(html_to_plain("&lt;b&gt; &AMP; &nbsp;x"), "<b> & x");
+    }
+
+    #[test]
     fn plain_preserves_literal_angle_brackets() {
         assert_eq!(html_to_plain("Vec<String> support"), "Vec<String> support");
         assert_eq!(html_to_plain("C++ vector<T>"), "C++ vector<T>");

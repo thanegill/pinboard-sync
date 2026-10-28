@@ -13,7 +13,7 @@ use crate::cli::{
 };
 use crate::config::{Config, GitHubAccount, HackerNewsAccount, RedditAccount};
 use crate::github::{GitHubClient, GitHubConfig};
-use crate::hackernews::cleanup::HackerNewsCleanupOpts;
+use crate::hackernews::cleanup::{HackerNewsCleanupOpts, HackerNewsCleanupOverrides};
 use crate::hackernews::{HackerNewsClient, HackerNewsConfig};
 use crate::hook::{cleanup_hook, handle_source_err, on_auth_failure_from_env};
 use crate::jobs::backup_jobs::{build_backup_plan, BackupJob};
@@ -292,15 +292,9 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                 );
             }
             if let Some(CleanupTarget { account, dates }) = hackernews {
+                let overrides = HackerNewsCleanupOverrides::default();
                 run.record(
-                    cleanup_hackernews_account(
-                        Some(account),
-                        false, // linking is opt-in via `cleanup hackernews --link-discussions`
-                        None,
-                        dates,
-                        &store,
-                    )
-                    .await,
+                    cleanup_hackernews_account(Some(account), overrides, dates, &store).await,
                 );
             }
             run.finish()
@@ -504,7 +498,7 @@ impl RedditCleanup {
 }
 
 async fn run_cleanup_hackernews(
-    args: HackerNewsCleanupArgs,
+    mut args: HackerNewsCleanupArgs,
     top_dry_run: bool,
     top_overrides: &DateFlags,
     config: &Config,
@@ -520,11 +514,13 @@ async fn run_cleanup_hackernews(
         &config.defaults.hackernews,
         config,
     )?;
-    let hn = hackernews_cleanup_client(account, args.link_tag)?;
-    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
+    let pinboard_token = args.pinboard_token.take();
+    let hackernews =
+        HackerNewsCleanup::build(account, HackerNewsCleanupOverrides::from(args), dates)?;
+    let (pinboard, bookmarks) = open_pinboard(pinboard_token, config).await?;
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
-    cleanup_hackernews_with_client(&store, &hn, args.link_discussions, dates).await
+    hackernews.run(&store).await
 }
 
 /// Build the HackerNews tag config for a cleanup run, letting `--tag-link` override the
@@ -542,43 +538,46 @@ fn resolve_hackernews_cleanup_config(
     Ok(hn_config)
 }
 
-/// The HackerNews client for a cleanup pass, built on the tag config
-/// [`resolve_hackernews_cleanup_config`] gives.
-fn hackernews_cleanup_client(
-    account: Option<&HackerNewsAccount>,
-    link_tag: Option<String>,
-) -> Result<HackerNewsClient> {
-    HackerNewsClient::for_cleanup(resolve_hackernews_cleanup_config(account, link_tag)?)
-}
-
 async fn cleanup_hackernews_account<S: BookmarkStore + AccountState>(
     account: Option<&HackerNewsAccount>,
-    link_discussions: bool,
-    link_tag: Option<String>,
+    overrides: HackerNewsCleanupOverrides,
     dates: DateOpts,
     store: &S,
 ) -> Result<()> {
-    let hn = hackernews_cleanup_client(account, link_tag)?;
-    cleanup_hackernews_with_client(store, &hn, link_discussions, dates).await
+    HackerNewsCleanup::build(account, overrides, dates)?
+        .run(store)
+        .await
 }
 
-async fn cleanup_hackernews_with_client<S: BookmarkStore + AccountState>(
-    store: &S,
-    hn: &HackerNewsClient,
-    link_discussions: bool,
-    dates: DateOpts,
-) -> Result<()> {
-    hackernews::cleanup::run(
-        store,
-        hn,
-        &HackerNewsCleanupOpts {
-            link_discussions,
-            dates,
-        },
-    )
-    .await
-    // No hook: HackerNews is public, so nothing here can be a re-auth to act on.
-    .map_err(SourceError::into_anyhow)
+/// A HackerNews cleanup pass's options and its client, built on the tag config
+/// [`resolve_hackernews_cleanup_config`] gives.
+struct HackerNewsCleanup {
+    opts: HackerNewsCleanupOpts,
+    client: HackerNewsClient,
+}
+
+impl HackerNewsCleanup {
+    fn build(
+        account: Option<&HackerNewsAccount>,
+        overrides: HackerNewsCleanupOverrides,
+        dates: DateOpts,
+    ) -> Result<Self> {
+        let config = resolve_hackernews_cleanup_config(account, overrides.link_tag)?;
+        Ok(Self {
+            opts: HackerNewsCleanupOpts {
+                link_discussions: overrides.link_discussions,
+                dates,
+            },
+            client: HackerNewsClient::for_cleanup(config)?,
+        })
+    }
+
+    async fn run<S: BookmarkStore + AccountState>(&self, store: &S) -> Result<()> {
+        hackernews::cleanup::run(store, &self.client, &self.opts)
+            .await
+            // No hook: HackerNews is public, so nothing here can be a re-auth to act on.
+            .map_err(SourceError::into_anyhow)
+    }
 }
 
 #[cfg(test)]

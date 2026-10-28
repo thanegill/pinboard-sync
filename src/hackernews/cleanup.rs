@@ -20,6 +20,15 @@ use crate::source::SourceError;
 use crate::tags::extend_unique;
 use crate::timefmt::DateOpts;
 
+/// The `cleanup hackernews` choices that are not account settings. The default, which
+/// `cleanup --all` runs with, links no discussions: that is opt-in.
+#[derive(Default)]
+pub struct HackerNewsCleanupOverrides {
+    pub link_discussions: bool,
+    /// `--tag-link`, in place of the account's `tag_link`.
+    pub link_tag: Option<String>,
+}
+
 /// Options for `cleanup hackernews`.
 pub struct HackerNewsCleanupOpts {
     /// Also link `link_tag`-tagged article bookmarks to their HN discussion.

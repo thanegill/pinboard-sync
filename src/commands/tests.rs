@@ -18,6 +18,27 @@ fn link_tag_override_rejects_whitespace_and_commas() {
     assert_eq!(refused("find,hn"), "`--tag-link` must not contain a comma");
 }
 
+#[tokio::test]
+async fn a_hackernews_cleanup_refuses_a_bad_link_tag_before_its_pass() {
+    let pinboard = crate::test_support::FakePinboard::default();
+    let overrides = HackerNewsCleanupOverrides {
+        link_tag: Some("find hn".into()),
+        ..Default::default()
+    };
+    let error = cleanup_hackernews_account(
+        None,
+        overrides,
+        crate::test_support::NO_DATING,
+        &pinboard.cleanup_store(false),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "`--tag-link` must not contain whitespace"
+    );
+}
+
 #[test]
 fn link_tag_override_accepts_a_bare_tag() {
     let hn_config =

@@ -7,6 +7,7 @@ use clap::{Args, Parser, Subcommand, ValueHint};
 use clap_complete::Shell;
 
 use crate::config::SyncLimit;
+use crate::hackernews::cleanup::HackerNewsCleanupOverrides;
 use crate::jobs::SyncOverrides;
 use crate::reddit::cleanup::RedditCleanupOverrides;
 
@@ -505,6 +506,15 @@ impl From<HackerNewsSyncArgs> for SyncOverrides {
             flags: args.flags,
             dry_run: args.dry_run,
             ..SyncOverrides::default()
+        }
+    }
+}
+
+impl From<HackerNewsCleanupArgs> for HackerNewsCleanupOverrides {
+    fn from(args: HackerNewsCleanupArgs) -> Self {
+        HackerNewsCleanupOverrides {
+            link_discussions: args.link_discussions,
+            link_tag: args.link_tag,
         }
     }
 }

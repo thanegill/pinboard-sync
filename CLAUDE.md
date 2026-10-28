@@ -411,7 +411,8 @@ Nothing needs to follow one: `saved.json` pagination only changes query paramete
   which panics when stdout is a closed pipe (`config example | head`). `stdout::write`
   writes a whole document (`config`, `completions`, `man`) and returns any other error;
   `outln!` writes the line-by-line output (the dry-run previews, `doctor`), which carries
-  on after a closed pipe. Tests read what a command wrote through
+  on after a closed pipe. The previews share their layout through
+  [`src/preview.rs`](src/preview.rs), and tests read what a command wrote through
   `test_support::capturing_stdout`.
 - **Service-specific, API-shaped structs carry a service prefix** (`GitHubRepo`,
   `HackerNewsItem`, `RedditSavedItem`, `AlgoliaSearchResponse`) — not bare `Repo`/`Item`.

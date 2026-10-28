@@ -16,6 +16,7 @@ mod http;
 mod jobs;
 mod keys;
 mod pinboard;
+mod preview;
 mod reddit;
 mod secrets;
 mod settings;

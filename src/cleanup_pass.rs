@@ -30,6 +30,7 @@ use time::OffsetDateTime;
 use url::Url;
 
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
+use crate::preview;
 use crate::source::{Halt, SourceError};
 use crate::stdout::outln;
 use crate::timefmt::DateOpts;
@@ -574,7 +575,7 @@ fn hold_back_visibility_mismatches<'p>(
             emit_preview(
                 &mut outcome.preview,
                 &mover,
-                &[("", format!("(refused: {reason})"))],
+                [preview::detail(format!("(refused: {reason})"))],
             );
         }
         // The mover didn't move, so its own URL is still occupied and no other rewrite may
@@ -595,7 +596,7 @@ fn refuse_group(key: &Url, reason: Refusal, dry_run: bool, outcome: &mut PassOut
         emit_preview(
             &mut outcome.preview,
             key,
-            &[("", format!("(refused: {reason})"))],
+            [preview::detail(format!("(refused: {reason})"))],
         );
     }
 }
@@ -624,7 +625,10 @@ async fn write_single<S: BookmarkStore>(
     let delete_old = planned.url != original.url && !targets.contains(&original.url);
 
     if dry_run {
-        emit_preview(&mut outcome.preview, &original.url, &changes);
+        let lines = changes
+            .iter()
+            .map(|(label, value)| preview::field(label, value));
+        emit_preview(&mut outcome.preview, &original.url, lines);
     }
 
     // Always through the store, dry run included: it is what withholds the network, and it
@@ -751,26 +755,25 @@ async fn write_merge<S: BookmarkStore>(
     let merged = &fitted;
 
     if dry_run {
-        let mut detail = Vec::new();
+        let mut lines = Vec::new();
         if rewrite {
-            let note_value = if merged.note.is_empty() {
-                "(removed)".to_string()
-            } else {
-                merged.note.clone()
-            };
-            detail.extend([
-                ("title", merged.title.clone()),
-                ("notes", note_value),
-                ("tags", format!("[{}]", merged.tags.joined())),
+            lines.extend([
+                preview::field("title", &merged.title),
+                preview::field("notes", preview::note(&merged.note)),
+                preview::field("tags", preview::tags(&merged.tags)),
             ]);
             if let Some(date) = merged.timestamp.and_then(crate::timefmt::to_pinboard_dt) {
-                detail.push(("date", date));
+                lines.push(preview::field("date", date));
             }
-            detail.push(("public", merged.public.to_string()));
-            detail.push(("toread", merged.read_later.to_string()));
+            lines.push(preview::field("public", merged.public));
+            lines.push(preview::field("toread", merged.read_later));
         }
-        detail.extend(old_urls.iter().map(|old| ("", format!("absorb {old}"))));
-        emit_preview(&mut outcome.preview, target, &detail);
+        lines.extend(
+            old_urls
+                .iter()
+                .map(|old| preview::detail(format!("absorb {old}"))),
+        );
+        emit_preview(&mut outcome.preview, target, lines);
     }
 
     // Always through the store -- see `write_single`.
@@ -868,26 +871,14 @@ fn warn_if_cut(planned: &Bookmark, fitted: &Bookmark) {
     }
 }
 
-/// Print one bookmark's dry-run preview and keep it in `preview`. A `(label, value)` pair
-/// renders as an aligned `label -> value`; an empty label renders the value alone, for the
-/// lines that are not field changes (`absorb <url>`, `(refused: ...)`).
-fn emit_preview(preview: &mut Vec<String>, url: &Url, detail: &[(&str, String)]) {
-    let mut push = |line: String| {
+/// Print one bookmark's dry-run preview, its `[dry-run] <url>` line and then its detail
+/// `lines`, and keep it in `kept`.
+fn emit_preview(kept: &mut Vec<String>, url: &Url, lines: impl IntoIterator<Item = String>) {
+    for line in std::iter::once(preview::header(url)).chain(lines) {
         outln!("{line}");
-        preview.push(line);
-    };
-    push(format!("[dry-run] {url}"));
-    for (label, value) in detail {
-        push(if label.is_empty() {
-            format!("{PREVIEW_INDENT}{value}")
-        } else {
-            format!("{PREVIEW_INDENT}{label:<6}-> {value}")
-        });
+        kept.push(line);
     }
 }
-
-/// The indent of a preview's detail lines, under its `[dry-run] <url>` line.
-const PREVIEW_INDENT: &str = "          ";
 
 /// Close `untouchable` under "a group whose target is untouchable doesn't move, so its
 /// members keep their own URLs occupied". Iterated to a fixpoint because each refusal can

@@ -57,15 +57,10 @@ impl Bookmark {
             changes.push(("title", new.title.clone()));
         }
         if new.note != self.note {
-            let value = if new.note.is_empty() {
-                "(removed)".to_string()
-            } else {
-                new.note.clone()
-            };
-            changes.push(("notes", value));
+            changes.push(("notes", crate::preview::note(&new.note)));
         }
         if self.tags.differs_from(&new.tags) {
-            changes.push(("tags", format!("[{}]", new.tags.joined())));
+            changes.push(("tags", crate::preview::tags(&new.tags)));
         }
         if new.timestamp != self.timestamp {
             let value = new

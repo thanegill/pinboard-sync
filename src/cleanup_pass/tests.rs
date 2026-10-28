@@ -724,7 +724,7 @@ async fn a_converged_incumbent_merge_is_not_rewritten_every_run() {
 #[tokio::test]
 async fn the_view_never_drifts_from_the_account() {
     // The view is what every later pass plans against, and nothing ever checks it back
-    // against Pinboard mid-run. So a missed, doubled or mis-ordered recording raises no
+    // against Pinboard mid-run. So a missed, doubled or misordered recording raises no
     // error at all -- it surfaces one pass later as a plan built on an account that never
     // existed. Run a mixed workload twice over one store and assert the view still
     // equals the account rebuilt from the writes that actually landed.

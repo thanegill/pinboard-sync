@@ -338,7 +338,11 @@ fn retag(mut tags: Tags, prefixes: &[&str], additions: impl IntoIterator<Item = 
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+    use crate::keys::{GitHubKeys, HackerNewsKeys};
+    use crate::source::UrlKey;
     use crate::test_support::{stored_at, url};
 
     /// A deep link, a gist or a bare owner is not this pass's bookmark: it is skipped
@@ -577,6 +581,54 @@ mod tests {
             kept,
             [(Some("github-star"), "own:"), (Some("work-star"), "work:")]
         );
+    }
+
+    /// A repo-root URL in any of the forms `cleanup github` canonicalizes: either host,
+    /// either scheme, any case, with or without `.git`, a trailing slash, a query or a
+    /// fragment. The name itself never ends in `.git`: `repo_root` strips one `.git` and
+    /// `GitHubKeys` one more, so `<name>.git.git` and `.git` key differently afterwards.
+    fn stored_repo_root() -> impl Strategy<Value = String> {
+        (
+            prop::sample::select(vec!["http", "https"]),
+            prop::sample::select(vec!["github.com", "www.github.com", "GitHub.com"]),
+            "[A-Za-z0-9]([A-Za-z0-9-]{0,10}[A-Za-z0-9])?",
+            "[A-Za-z0-9._-]{1,20}".prop_filter("a repo name", |name| {
+                !matches!(name.as_str(), "." | "..") && !name.ends_with(".git")
+            }),
+            prop::sample::select(vec!["", ".git"]),
+            prop::sample::select(vec!["", "/"]),
+            prop::sample::select(vec!["", "?tab=readme-ov-file", "#readme"]),
+        )
+            .prop_map(|(scheme, host, owner, name, suffix, slash, tail)| {
+                format!("{scheme}://{host}/{owner}/{name}{suffix}{slash}{tail}")
+            })
+    }
+
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config())]
+
+        #[test]
+        fn a_repo_root_keys_the_same_once_canonicalized(stored in stored_repo_root()) {
+            let stored = url(&stored);
+            let root = repo_root(&stored).expect("a repo root");
+            let canonical = root.canonical_url().expect("a canonical URL");
+            prop_assert!(GitHubKeys.dedup_key(&stored).is_some(), "{} has no key", stored);
+            prop_assert_eq!(
+                GitHubKeys.dedup_key(&canonical),
+                GitHubKeys.dedup_key(&stored),
+                "{} -> {}",
+                stored,
+                canonical
+            );
+            let hackernews = HackerNewsKeys::default();
+            prop_assert_eq!(
+                hackernews.dedup_key(&canonical),
+                hackernews.dedup_key(&stored),
+                "{} -> {}",
+                stored,
+                canonical
+            );
+        }
     }
 }
 

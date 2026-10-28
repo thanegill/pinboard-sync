@@ -1,6 +1,9 @@
-use super::*;
-use crate::test_support::url;
+use proptest::prelude::*;
 use serde_json::json;
+
+use super::*;
+use crate::keys::HackerNewsKeys;
+use crate::test_support::url;
 
 const ID: &str = "aa5a315d61ae9438b18d";
 
@@ -202,4 +205,57 @@ fn gist_post_date_parses_its_three_values_and_never_quotes_a_bad_one() {
     let error = parse("ghp_SECRET").unwrap_err();
     assert!(error.contains("`gist_post_date`"), "{error}");
     assert!(!error.contains("SECRET"), "{error}");
+}
+
+/// A gist id as GitHub hands them out: all digits for the oldest, else 20 or 32 hex
+/// characters, in either case.
+fn gist_id() -> impl Strategy<Value = String> {
+    prop_oneof!["[1-9][0-9]{0,9}", "[0-9a-fA-F]{20}", "[0-9a-fA-F]{32}"]
+}
+
+const LOGIN: &str = "[A-Za-z0-9]([A-Za-z0-9-]{0,10}[A-Za-z0-9])?";
+
+proptest! {
+    #![proptest_config(crate::test_support::proptest_config())]
+
+    /// The stored owner may differ from the API's, as after a rename: the key ignores it.
+    #[test]
+    fn a_gist_root_keys_the_same_once_canonicalized(
+        id in gist_id(),
+        owner in proptest::option::of(LOGIN),
+        stored_owner in proptest::option::of(LOGIN),
+        scheme in prop::sample::select(vec!["http", "https"]),
+        suffix in prop::sample::select(vec!["", ".git", "/", "?file=a.rs", "#file-a-rs"]),
+    ) {
+        let path = match &stored_owner {
+            Some(stored_owner) => format!("{stored_owner}/{id}"),
+            None => id.clone(),
+        };
+        let stored = url(&format!("{scheme}://{GIST_HOST}/{path}{suffix}"));
+        let id = id.to_ascii_lowercase();
+        let canonical = gist(json!({
+            "id": id,
+            "html_url": format!("https://{GIST_HOST}/{id}"),
+            "files": {},
+            "owner": owner.map(|login| json!({ "login": login })),
+        }))
+        .canonical_url()
+        .expect("a canonical URL");
+        prop_assert!(GitHubKeys.dedup_key(&stored).is_some(), "{} has no key", stored);
+        prop_assert_eq!(
+            GitHubKeys.dedup_key(&canonical),
+            GitHubKeys.dedup_key(&stored),
+            "{} -> {}",
+            stored,
+            canonical
+        );
+        let hackernews = HackerNewsKeys::default();
+        prop_assert_eq!(
+            hackernews.dedup_key(&canonical),
+            hackernews.dedup_key(&stored),
+            "{} -> {}",
+            stored,
+            canonical
+        );
+    }
 }

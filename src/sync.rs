@@ -124,7 +124,7 @@ pub async fn write_drafts<P: BookmarkStore>(
             outln!("{}", preview::header(&bm.url));
             outln!("{INDENT}title: {}", bm.title);
             if !bm.note.is_empty() {
-                outln!("{INDENT}notes: {}", crate::htmltext::preview(&bm.note));
+                outln!("{INDENT}notes: {}", preview::excerpt(&bm.note));
             }
             outln!("{INDENT}tags:  {}", preview::tags(&bm.tags));
             if !dt.is_empty() {

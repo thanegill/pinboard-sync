@@ -3,6 +3,7 @@
 
 use std::fmt::Display;
 
+use crate::htmltext::collapse_whitespace;
 use crate::tags::Tags;
 
 /// The indent of a preview's detail lines, under its `[dry-run] <subject>` line.
@@ -35,4 +36,41 @@ pub fn note(note: &str) -> String {
 /// Tags as a preview shows them, `[a b]`.
 pub fn tags(tags: &Tags) -> String {
     format!("[{}]", tags.joined())
+}
+
+/// A single-line, length-bounded excerpt of (possibly multi-line) text, for dry-run output
+/// only. The full text is still sent to Pinboard's `extended`.
+pub fn excerpt(text: &str) -> String {
+    const MAX: usize = 160;
+    let one_line = collapse_whitespace(text, " ");
+    if one_line.chars().count() > MAX {
+        let head: String = one_line.chars().take(MAX).collect();
+        format!("{head}…")
+    } else {
+        one_line
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn excerpt_collapses_whitespace() {
+        assert_eq!(excerpt("line1\nline2   line3"), "line1 line2 line3");
+    }
+
+    #[test]
+    fn excerpt_truncates_long_text_with_ellipsis() {
+        let long = "word ".repeat(100);
+        let p = excerpt(&long);
+        assert!(p.ends_with('…'), "{p:?}");
+        assert_eq!(p.chars().count(), 161);
+    }
+
+    #[test]
+    fn excerpt_keeps_text_of_exactly_the_limit_whole() {
+        let limit = "é".repeat(160);
+        assert_eq!(excerpt(&limit), limit);
+    }
 }

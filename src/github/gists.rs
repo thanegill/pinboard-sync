@@ -199,8 +199,8 @@ impl GitHubGist {
         tags
     }
 
-    /// The gist's post date under `post_date`, `None` for [`GistPostDate::Now`] or a date
-    /// that doesn't parse.
+    /// The gist's post date under `post_date`, in UTC at whole seconds as a star is dated.
+    /// `None` for [`GistPostDate::Now`] or a date that doesn't parse.
     pub(crate) fn post_date(&self, post_date: GistPostDate) -> Option<time::OffsetDateTime> {
         let date = match post_date {
             GistPostDate::Now => return None,
@@ -208,6 +208,7 @@ impl GitHubGist {
             GistPostDate::Updated => self.updated_at.as_deref(),
         };
         date.and_then(crate::timefmt::parse_rfc3339)
+            .and_then(crate::timefmt::utc_whole_seconds)
     }
 
     /// Shape the gist into a Pinboard draft under `cfg`. `None` (with a warning) if its

@@ -115,19 +115,13 @@ pub async fn write_drafts<P: BookmarkStore>(
     for draft in drafts {
         let bm = &draft.bookmark;
         if mode.is_dry_run() {
-            // The source post date as Pinboard's `dt`, when set (the sync loop has already
-            // applied the use_post_date flag + age cap); empty = let Pinboard default.
-            let dt = bm
-                .timestamp
-                .and_then(crate::timefmt::to_pinboard_dt)
-                .unwrap_or_default();
             outln!("{}", preview::header(&bm.url));
             outln!("{INDENT}title: {}", bm.title);
             if !bm.note.is_empty() {
                 outln!("{INDENT}notes: {}", preview::excerpt(&bm.note));
             }
             outln!("{INDENT}tags:  {}", preview::tags(&bm.tags));
-            if !dt.is_empty() {
+            if let Some(dt) = bm.timestamp.and_then(crate::timefmt::to_pinboard_dt) {
                 outln!("{INDENT}date:  {dt}");
             }
             continue;

@@ -254,21 +254,18 @@ pub(crate) fn gist_note<'a>(
 }
 
 /// The id of a gist-root URL: `gist.github.com/<id>` or `gist.github.com/<owner>/<id>`,
-/// ignoring a trailing slash and a `.git` suffix, with the owner when the URL names one.
-/// `None` for anything else: a deep link (a revision, `/raw`), an owner's gist list
-/// (`gist.github.com/<owner>`), or another host.
-pub(crate) fn gist_root(url: &Url) -> Option<(Option<&str>, String)> {
+/// ignoring a trailing slash and a `.git` suffix. `None` for anything else: a deep link (a
+/// revision, `/raw`), an owner's gist list (`gist.github.com/<owner>`), or another host.
+pub(crate) fn gist_root_id(url: &Url) -> Option<String> {
     if url.host_str() != Some(GIST_HOST) {
         return None;
     }
     let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
-    let (owner, id) = match segments[..] {
-        [id] => (None, id),
-        [owner, id] => (Some(owner), id),
-        _ => return None,
+    let ([id] | [_, id]) = segments[..] else {
+        return None;
     };
     let id = id.strip_suffix(".git").unwrap_or(id);
-    is_gist_id(id).then(|| (owner, id.to_ascii_lowercase()))
+    is_gist_id(id).then(|| id.to_ascii_lowercase())
 }
 
 /// Whether `segment` is a gist id rather than a username: hex, and either all digits (the

@@ -8,7 +8,7 @@ use super::{is_lone_blockquote, retag};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::config::own_then_configured;
-use crate::github::gists::{gist_root, GistConfig, GitHubGist, GIST_HOST};
+use crate::github::gists::{gist_root_id, GistConfig, GitHubGist, GIST_HOST};
 use crate::github::{GitHubClient, GitHubConfig};
 use crate::htmltext::{blockquote, collapse_whitespace};
 use crate::source::SourceError;
@@ -35,7 +35,7 @@ pub(super) async fn run<S: BookmarkStore + AccountState>(
     let gist_bookmarks = store.snapshot(|bookmark| bookmark.url.host_str() == Some(GIST_HOST));
     let starred = if gist_bookmarks
         .iter()
-        .any(|bookmark| gist_root(&bookmark.url).is_some())
+        .any(|bookmark| gist_root_id(&bookmark.url).is_some())
     {
         client.starred_gists().await?
     } else {
@@ -108,7 +108,7 @@ struct GistCleanupPass<'a> {
 
 impl CleanupPass for GistCleanupPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
-        let Some((_, id)) = gist_root(&bookmark.url) else {
+        let Some(id) = gist_root_id(&bookmark.url) else {
             return Ok(Plan::Skipped);
         };
         let looked_up;

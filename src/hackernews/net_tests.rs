@@ -64,10 +64,8 @@ async fn fetch_scrapes_favorites_then_reads_items() {
         drafts[1].bookmark.url.as_str(),
         "https://news.ycombinator.com/item?id=9"
     );
-    assert!(drafts[1]
-        .bookmark
-        .tags
-        .contains(&"hackernews-comment".to_string()));
+    let tags = &drafts[1].bookmark.tags;
+    assert!(tags.contains(&"hackernews-comment".to_string()), "{tags:?}");
 }
 
 #[tokio::test]
@@ -126,7 +124,7 @@ async fn fetch_succeeds_on_genuinely_empty_favorites() {
         .await
         .0
         .unwrap();
-    assert!(drafts.is_empty());
+    assert!(drafts.is_empty(), "{drafts:?}");
 }
 
 /// A client reading favorites from `hn` and items from `algolia`, as `psophis`.
@@ -343,7 +341,8 @@ async fn a_favorites_429_with_a_short_retry_after_is_retried_once() {
     let (drafts, waits) =
         crate::http::recording_waits(hackernews_client(hn.uri(), UNUSED.into()).fetch()).await;
 
-    assert!(drafts.unwrap().is_empty());
+    let drafts = drafts.unwrap();
+    assert!(drafts.is_empty(), "{drafts:?}");
     assert_eq!(
         waits,
         [Duration::from_secs(30), FAVORITES_PAGE_PAUSE],
@@ -447,7 +446,8 @@ async fn fetch_items_pauses_only_between_algolia_chunks() {
         crate::http::recording_waits(client.algolia.fetch_items(&ids, &mut RawSink::disabled()))
             .await;
 
-    assert!(items.unwrap().is_empty());
+    let items = items.unwrap();
+    assert!(items.is_empty(), "{items:?}");
     assert_eq!(waits, [ALGOLIA_CHUNK_PAUSE]);
 }
 
@@ -499,7 +499,8 @@ async fn dump_captures_both_scraped_pages_and_the_algolia_response() {
     assert_eq!(by_stream("favorites").len(), 1);
     assert_eq!(by_stream("favorites-comments").len(), 1);
     assert_eq!(by_stream("").len(), 1);
-    assert!(by_stream("favorites")[0].body.contains(r#"id="42""#));
+    let favorites = &by_stream("favorites")[0].body;
+    assert!(favorites.contains(r#"id="42""#), "{favorites}");
     assert_eq!(by_stream("favorites")[0].kind, RawKind::Html);
 
     // The Algolia fields the typed item drops are still in the captured body.
@@ -547,7 +548,7 @@ async fn dump_captures_both_scraped_pages_and_the_algolia_response() {
     assert!(records[0]["dedup_key"].is_string());
 
     let html = std::fs::read_to_string(dir.join("raw/hackernews-psophis-favorites.html")).unwrap();
-    assert!(html.contains(r#"id="42""#));
+    assert!(html.contains(r#"id="42""#), "{html:?}");
 }
 
 async fn algolia_answering_with_a_long_error_page() -> (MockServer, AlgoliaClient) {

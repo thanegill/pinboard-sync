@@ -88,7 +88,7 @@ fn two_default_accounts_each_own_only_their_gists() {
         [strings(&["github-star", "github-gist"])]
     );
     assert!(owners(&["github-star"]).is_empty(), "saved by hand");
-    assert!(owners(&["github-gist"]).is_empty());
+    assert_eq!(owners(&["github-gist"]), Vec::<Vec<String>>::new());
 }
 
 #[test]

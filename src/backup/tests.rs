@@ -25,7 +25,8 @@ fn bookmark() -> Bookmark {
 fn disabled_sink_retains_nothing() {
     let mut sink = RawSink::disabled();
     sink.push("saved", RawKind::Json, "[]");
-    assert!(sink.into_parts().0.is_empty());
+    let (pages, _) = sink.into_parts();
+    assert!(pages.is_empty(), "{pages:?}");
 }
 
 #[test]
@@ -82,10 +83,16 @@ fn merge_reports_which_page_failed_to_parse() {
 #[test]
 fn merged_html_keeps_every_page_verbatim_behind_a_marker() {
     let merged = merge_html_pages(&["<a>one</a>", "<a>two</a>"]);
-    assert!(merged.contains("<!-- pinboard-sync page 1 -->"));
-    assert!(merged.contains("<!-- pinboard-sync page 2 -->"));
-    assert!(merged.contains("<a>one</a>"));
-    assert!(merged.contains("<a>two</a>"));
+    assert!(
+        merged.contains("<!-- pinboard-sync page 1 -->"),
+        "{merged:?}"
+    );
+    assert!(
+        merged.contains("<!-- pinboard-sync page 2 -->"),
+        "{merged:?}"
+    );
+    assert!(merged.contains("<a>one</a>"), "{merged:?}");
+    assert!(merged.contains("<a>two</a>"), "{merged:?}");
 }
 
 #[test]
@@ -138,7 +145,7 @@ fn export_omits_absent_timestamp_and_carries_a_draft_dedup_key() {
         json.get("timestamp").is_none(),
         "an absent timestamp is omitted, not null: {json}"
     );
-    assert!(json.get("dedup_key").is_none());
+    assert_eq!(json.get("dedup_key"), None);
 
     let draft = BookmarkDraft {
         bookmark: bookmark(),
@@ -256,7 +263,7 @@ fn a_partial_run_is_marked_incomplete_in_the_manifest() {
     let ok: Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(ok["complete"], true);
-    assert!(ok.get("failed").is_none());
+    assert_eq!(ok.get("failed"), None);
     assert_eq!(ok["files"][0]["items"], 3);
     assert!(ok["files"][0].get("pages").is_none(), "never both counts");
 
@@ -716,7 +723,7 @@ async fn a_stale_removal_that_fails_reports_it_without_losing_the_write() {
     assert!(reason.contains("removing stale"), "{reason}");
     // The file is still there, so its entry must not be dropped — `removed` stays
     // empty and the manifest keeps describing what is actually on disk.
-    assert!(outcome.removed.is_empty());
+    assert!(outcome.removed.is_empty(), "{:?}", outcome.removed);
     scratch.close().unwrap();
 }
 
@@ -821,7 +828,7 @@ fn probe_creates_nothing_and_reports_a_missing_directory() {
     assert!(!missing.exists(), "the probe must not create it");
 
     // A typo'd path, whose parent is missing too, is a real failure.
-    assert!(probe_writable(&dir.join("no/such/parent")).is_err());
+    probe_writable(&dir.join("no/such/parent")).unwrap_err();
 }
 
 #[test]
@@ -832,7 +839,7 @@ fn a_non_array_json_body_may_not_replace_a_snapshot() {
         body: "<html>maintenance</html>".into(),
         count: Count::Items(0),
     };
-    assert!(check_writable(&bad).is_err());
+    check_writable(&bad).unwrap_err();
 
     let empty_html = BackupFile {
         path: "raw/hackernews-me-favorites.html".into(),
@@ -840,7 +847,7 @@ fn a_non_array_json_body_may_not_replace_a_snapshot() {
         body: "   \n".into(),
         count: Count::Pages(1),
     };
-    assert!(check_writable(&empty_html).is_err());
+    check_writable(&empty_html).unwrap_err();
 
     let good = BackupFile {
         path: "raw/pinboard.json".into(),
@@ -848,5 +855,5 @@ fn a_non_array_json_body_may_not_replace_a_snapshot() {
         body: "[]".into(),
         count: Count::Items(0),
     };
-    assert!(check_writable(&good).is_ok());
+    check_writable(&good).unwrap();
 }

@@ -5,12 +5,12 @@ use crate::source::UrlKey;
 #[test]
 fn empty_config_is_all_defaults() {
     let cfg = Config::parse("").unwrap();
-    assert!(cfg.reddit.is_empty());
-    assert!(cfg.pinboard.token.is_none());
+    assert!(cfg.reddit.is_empty(), "{:?}", cfg.reddit);
+    assert_eq!(cfg.pinboard.token, None);
     assert!(!cfg.pinboard.public);
-    assert!(cfg.hooks.on_auth_failure.is_none());
-    assert!(cfg.pinboard.limit.is_none());
-    assert!(cfg.defaults.reddit.toread.is_none());
+    assert_eq!(cfg.hooks.on_auth_failure, None);
+    assert_eq!(cfg.pinboard.limit, None);
+    assert_eq!(cfg.defaults.reddit.toread, None);
 }
 
 fn assert_error_hides(text: &str, secret: &str, location: &str) {
@@ -253,7 +253,7 @@ fn account_names_that_slug_alike_are_rejected_without_quoting_them() {
             );
         }
     }
-    assert!(Config::parse("[[reddit]]\nusername = \"a.b\"\n[[reddit]]\nname = \"a.c\"\n").is_ok());
+    Config::parse("[[reddit]]\nusername = \"a.b\"\n[[reddit]]\nname = \"a.c\"\n").unwrap();
 }
 
 #[test]
@@ -289,10 +289,14 @@ fn debug_of_a_parsed_config_redacts_inline_secrets() {
         format!("{:?}", Redacted(cfg.reddit[1].cookie.as_deref())),
         "None"
     );
-    assert!(format!("{:?}", cfg.pinboard).contains("token: Some(<redacted>)"));
-    assert!(format!("{:?}", cfg.reddit[0]).contains("cookie: Some(<redacted>)"));
-    assert!(format!("{:?}", cfg.reddit[1]).contains("cookie: None"));
-    assert!(format!("{:?}", cfg.github[0]).contains("token: Some(<redacted>)"));
+    for (debug, want) in [
+        (format!("{:?}", cfg.pinboard), "token: Some(<redacted>)"),
+        (format!("{:?}", cfg.reddit[0]), "cookie: Some(<redacted>)"),
+        (format!("{:?}", cfg.reddit[1]), "cookie: None"),
+        (format!("{:?}", cfg.github[0]), "token: Some(<redacted>)"),
+    ] {
+        assert!(debug.contains(want), "{debug}");
+    }
 }
 
 #[test]
@@ -344,7 +348,7 @@ fn parses_per_source_defaults_and_account_overrides() {
     assert_eq!(cfg.reddit[0].toread, Some(true));
     assert_eq!(cfg.reddit[1].toread, None);
     // An unknown key inside the per-source table is still rejected.
-    assert!(Config::parse("[defaults.reddit]\nnonsense = 1").is_err());
+    Config::parse("[defaults.reddit]\nnonsense = 1").unwrap_err();
 }
 
 #[test]
@@ -391,16 +395,16 @@ fn parses_hooks_pinboard_and_multiple_reddit_accounts() {
 
 #[test]
 fn rejects_unknown_keys() {
-    assert!(Config::parse("[[reddit]]\nnonsense = 1").is_err());
+    Config::parse("[[reddit]]\nnonsense = 1").unwrap_err();
 }
 
 #[test]
 fn rejects_whitespace_in_tags() {
-    assert!(Config::parse("[[reddit]]\ntags = [\"a b\"]").is_err());
-    assert!(Config::parse("[[github]]\ntag_lang_prefix = \"lang :\"").is_err());
-    assert!(Config::parse("[[hackernews]]\ntag_link = \"find hn\"").is_err());
+    Config::parse("[[reddit]]\ntags = [\"a b\"]").unwrap_err();
+    Config::parse("[[github]]\ntag_lang_prefix = \"lang :\"").unwrap_err();
+    Config::parse("[[hackernews]]\ntag_link = \"find hn\"").unwrap_err();
     // No whitespace → fine (hyphens/colons allowed).
-    assert!(Config::parse("[[reddit]]\ntags = [\"reddit\", \"a-b\"]").is_ok());
+    Config::parse("[[reddit]]\ntags = [\"reddit\", \"a-b\"]").unwrap();
 }
 
 #[test]
@@ -435,7 +439,7 @@ fn rejects_duplicate_account_names() {
             [[reddit]]
             name = "main"
         "#;
-    assert!(Config::parse(dup).is_err());
+    Config::parse(dup).unwrap_err();
     // Distinct names (and unnamed accounts) are fine.
     let ok = r#"
             [[reddit]]
@@ -444,7 +448,7 @@ fn rejects_duplicate_account_names() {
             name = "alt"
             [[reddit]]
         "#;
-    assert!(Config::parse(ok).is_ok());
+    Config::parse(ok).unwrap();
 }
 
 #[test]
@@ -459,44 +463,50 @@ fn rejects_a_zero_cap_with_stale_to_now_as_each_account_resolves_it() {
          would re-date its stale bookmarks on every run; raise the cap or turn \
          `cleanup_stale_to_now` off"
     );
-    assert!(rejected(
+    let error = rejected(
         "[pinboard]\ncleanup_stale_to_now = true\n\
-         [defaults.github]\npost_date_max_age_days = 0\n[[github]]"
-    )
-    .starts_with("config: github[0] resolves "));
-    assert!(rejected(
+         [defaults.github]\npost_date_max_age_days = 0\n[[github]]",
+    );
+    assert!(error.starts_with("config: github[0] resolves "), "{error}");
+    let error = rejected(
         "[defaults.hackernews]\ncleanup_stale_to_now = true\n\
-         [[hackernews]]\n[[hackernews]]\nusername = \"u\"\npost_date_max_age_days = 0"
-    )
-    .starts_with(
-        "config: hackernews[1] resolves `post_date_max_age_days` to 0 (from the account) with \
-         `cleanup_stale_to_now` on (from `[defaults.hackernews]`)"
-    ));
+         [[hackernews]]\n[[hackernews]]\nusername = \"u\"\npost_date_max_age_days = 0",
+    );
+    assert!(
+        error.starts_with(
+            "config: hackernews[1] resolves `post_date_max_age_days` to 0 (from the account) \
+             with `cleanup_stale_to_now` on (from `[defaults.hackernews]`)"
+        ),
+        "{error}"
+    );
 
     // An account overriding either half resolves to a combination that settles.
-    assert!(Config::parse(
+    Config::parse(
         "[pinboard]\npost_date_max_age_days = 0\ncleanup_stale_to_now = true\n\
          [[reddit]]\npost_date_max_age_days = 1\n\
          [[github]]\ncleanup_stale_to_now = false\n\
-         [[hackernews]]\npost_date_max_age_days = 7"
+         [[hackernews]]\npost_date_max_age_days = 7",
     )
-    .is_ok());
-    assert!(Config::parse("[pinboard]\npost_date_max_age_days = 0").is_ok());
+    .unwrap();
+    Config::parse("[pinboard]\npost_date_max_age_days = 0").unwrap();
 
     // A source with no accounts still has its implicit CLI/env account to check.
-    assert!(rejected(
+    let error = rejected(
         "[pinboard]\npost_date_max_age_days = 0\ncleanup_stale_to_now = true\n\
-         [[reddit]]\npost_date_max_age_days = 1"
-    )
-    .starts_with("config: github (implicit CLI/env account) resolves "));
+         [[reddit]]\npost_date_max_age_days = 1",
+    );
+    assert!(
+        error.starts_with("config: github (implicit CLI/env account) resolves "),
+        "{error}"
+    );
 }
 
 #[test]
 fn rejects_malformed_reddit_domain() {
-    assert!(Config::parse("[[reddit]]\nreddit_domain = \"https://old.reddit.com\"").is_err());
-    assert!(Config::parse("[[reddit]]\nreddit_domain = \"old.reddit.com/\"").is_err());
-    assert!(Config::parse("[[reddit]]\nreddit_domain = \"\"").is_err());
-    assert!(Config::parse("[[reddit]]\nreddit_domain = \"www.reddit.com\"").is_ok());
+    Config::parse("[[reddit]]\nreddit_domain = \"https://old.reddit.com\"").unwrap_err();
+    Config::parse("[[reddit]]\nreddit_domain = \"old.reddit.com/\"").unwrap_err();
+    Config::parse("[[reddit]]\nreddit_domain = \"\"").unwrap_err();
+    Config::parse("[[reddit]]\nreddit_domain = \"www.reddit.com\"").unwrap();
 }
 
 #[test]
@@ -698,10 +708,11 @@ fn select_account_by_name_or_first_or_error() {
             .as_deref(),
         Some("b")
     );
-    assert!(select_account(&accounts, Some("missing")).is_err());
+    select_account(&accounts, Some("missing")).unwrap_err();
     // No accounts + no name → None (caller uses flags/env).
     let empty: Vec<RedditAccount> = vec![];
-    assert!(select_account(&empty, None).unwrap().is_none());
+    let selected = select_account(&empty, None).unwrap();
+    assert!(selected.is_none(), "{selected:?}");
 }
 
 #[test]

@@ -250,7 +250,8 @@ async fn fetch_errors_when_a_whole_page_fails_to_parse() {
         .await;
 
     let client = github_client(&server);
-    assert!(matches!(client.fetch().await, Err(SourceError::Other(_))));
+    let result = client.fetch().await;
+    assert!(matches!(result, Err(SourceError::Other(_))), "{result:?}");
 }
 
 #[tokio::test]
@@ -264,7 +265,8 @@ async fn fetch_empty_page_is_ok() {
         .await;
 
     let client = github_client(&server);
-    assert!(client.fetch().await.unwrap().is_empty());
+    let drafts = client.fetch().await.unwrap();
+    assert!(drafts.is_empty(), "{drafts:?}");
 }
 
 #[tokio::test]

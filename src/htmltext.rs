@@ -115,7 +115,7 @@ mod tests {
     fn preview_truncates_long_text_with_ellipsis() {
         let long = "word ".repeat(100);
         let p = preview(&long);
-        assert!(p.ends_with('…'));
+        assert!(p.ends_with('…'), "{p:?}");
         assert_eq!(p.chars().count(), 161);
     }
 

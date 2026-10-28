@@ -684,7 +684,7 @@ mod tests {
         let huge = "word ".repeat(20_000); // ~100 KB of notes
         let fitted = c.fit_extended(&c.url("posts/add"), FIXED, &huge, MAX_URL_BYTES);
         assert!(fitted.len() < huge.len());
-        assert!(fitted.ends_with(TRUNCATION_MARKER));
+        assert!(fitted.ends_with(TRUNCATION_MARKER), "{fitted:?}");
         assert!(url_len(&c, &fitted) <= MAX_URL_BYTES);
     }
 
@@ -693,7 +693,7 @@ mod tests {
         let c = test_client();
         let huge = "é".repeat(20_000); // 2 bytes each — a naive byte cut would panic
         let fitted = c.fit_extended(&c.url("posts/add"), FIXED, &huge, MAX_URL_BYTES);
-        assert!(fitted.ends_with(TRUNCATION_MARKER));
+        assert!(fitted.ends_with(TRUNCATION_MARKER), "{fitted:?}");
         assert!(url_len(&c, &fitted) <= MAX_URL_BYTES);
     }
 
@@ -763,7 +763,7 @@ mod tests {
     fn unparseable_url_is_the_only_fatal_conversion() {
         let mut bad = wire("");
         bad.url = "not a url".into();
-        assert!(Bookmark::try_from(bad).is_err());
+        Bookmark::try_from(bad).unwrap_err();
     }
 
     #[tokio::test]

@@ -116,7 +116,7 @@ async fn one_unreachable_link_does_not_fail_the_run() {
     let pinboard = FakePinboard::default();
 
     let outcome = run(&pinboard, &books, &pass).await;
-    assert!(outcome.into_result().is_ok());
+    outcome.into_result().unwrap();
 }
 
 #[tokio::test]
@@ -134,7 +134,11 @@ async fn a_failed_write_fails_the_run() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.write_failed, 1);
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
     let err = outcome.into_result().unwrap_err();
     assert!(err.to_string().contains("failed to write"), "{err}");
 }
@@ -165,7 +169,7 @@ async fn a_lone_failed_lookup_never_fails_the_run() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!((outcome.reached, outcome.plan_failed), (0, 1));
-    assert!(outcome.into_result().is_ok());
+    outcome.into_result().unwrap();
 }
 
 #[tokio::test]
@@ -418,7 +422,7 @@ async fn an_unchanged_plan_counts_as_reaching_the_source() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.reached, 1);
-    assert!(outcome.into_result().is_ok());
+    outcome.into_result().unwrap();
 }
 
 #[tokio::test]
@@ -429,8 +433,16 @@ async fn none_plan_is_skipped() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -441,7 +453,11 @@ async fn unchanged_plan_is_skipped() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 #[tokio::test]
@@ -538,8 +554,14 @@ async fn chained_rewrite_does_not_delete_another_writes_target() {
         let deleted = pinboard.deleted.borrow();
         // old-a is deleted (no other write targets it); collide-b is X's target and
         // must survive Y's rewrite.
-        assert!(deleted.contains(&"https://old-a/".to_string()));
-        assert!(!deleted.contains(&"https://collide-b/".to_string()));
+        assert!(
+            deleted.contains(&"https://old-a/".to_string()),
+            "{deleted:?}"
+        );
+        assert!(
+            !deleted.contains(&"https://collide-b/".to_string()),
+            "{deleted:?}"
+        );
     }
 
     let x = bookmark("https://old-a/");
@@ -625,7 +647,11 @@ async fn a_matching_public_group_merges_and_stays_public() {
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
-    assert!(updated[0].extended.contains("shared annotation"));
+    assert!(
+        updated[0].extended.contains("shared annotation"),
+        "{:?}",
+        updated[0].extended
+    );
     assert!(updated[0].shared, "a matching group must stay public");
     assert!(
         !updated[0].toread,
@@ -1297,7 +1323,11 @@ async fn a_swap_still_writes_both_bookmarks() {
         .collect();
     written.sort_unstable();
     assert_eq!(written, strings(&["https://x/", "https://y/"]));
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -1400,7 +1430,11 @@ async fn a_visibility_mismatch_refuses_instead_of_merging() {
         pinboard.updated.borrow().is_empty(),
         "a mismatched merge must write nothing at all"
     );
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -1640,10 +1674,26 @@ async fn rewrite_onto_a_resident_outside_the_slice_merges_with_it() {
     // The resident goes into the merge first, so its title survives and its notes and
     // tags are kept alongside the mover's rather than replaced by them.
     assert_eq!(updated[0].description, "Resident title");
-    assert!(updated[0].extended.contains("hand written"));
-    assert!(updated[0].extended.contains("from the mover"));
-    assert!(updated[0].tags.contains(&"keepme".to_string()));
-    assert!(updated[0].tags.contains(&"moved".to_string()));
+    assert!(
+        updated[0].extended.contains("hand written"),
+        "{:?}",
+        updated[0].extended
+    );
+    assert!(
+        updated[0].extended.contains("from the mover"),
+        "{:?}",
+        updated[0].extended
+    );
+    assert!(
+        updated[0].tags.contains(&"keepme".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"moved".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
     // The mover's old URL is absorbed, so a later run sees one bookmark.
     assert_eq!(*pinboard.deleted.borrow(), strings(&["https://x/mine"]));
 }
@@ -1712,8 +1762,16 @@ async fn rewrite_onto_skipped_resident_merges_with_it() {
     assert_eq!(updated[0].url, "https://collide/");
     assert!(updated[0].extended.contains("from A"), "{updated:?}");
     assert!(updated[0].extended.contains("from B"), "{updated:?}");
-    assert!(updated[0].tags.contains(&"x".to_string()));
-    assert!(updated[0].tags.contains(&"y".to_string()));
+    assert!(
+        updated[0].tags.contains(&"x".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"y".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
     assert_eq!(*pinboard.deleted.borrow(), strings(&["https://old-b/"]));
 }
 
@@ -1746,7 +1804,11 @@ async fn rewrite_onto_a_bookmark_whose_lookup_failed_is_refused() {
         pinboard.updated.borrow().is_empty(),
         "must not write over a bookmark whose own lookup failed"
     );
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -1772,7 +1834,11 @@ async fn rewrite_onto_a_bookmark_left_unplanned_by_reauth_is_refused() {
     let pinboard = FakePinboard::default();
 
     let outcome = run(&pinboard, &books, &pass).await;
-    assert!(matches!(outcome.halted, Some(Halt::Reauth(_))));
+    assert!(
+        matches!(outcome.halted, Some(Halt::Reauth(_))),
+        "{:?}",
+        outcome.halted
+    );
     assert_eq!(
         outcome.refused, 1,
         "and the rewrite is reported, not just dropped"
@@ -1781,7 +1847,11 @@ async fn rewrite_onto_a_bookmark_left_unplanned_by_reauth_is_refused() {
         pinboard.updated.borrow().is_empty(),
         "must not write over a bookmark reauth left unplanned"
     );
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 /// Two bookmarks in the slice, both planned onto the second one's own URL — a GitHub
@@ -1967,7 +2037,11 @@ async fn an_emptied_group_is_not_counted_as_a_refusal_of_its_own() {
         "no group is previewed twice: {:?}",
         outcome.preview
     );
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 #[tokio::test]
@@ -2031,7 +2105,11 @@ async fn colliding_peers_that_disagree_are_all_refused() {
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
     assert_eq!(outcome.refused, 2, "neither peer may write");
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
     assert!(
         pinboard.deleted.borrow().is_empty(),
         "and neither is absorbed — the public one must not vanish"
@@ -2070,8 +2148,16 @@ async fn colliding_peers_that_agree_still_merge() {
     );
     // Both notes survive. *Which leads* is first-appearance order in the slice, which
     // the user has no way to see or control, so it is not something to pin here.
-    assert!(updated[0].extended.contains("from A"));
-    assert!(updated[0].extended.contains("from B"));
+    assert!(
+        updated[0].extended.contains("from A"),
+        "{:?}",
+        updated[0].extended
+    );
+    assert!(
+        updated[0].extended.contains("from B"),
+        "{:?}",
+        updated[0].extended
+    );
     assert_eq!(pinboard.deleted.borrow().len(), 2);
 }
 
@@ -2097,9 +2183,13 @@ async fn a_dry_run_pass_still_advances_the_view() {
         store.resident(&u("https://x/moved")).is_some(),
         "the next pass must preview from the state this one would leave"
     );
-    assert!(store.resident(&u("https://x/mine")).is_none());
+    assert_eq!(store.resident(&u("https://x/mine")), None);
     assert!(pinboard.updated.borrow().is_empty(), "and write nothing");
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -2141,8 +2231,16 @@ async fn dry_run_renders_every_field_and_writes_nothing() {
     )
     .await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
     // What the operator actually reads before letting a real run touch the account.
     assert_eq!(
         outcome.preview,
@@ -2193,8 +2291,16 @@ async fn a_dry_run_previews_a_merge_and_its_absorbed_urls() {
         &pass,
     )
     .await;
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
     assert_eq!(
         outcome.preview,
         vec![
@@ -2231,7 +2337,11 @@ async fn a_merge_onto_a_trimmed_note_is_not_rewritten_every_run() {
         note: note_pinboard_trims(),
         ..bookmark("https://collide/")
     });
-    assert!(resident.note.ends_with(TRUNCATION_MARKER));
+    assert!(
+        resident.note.ends_with(TRUNCATION_MARKER),
+        "{:?}",
+        resident.note
+    );
     let mover = bookmark("https://x/mover");
     let other = bookmark("https://x/other");
     let slice = vec![mover.clone(), other.clone()];
@@ -2391,7 +2501,11 @@ async fn a_change_wholly_past_the_cut_is_not_written() {
 
     let (outcome, logs) = crate::test_support::capturing_logs(run(&pinboard, &books, &pass)).await;
     assert_eq!(outcome.changed, 0);
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
     assert!(crate::test_support::warnings(&logs).is_empty(), "{logs:#?}");
 }
 
@@ -2607,7 +2721,11 @@ async fn stale_to_now_settles_after_one_run() {
     )
     .await;
     assert_eq!(outcome.changed, 0);
-    assert!(second.updated.borrow().is_empty());
+    assert!(
+        second.updated.borrow().is_empty(),
+        "{:?}",
+        second.updated.borrow()
+    );
 }
 
 #[tokio::test]

@@ -332,8 +332,16 @@ mod tests {
         // The re-derived url/title still apply and the base tags still merge in.
         assert_eq!(planned.url.as_str(), "https://example.com/x");
         assert_eq!(planned.title, "Cool thing");
-        assert!(planned.tags.contains(&"mine".to_string()));
-        assert!(planned.tags.contains(&"hackernews".to_string()));
+        assert!(
+            planned.tags.contains(&"mine".to_string()),
+            "{:?}",
+            planned.tags
+        );
+        assert!(
+            planned.tags.contains(&"hackernews".to_string()),
+            "{:?}",
+            planned.tags
+        );
     }
 
     #[tokio::test]

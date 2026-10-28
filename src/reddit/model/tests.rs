@@ -133,7 +133,7 @@ fn into_draft_skips_item_with_unparseable_url() {
             "permalink": "/r/rust/comments/abc/x/", "title": "T"
         }),
     );
-    assert!(it.into_draft(&cfg).is_none());
+    assert_eq!(it.into_draft(&cfg), None);
 }
 
 #[test]
@@ -147,9 +147,15 @@ fn post_tags_include_author_flair_and_type() {
         }),
     );
     let tags = it.tags(&RedditConfig::default());
-    assert!(tags.contains(&"author:reddit:alice".to_string()));
-    assert!(tags.contains(&"reddit-flair:help-wanted".to_string()));
-    assert!(tags.contains(&"type:image".to_string()));
+    assert!(
+        tags.contains(&"author:reddit:alice".to_string()),
+        "{tags:?}"
+    );
+    assert!(
+        tags.contains(&"reddit-flair:help-wanted".to_string()),
+        "{tags:?}"
+    );
+    assert!(tags.contains(&"type:image".to_string()), "{tags:?}");
 }
 
 #[test]
@@ -229,17 +235,18 @@ fn media_type_tag_is_gated_by_the_media_types_allowlist() {
         media_types: vec!["video".into()],
         ..RedditConfig::default()
     };
-    assert!(!img.tags(&only_video).iter().any(|t| t.starts_with("type:")));
-    assert!(img
-        .tags(&RedditConfig::default())
-        .contains(&"type:image".to_string()));
+    let tags = img.tags(&only_video);
+    assert!(!tags.iter().any(|t| t.starts_with("type:")), "{tags:?}");
+    let tags = img.tags(&RedditConfig::default());
+    assert!(tags.contains(&"type:image".to_string()), "{tags:?}");
 
     // An empty media_prefix disables the tag even when the type is allowed.
     let no_prefix = RedditConfig {
         media_prefix: String::new(),
         ..RedditConfig::default()
     };
-    assert!(!img.tags(&no_prefix).iter().any(|t| t.starts_with("type:")));
+    let tags = img.tags(&no_prefix);
+    assert!(!tags.iter().any(|t| t.starts_with("type:")), "{tags:?}");
 }
 
 #[test]
@@ -252,10 +259,8 @@ fn text_and_link_posts_get_no_type_tag_and_comment_links_its_parent_thread() {
             "title": "T", "is_self": true, "selftext": "hi"
         }),
     );
-    assert!(!post
-        .tags(&RedditConfig::default())
-        .iter()
-        .any(|t| t.starts_with("type:")));
+    let tags = post.tags(&RedditConfig::default());
+    assert!(!tags.iter().any(|t| t.starts_with("type:")), "{tags:?}");
 
     let comment = item(
         "t1",
@@ -269,10 +274,8 @@ fn text_and_link_posts_get_no_type_tag_and_comment_links_its_parent_thread() {
         "Thread: https://old.reddit.com/r/rust/comments/a/x/\n\n<blockquote>my reply</blockquote>"
     );
     // Comments get no `type:` tag.
-    assert!(!comment
-        .tags(&RedditConfig::default())
-        .iter()
-        .any(|t| t.starts_with("type:")));
+    let tags = comment.tags(&RedditConfig::default());
+    assert!(!tags.iter().any(|t| t.starts_with("type:")), "{tags:?}");
 }
 
 #[test]
@@ -371,9 +374,8 @@ fn over_18_adds_nsfw_tag() {
             "over_18": true,
         }),
     );
-    assert!(it
-        .tags(&RedditConfig::default())
-        .contains(&"nsfw".to_string()));
+    let tags = it.tags(&RedditConfig::default());
+    assert!(tags.contains(&"nsfw".to_string()), "{tags:?}");
 }
 
 #[test]
@@ -439,7 +441,7 @@ fn all_children_failing_is_an_error_not_a_silent_empty_page() {
                 }
             }"#,
     );
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[test]
@@ -448,7 +450,11 @@ fn genuinely_empty_children_is_ok() {
     let listing: RedditListing =
         serde_json::from_str(r#"{ "kind": "Listing", "data": { "after": null, "children": [] } }"#)
             .unwrap();
-    assert!(listing.data.children.is_empty());
+    assert!(
+        listing.data.children.is_empty(),
+        "{:?}",
+        listing.data.children
+    );
 }
 
 #[test]
@@ -457,7 +463,7 @@ fn non_array_children_still_fail() {
     // still a genuine error, not silently an empty page.
     let result: Result<RedditListing, _> =
         serde_json::from_str(r#"{ "kind": "Listing", "data": { "children": "nope" } }"#);
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[test]
@@ -467,7 +473,7 @@ fn non_post_non_comment_kinds_are_skipped() {
         "data": { "subreddit": "rust", "permalink": "/r/rust/" }
     }))
     .unwrap();
-    assert!(entry.into_saved_item("old.reddit.com").is_none());
+    assert_eq!(entry.into_saved_item("old.reddit.com"), None);
 }
 
 #[test]

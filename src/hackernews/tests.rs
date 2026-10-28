@@ -114,7 +114,11 @@ fn text_post_without_url_bookmarks_the_hn_permalink() {
     // text (no redundant `HN Link:`), with the inner HTML converted to Markdown.
     assert_eq!(d.bookmark.note, "<blockquote>details</blockquote>");
     // Ask HN: → special-type tag.
-    assert!(d.bookmark.tags.contains(&"hackernews:ask-hn".to_string()));
+    assert!(
+        d.bookmark.tags.contains(&"hackernews:ask-hn".to_string()),
+        "{:?}",
+        d.bookmark.tags
+    );
 }
 
 #[test]
@@ -191,11 +195,9 @@ fn into_draft_skips_story_with_unparseable_article_url() {
     // A story whose article URL doesn't parse is dropped rather than producing a
     // draft with no URL. (Comments/text posts use the HN permalink, which always
     // parses, so only article stories can hit this.)
-    assert!(
-        item(json!({ "id": 5, "type": "story", "by": "ann", "url": "not a url" }))
-            .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default())
-            .is_none()
-    );
+    let draft = item(json!({ "id": 5, "type": "story", "by": "ann", "url": "not a url" }))
+        .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default());
+    assert!(draft.is_none(), "{draft:?}");
 }
 
 #[test]
@@ -261,7 +263,7 @@ fn parse_favorite_ids_accepts_empty_list_with_marker() {
     let FavoritesPage::Recognized { ids, more } = parse_favorite_ids(html) else {
         panic!("expected an empty favorites list to be recognized");
     };
-    assert!(ids.is_empty());
+    assert!(ids.is_empty(), "{ids:?}");
     assert_eq!(more, None);
 }
 
@@ -282,8 +284,8 @@ fn hn_item_id_extracts_only_from_hn_item_urls() {
         Url::from(&id).as_str(),
         "https://news.ycombinator.com/item?id=42"
     );
-    assert!(HackerNewsItemId::try_from(&url("https://example.com/item?id=42")).is_err());
-    assert!(HackerNewsItemId::try_from(&url("https://news.ycombinator.com/news")).is_err());
+    HackerNewsItemId::try_from(&url("https://example.com/item?id=42")).unwrap_err();
+    HackerNewsItemId::try_from(&url("https://news.ycombinator.com/news")).unwrap_err();
 }
 
 #[test]

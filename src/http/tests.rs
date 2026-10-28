@@ -585,7 +585,7 @@ async fn a_silent_host_is_given_up_once_its_timeouts_outlast_the_backoff() {
         Ok(Err(Failure::Timeout)),
         "a 5xx is a response, so the outage starts over"
     );
-    assert!(budget.host(HOST).unreachable().is_none());
+    assert_eq!(budget.host(HOST).unreachable(), None);
 
     tokio::time::advance(LONG_BACKOFF.iter().sum()).await;
     let (result, _) = attempt_long(&budget, timeouts(2)).await;
@@ -786,7 +786,7 @@ fn excerpt_is_cut_on_a_char_boundary_within_the_cap() {
     assert!(excerpt.len() <= ERROR_BODY_MAX_BYTES);
     let kept = excerpt.strip_suffix(ELLIPSIS).expect("cut is marked");
     assert_eq!(kept.len(), ERROR_BODY_MAX_BYTES - ELLIPSIS.len() - 1);
-    assert!(body.starts_with(kept));
+    assert!(body.starts_with(kept), "{body:?}");
 }
 
 #[test]

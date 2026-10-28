@@ -487,8 +487,16 @@ pub async fn assert_cleanup_changes_nothing(
         "cleanup rewrote what sync wrote: {updated:#?}\nas sync stored it: {:#?}",
         pinboard.all
     );
-    assert!(pinboard.added.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.added.borrow().is_empty(),
+        "{:?}",
+        pinboard.added.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 /// Parse `argv` as the binary does, but with no flag falling back to an environment

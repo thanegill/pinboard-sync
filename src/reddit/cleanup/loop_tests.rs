@@ -63,9 +63,21 @@ async fn normalizes_url_tags_nsfw_and_title() {
         "https://old.reddit.com/r/NEWS/comments/abc/x/"
     );
     assert_eq!(updated[0].description, "Real Title");
-    assert!(updated[0].tags.contains(&"reddit".to_string()));
-    assert!(updated[0].tags.contains(&"subreddit:news".to_string()));
-    assert!(updated[0].tags.contains(&"nsfw".to_string()));
+    assert!(
+        updated[0].tags.contains(&"reddit".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"subreddit:news".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"nsfw".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
     // Notes, privacy, to-read, and the original creation time are preserved.
     assert_eq!(updated[0].extended, "original notes");
     assert!(updated[0].shared);
@@ -115,8 +127,16 @@ async fn marks_nsfw_with_configured_tag_not_literal_nsfw() {
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
-    assert!(updated[0].tags.contains(&"adult".to_string()));
-    assert!(!updated[0].tags.contains(&"nsfw".to_string()));
+    assert!(
+        updated[0].tags.contains(&"adult".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        !updated[0].tags.contains(&"nsfw".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
 }
 
 #[tokio::test]
@@ -182,7 +202,11 @@ async fn configured_nsfw_tag_is_idempotent() {
         .await
         .unwrap();
 
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 #[tokio::test]
@@ -234,7 +258,11 @@ async fn keeps_entity_text_in_a_stored_title() {
         .await
         .unwrap();
 
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 #[tokio::test]
@@ -311,7 +339,11 @@ async fn strips_self_link_notes_from_a_self_post() {
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].extended, "");
     // URL was already normalized, so nothing is deleted.
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -386,7 +418,11 @@ async fn retrofits_self_post_notes_with_blockquote() {
         "<blockquote>the body text</blockquote>"
     );
     // Notes-only change: URL unchanged, so nothing is deleted.
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -492,7 +528,11 @@ async fn leaves_comment_notes_untouched() {
         .unwrap();
 
     // Nothing changed (notes preserved, URL/title/tags already current), so no write.
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 #[tokio::test]
@@ -536,7 +576,11 @@ async fn use_post_date_leaves_comment_timestamp_untouched() {
 
     // Only the date could have changed, and the fix keeps the comment's own date, so
     // nothing is written. Without the guard the thread's created_utc would leak in.
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 #[tokio::test]
@@ -565,8 +609,16 @@ async fn skips_unchanged_and_non_reddit() {
     run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -947,8 +999,16 @@ async fn dry_run_writes_nothing() {
     run(&pinboard.dry_cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap();
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -1028,7 +1088,7 @@ async fn logs_and_skips_a_failing_update_then_continues() {
     let err = run(&pinboard.cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("1 bookmark(s) failed"));
+    assert!(err.to_string().contains("1 bookmark(s) failed"), "{err}");
     // ...but the second bookmark was still updated despite the first failing.
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1239,7 +1299,11 @@ async fn a_comment_missing_from_the_lookup_adds_nothing_and_does_not_fail() {
         .await
         .unwrap();
 
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 /// One cleanup run over `seed`, returning how many bookmarks it wrote and the account as

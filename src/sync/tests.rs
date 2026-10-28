@@ -163,7 +163,7 @@ async fn present_bookmark_with_unparseable_time_still_dedups() {
 
     let drafts = reddit.fetch().await.unwrap();
     let new = filter_new(&reddit, drafts, &[stored]);
-    assert!(new.is_empty());
+    assert!(new.is_empty(), "{new:?}");
 }
 
 #[tokio::test]
@@ -176,7 +176,11 @@ async fn dry_run_writes_nothing() {
     let pinboard = FakePinboard::default();
     let outcome = write_drafts(&pinboard, &new, WriteMode::DryRun).await;
     assert_eq!(outcome.written, 0);
-    assert!(pinboard.added.borrow().is_empty());
+    assert!(
+        pinboard.added.borrow().is_empty(),
+        "{:?}",
+        pinboard.added.borrow()
+    );
 }
 
 #[tokio::test]

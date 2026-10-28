@@ -72,9 +72,19 @@ pub async fn capturing_logs<T>(fut: impl Future<Output = T>) -> (T, Vec<String>)
 
 /// The warnings among lines [`capturing_logs`] returned.
 pub fn warnings(logs: &[String]) -> Vec<&str> {
+    at_levels(logs, &["WARN"])
+}
+
+/// The warnings and errors among lines [`capturing_logs`] returned.
+pub fn complaints(logs: &[String]) -> Vec<&str> {
+    at_levels(logs, &["WARN", "ERROR"])
+}
+
+/// The lines among `logs` logged at one of `levels`.
+fn at_levels<'l>(logs: &'l [String], levels: &[&str]) -> Vec<&'l str> {
     logs.iter()
         .map(String::as_str)
-        .filter(|line| line.starts_with("WARN"))
+        .filter(|line| levels.iter().any(|level| line.starts_with(level)))
         .collect()
 }
 
@@ -428,9 +438,11 @@ pub const ROUND_TRIP_DATINGS: [DateOpts; 3] = [
 ];
 
 /// The account one `sync` run of `source` leaves on an empty account under `dates`, each
-/// bookmark read back as `posts/all` returns it. Pinboard dates a bookmark sent without a
-/// `dt` when it lands, so such a bookmark reads back dated to the run. Not modelled:
-/// Pinboard's limits, such as a note cut to fit the request URL or a long title.
+/// bookmark read back as `posts/all` returns it. Written through a [`FakePinboard`] that
+/// trims notes, so a note too long for the request URL is stored cut, as the client cuts
+/// it; [`assert_cleanup_changes_nothing`] cleans up through one too. Pinboard dates a
+/// bookmark sent without a `dt` when it lands, so such a bookmark reads back dated to the
+/// run. Not modelled: Pinboard's own limits, such as a long title.
 pub async fn synced_account<S: Source>(source: &S, dates: DateOpts) -> Vec<Bookmark> {
     let drafts = crate::http::recording_waits(source.fetch())
         .await
@@ -444,7 +456,10 @@ pub async fn synced_account<S: Source>(source: &S, dates: DateOpts) -> Vec<Bookm
         dates,
     };
     let new = prepare_new_drafts(source, drafts, &[], &settings, now);
-    let pinboard = FakePinboard::default();
+    let pinboard = FakePinboard {
+        trims_notes: true,
+        ..Default::default()
+    };
     let tally = write_drafts(&pinboard, &new, WriteMode::Live).await;
     assert_eq!(tally.failed, 0);
     replay(&[], &pinboard.ops.take())
@@ -478,15 +493,13 @@ pub async fn assert_cleanup_changes_nothing(
 ) {
     let pinboard = FakePinboard {
         all: account,
+        trims_notes: true,
         ..Default::default()
     };
     let (result, logs) = capturing_logs(cleanup(&pinboard.cleanup_store())).await;
     result.unwrap();
-    let complaints: Vec<&String> = logs
-        .iter()
-        .filter(|line| line.starts_with("WARN") || line.starts_with("ERROR"))
-        .collect();
-    assert!(complaints.is_empty(), "{complaints:#?}");
+    let complained = complaints(&logs);
+    assert!(complained.is_empty(), "{complained:#?}");
     let updated = pinboard.updated.borrow();
     assert!(
         updated.is_empty(),

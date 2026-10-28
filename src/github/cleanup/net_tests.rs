@@ -1,7 +1,7 @@
 use super::*;
 use crate::github::gists::GistPostDate;
 use crate::pinboard::TRUNCATION_MARKER;
-use crate::source::{Halt, Source};
+use crate::source::Halt;
 use crate::test_support::{
     assert_cleanup_changes_nothing, stored_at, strings, synced_account, tag_list, FakePinboard,
     NO_DATING, ROUND_TRIP_DATINGS,
@@ -1251,20 +1251,11 @@ async fn many_file_gist_server(description: &str) -> MockServer {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
         .mount(&server)
         .await;
-    let files: serde_json::Map<String, serde_json::Value> = (0..200)
-        .map(|n| {
-            let name = format!("file_number_{n:03}.txt");
-            (
-                name.clone(),
-                json!({ "filename": name, "language": "Text" }),
-            )
-        })
-        .collect();
     let gist = json!({
         "id": GIST_ID,
         "html_url": gist_url(None),
         "description": description,
-        "files": files,
+        "files": many_files(200),
         "owner": { "login": "octocat" },
     });
     mount_starred(
@@ -1273,38 +1264,6 @@ async fn many_file_gist_server(description: &str) -> MockServer {
     )
     .await;
     server
-}
-
-/// The account after `sync github` writes what `server` lists to a Pinboard that trims
-/// long notes, each bookmark dated as Pinboard dates an undated write.
-async fn synced_trimmed(server: &MockServer) -> Vec<Bookmark> {
-    let drafts = crate::http::recording_waits(github_client(server).fetch())
-        .await
-        .0
-        .unwrap();
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
-    let new = crate::sync::prepare_new_drafts(
-        &github_client(server),
-        drafts,
-        &[],
-        &crate::sync::JobSettings {
-            limit: crate::config::SyncLimit::All,
-            read_later: false,
-            public: false,
-            dates: NO_DATING,
-        },
-        time::OffsetDateTime::now_utc(),
-    );
-    let tally = crate::sync::write_drafts(&pinboard, &new, crate::bookmark::WriteMode::Live).await;
-    assert_eq!(tally.failed, 0);
-    let mut synced = crate::test_support::replay(&[], &pinboard.ops.take());
-    for bookmark in &mut synced {
-        bookmark.timestamp = crate::timefmt::parse_rfc3339("2024-05-06T07:08:09Z");
-    }
-    synced
 }
 
 /// One cleanup run over `account` on a Pinboard that trims long notes, returning how many
@@ -1331,7 +1290,7 @@ async fn clean_trimmed(account: Vec<Bookmark>, server: &MockServer) -> (usize, V
 #[tokio::test]
 async fn cleanup_leaves_a_gist_note_pinboard_trimmed_as_it_is() {
     let server = many_file_gist_server("Many files").await;
-    let synced = synced_trimmed(&server).await;
+    let synced = synced_account(&github_client(&server), NO_DATING).await;
     assert!(
         synced[0].note.ends_with(TRUNCATION_MARKER),
         "the fixture's note must be trimmed: {:?}",
@@ -1347,7 +1306,8 @@ async fn cleanup_leaves_a_gist_note_pinboard_trimmed_as_it_is() {
 
 #[tokio::test]
 async fn cleanup_refreshes_an_edited_gist_with_a_trimmed_note_once() {
-    let synced = synced_trimmed(&many_file_gist_server("Many files").await).await;
+    let original = many_file_gist_server("Many files").await;
+    let synced = synced_account(&github_client(&original), NO_DATING).await;
 
     let edited = many_file_gist_server("Many more files").await;
     let (first_writes, cleaned) = clean_trimmed(synced, &edited).await;
@@ -1442,7 +1402,8 @@ async fn cleanup_leaves_the_stars_sync_wrote_as_they_are() {
 }
 
 /// Starred gists as `/gists/starred` lists them: one by `octocat` in three languages, made
-/// recently, and an undescribed one-file gist by `someone`, made long ago.
+/// recently, an undescribed one-file gist by `someone`, made long ago, and one by `bulk`
+/// with 300 files, whose notes are too long to write whole.
 fn round_trip_gists() -> Vec<serde_json::Value> {
     vec![
         json!({
@@ -1467,7 +1428,30 @@ fn round_trip_gists() -> Vec<serde_json::Value> {
             "created_at": LONG_AGO,
             "updated_at": LONG_AGO,
         }),
+        json!({
+            "id": "fedcba9876543210fedc",
+            "html_url": "https://gist.github.com/fedcba9876543210fedc",
+            "description": "Generated fixtures",
+            "files": many_files(300),
+            "owner": { "login": "bulk" },
+            "created_at": days_ago(3),
+            "updated_at": days_ago(2),
+        }),
     ]
+}
+
+/// `count` text files keyed by name, as a gist lists them. A few hundred make the notes
+/// `sync` gives the gist too long for a `posts/add` URL.
+fn many_files(count: usize) -> serde_json::Map<String, serde_json::Value> {
+    (0..count)
+        .map(|n| {
+            let name = format!("file_number_{n:03}.txt");
+            (
+                name.clone(),
+                json!({ "filename": name, "language": "Text" }),
+            )
+        })
+        .collect()
 }
 
 /// The defaults dating gists by `post_date`, and the same with gist tags of their own, a
@@ -1516,6 +1500,15 @@ async fn cleanup_leaves_the_gists_sync_wrote_as_they_are() {
 
                 let account = synced_account(&client, dates).await;
                 assert_eq!(account.len(), gists.len(), "{config:?} {dates:?}");
+                let bulk = account
+                    .iter()
+                    .find(|bookmark| bookmark.url.as_str().ends_with("/fedcba9876543210fedc"))
+                    .expect("the many-file gist is synced");
+                assert!(
+                    bulk.note.ends_with(TRUNCATION_MARKER),
+                    "the many-file gist's note must be stored cut: {:?}",
+                    bulk.note
+                );
                 let configured = [config.clone()];
                 assert_cleanup_changes_nothing(account, async |store| {
                     run(store, &client, dates, &configured).await

@@ -3,10 +3,10 @@
 //! bookmark's end-state, group the plans by target URL, and write each group.
 //!
 //! A lone plan is fitted to what the store would keep ([`BookmarkStore::fit`]), skipped
-//! when it would store nothing that writing its stored bookmark back wouldn't, otherwise
-//! written via [`BookmarkStore::apply_update`], deleting the old URL on a rewrite. Plans
-//! landing on one URL, with any record already stored there, are field-merged
-//! ([`merge_bookmarks`]) into one record, checked and written the same way via
+//! when it would store nothing that writing its stored bookmark back wouldn't, and
+//! otherwise written via [`BookmarkStore::apply_update`], deleting the old URL on a
+//! rewrite. Plans landing on one URL, with any record already stored there, are
+//! field-merged ([`merge_bookmarks`]) into one record, checked and written the same way via
 //! [`BookmarkStore::apply_merge`], which deletes the absorbed URLs: Pinboard holds one
 //! record per URL. A plan that disagrees about visibility with the record staying at its
 //! target is refused and left where it is; with no record staying, plans that disagree with

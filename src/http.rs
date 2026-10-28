@@ -494,13 +494,13 @@ impl RetryingClient {
     /// Send a request, retrying *transient* failures. A request that could not establish a
     /// connection (per `reqwest::Error::is_connect`: any connector failure, so DNS, TCP
     /// connect, or the TLS handshake, including one that runs past [`CONNECT_TIMEOUT`]) is
-    /// retried on the long exponential [`CONNECT_BACKOFF`] (5s, 10s, 20s, 40s, 80s), so a
-    /// short resolver or network outage doesn't fail the run, once per host per client (see
-    /// [`ConnectBudget`], which also gives up hosts). Other transport errors (a connection
-    /// dropped mid-request, or no response headers within [`READ_TIMEOUT`]), HTTP 429, and
-    /// 5xx are retried on the client's [`LinearBackoff`]. Responses that are not transient
-    /// -- 2xx and other 4xx (e.g. 401/403/400) -- are returned as-is for the caller to
-    /// interpret, since retrying them would not help.
+    /// retried on the long exponential [`CONNECT_BACKOFF`], so a short resolver or network
+    /// outage doesn't fail the run, once per host per client (see [`ConnectBudget`], which
+    /// also gives up hosts). Other transport errors (a connection dropped mid-request, or
+    /// no response headers within [`READ_TIMEOUT`]), HTTP 429, and 5xx are retried on the
+    /// client's [`LinearBackoff`]. Responses that are not transient -- 2xx and other 4xx
+    /// (e.g. 401/403/400) -- are returned as-is for the caller to interpret, since retrying
+    /// them would not help.
     ///
     /// Only sending is retried: a body that stalls after this returns fails the caller's
     /// read.

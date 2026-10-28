@@ -1,9 +1,8 @@
-//! `cleanup` subcommand: normalize existing Reddit bookmarks in a Pinboard
-//! account. Rewrites URLs to the account's `reddit_domain` (unwrapping `over18`
-//! redirects) unless they are on another configured account's,
-//! normalizes tags, and -- using Reddit's `/api/info` for authoritative data --
-//! marks NSFW posts, replaces generic placeholder titles, and backfills the author,
-//! flair and media-type tags sync writes.
+//! `cleanup` subcommand: normalize existing Reddit bookmarks in a Pinboard account.
+//! Rewrites URLs to the account's `reddit_domain` (unwrapping `over18` redirects) unless
+//! they are on another configured account's, normalizes tags, and -- using Reddit's
+//! `/api/info` for authoritative data -- marks NSFW posts, replaces generic placeholder
+//! titles, and backfills the author, flair and media-type tags sync writes.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -232,14 +231,9 @@ impl CleanupPass for RedditCleanupPass<'_> {
             }
         }
 
-        // Reshape the notes. Only for *post* bookmarks: `post` is keyed by the post fullname
-        // (`post_fullname`), and a comment's own entry is used only for its tags, so leave
-        // those notes alone. When we have authoritative data, retrofit the rebuild (selftext
-        // in a <blockquote>, or a link post's external URL) onto the stored notes *only* when
-        // those notes are ones the tool itself wrote (empty, the current rebuild, the raw
-        // pre-<blockquote> selftext, or a bare self-link an older sync left) -- a
-        // hand-written annotation on a manually-saved bookmark is preserved. Without an entry
-        // this run, only drop a bare self-link; never wipe genuine notes.
+        // Only a post's notes are rebuilt, and only when the tool wrote them; a comment's
+        // entry feeds only its tags. Without an entry this run, only a bare self-link is
+        // dropped, so a hand-written note is never wiped.
         let note = if is_comment_url(&new_url) {
             bookmark.note.clone()
         } else if let Some(post) = post {

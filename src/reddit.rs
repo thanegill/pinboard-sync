@@ -402,16 +402,16 @@ fn redirect_error(
     anyhow::anyhow!("{what} returned {status}, redirecting to {location:?}").into()
 }
 
-/// The body text of a Reddit response, centralizing status handling. Reddit's
-/// network-security page (see [`edge_page`]) becomes [`Halt::Blocked`] and any other
-/// 401/403 [`Halt::Reauth`]; both carry a fixed, actionable message, since the body is
-/// usually a large HTML page and isn't echoed (one that is neither edge page is logged at
-/// debug level instead). Redirects are not followed (see [`redirect_error`]). Any other
-/// non-success status becomes [`SourceError::Other`], as does a body cut off mid-read on a
-/// success or 401/403, since a partial 403 page can't tell the block from a refused
-/// cookie. `what` names the request, and `cookie` is the one it sent: its setting is named
-/// in advice and its [secrets](SessionCookie::secrets) are redacted from a logged or
-/// quoted body.
+/// The body text of a Reddit response, with every status decided here:
+/// - the network-security page ([`edge_page`]) is [`Halt::Blocked`], and any other 401/403
+///   [`Halt::Reauth`], each with a fixed message rather than the body (logged at debug
+///   level when it is neither edge page);
+/// - a redirect is not followed but reported by [`redirect_error`];
+/// - any other failure status, or a body cut off on a success or 401/403 (a partial 403
+///   page can't tell a block from a refused cookie), is [`SourceError::Other`].
+///
+/// `what` names the request. `cookie` is the one it sent: messages name its setting, and
+/// its [secrets](SessionCookie::secrets) are redacted from any body logged or quoted.
 async fn reddit_body(
     resp: reqwest::Response,
     what: &str,

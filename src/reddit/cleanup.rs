@@ -14,7 +14,7 @@ use crate::config::own_then_configured;
 use crate::htmltext::collapse_whitespace;
 use crate::keys::RedditKeys;
 use crate::reddit::model::{
-    cased_subreddit, created_at, over18_dest, RedditConfig, RedditKind, RedditSavedItem,
+    cased_subreddit, created_at, unwrap_over18, RedditConfig, RedditKind, RedditSavedItem,
 };
 use crate::reddit::PostInfo;
 use crate::source::{DedupKey, SourceError, UrlKey};
@@ -386,15 +386,6 @@ pub fn normalize_url(url: &Url, domain: &str) -> Option<Url> {
     let unwrapped = unwrap_over18(url);
     let normalized = to_reddit_domain(&unwrapped, domain).unwrap_or(unwrapped);
     (normalized != *url).then_some(normalized)
-}
-
-/// `url` with every `over18/?dest=` redirect unwrapped.
-fn unwrap_over18(url: &Url) -> Url {
-    let mut current = url.clone();
-    while let Some(dest) = over18_dest(&current) {
-        current = dest;
-    }
-    current
 }
 
 /// Rewrite any reddit host (`reddit.com` or a `*.reddit.com` subdomain) to the

@@ -78,6 +78,10 @@ All notable changes to this project are documented here. The format is based on
   longer one that starts `config:` as if the config had set it.
 - A Reddit cookie with a stray `;` (`abc;`, `a=1;;`) is sent without it, so a bare value
   still counts as the session.
+- `sync reddit` no longer re-adds a saved post whose bookmark is still Reddit's `over18`
+  interstitial: the interstitial now matches the post it leads to.
+- A Reddit cookie in doubled quotes (`""abc==""`), or in quotes beside a blank pair
+  (`"abc==";=`), is sent as the unquoted session.
 - Error excerpts and `-v` body logs redact the GitHub token and Reddit cookie too.
 - An error for an empty response body no longer ends in a dangling `: `.
 - Reddit no longer pauses after its last saved page when the page cap stops it.

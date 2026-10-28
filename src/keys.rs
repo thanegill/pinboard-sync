@@ -8,7 +8,7 @@ use url::Url;
 
 use crate::github::gists::{gist_root_id, GIST_HOST};
 use crate::hackernews::HackerNewsItemId;
-use crate::reddit::model::over18_dest;
+use crate::reddit::model::unwrap_over18;
 use crate::source::{DedupKey, UrlKey};
 use crate::urls::{host_matches, UrlExt};
 
@@ -64,7 +64,8 @@ impl UrlKey for GitHubKeys {
 /// under any Reddit host (`old.`/`www.`/`m.`) maps to the same key. A Reddit host is
 /// reddit.com, a subdomain of it, or one of `domains`, the `reddit_domain`s of the
 /// accounts in play: a mirror outside reddit.com counts too, since that is where sync
-/// writes its account's bookmarks.
+/// writes its account's bookmarks. An `over18` interstitial keys as its `dest`, the URL
+/// `cleanup reddit` unwraps it to.
 #[derive(Debug, Clone, Default)]
 pub struct RedditKeys {
     domains: Vec<String>,
@@ -90,6 +91,7 @@ impl RedditKeys {
 
 impl UrlKey for RedditKeys {
     fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
+        let url = &unwrap_over18(url);
         if !self.is_reddit_host(url) {
             return None;
         }
@@ -126,9 +128,7 @@ impl HackerNewsKeys {
 
 impl UrlKey for HackerNewsKeys {
     fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
-        if let Some(dest) = over18_dest(url) {
-            return self.dedup_key(&dest);
-        }
+        let url = &unwrap_over18(url);
         if let Ok(id) = HackerNewsItemId::try_from(url) {
             return Some(id.dedup_key());
         }
@@ -300,6 +300,27 @@ mod tests {
         ] {
             assert_eq!(key(url).as_deref(), Some(want), "url: {url}");
         }
+    }
+
+    #[test]
+    fn reddit_keys_an_over18_interstitial_as_its_dest() {
+        let interstitial = "https://www.reddit.com/over18/?dest=http%3A%2F%2Freddit.com%2Fr%2FA0a%2Fcomments%2F00a0a%2F0";
+        for domain in ["old.reddit.com", "www.reddit.com"] {
+            let cleaned = crate::reddit::cleanup::normalize_url(&url(interstitial), domain)
+                .expect("cleanup reddit moves an interstitial");
+            assert_eq!(key(interstitial), key(cleaned.as_str()), "{cleaned}");
+        }
+        assert_eq!(
+            key(interstitial).as_deref(),
+            Some("/r/a0a/comments/00a0a/0")
+        );
+        let nested = "https://www.reddit.com/over18?dest=https%3A%2F%2Fwww.reddit.com%2Fover18%3Fdest%3Dhttps%253A%252F%252Fwww.reddit.com%252Fr%252Fx%252Fcomments%252Fa%252Ft%252F";
+        assert_eq!(key(nested).as_deref(), Some("/r/x/comments/a/t"));
+        assert_eq!(
+            key("https://www.reddit.com/over18?dest=https%3A%2F%2Fexample.com%2Fpost"),
+            None,
+            "an interstitial in front of another site is that site's link"
+        );
     }
 
     #[test]

@@ -409,9 +409,19 @@ pub fn cased_subreddit(subreddit: &str) -> String {
     }
 }
 
+/// `url` with every `over18/?dest=` interstitial unwrapped, as `cleanup reddit` moves it
+/// and as [`RedditKeys`](crate::keys::RedditKeys) and `HackerNewsKeys` key it.
+pub fn unwrap_over18(url: &Url) -> Url {
+    let mut current = url.clone();
+    while let Some(dest) = over18_dest(&current) {
+        current = dest;
+    }
+    current
+}
+
 /// If `url` is a reddit `over18` interstitial, return its `dest` target (the `url`
 /// crate percent-decodes the query value).
-pub fn over18_dest(url: &Url) -> Option<Url> {
+fn over18_dest(url: &Url) -> Option<Url> {
     if !host_matches(url.host_str()?, "reddit.com")
         || !url.path().trim_start_matches('/').starts_with("over18")
     {

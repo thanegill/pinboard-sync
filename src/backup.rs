@@ -106,8 +106,13 @@ impl RawSink {
         }
     }
 
-    pub fn into_parts(self) -> (Vec<RawPage>, Option<String>) {
-        (self.pages, self.truncated)
+    /// The dump of what this sink captured, with `records` as its normalized half.
+    pub fn into_dump(self, records: Result<Vec<ExportBookmark>>) -> BackupDump {
+        BackupDump {
+            raw: self.pages,
+            records,
+            truncated: self.truncated,
+        }
     }
 }
 
@@ -174,12 +179,7 @@ impl BackupDump {
     /// The dump of a source that shapes its drafts as it paginates (GitHub, HackerNews):
     /// everything `sink` captured, with `drafts` as the records.
     pub fn from_drafts(sink: RawSink, drafts: &[BookmarkDraft]) -> Self {
-        let (raw, truncated) = sink.into_parts();
-        Self {
-            raw,
-            records: Ok(drafts.iter().map(ExportBookmark::from).collect()),
-            truncated,
-        }
+        sink.into_dump(Ok(drafts.iter().map(ExportBookmark::from).collect()))
     }
 }
 

@@ -94,8 +94,7 @@ async fn connect_error_does_not_leak_query_token() {
         send_with_connect_backoff(
             "posts/all",
             &budget,
-            2,
-            Duration::ZERO,
+            LinearBackoff::new(2, Duration::ZERO),
             &[Duration::ZERO; 3],
             backoff_if_transient,
             || http.get(&url).query(&[("auth_token", "user:SECRET123")]),
@@ -130,8 +129,7 @@ async fn a_stalled_connect_times_out_onto_the_connect_backoff() {
         send_with_connect_backoff(
             "stalled",
             &ConnectBudget::default(),
-            2,
-            Duration::ZERO,
+            LinearBackoff::new(2, Duration::ZERO),
             &[Duration::ZERO; 3],
             backoff_if_transient,
             || http.get(format!("https://127.0.0.1:{port}/")),
@@ -231,8 +229,7 @@ async fn h2_get(http: &reqwest::Client, url: &str) -> (Result<reqwest::Response>
     recording_waits(send_with_connect_backoff(
         "h2c",
         &ConnectBudget::default(),
-        3,
-        H2_LINEAR_DELAY,
+        LinearBackoff::new(3, H2_LINEAR_DELAY),
         &H2_CONNECT_BACKOFF,
         backoff_if_transient,
         || http.get(url),
@@ -303,8 +300,7 @@ async fn a_reset_stream_or_killed_h2_connection_does_not_count_against_its_host(
         let (sent, waits) = recording_waits(send_with_connect_backoff(
             "h2c",
             &budget,
-            3,
-            H2_LINEAR_DELAY,
+            LinearBackoff::new(3, H2_LINEAR_DELAY),
             &H2_CONNECT_BACKOFF,
             backoff_if_transient,
             || h2_client().get(format!("http://{addr}/")),
@@ -400,8 +396,7 @@ async fn an_unanswered_h2_ping_counts_as_no_answer_until_a_new_connection_answer
         recording_waits(send_with_connect_backoff(
             "h2c",
             &budget,
-            1,
-            H2_LINEAR_DELAY,
+            LinearBackoff::new(1, H2_LINEAR_DELAY),
             &H2_CONNECT_BACKOFF,
             backoff_if_transient,
             || http.get(&url),
@@ -437,8 +432,7 @@ async fn a_given_up_host_is_not_contacted_again() {
         send_with_connect_backoff(
             "posts/all",
             &budget,
-            2,
-            Duration::ZERO,
+            LinearBackoff::new(2, Duration::ZERO),
             &[Duration::ZERO; 3],
             backoff_if_transient,
             || http.get(&url).query(&[("auth_token", "user:SECRET123")]),
@@ -486,8 +480,7 @@ async fn a_silent_host_is_given_up_and_not_contacted_again() {
         send_with_connect_backoff(
             "silent",
             &budget,
-            2,
-            Duration::ZERO,
+            LinearBackoff::new(2, Duration::ZERO),
             &[Duration::ZERO; 3],
             backoff_if_transient,
             || http.get(format!("http://127.0.0.1:{port}/")),
@@ -528,8 +521,7 @@ async fn a_body_that_stalls_does_not_count_against_its_host() {
     let resp = send_with_connect_backoff(
         "stalling",
         &budget,
-        2,
-        Duration::ZERO,
+        LinearBackoff::new(2, Duration::ZERO),
         &[Duration::ZERO; 3],
         backoff_if_transient,
         || http.get(format!("http://127.0.0.1:{port}/")),
@@ -588,8 +580,7 @@ async fn a_silent_server_times_out_onto_the_linear_retries() {
         send_with_connect_backoff(
             "silent",
             &ConnectBudget::default(),
-            2,
-            Duration::ZERO,
+            LinearBackoff::new(2, Duration::ZERO),
             &[Duration::ZERO; 3],
             backoff_if_transient,
             || http.get(format!("http://127.0.0.1:{port}/")),

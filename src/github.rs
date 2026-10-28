@@ -7,7 +7,6 @@ pub mod gists;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use log::{debug, warn};
@@ -17,7 +16,7 @@ use time::OffsetDateTime;
 use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_plain};
-use crate::http::{client_builder, RetryingClient, USER_AGENT};
+use crate::http::{client_builder, read_body, RetryingClient, DEFAULT_BACKOFF, USER_AGENT};
 use crate::keys::GitHubKeys;
 use crate::secrets::ConfiguredSecret;
 use crate::source::{
@@ -29,8 +28,6 @@ use gists::{GistConfig, GitHubGist};
 use url::Url;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
-const MAX_RETRIES: u32 = 4;
-const RETRY_DELAY: Duration = Duration::from_secs(2);
 /// The most items a GitHub listing returns per page; GitHub's default is 30.
 const PER_PAGE: &str = "100";
 /// Backstop against a malformed `Link: rel="next"` chain that never terminates.
@@ -308,21 +305,17 @@ fn permanent_refusal(
 
 /// The body of a refused response to the `what` request. On a 403 or 429 whose headers
 /// don't already mark a rate limit, the body decides the refusal: a 403 may be a block,
-/// and either may be a secondary rate limit known only by its message. A body cut off
-/// there is an error rather than an empty one, which would read as an ordinary refusal.
-/// Anywhere else the body only feeds the excerpt, and a failed read leaves it empty.
+/// and either may be a secondary rate limit known only by its message, so [`read_body`]
+/// fails a cut-off one rather than letting it read as an ordinary refusal.
 async fn refusal_body(what: &str, resp: reqwest::Response) -> Result<String, SourceError> {
     let status = resp.status();
     let decides = (status == reqwest::StatusCode::FORBIDDEN
         || status == reqwest::StatusCode::TOO_MANY_REQUESTS)
         && rate_limit_message(status, resp.headers(), "").is_none();
-    match resp.text().await {
-        Ok(body) => Ok(body),
-        Err(read_error) if decides => Err(anyhow::Error::new(read_error.without_url())
-            .context(format!("reading {what} response ({status})"))
-            .into()),
-        Err(_) => Ok(String::new()),
-    }
+    Ok(read_body(resp, decides, || {
+        format!("reading {what} response ({status})")
+    })
+    .await?)
 }
 
 /// Reads a user's starred repos via a personal access token.
@@ -373,7 +366,7 @@ impl GitHubClient {
             .build()
             .context("building HTTP client")?;
         Ok(Self {
-            http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
+            http: RetryingClient::new(http, DEFAULT_BACKOFF),
             config,
             base,
             token_source: token.source,

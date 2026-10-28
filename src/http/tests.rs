@@ -99,8 +99,7 @@ async fn attempt_classified(
     let seq = RefCell::new(outcomes.into_iter());
     let policy = RetryPolicy::new(
         budget.host(host),
-        max,
-        NO_DELAY,
+        LinearBackoff::new(max, NO_DELAY),
         connect_backoff,
         classify,
         Failure::reach,
@@ -170,8 +169,7 @@ async fn a_retry_after_wait_sleeps_that_long() {
     let budget = ConnectBudget::default();
     let policy = RetryPolicy::new(
         budget.host(HOST),
-        5,
-        Duration::from_secs(2),
+        LinearBackoff::new(5, Duration::from_secs(2)),
         &NO_CONNECT_BACKOFF,
         |status: &u16| match *status {
             429 => Verdict::RetryOnceAfter(Duration::from_secs(90)),
@@ -378,8 +376,7 @@ async fn connect_backoff_outlasts_a_two_minute_outage() {
     let budget = ConnectBudget::default();
     let policy = RetryPolicy::new(
         budget.host(HOST),
-        5,
-        Duration::from_secs(3),
+        LinearBackoff::new(5, Duration::from_secs(3)),
         &CONNECT_BACKOFF,
         |_: &u16| Verdict::Done,
         Failure::reach,
@@ -600,8 +597,7 @@ async fn one_request_whose_timeouts_outlast_the_backoff_gives_its_host_up() {
     let attempts = Cell::new(0);
     let policy = RetryPolicy::new(
         budget.host(HOST),
-        2,
-        NO_DELAY,
+        LinearBackoff::new(2, NO_DELAY),
         &LONG_BACKOFF,
         backoff_on_429_and_5xx,
         Failure::reach,
@@ -629,8 +625,7 @@ async fn an_outage_starts_with_the_attempt_that_first_got_no_response() {
     let outcomes = RefCell::new(vec![Ok(503), Err(Failure::Timeout)].into_iter());
     let policy = RetryPolicy::new(
         budget.host(HOST),
-        2,
-        NO_DELAY,
+        LinearBackoff::new(2, NO_DELAY),
         &LONG_BACKOFF,
         backoff_on_429_and_5xx,
         Failure::reach,
@@ -727,8 +722,7 @@ async fn request_error_does_not_leak_query_token() {
     let err = send_with_connect_backoff(
         "posts/all",
         &ConnectBudget::default(),
-        2,
-        NO_DELAY,
+        LinearBackoff::new(2, NO_DELAY),
         &NO_CONNECT_BACKOFF,
         backoff_if_transient,
         || {
@@ -750,8 +744,7 @@ async fn a_request_that_cannot_be_built_fails_at_once_without_its_url() {
     let err = send_with_connect_backoff(
         "posts/all",
         &ConnectBudget::default(),
-        2,
-        NO_DELAY,
+        LinearBackoff::new(2, NO_DELAY),
         &NO_CONNECT_BACKOFF,
         backoff_if_transient,
         || {

@@ -56,6 +56,24 @@ const CONNECT_BACKOFF: [Duration; 5] = [
     Duration::from_secs(80),
 ];
 
+/// The linear retry schedule for transient failures (a transport error, 429 or 5xx): up to
+/// `attempts` tries in all, waiting `delay * n` before the nth retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinearBackoff {
+    attempts: u32,
+    delay: Duration,
+}
+
+impl LinearBackoff {
+    pub const fn new(attempts: u32, delay: Duration) -> Self {
+        LinearBackoff { attempts, delay }
+    }
+}
+
+/// 4 tries, 2s, 4s and 6s apart: about 12s in all, enough to ride out a 5xx blip, and given
+/// up long before any rate limit resets.
+pub const DEFAULT_BACKOFF: LinearBackoff = LinearBackoff::new(4, Duration::from_secs(2));
+
 /// One client's connect allowance, per host: the long [`CONNECT_BACKOFF`] wait is spent
 /// once, and a host with no response for longer than that schedule, unbroken, is given up.
 /// Neither is undone within a run.
@@ -199,16 +217,15 @@ pub enum Verdict {
 
 /// How tower's [`Retry`] retries one request to `host`: connect failures on
 /// `connect_delays` while the host's long wait is unspent, other failures and
-/// [`Verdict::Backoff`] responses linearly up to `max_attempts`, and a
-/// [`Verdict::RetryOnceAfter`] once. Ending its linear attempts without a response, after
-/// `give_up_after` of unbroken outage, gives the host up.
+/// [`Verdict::Backoff`] responses on the `linear` backoff, and a [`Verdict::RetryOnceAfter`]
+/// once. Ending its linear attempts without a response, after `give_up_after` of unbroken
+/// outage, gives the host up.
 ///
 /// `Retry` clones the policy once per request, so its counters start fresh; `attempts` and
 /// `attempt_started` are shared with that clone.
 struct RetryPolicy<'a, Res, E> {
     host: HostBudget<'a>,
-    max_attempts: u32,
-    base_delay: Duration,
+    linear: LinearBackoff,
     connect_delays: std::slice::Iter<'a, Duration>,
     give_up_after: Duration,
     classify: Rc<dyn Fn(&Res) -> Verdict + 'a>,
@@ -235,16 +252,14 @@ impl<'a, Res, E> RetryPolicy<'a, Res, E> {
     /// Call just before sending: the first attempt's start is stamped now.
     fn new(
         host: HostBudget<'a>,
-        max_attempts: u32,
-        base_delay: Duration,
+        linear: LinearBackoff,
         connect_backoff: &'a [Duration],
         classify: impl Fn(&Res) -> Verdict + 'a,
         reach: fn(&E) -> Reach,
     ) -> Self {
         RetryPolicy {
             host,
-            max_attempts,
-            base_delay,
+            linear,
             connect_delays: connect_backoff.iter(),
             give_up_after: connect_backoff.iter().sum(),
             classify: Rc::new(classify),
@@ -284,8 +299,8 @@ impl<'a, Res, E> RetryPolicy<'a, Res, E> {
             }
             Verdict::Backoff => {
                 self.other_attempts += 1;
-                if self.other_attempts < self.max_attempts {
-                    return Some(self.base_delay * self.other_attempts);
+                if self.other_attempts < self.linear.attempts {
+                    return Some(self.linear.delay * self.other_attempts);
                 }
                 if let Some(outage) = self.host.outage_lasting(self.give_up_after) {
                     self.host
@@ -452,24 +467,22 @@ pub(crate) fn client_builder_with_read_timeout(read_timeout: Duration) -> reqwes
         .http2_keep_alive_while_idle(true)
 }
 
-/// A client's `reqwest::Client` together with how its requests are retried: the linear
-/// backoff's attempts and base delay, and its [`ConnectBudget`]. Every request a service
-/// client sends goes through [`RetryingClient::send`], so the retry settings are chosen
-/// once, where the client is built, rather than at each call.
+/// A client's `reqwest::Client` together with how its requests are retried: its
+/// [`LinearBackoff`] and its [`ConnectBudget`]. Every request a service client sends goes
+/// through [`RetryingClient::send`], so the retry settings are chosen once, where the
+/// client is built, rather than at each call.
 pub struct RetryingClient {
     client: reqwest::Client,
     budget: ConnectBudget,
-    max_attempts: u32,
-    base_delay: Duration,
+    linear: LinearBackoff,
 }
 
 impl RetryingClient {
-    pub fn new(client: reqwest::Client, max_attempts: u32, base_delay: Duration) -> Self {
+    pub fn new(client: reqwest::Client, linear: LinearBackoff) -> Self {
         RetryingClient {
             client,
             budget: ConnectBudget::default(),
-            max_attempts,
-            base_delay,
+            linear,
         }
     }
 
@@ -485,9 +498,9 @@ impl RetryingClient {
     /// short resolver or network outage doesn't fail the run, once per host per client (see
     /// [`ConnectBudget`], which also gives up hosts). Other transport errors (a connection
     /// dropped mid-request, or no response headers within [`READ_TIMEOUT`]), HTTP 429, and
-    /// 5xx are retried with linear backoff, `base_delay * n` for up to `max_attempts`
-    /// attempts. Responses that are not transient -- 2xx and other 4xx (e.g. 401/403/400) --
-    /// are returned as-is for the caller to interpret, since retrying them would not help.
+    /// 5xx are retried on the client's [`LinearBackoff`]. Responses that are not transient
+    /// -- 2xx and other 4xx (e.g. 401/403/400) -- are returned as-is for the caller to
+    /// interpret, since retrying them would not help.
     ///
     /// Only sending is retried: a body that stalls after this returns fails the caller's
     /// read.
@@ -518,8 +531,7 @@ impl RetryingClient {
         send_with_connect_backoff(
             label,
             &self.budget,
-            self.max_attempts,
-            self.base_delay,
+            self.linear,
             &CONNECT_BACKOFF,
             classify,
             build,
@@ -531,8 +543,7 @@ impl RetryingClient {
 async fn send_with_connect_backoff<F>(
     label: &str,
     budget: &ConnectBudget,
-    max_attempts: u32,
-    base_delay: Duration,
+    linear: LinearBackoff,
     connect_backoff: &[Duration],
     classify: impl Fn(&reqwest::Response) -> Verdict,
     build: F,
@@ -547,8 +558,7 @@ where
     let host = authority(request.url());
     let policy = RetryPolicy::new(
         budget.host(&host),
-        max_attempts,
-        base_delay,
+        linear,
         connect_backoff,
         classify,
         Reach::of,
@@ -606,6 +616,22 @@ pub const ELLIPSIS: &str = "…";
 
 /// Stands in for a secret [`redact`] removed.
 pub const REDACTED: &str = "[redacted]";
+
+/// `resp`'s body. When the caller acts on what the body says (`decides`), a read cut off
+/// partway is an error under `context`, without the request URL, since a partial body could
+/// pass for a different answer. Otherwise the body only feeds an error excerpt, and a failed
+/// read leaves it empty.
+pub async fn read_body(
+    resp: reqwest::Response,
+    decides: bool,
+    context: impl FnOnce() -> String,
+) -> Result<String> {
+    match resp.text().await {
+        Ok(body) => Ok(body),
+        Err(read_error) if decides => Err(read_error.without_url()).with_context(context),
+        Err(_) => Ok(String::new()),
+    }
+}
 
 /// The error `"{what}: {excerpt}"`, quoting a response body as [`error_excerpt`] cuts it,
 /// or just `"{what}"` when the body is blank, with [`body_debug_line`] logged at debug

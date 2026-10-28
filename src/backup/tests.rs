@@ -25,7 +25,7 @@ fn bookmark() -> Bookmark {
 fn disabled_sink_retains_nothing() {
     let mut sink = RawSink::disabled();
     sink.push("saved", RawKind::Json, "[]");
-    let (pages, _) = sink.into_parts();
+    let pages = sink.into_dump(Ok(Vec::new())).raw;
     assert!(pages.is_empty(), "{pages:?}");
 }
 
@@ -35,7 +35,7 @@ fn collecting_sink_preserves_order_and_stream() {
     sink.push("saved", RawKind::Json, "[1]");
     sink.push("saved", RawKind::Json, "[2]");
     assert_eq!(
-        sink.into_parts().0,
+        sink.into_dump(Ok(Vec::new())).raw,
         vec![
             page("saved", RawKind::Json, "[1]"),
             page("saved", RawKind::Json, "[2]"),

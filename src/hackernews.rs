@@ -11,7 +11,6 @@ mod favorites;
 pub use algolia::AlgoliaClient;
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use log::warn;
@@ -20,7 +19,7 @@ use serde::Deserialize;
 use crate::backup::{BackupDump, BackupSource, RawSink};
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
-use crate::http::{client_builder, RetryingClient};
+use crate::http::{client_builder, RetryingClient, DEFAULT_BACKOFF};
 use crate::keys::{HackerNewsKeys, RedditKeys};
 use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
 use crate::tags::Tags;
@@ -30,8 +29,6 @@ use url::Url;
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0";
 const HN_BASE: &str = "https://news.ycombinator.com";
-const MAX_RETRIES: u32 = 4;
-const RETRY_DELAY: Duration = Duration::from_secs(2);
 
 /// Tag vocabulary for HackerNews favorites. `tags` are applied to every bookmark
 /// (defaulting to `["hackernews"]`); the rest default to their built-in values, and
@@ -204,7 +201,7 @@ fn retrying_client() -> anyhow::Result<RetryingClient> {
         .user_agent(BROWSER_UA)
         .build()
         .context("building HTTP client")?;
-    Ok(RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY))
+    Ok(RetryingClient::new(http, DEFAULT_BACKOFF))
 }
 
 /// Reads a user's public HackerNews favorites.

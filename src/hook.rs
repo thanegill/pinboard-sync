@@ -4,6 +4,8 @@
 
 use std::path::Path;
 
+use log::{error, info};
+
 use crate::config::Config;
 use crate::jobs::SourceAccount;
 use crate::source::SourceError;
@@ -36,13 +38,13 @@ fn run_auth_failure_hook(cmd: Option<&str>, err: &str) {
     let Some(cmd) = cmd else {
         return;
     };
-    eprintln!("Running --on-auth-failure hook...");
+    info!("running the --on-auth-failure hook");
     let mut command = auth_failure_hook_command(cmd, err);
     match command.status() {
         Ok(s) if s.success() => {}
-        Ok(s) => eprintln!("auth-failure hook exited with {s}"),
-        Err(e) => eprintln!(
-            "failed to run auth-failure hook via {}: {e}",
+        Ok(s) => error!("the --on-auth-failure hook exited with {s}"),
+        Err(e) => error!(
+            "failed to run the --on-auth-failure hook via {}: {e}",
             command.get_program().display()
         ),
     }
@@ -193,6 +195,25 @@ mod tests {
             Some(&hook),
         );
         assert!(marker.exists(), "a dead credential must fire the hook");
+    }
+
+    /// Running the hook, and a hook that fails, are reported through the logger like the
+    /// rest of the run, not printed beside it.
+    #[tokio::test]
+    async fn the_hook_reports_through_the_logger() {
+        let ((), logs) = crate::test_support::capturing_logs(async {
+            run_auth_failure_hook(Some("exit 0"), "cookie expired");
+            run_auth_failure_hook(Some("exit 3"), "cookie expired");
+        })
+        .await;
+        assert_eq!(
+            logs,
+            [
+                "INFO running the --on-auth-failure hook",
+                "INFO running the --on-auth-failure hook",
+                "ERROR the --on-auth-failure hook exited with exit status: 3",
+            ]
+        );
     }
 
     /// The NixOS module's units carry no shell on `PATH` (thanegill/pinboard-sync#77), so

@@ -95,7 +95,7 @@ Per source:
 Each value resolves through a ladder, highest precedence first: a **CLI flag**, the
 **environment variable**, that variable's **`<VAR>_FILE`** form, then the inline value
 and `*_file` path in the **`--config` file** (below). A blank or missing rung falls
-through to the next; the first non-empty value wins.
+through to the next; the first non-empty value wins, trimmed of surrounding whitespace.
 
 `<VAR>_FILE` names a **path whose trimmed contents are the value** — so the secret
 itself never sits in the environment or the Nix store, only a path to it does. Every

@@ -334,6 +334,23 @@ fn each_skipped_target_counts_as_a_failed_account() {
     assert_eq!(error.to_string(), "2 account(s) failed");
 }
 
+/// An `--all` run reports each account's failure through the logger, as a single-account
+/// run reports its one failure, so both read the same on stderr.
+#[tokio::test]
+async fn an_all_run_logs_each_failure_as_an_error() {
+    let (failed, logs) = crate::test_support::capturing_logs(async {
+        let mut run = AllRun::default();
+        run.record(Ok(()));
+        run.record(Err(
+            anyhow::anyhow!("no token").context("github[a] could not be built")
+        ));
+        run.failed
+    })
+    .await;
+    assert_eq!(failed, 1);
+    assert_eq!(logs, ["ERROR github[a] could not be built: no token"]);
+}
+
 /// Every setting the ladder reads for a secret, `$VAR_FILE` included, is one an operator
 /// can use, so a "missing X" message names all of them.
 #[test]

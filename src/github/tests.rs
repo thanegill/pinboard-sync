@@ -152,6 +152,31 @@ fn draft_maps_fields_and_language_tag() {
 }
 
 #[test]
+fn a_star_is_dated_in_utc_at_whole_seconds() {
+    let starred = |starred_at: &str| -> GitHubStarredRepo {
+        serde_json::from_value(json!({
+            "starred_at": starred_at,
+            "repo": { "full_name": "o/r", "html_url": "https://github.com/o/r" },
+        }))
+        .unwrap()
+    };
+    let date = |starred_at| {
+        starred(starred_at)
+            .into_draft(&GitHubConfig::default())
+            .unwrap()
+            .bookmark
+            .timestamp
+            .and_then(crate::timefmt::to_rfc3339)
+    };
+
+    assert_eq!(
+        date("2023-01-02T04:04:05.75+01:00").as_deref(),
+        Some("2023-01-02T03:04:05Z")
+    );
+    assert_eq!(date("not a date"), None);
+}
+
+#[test]
 fn into_draft_skips_repo_with_unparseable_url() {
     // A repo whose `html_url` doesn't parse is dropped rather than producing a draft.
     assert!(repo(json!({ "full_name": "o/r", "html_url": "not a url" }))

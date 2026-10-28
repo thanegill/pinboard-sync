@@ -773,4 +773,5 @@ nix flake check        # builds the package (runs the hermetic tests) + evaluate
 nix fmt                # formats the Nix files
 ```
 
-See [CLAUDE.md](CLAUDE.md) for the architecture.
+CI also runs a `lint` job; [CLAUDE.md](CLAUDE.md) lists its commands and describes the
+architecture.

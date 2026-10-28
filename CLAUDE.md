@@ -20,6 +20,7 @@ nix develop --command cargo fmt --check
 nix develop --command cargo mutants --in-diff <diff>  # mutation-tests the lines a diff file changes
 nix flake check                              # builds the package (runs tests) + evaluates the NixOS module and config-checks its TOML + lints the Nix files
 nix fmt                                      # formats the Nix files (nixfmt, via nixfmt-tree)
+RUSTDOCFLAGS='-D warnings' nix develop --command cargo doc --document-private-items --no-deps
 ```
 
 `nix flake check` runs the flake's `checks` for the host system only: `checks.package`
@@ -39,6 +40,9 @@ runs `nix flake check` on x86_64-linux, in its `flake` job.
 `cargo clippy -D warnings` and `cargo fmt --check` are the gate — keep both clean.
 Commit often: each working feature or structural piece, with its tests, keeping the
 gate green.
+
+CI's `lint` job builds the docs with rustdoc warnings as errors, so a broken intra-doc
+link fails it.
 
 ## Architecture
 

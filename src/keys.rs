@@ -7,7 +7,7 @@
 use url::Url;
 
 use crate::github::gists::{gist_root_id, GIST_HOST};
-use crate::github::repo_name;
+use crate::github::repo_path;
 use crate::hackernews::HackerNewsItemId;
 use crate::reddit::model::unwrap_over18;
 use crate::source::{DedupKey, UrlKey};
@@ -31,11 +31,12 @@ pub fn url_key(url: &Url) -> Option<String> {
 }
 
 /// GitHub's key: [`url_key`], gated to github.com hosts, with the `www.` alias folded onto
-/// the bare host and a repo root's `.git` suffix dropped. Those are the forms
-/// `cleanup github` canonicalizes to `github.com/owner/repo`, so a bookmark keys the same
-/// before and after it does. A gist root keys by its id alone (`gist.github.com/<id>`), so
-/// its owner-less form matches the `gist.github.com/<owner>/<id>` form cleanup moves it
-/// to. Other subdomains, and a gist's deep links, keep their own host and path.
+/// the bare host, and a repo root read as its [`repo_path`], so its empty segments and
+/// `.git` suffixes are dropped. Those are the forms `cleanup github` canonicalizes to
+/// `github.com/owner/repo`, so a bookmark keys the same before and after it does. A gist
+/// root keys by its id alone (`gist.github.com/<id>`), so its owner-less form matches the
+/// `gist.github.com/<owner>/<id>` form cleanup moves it to. Other subdomains, and a gist's
+/// deep links, keep their own host and path.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GitHubKeys;
 
@@ -51,9 +52,8 @@ impl UrlKey for GitHubKeys {
         };
         let repo_root = key
             .strip_prefix("github.com/")
-            .and_then(|path| path.split_once('/'))
-            .filter(|(_, name)| !name.contains('/'))
-            .and_then(|(owner, name)| Some(format!("github.com/{owner}/{}", repo_name(name)?)));
+            .and_then(|path| repo_path(path.split('/')))
+            .map(|(owner, name)| format!("github.com/{owner}/{name}"));
         Some(repo_root.unwrap_or(key).into())
     }
 }
@@ -184,6 +184,8 @@ mod tests {
             "https://www.github.com/Owner/Repo",
             "https://github.com/Owner/Repo.git",
             "https://www.github.com/owner/repo.git/",
+            "https://github.com/owner//repo",
+            "https://github.com//owner/repo/",
         ] {
             assert_eq!(
                 key(alias).as_deref(),

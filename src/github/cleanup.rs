@@ -10,7 +10,7 @@ use anyhow::Context;
 use time::OffsetDateTime;
 use url::Url;
 
-use super::{github_note, repo_name, GitHubClient, GitHubConfig, GitHubRepo, HOMEPAGE_SEPARATOR};
+use super::{github_note, repo_path, GitHubClient, GitHubConfig, GitHubRepo, HOMEPAGE_SEPARATOR};
 use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, two_pass_verdict, CleanupPass, Plan};
@@ -198,22 +198,18 @@ impl RepoName {
 }
 
 /// The [`RepoName`] of a genuine repo-root URL: the host must be the `github.com` repo host
-/// (bare or the `www.` alias, not another subdomain) and the path exactly two non-empty
-/// segments, ignoring a trailing slash, the second a [`repo_name`]. `None` for anything
-/// else -- a deep link (`/issues`, `/tree/...`), a gist or other subdomain, a non-GitHub
-/// host, or a name that is no repo's (`/owner/.git`, `/owner/..git`) -- which cleanup
-/// leaves untouched.
+/// (bare or the `www.` alias, not another subdomain) and the path a [`repo_path`]: exactly
+/// two non-empty segments, the second naming a repo. `None` for anything else -- a deep
+/// link (`/issues`, `/tree/...`), a gist or other subdomain, a non-GitHub host, or a name
+/// that is no repo's (`/owner/.git`, `/owner/..git`) -- which cleanup leaves untouched.
 fn repo_root(url: &Url) -> Option<RepoName> {
     if !is_repo_host(url.host_str()?) {
         return None;
     }
-    let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
-    let [owner, repo] = segments[..] else {
-        return None;
-    };
+    let (owner, name) = repo_path(url.path_segments()?)?;
     Some(RepoName {
         owner: owner.to_string(),
-        name: repo_name(repo)?.to_string(),
+        name: name.to_string(),
     })
 }
 

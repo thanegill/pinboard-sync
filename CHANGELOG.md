@@ -78,6 +78,8 @@ All notable changes to this project are documented here. The format is based on
   `owner/.GIT` alone as it does `owner/.git`.
 - `cleanup github` drops every trailing `.git` in one run, so `repo.git.git` no longer takes
   two runs, and its key no longer changes between them.
+- `sync` keys a GitHub repo URL with a doubled slash (`owner//repo`) as the `owner/repo`
+  that `cleanup github` rewrites it to, so it no longer adds the repo again.
 - A missing Reddit or HackerNews username or Pinboard token names every setting it can come
   from, `$REDDIT_USERNAME_FILE`, `$HN_USERNAME_FILE` and `$PINBOARD_TOKEN_FILE` included,
   as the cookie and GitHub token messages already did.

@@ -2,7 +2,7 @@
 //! hook, and per-source arrays of accounts. Each account holds non-secret settings
 //! (tags, domain, limit) plus secret values inline or as a `*_file` path. Secrets
 //! resolve through the ladder in `secrets`; this module is the typed schema + the
-//! account → typed-config mapping. Every field is optional, so an absent or empty
+//! account -> typed-config mapping. Every field is optional, so an absent or empty
 //! config yields all defaults.
 
 use std::collections::HashMap;
@@ -54,7 +54,7 @@ pub struct Defaults {
     pub hackernews: SourceDefaults,
 }
 
-/// The overridable settings, as a per-source default tier. All `Option` — `None`
+/// The overridable settings, as a per-source default tier. All `Option` -- `None`
 /// falls through to the global default.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -163,7 +163,7 @@ pub struct PinboardConfig {
     /// time (cleanup).
     pub post_date_max_age_days: Option<u64>,
     /// With `use_post_date`, whether `cleanup` re-dates posts older than the cap to "now"
-    /// instead of leaving their existing date (default false — keeps cleanup idempotent).
+    /// instead of leaving their existing date (default false -- keeps cleanup idempotent).
     #[serde(default)]
     pub cleanup_stale_to_now: bool,
 }
@@ -314,7 +314,7 @@ impl Config {
         Ok(config)
     }
 
-    /// Reject tag values containing whitespace or commas — Pinboard tags can't contain
+    /// Reject tag values containing whitespace or commas -- Pinboard tags can't contain
     /// either (its API splits the tag string on spaces), so one here is silently
     /// corrupting and should fail loudly instead.
     fn validate(&self) -> Result<()> {
@@ -459,7 +459,7 @@ fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
     (line, column)
 }
 
-/// Error if `value` (a tag or tag prefix) contains whitespace or a comma — Pinboard tags
+/// Error if `value` (a tag or tag prefix) contains whitespace or a comma -- Pinboard tags
 /// can't contain either (its API splits the tag string on spaces, and its docs forbid
 /// commas), so one here silently corrupts and should fail loudly instead. The error names
 /// the `setting` (a config field or a flag, as the message spells it), never the value,
@@ -534,11 +534,11 @@ fn check_unique_names<T: Named>(source: &str, accounts: &[T]) -> Result<()> {
 }
 
 /// Error if `value` isn't a bare host written as the `url` crate spells it: it's
-/// interpolated as `https://<domain>…` and set as `cleanup reddit`'s host, and `RedditKeys`
-/// compares it to a parsed URL's host, so a scheme, slash, whitespace, port, or any form
-/// the parser rewrites (percent-escapes, non-ASCII) would corrupt the URLs or never match.
-/// A trailing `.` would be set as the host, which `cleanup reddit`'s reddit.com filter
-/// then no longer recognizes.
+/// interpolated as `https://<domain>...` and set as `cleanup reddit`'s host, and
+/// `RedditKeys` compares it to a parsed URL's host, so a scheme, slash, whitespace, port,
+/// or any form the parser rewrites (percent-escapes, non-ASCII) would corrupt the URLs or
+/// never match. A trailing `.` would be set as the host, which `cleanup reddit`'s
+/// reddit.com filter then no longer recognizes.
 fn check_domain(field: &str, value: Option<&str>) -> Result<()> {
     let Some(domain) = value else {
         return Ok(());
@@ -864,7 +864,7 @@ impl Named for HackerNewsAccount {
 
 /// The per-account settings shared across every source. Each returns the account-level
 /// override, or `None` to fall through to the per-source default and then the
-/// `[pinboard]` global — letting the job/cleanup builders resolve them generically (see
+/// `[pinboard]` global -- letting the job/cleanup builders resolve them generically (see
 /// [`resolve_setting`](crate::settings::resolve_setting) and
 /// [`resolve_dates`](crate::settings::resolve_dates)). The method names normalize the two
 /// longer field names (`post_date_max_age_days`, `cleanup_stale_to_now`).

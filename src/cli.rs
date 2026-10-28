@@ -95,7 +95,7 @@ pub enum BackupTarget {
 }
 
 // Backing up a source never contacts Pinboard, so none of the source targets take a
-// Pinboard token — the one place `backup` deliberately diverges from `sync`/`cleanup`.
+// Pinboard token -- the one place `backup` deliberately diverges from `sync`/`cleanup`.
 
 #[derive(Args)]
 pub struct RedditBackupArgs {
@@ -322,7 +322,7 @@ pub enum CleanupSource {
 
 /// The date-setting flags shared by every cleanup command (and `cleanup --all`), flattened
 /// into each so the declarations live in one place. They are the top tier of the date
-/// settings (flag → account → per-source default → `[pinboard]` global), and all-`None`
+/// settings (flag -> account -> per-source default -> `[pinboard]` global), and all-`None`
 /// means "no flag given", so resolution falls through to the other tiers.
 #[derive(Args, Clone, Copy, Default)]
 pub struct DateFlags {
@@ -576,11 +576,11 @@ mod tests {
 
     #[test]
     fn value_taking_boolean_flags_parse_bare_and_explicit() {
-        // Absent → None (falls through to the config tiers).
+        // Absent -> None (falls through to the config tiers).
         assert_eq!(parse_reddit_sync(&[]).flags.public, None);
-        // Bare `--public` → Some(true) via default_missing_value.
+        // Bare `--public` -> Some(true) via default_missing_value.
         assert_eq!(parse_reddit_sync(&["--public"]).flags.public, Some(true));
-        // `--public=false` → Some(false): the explicit force-off a bare flag can't express.
+        // `--public=false` -> Some(false): the explicit force-off a bare flag can't say.
         assert_eq!(
             parse_reddit_sync(&["--public=false"]).flags.public,
             Some(false)

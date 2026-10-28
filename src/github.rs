@@ -214,7 +214,7 @@ impl GitHubRepo {
 /// else `None`.
 ///
 /// Needed because GitHub answers *both* its primary and secondary rate limits with a
-/// `403` or a `429`, the same statuses a genuine permission denial uses — so the status
+/// `403` or a `429`, the same statuses a genuine permission denial uses -- so the status
 /// alone cannot tell them apart. The headers can: an exhausted primary quota zeroes
 /// `x-ratelimit-remaining` and dates the reset in `x-ratelimit-reset`, while a secondary
 /// limit carries `retry-after`. Getting this wrong in either direction is costly, so it
@@ -255,8 +255,8 @@ fn rate_limit_message(
             None => "GitHub rate limit exhausted".to_string(),
         });
     }
-    // A secondary limit need carry neither header — the docs' guidance is then simply
-    // "wait at least one minute" — so its error message is the only thing left to go on.
+    // A secondary limit need carry neither header -- the docs' guidance is then simply
+    // "wait at least one minute" -- so its error message is the only thing left to go on.
     if body.to_lowercase().contains("secondary rate limit") {
         return Some("GitHub secondary rate limit hit; wait a minute before retrying".to_string());
     }
@@ -417,7 +417,7 @@ impl GitHubClient {
 
     /// Look up a repo via `/repos/{owner}/{name}` (the API follows renames and
     /// transfers, returning the current name/URL). `None` if it is permanently
-    /// inaccessible — deleted or private (404), or refused for good
+    /// inaccessible -- deleted or private (404), or refused for good
     /// ([`permanent_refusal`]: blocked, or behind SSO this token isn't authorized for).
     async fn repo(&self, owner: &str, name: &str) -> Result<Option<GitHubRepo>, SourceError> {
         let endpoint = format!("{}/repos/{owner}/{name}", self.base);
@@ -724,6 +724,6 @@ impl GitHubClient {
 mod tests;
 
 /// Integration tests against a `wiremock` server. These bind a TCP socket, so they
-/// can't run in the Nix build sandbox — the flake skips `net_tests` there.
+/// can't run in the Nix build sandbox -- the flake skips `net_tests` there.
 #[cfg(test)]
 mod net_tests;

@@ -10,9 +10,9 @@ use url::Url;
 /// For a non-source domain whose identity a plain host+path key would clobber, the
 /// suffix to append so distinct resources don't collapse to one key. Two cases:
 /// - Identity in the query string, which `url_key` drops (e.g. YouTube `watch?v=AAA`
-///   vs `watch?v=BBB`) — append the case-sensitive query value.
+///   vs `watch?v=BBB`): append the case-sensitive query value.
 /// - Identity in a case-sensitive path segment, which `url_key` lowercases (e.g. the
-///   `youtu.be/<id>` short link, whose 11-char base64url video id is case-sensitive) —
+///   `youtu.be/<id>` short link, whose 11-char base64url video id is case-sensitive):
 ///   append the original-case path so `youtu.be/AbC` and `youtu.be/abc` stay distinct.
 ///
 /// `None` for domains where dropping the query and lowercasing the path is the right

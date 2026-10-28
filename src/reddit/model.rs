@@ -153,7 +153,7 @@ impl RedditListingEntry {
     ///
     /// A post/comment missing `subreddit`/`permalink` is dropped *with a warning*: every
     /// `RedditEntryFields` field is an optional default, so a renamed required subfield
-    /// still deserializes (as `None`) and slips past the listing's all-fail guard — the
+    /// still deserializes (as `None`) and slips past the listing's all-fail guard -- the
     /// warning keeps that silent loss visible.
     pub fn into_saved_item(self, domain: &str) -> Option<RedditSavedItem> {
         let (is_comment, wire_kind) = match self.kind {
@@ -259,7 +259,7 @@ fn parent_thread_url(link_permalink: Option<&str>, domain: &str) -> Option<Strin
     }
 }
 
-/// The media type of a post — `image` or `video` — or `None` for text/link
+/// The media type of a post -- `image` or `video` -- or `None` for text/link
 /// posts, which don't get a `type:` tag.
 fn post_media_type(is_video: bool, post_hint: Option<&str>) -> Option<&'static str> {
     if is_video {
@@ -391,9 +391,9 @@ pub(crate) fn created_at(created_utc: Option<f64>) -> Option<OffsetDateTime> {
 }
 
 /// Normalize a subreddit name for tagging: lowercase it, keeping the original
-/// case only when it is multi-word camel/Pascal case — i.e. it has an internal
-/// lowercase→uppercase boundary (`AskReddit`, `ExplainLikeImFive`). Single words
-/// and all-caps lowercase: `rust`/`Rust`/`NEWS` → `rust`/`rust`/`news`.
+/// case only when it is multi-word camel/Pascal case -- i.e. it has an internal
+/// lowercase->uppercase boundary (`AskReddit`, `ExplainLikeImFive`). Single words
+/// and all-caps lowercase: `rust`/`Rust`/`NEWS` -> `rust`/`rust`/`news`.
 pub fn cased_subreddit(subreddit: &str) -> String {
     let multiword_camel = subreddit
         .chars()

@@ -1,5 +1,5 @@
 //! `sync` jobs: one per account, each a configured source client plus its auth-failure
-//! hook and settings resolved through the flag → account → `[defaults.<source>]` →
+//! hook and settings resolved through the flag -> account -> `[defaults.<source>]` ->
 //! `[pinboard]` ladder. [`SourceAccount`] is what lets `sync`, `backup` and `doctor` treat
 //! the three sources through one generic path. The Pinboard client is built here too
 //! ([`open_pinboard`]), as is [`AllRun`], which tallies an `--all` run's failures, and
@@ -449,8 +449,8 @@ fn pinboard_client_for_token(token: String, config: &Config) -> Result<PinboardC
 }
 
 /// Build the client and fetch `posts/all` once. Returns the client and the bookmark
-/// set to share across every account in a run (so `posts/all` — the most rate-limited
-/// endpoint — is hit once, not once per account).
+/// set to share across every account in a run (so `posts/all` -- the most rate-limited
+/// endpoint -- is hit once, not once per account).
 pub async fn open_pinboard(
     token_flag: Option<String>,
     config: &Config,

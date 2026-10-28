@@ -223,7 +223,7 @@ async fn back_up(
         println!("[dry-run] {} file(s) would be written.", entries.len());
     } else {
         // Written even on a partial run, carrying `complete: false` and the failed
-        // targets — a target that failed left its previous files in place, and the
+        // targets -- a target that failed left its previous files in place, and the
         // manifest is what stops them passing as part of this run.
         let now = timefmt::to_rfc3339(time::OffsetDateTime::now_utc()).unwrap_or_default();
         backup::write_manifest(dir, &entries, &removed, &failed, &now)?;
@@ -237,8 +237,8 @@ async fn back_up(
 }
 
 /// The snapshot directory: the `--out` after the target, else the one before it, else
-/// `[backup].directory`. There is no built-in default — writing a snapshot into an
-/// unexpected working directory is worse than an error — and an empty `--out` in either
+/// `[backup].directory`. There is no built-in default -- writing a snapshot into an
+/// unexpected working directory is worse than an error -- and an empty `--out` in either
 /// place is refused, as an empty `[backup].directory` is, rather than skipped.
 fn resolve_backup_dir(flags: [Option<String>; 2], config: &Config) -> Result<PathBuf> {
     if flags.iter().flatten().any(|dir| dir.trim().is_empty()) {

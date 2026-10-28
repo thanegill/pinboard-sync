@@ -212,7 +212,7 @@ async fn configured_nsfw_tag_is_idempotent() {
 #[tokio::test]
 async fn preserves_markup_in_stored_title() {
     // A non-placeholder stored title carrying angle brackets / tag-like text is kept
-    // verbatim through cleanup, not stripped as HTML — the deliberate tradeoff of
+    // verbatim through cleanup, not stripped as HTML -- the deliberate tradeoff of
     // treating every title as plain text. The www host still forces a rewrite so an
     // update is emitted.
     let pinboard = FakePinboard {
@@ -348,8 +348,8 @@ async fn strips_self_link_notes_from_a_self_post() {
 
 #[tokio::test]
 async fn keeps_external_link_notes_on_a_link_post() {
-    // A link post's notes hold the external URL — not the bookmark's own
-    // permalink — so cleanup must preserve them while rewriting the host.
+    // A link post's notes hold the external URL -- not the bookmark's own
+    // permalink -- so cleanup must preserve them while rewriting the host.
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "A real title".into(),
@@ -497,7 +497,7 @@ async fn retrofits_empty_note_from_authoritative_selftext() {
 #[tokio::test]
 async fn leaves_comment_notes_untouched() {
     // A comment bookmark: /api/info only returns the parent *post* (post_fullname keys
-    // by t3), never the comment body, so the comment's notes must be left as-is — the
+    // by t3), never the comment body, so the comment's notes must be left as-is -- the
     // post's selftext must not leak into the comment's notes.
     let stored = "Thread: https://old.reddit.com/r/rust/comments/a/x/\n\nmy comment";
     let pinboard = FakePinboard {
@@ -538,8 +538,8 @@ async fn leaves_comment_notes_untouched() {
 #[tokio::test]
 async fn use_post_date_leaves_comment_timestamp_untouched() {
     // A comment bookmark under `use_post_date`: /api/info is keyed by the parent post
-    // (post_fullname → t3), so its `created_utc` is the *thread* creation time, not the
-    // comment's. That must not be applied to the comment — its stored date stays.
+    // (post_fullname -> t3), so its `created_utc` is the *thread* creation time, not the
+    // comment's. That must not be applied to the comment -- its stored date stays.
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "Parent title".into(),

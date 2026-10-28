@@ -1,4 +1,4 @@
-//! The generic source port. Every service (Reddit, …) implements [`Source`]:
+//! The generic source port. Every service (Reddit, ...) implements [`Source`]:
 //! it yields [`BookmarkDraft`]s to write to Pinboard and maps an existing Pinboard
 //! URL back to a dedup key, so the sync loop stays service-agnostic.
 
@@ -62,7 +62,7 @@ impl SourceError {
     /// has decided on the hook; `doctor`, which reports each credential rather than acting
     /// on it; and HackerNews, which is public and cannot need re-authentication. Everywhere
     /// else the variant is what decides whether the `--on-auth-failure` hook fires, so
-    /// flattening early silently loses that hook — don't reach for this to make a type
+    /// flattening early silently loses that hook -- don't reach for this to make a type
     /// mismatch go away.
     pub fn into_anyhow(self) -> anyhow::Error {
         match self {

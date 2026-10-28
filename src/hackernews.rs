@@ -114,7 +114,7 @@ impl HackerNewsItem {
     /// permalink for text posts (Ask HN, etc.). `keys` keys the article.
     fn into_draft(self, cfg: &HackerNewsConfig, keys: &HackerNewsKeys) -> Option<BookmarkDraft> {
         let item_id = HackerNewsItemId::from(self.id);
-        // The HN discussion permalink (always valid — the id sits in the query string).
+        // The HN discussion permalink (always valid -- the id sits in the query string).
         let hn_url = Url::from(&item_id);
         let is_comment = self.kind == HackerNewsItemKind::Comment;
 
@@ -167,7 +167,7 @@ impl HackerNewsItem {
                 .unwrap_or_else(|| format!("HN: {} by {}", self.kind, self.by)),
         );
         // The `HN Link:` line points at the discussion. For a text post the bookmark
-        // URL already *is* that permalink, so including it would duplicate the URL —
+        // URL already *is* that permalink, so including it would duplicate the URL --
         // skip it and let the notes carry just the post text.
         let mut note = if article.is_some() {
             format!("HN Link: {hn_url}")
@@ -329,7 +329,7 @@ impl UrlKey for HackerNewsClient {
     }
 }
 
-/// A HackerNews item id — the `<n>` in a `news.ycombinator.com/item?id=<n>` URL. Held
+/// A HackerNews item id -- the `<n>` in a `news.ycombinator.com/item?id=<n>` URL. Held
 /// as a string (the favorites page scrapes it as text and Algolia's `objectID` filter
 /// takes it as text); built from a numeric id, a scraped string, or parsed out of a URL
 /// (`TryFrom<&Url>`), and rendered back to the discussion permalink (`From<&Self> for Url`).
@@ -401,7 +401,7 @@ impl From<&HackerNewsItemId> for Url {
 #[error("not a HackerNews item URL")]
 pub struct NotHnItemUrl;
 
-/// The slug for a `Show/Ask/Tell/Launch HN:` title prefix (e.g. `Show HN:` →
+/// The slug for a `Show/Ask/Tell/Launch HN:` title prefix (e.g. `Show HN:` ->
 /// `show-hn`), or `None` for ordinary titles.
 fn special_type(title: &str) -> Option<String> {
     ["Show HN", "Ask HN", "Tell HN", "Launch HN"]
@@ -469,6 +469,6 @@ impl HackerNewsClient {
 mod tests;
 
 /// Integration tests against a `wiremock` server. These bind a TCP socket, so they
-/// can't run in the Nix build sandbox — the flake skips `net_tests` there.
+/// can't run in the Nix build sandbox -- the flake skips `net_tests` there.
 #[cfg(test)]
 mod net_tests;

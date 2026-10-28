@@ -403,7 +403,7 @@ fn rejects_whitespace_in_tags() {
     Config::parse("[[reddit]]\ntags = [\"a b\"]").unwrap_err();
     Config::parse("[[github]]\ntag_lang_prefix = \"lang :\"").unwrap_err();
     Config::parse("[[hackernews]]\ntag_link = \"find hn\"").unwrap_err();
-    // No whitespace → fine (hyphens/colons allowed).
+    // No whitespace -> fine (hyphens/colons allowed).
     Config::parse("[[reddit]]\ntags = [\"reddit\", \"a-b\"]").unwrap();
 }
 
@@ -542,8 +542,8 @@ fn shipped_example_config_parses() {
     assert_eq!(cfg.hackernews.len(), 1);
 }
 
-/// True if `key` appears as a TOML key in the template — either active
-/// (`key = …`) or commented out (`# key = …`).
+/// True if `key` appears as a TOML key in the template -- either active
+/// (`key = ...`) or commented out (`# key = ...`).
 fn documents_key(example: &str, key: &str) -> bool {
     example.lines().any(|line| {
         let line = line.trim_start();
@@ -557,7 +557,7 @@ fn documents_key(example: &str, key: &str) -> bool {
 #[test]
 fn example_config_documents_every_field() {
     // The macro destructures each struct with no `..`, so adding a field is a
-    // *compile* error until it's listed here — and `stringify!` then derives the
+    // *compile* error until it's listed here -- and `stringify!` then derives the
     // key list from that same list, so the new key is checked against the
     // template below. Net effect: a new config field fails the build until it is
     // documented in config.example.toml (commented-out lines count).
@@ -582,7 +582,7 @@ fn example_config_documents_every_field() {
         cleanup_stale_to_now,
     });
     // Note this list does not destructure `Config` itself, so a *new top-level table*
-    // (like `[backup]`) has to be added here deliberately — only its fields are
+    // (like `[backup]`) has to be added here deliberately -- only its fields are
     // compile-checked, not its presence.
     let backup = documented_fields!(BackupConfig { directory });
     // The per-source defaults tier (`[defaults.<source>]`).
@@ -709,7 +709,7 @@ fn select_account_by_name_or_first_or_error() {
         Some("b")
     );
     select_account(&accounts, Some("missing")).unwrap_err();
-    // No accounts + no name → None (caller uses flags/env).
+    // No accounts + no name -> None (caller uses flags/env).
     let empty: Vec<RedditAccount> = vec![];
     let selected = select_account(&empty, None).unwrap();
     assert!(selected.is_none(), "{selected:?}");

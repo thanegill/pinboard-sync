@@ -33,14 +33,14 @@ pub fn to_pinboard_dt(dt: OffsetDateTime) -> Option<String> {
     utc_whole_seconds(dt).and_then(to_rfc3339)
 }
 
-/// An [`OffsetDateTime`] from unix epoch seconds — used to lift a source's epoch post
+/// An [`OffsetDateTime`] from unix epoch seconds -- used to lift a source's epoch post
 /// date into the `cleanup` domain form. `None` if out of range.
 pub fn from_unix(secs: i64) -> Option<OffsetDateTime> {
     OffsetDateTime::from_unix_timestamp(secs).ok()
 }
 
 /// Whether a post created at `timestamp` (epoch) is at most `max_age_days` old relative
-/// to `now` (epoch) — the `use_post_date` backdate cap. Shared by
+/// to `now` (epoch) -- the `use_post_date` backdate cap. Shared by
 /// [`DateOpts::sync_date`] and [`DateOpts::cleanup_date`].
 fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
     i128::from(now) - i128::from(timestamp) <= i128::from(max_age_days) * SECS_PER_DAY
@@ -173,38 +173,38 @@ mod tests {
             stale_to_now,
         };
 
-        // Dating off → keep existing.
+        // Dating off -> keep existing.
         assert_eq!(
             dates(false, true).cleanup_date(Some(recent), now, existing),
             existing
         );
-        // Within cap → source date.
+        // Within cap -> source date.
         assert_eq!(
             dates(true, false).cleanup_date(Some(recent), now, existing),
             Some(recent)
         );
-        // Stale + default (no stale_to_now) → keep existing.
+        // Stale + default (no stale_to_now) -> keep existing.
         assert_eq!(
             dates(true, false).cleanup_date(Some(old), now, existing),
             existing
         );
-        // Stale + stale_to_now → now.
+        // Stale + stale_to_now -> now.
         assert_eq!(
             dates(true, true).cleanup_date(Some(old), now, existing),
             Some(now)
         );
         // Stale + stale_to_now, but already dated within the cap (e.g. by the previous
-        // run's "now") → keep existing, so the pass settles.
+        // run's "now") -> keep existing, so the pass settles.
         assert_eq!(
             dates(true, true).cleanup_date(Some(old), now, Some(recent)),
             Some(recent)
         );
-        // Stale + stale_to_now with no stored date → now.
+        // Stale + stale_to_now with no stored date -> now.
         assert_eq!(
             dates(true, true).cleanup_date(Some(old), now, None),
             Some(now)
         );
-        // No source date → keep existing.
+        // No source date -> keep existing.
         assert_eq!(
             dates(true, true).cleanup_date(None, now, existing),
             existing

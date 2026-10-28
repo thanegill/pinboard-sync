@@ -13,10 +13,10 @@ use crate::source::UrlKey;
 use crate::urls::{host_matches, UrlExt};
 
 /// A host+path dedup key for a URL: scheme and query/fragment dropped, host lowercased
-/// (by the `url` crate), path lowercased with any trailing slash removed — e.g.
-/// `https://GitHub.com/Owner/Repo/?tab=x` → `github.com/owner/repo`. Dropping the query
+/// (by the `url` crate), path lowercased with any trailing slash removed -- e.g.
+/// `https://GitHub.com/Owner/Repo/?tab=x` -> `github.com/owner/repo`. Dropping the query
 /// is deliberate canonicalization; the exception is a non-source domain whose identity
-/// lives in the query string (e.g. YouTube `watch?v=…`), for which
+/// lives in the query string (e.g. YouTube `watch?v=...`), for which
 /// [`crate::domains::dedup_key_suffix`] appends a query-derived suffix so distinct
 /// resources don't collapse to one key. Returns `None` for a URL without a host.
 pub fn url_key(url: &Url) -> Option<String> {

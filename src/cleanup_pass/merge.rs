@@ -9,7 +9,7 @@ use crate::tags::extend_unique;
 
 /// The index within `members` of the group's *incumbent*: the member whose stored URL is
 /// already the group's target. It is the record that stays at that URL, so it plays the
-/// same role a resident does — its plan leads the merge, and its own reading state and date
+/// same role a resident does -- its plan leads the merge, and its own reading state and date
 /// survive the merge's field rules. A resident is by definition unplanned, so a group has
 /// at most one of the two, and being inside the pass's slice is an implementation detail
 /// that must not decide whether a bookmark is protected.
@@ -40,7 +40,7 @@ pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
     // stays, and its spacing is the user's. Later members contribute only the
     // blank-line-separated blocks the base doesn't already have. Blocks are compared
     // trimmed so re-merging an already-merged note is a no-op even when the base ends in a
-    // newline, which otherwise re-splits as a block the plain comparison can't recognise —
+    // newline, which otherwise re-splits as a block the plain comparison can't recognise --
     // and any group whose old URL is never absorbed re-merges every run. One case still
     // escapes it: a note long enough that `PinboardClient::fit_extended` trims it comes
     // back as a fragment no block matches, and re-merges forever. That is why the trim is
@@ -138,7 +138,7 @@ mod tests {
     fn merge_bookmarks_keeps_a_later_members_block_verbatim() {
         // Carrying the first member's note byte for byte is only half of it: an absorbed
         // member's blocks are the user's writing too. Comparing them trimmed is what makes
-        // re-merging settle, but appending them trimmed dedents a Markdown code block —
+        // re-merging settle, but appending them trimmed dedents a Markdown code block --
         // Pinboard renders notes as markup, so that changes what the note says.
         let mut resident = bookmark("https://t/");
         resident.note = "A".into();

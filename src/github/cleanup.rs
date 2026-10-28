@@ -118,7 +118,7 @@ fn star_configs(own: &GitHubConfig, configured: &[GitHubConfig]) -> Vec<GitHubCo
 
 /// Re-shapes one GitHub repo-root bookmark: skip anything that isn't a bare
 /// `github.com/owner/repo` URL, else canonicalize it and refresh from the API (which
-/// follows renames/transfers) — the current URL, plus what the tool owns of it: notes it
+/// follows renames/transfers) -- the current URL, plus what the tool owns of it: notes it
 /// wrote, and a synced star's title and tags. A 404 keeps just the canonicalization.
 struct GitHubCleanupPass<'a> {
     client: &'a GitHubClient,

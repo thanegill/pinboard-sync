@@ -210,7 +210,7 @@ pub struct FakeReddit {
     pub saved: Vec<RedditListingEntry>,
     /// What `/api/info` knows; `info` answers with the entries whose fullname was asked for.
     pub info: Vec<RedditListingEntry>,
-    /// When set, `info` fails with it instead of answering — for exercising the
+    /// When set, `info` fails with it instead of answering -- for exercising the
     /// expired-cookie path that has to reach the auth-failure hook.
     pub info_error: Option<SourceError>,
 }
@@ -325,7 +325,7 @@ pub struct FakePinboard {
     /// way to reach the half-applied case where the write landed and an absorbed URL
     /// survived.
     pub fail_delete_urls: HashSet<String>,
-    /// The successful writes and deletes, interleaved in call order — see [`replay`].
+    /// The successful writes and deletes, interleaved in call order -- see [`replay`].
     pub ops: RefCell<Vec<Op>>,
 }
 

@@ -50,7 +50,7 @@ async fn a_merge_never_deletes_its_own_target() {
 
 #[tokio::test]
 async fn a_merge_returns_the_first_delete_error_and_still_tries_the_rest() {
-    // Only one error can be carried out to the caller, and it is the *first* — later
+    // Only one error can be carried out to the caller, and it is the *first* -- later
     // ones are logged instead. Asserting which one it is matters: the caller reports it
     // verbatim, so keeping the last would name a different URL than the one that first
     // went wrong.
@@ -172,7 +172,7 @@ async fn a_write_is_visible_to_the_next_read_without_refetching() {
 #[tokio::test]
 async fn a_dry_run_updates_the_view_but_writes_nothing() {
     // A preview must show the same changes a real run makes, including ones a later
-    // pass only makes because an earlier one wrote — so the view moves, the store
+    // pass only makes because an earlier one wrote -- so the view moves, the store
     // does not.
     let fake = FakePinboard::default();
     let store = CleanupStore::new(

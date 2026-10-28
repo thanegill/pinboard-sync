@@ -79,7 +79,7 @@ pub fn prepare_new_drafts<S: UrlKey>(
 
 /// Flatten each job's prepared drafts into one write batch, keeping the first occurrence
 /// of any `dedup_key` so two drafts the dedup logic treats as one item are written once
-/// (matching [`filter_new`]'s existing-key check — otherwise two fresh drafts whose URLs
+/// (matching [`filter_new`]'s existing-key check -- otherwise two fresh drafts whose URLs
 /// differ byte-for-byte but share a key, e.g. two HN favorites of the same article stored
 /// as `http://x` vs `https://x`, would each be written on a first-time run). Order is
 /// preserved: jobs in order, drafts in order within a job.
@@ -138,7 +138,7 @@ pub async fn write_drafts<P: BookmarkStore>(
                 outcome.written += 1;
                 debug!("added {}  [{}]", bm.url, bm.tags.join(" "));
             }
-            // Log and skip — one bad bookmark shouldn't abort the rest of the run.
+            // Log and skip -- one bad bookmark shouldn't abort the rest of the run.
             Err(e) => {
                 outcome.failed += 1;
                 error!("adding bookmark {}: {e:#}", bm.url);

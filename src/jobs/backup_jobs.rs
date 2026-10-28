@@ -28,7 +28,7 @@ pub struct BackupJob {
 }
 
 /// A backup target's client. Pinboard is a `BookmarkStore`, not a `Source`, so it can't
-/// join `SourceClient` — but it implements the same `BackupSource` port, so the driver
+/// join `SourceClient` -- but it implements the same `BackupSource` port, so the driver
 /// treats all four identically.
 pub enum BackupClient {
     /// Boxed: a `SourceClient` is several times the size of a `PinboardClient`, so an
@@ -218,7 +218,7 @@ fn build_backup_job<A: SourceAccount>(
     })
 }
 
-/// The Pinboard backup job, or `None` when no token is configured — so `backup --all`
+/// The Pinboard backup job, or `None` when no token is configured -- so `backup --all`
 /// still backs up the sources on a machine that only holds source credentials.
 fn build_pinboard_backup_job(flag: Option<String>, config: &Config) -> Result<Option<BackupJob>> {
     let Some(token) = resolve_pinboard_token(flag, &config.pinboard) else {

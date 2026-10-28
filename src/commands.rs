@@ -260,9 +260,9 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
     match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
-            // Cleanup normalizes the shared Pinboard bookmark set, so it runs once
-            // per cleanup-capable service (reddit, github, hackernews), using the
-            // first configured account of each for its cookie/domain/tags.
+            // Cleanup normalizes the shared Pinboard bookmark set, so it runs once per
+            // source, github then reddit then hackernews, as the first configured account
+            // of each.
             if !config.has_accounts() {
                 bail!("cleanup --all requires a --config with at least one configured account");
             }

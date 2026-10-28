@@ -350,12 +350,7 @@ impl BackupSource for RedditClient {
             .drafts_from(entries)
             .map(|drafts| drafts.iter().map(ExportBookmark::from).collect())
             .map_err(SourceError::into_anyhow);
-        let (raw, truncated) = sink.into_parts();
-        Ok(BackupDump {
-            raw,
-            records,
-            truncated,
-        })
+        Ok(sink.into_dump(records))
     }
 }
 

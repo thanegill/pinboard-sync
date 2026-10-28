@@ -15,9 +15,9 @@ name: Release
 # in the Actions tab) rehearses all of that against throwaway refs instead: the
 # bump goes to a `release-rehearsal/<run-id>` branch and the tags to
 # `rehearsal-<run-id>` and `rehearsal-<run-id>-latest`, all deleted again at the
-# end, and the GitHub release and the nixos-config dispatch are skipped. It never
-# touches master, a `v*` tag or `latest`. Every push goes through one helper that
-# sends the job token in a per-command header, and the checkout keeps none.
+# end, and the GitHub release is skipped. It never touches master, a `v*` tag or
+# `latest`. Every push goes through one helper that sends the job token in a
+# per-command header, and the checkout keeps none.
 
 on:
   push:
@@ -222,20 +222,6 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --notes-file RELEASE_NOTES.md \
             dist/*
-
-      # Tell nixos-config to bump its pinboard-sync flake input, which tracks the
-      # `latest` tag. Done here (not a standalone `push: tags: [latest]` workflow)
-      # because the force-move above is a GITHUB_TOKEN push, which can't trigger
-      # another workflow — and this runs after the move, so the dispatched
-      # `nix flake update pinboard-sync` sees the new `latest`.
-      - name: Notify nixos-config to bump the pinboard-sync input
-        if: env.REHEARSE != 'true'
-        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
-        with:
-          token: ${{ secrets.NIXOS_CONFIG_DISPATCH_TOKEN }}
-          repository: thanegill/nixos-config
-          event-type: update-input
-          client-payload: '{"input": "pinboard-sync"}'
 
       # Named from the run id rather than the meta step's outputs, so a run that failed
       # before (or in) that step still cleans up. Every push needs the helper, so with no

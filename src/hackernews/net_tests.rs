@@ -623,3 +623,25 @@ async fn a_story_linking_github_is_not_re_added_after_cleanup_github_canonicaliz
 
     assert_eq!(client.sync_once(&drafts, &cleaned).await, cleaned);
 }
+
+#[tokio::test]
+async fn a_favorites_page_cut_off_mid_body_is_a_read_error() {
+    let hn = crate::test_support::truncated_body_server(
+        "200 OK",
+        "text/html",
+        r#"<table><tr class="athing" id="42"><td>x</td></tr>"#,
+    );
+    let client = hackernews_client(hn, UNUSED.into());
+    let err = crate::http::recording_waits(client.fetch())
+        .await
+        .0
+        .unwrap_err();
+    let SourceError::Other(error) = &err else {
+        panic!("a cut-off body is a transient failure: {err:?}");
+    };
+    let message = format!("{error:#}");
+    assert!(
+        message.starts_with("reading hn favorites page 1: "),
+        "{message}"
+    );
+}

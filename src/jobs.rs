@@ -90,27 +90,50 @@ fn unflagged(flagged: &[(SecretSpec, &Option<String>)]) -> Vec<SecretSpec> {
         .collect()
 }
 
-/// Build one job per account: every account when `all`, else the named (or first, or
-/// implicit CLI/env) account. Under `all`, as in [`build_all_jobs`], an account that fails
-/// to build is returned as a [`SkippedTarget`] rather than aborting the rest.
+/// Which of one source's accounts a `sync` or `backup` runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selection<'a> {
+    /// Every configured account.
+    All,
+    /// The named account, else the first, else an implicit CLI/env account.
+    One(Option<&'a str>),
+}
+
+impl<'a> Selection<'a> {
+    /// The selection a source's `[account]` and `--all` make. Both at once is refused: it
+    /// would have to ignore the name, even one no account has.
+    pub fn new(account: Option<&'a str>, all: bool) -> Result<Self> {
+        match (account, all) {
+            (Some(_), true) => bail!("--all cannot be combined with an account name"),
+            (None, true) => Ok(Selection::All),
+            (account, false) => Ok(Selection::One(account)),
+        }
+    }
+}
+
+/// Build one job per selected account. Under [`Selection::All`], as in [`build_all_jobs`],
+/// an account that fails to build is returned as a [`SkippedTarget`] rather than aborting
+/// the rest.
 pub fn build_jobs<A: SourceAccount>(
-    name: Option<&str>,
-    all: bool,
+    selection: Selection,
     overrides: &SyncOverrides,
     config: &Config,
 ) -> Result<(Vec<SyncJob>, Vec<SkippedTarget>)> {
     let accounts = A::configured(config);
-    if all {
-        if accounts.is_empty() {
-            bail!("--all requires a --config with at least one configured account");
+    match selection {
+        Selection::All => {
+            if accounts.is_empty() {
+                bail!("--all requires a --config with at least one configured account");
+            }
+            let mut jobs = Vec::new();
+            let mut skipped = Vec::new();
+            build_every_job::<A>(config, overrides, &mut jobs, &mut skipped);
+            Ok((jobs, skipped))
         }
-        let mut jobs = Vec::new();
-        let mut skipped = Vec::new();
-        build_every_job::<A>(config, overrides, &mut jobs, &mut skipped);
-        Ok((jobs, skipped))
-    } else {
-        let account = config::select_account(accounts, name)?;
-        Ok((vec![build_job(account, overrides, config)?], Vec::new()))
+        Selection::One(name) => {
+            let account = config::select_account(accounts, name)?;
+            Ok((vec![build_job(account, overrides, config)?], Vec::new()))
+        }
     }
 }
 

@@ -233,7 +233,8 @@ source when one would apply to several accounts, using the resolver's own accept
 
 **`sync <source> [account]` / `cleanup <source> [account]` select one account** (by name,
 else the first, else an implicit CLI/env account). `--all` runs every configured account,
-exiting non-zero if any fail (`AllRun`); `cleanup --all` runs once per source, since it
+exiting non-zero if any fail (`AllRun`); the two are a `jobs::Selection`, and clap refuses
+an account name next to a source's `--all`. `cleanup --all` runs once per source, since it
 normalizes the shared bookmark set. `cleanup github` (see its module doc) refreshes only
 what the tool wrote: notes in `github_note`'s shape, the base/language/owner tags of
 bookmarks carrying any configured account's base tag (with that account's tag config), their
@@ -322,7 +323,9 @@ is known only by its body (its `retry-after: 0` must not be read as a rate limit
 page, which Reddit also serves for a junk cookie. A block arrives with a valid cookie (#78),
 so the hook would send the operator to re-copy a credential that isn't the problem. It
 shares `RateLimited`'s handling (no hook; a pass halts via `Halt::Blocked`) but keeps its
-own variant so the message names a block, which no reset is known to lift.
+own variant so the message names a block, which no reset is known to lift. A 401/403 whose
+body is cut off mid-read is `Other`, since without the whole page a block and a refused
+cookie look alike.
 
 **The Reddit client never follows a redirect.** Reddit answers a request without a session
 it accepts with a 302 to `/login`, and following it can land on a login page that answers

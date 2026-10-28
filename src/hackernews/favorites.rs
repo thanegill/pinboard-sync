@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use anyhow::Context;
 use log::{debug, warn};
 use scraper::{Html, Selector};
 use url::Url;
@@ -95,7 +96,6 @@ impl HackerNewsClient {
                     self.username
                 )));
             }
-            let body = resp.text().await.unwrap_or_default();
             if !status.is_success() {
                 return Err(anyhow::anyhow!(
                     "hn {stream} for '{}' returned {status}",
@@ -103,6 +103,11 @@ impl HackerNewsClient {
                 )
                 .into());
             }
+            let body = resp
+                .text()
+                .await
+                .map_err(reqwest::Error::without_url)
+                .with_context(|| format!("reading {label} page {page}"))?;
             sink.push(stream, RawKind::Html, &body);
             let (ids, more) = match parse_favorite_ids(&body) {
                 FavoritesPage::Recognized { ids, more } => (ids, more),

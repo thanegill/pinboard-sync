@@ -179,12 +179,26 @@ fn build_jobs_for_every_account_of_a_source_isolates_a_failing_account() {
         ..Default::default()
     };
     let (jobs, skipped) =
-        build_jobs::<GitHubAccount>(None, true, &SyncOverrides::default(), &config)
+        build_jobs::<GitHubAccount>(Selection::All, &SyncOverrides::default(), &config)
             .expect("a failing account does not abort the source");
     let labels: Vec<&str> = jobs.iter().map(|job| job.label.as_str()).collect();
     assert_eq!(labels, ["github[main]"]);
     let skipped: Vec<&str> = skipped.iter().map(|target| target.label.as_str()).collect();
     assert_eq!(skipped, ["github[tokenless]"]);
+}
+
+#[test]
+fn a_selection_is_every_account_or_one_never_both() {
+    assert_eq!(Selection::new(None, true).unwrap(), Selection::All);
+    assert_eq!(Selection::new(None, false).unwrap(), Selection::One(None));
+    assert_eq!(
+        Selection::new(Some("main"), false).unwrap(),
+        Selection::One(Some("main"))
+    );
+    assert_eq!(
+        Selection::new(Some("main"), true).unwrap_err().to_string(),
+        "--all cannot be combined with an account name"
+    );
 }
 
 fn reddit_account(name: &str) -> RedditAccount {

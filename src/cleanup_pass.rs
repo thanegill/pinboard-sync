@@ -311,8 +311,8 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // which member leads that merge is settled in `write_merge`.
         let resident = residents.get(key);
         let stranded = match (resident, &group[..]) {
-            (None, [(original, planned)]) => {
-                write_single(store, original, planned, &targets, dry_run, &mut outcome).await
+            (None, [Member { stored, planned }]) => {
+                write_single(store, stored, planned, &targets, dry_run, &mut outcome).await
             }
             _ => {
                 write_merge(
@@ -354,8 +354,12 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
 }
 
 /// One member of a collision group, the planned bookmarks heading for one target URL: its
-/// `(stored, planned)` pair. A group holds its members in snapshot order.
-type Member<'p> = (&'p Bookmark, &'p Bookmark);
+/// stored record and its plan. A group holds its members in snapshot order.
+#[derive(Clone, Copy)]
+struct Member<'p> {
+    stored: &'p Bookmark,
+    planned: &'p Bookmark,
+}
 
 /// Phase 1's result: each planned bookmark beside its stored record, and the URLs whose
 /// record this pass could not establish.
@@ -437,8 +441,7 @@ fn group_by_target<'p>(
 ) -> (Vec<&'p Url>, HashMap<&'p Url, Vec<Member<'p>>>) {
     let mut group_order: Vec<&Url> = Vec::new();
     let mut groups: HashMap<&Url, Vec<Member<'_>>> = HashMap::new();
-    for pair in pairs {
-        let (original, planned) = (pair.0, &pair.1);
+    for (stored, planned) in pairs {
         let key = &planned.url;
         groups
             .entry(key)
@@ -446,7 +449,7 @@ fn group_by_target<'p>(
                 group_order.push(key);
                 Vec::new()
             })
-            .push((original, planned));
+            .push(Member { stored, planned });
     }
     (group_order, groups)
 }
@@ -464,11 +467,7 @@ fn write_order<'p>(
 ) -> Vec<&'p Url> {
     let leaving_to: HashMap<&Url, &Url> = first_appearance
         .iter()
-        .flat_map(|key| {
-            groups[*key]
-                .iter()
-                .map(|(original, _)| (&original.url, *key))
-        })
+        .flat_map(|key| groups[*key].iter().map(|member| (&member.stored.url, *key)))
         .filter(|(from, to)| from != to)
         .collect();
     let mut placed: HashSet<&Url> = HashSet::with_capacity(first_appearance.len());
@@ -560,29 +559,29 @@ fn hold_back_visibility_mismatches<'p>(
         let staying = residents
             .get(key)
             .map(|resident| resident.public)
-            .or_else(|| incumbent_of(members, key).map(|at| members[at].1.public));
+            .or_else(|| incumbent_of(members, key).map(|at| members[at].planned.public));
         let agreed = match staying {
             Some(public) => Some(public),
             None => members
                 .first()
-                .map(|(_, planned)| planned.public)
-                .filter(|first| members.iter().all(|(_, p)| p.public == *first)),
+                .map(|member| member.planned.public)
+                .filter(|first| members.iter().all(|m| m.planned.public == *first)),
         };
         let members = groups.get_mut(key).expect("key came from group_order");
         let (kept, refused): (Vec<_>, Vec<_>) = match agreed {
             Some(public) => members
                 .iter()
                 .copied()
-                .partition(|(_, planned)| planned.public == public),
+                .partition(|member| member.planned.public == public),
             None => (Vec::new(), members.clone()),
         };
         if refused.is_empty() {
             continue;
         }
-        held_back.extend(refused.iter().map(|(original, planned)| HeldBack {
-            mover: original.url.clone(),
+        held_back.extend(refused.iter().map(|member| HeldBack {
+            mover: member.stored.url.clone(),
             target: key,
-            mover_public: planned.public,
+            mover_public: member.planned.public,
             staying,
         }));
         *members = kept;
@@ -734,7 +733,7 @@ async fn write_merge<S: BookmarkStore>(
     let (survivor, lifted) = match resident {
         Some(resident) => (Some(resident), None),
         None => match incumbent_of(group, key) {
-            Some(at) => (Some(group[at].1), Some(at)),
+            Some(at) => (Some(group[at].planned), Some(at)),
             None => (None, None),
         },
     };
@@ -745,7 +744,7 @@ async fn write_merge<S: BookmarkStore>(
                 .iter()
                 .enumerate()
                 .filter(|(at, _)| Some(*at) != lifted)
-                .map(|(_, (_, planned))| *planned),
+                .map(|(_, member)| member.planned),
         )
         .collect();
     let mut merged = merge_bookmarks(&plans);
@@ -768,12 +767,12 @@ async fn write_merge<S: BookmarkStore>(
     // Absorbed URLs to delete: an original that is neither the target nor another planned
     // write's target (deleting the latter would clobber that write's record).
     let mut old_urls: Vec<&Url> = Vec::new();
-    for (original, _) in group {
-        if original.url != *target
-            && !targets.contains(&original.url)
-            && !old_urls.contains(&&original.url)
+    for Member { stored, .. } in group {
+        if stored.url != *target
+            && !targets.contains(&stored.url)
+            && !old_urls.contains(&&stored.url)
         {
-            old_urls.push(&original.url);
+            old_urls.push(&stored.url);
         }
     }
 
@@ -781,7 +780,7 @@ async fn write_merge<S: BookmarkStore>(
     // there is nothing to absorb — otherwise a converged state would rewrite itself every
     // run. Compared against the *stored* record, which for an incumbent is not the plan
     // that led the merge.
-    let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].0));
+    let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].stored));
     if stored_at_target.is_some_and(|stored| stored.diff(&merged).is_empty()) && old_urls.is_empty()
     {
         return Vec::new();
@@ -835,7 +834,7 @@ async fn write_merge<S: BookmarkStore>(
             error!("merging into {target}: {e:#}");
             group
                 .iter()
-                .map(|(original, _)| original.url.clone())
+                .map(|member| member.stored.url.clone())
                 .collect()
         }
     }
@@ -879,7 +878,7 @@ fn propagate_refusals(
             .filter(|key| untouchable.contains_key(**key))
             .filter_map(|key| groups.get(*key))
             .flatten()
-            .map(|(original, _)| original.url.clone())
+            .map(|member| member.stored.url.clone())
             .filter(|url| !untouchable.contains_key(url))
             .collect();
         if newly_occupied.is_empty() {

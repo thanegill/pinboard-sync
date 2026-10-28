@@ -3,6 +3,7 @@
 
 use url::Url;
 
+use super::Member;
 use crate::bookmark::Bookmark;
 use crate::tags::extend_unique;
 
@@ -12,10 +13,10 @@ use crate::tags::extend_unique;
 /// survive the merge's field rules. A resident is by definition unplanned, so a group has
 /// at most one of the two, and being inside the pass's slice is an implementation detail
 /// that must not decide whether a bookmark is protected.
-pub(super) fn incumbent_of(members: &[(&Bookmark, &Bookmark)], target: &Url) -> Option<usize> {
+pub(super) fn incumbent_of(members: &[Member<'_>], target: &Url) -> Option<usize> {
     members
         .iter()
-        .position(|(original, _)| original.url == *target)
+        .position(|member| member.stored.url == *target)
 }
 
 /// Field-merge the PLANNED bookmarks of a collision group (all sharing `url`, given in

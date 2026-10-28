@@ -217,9 +217,9 @@ pub enum Verdict {
 
 /// How tower's [`Retry`] retries one request to `host`: connect failures on
 /// `connect_delays` while the host's long wait is unspent, other failures and
-/// [`Verdict::Backoff`] responses on the `linear` backoff, and a [`Verdict::RetryOnceAfter`]
-/// once. Ending its linear attempts without a response, after `give_up_after` of unbroken
-/// outage, gives the host up.
+/// [`Verdict::Backoff`] responses on the `linear` backoff, and a
+/// [`Verdict::RetryOnceAfter`] once. Ending its linear attempts without a response, after
+/// `give_up_after` of unbroken outage, gives the host up.
 ///
 /// `Retry` clones the policy once per request, so its counters start fresh; `attempts` and
 /// `attempt_started` are shared with that clone.
@@ -494,13 +494,13 @@ impl RetryingClient {
     /// Send a request, retrying *transient* failures. A request that could not establish a
     /// connection (per `reqwest::Error::is_connect`: any connector failure, so DNS, TCP
     /// connect, or the TLS handshake, including one that runs past [`CONNECT_TIMEOUT`]) is
-    /// retried on the long exponential [`CONNECT_BACKOFF`] (5s, 10s, 20s, 40s, 80s), so a
-    /// short resolver or network outage doesn't fail the run, once per host per client (see
-    /// [`ConnectBudget`], which also gives up hosts). Other transport errors (a connection
-    /// dropped mid-request, or no response headers within [`READ_TIMEOUT`]), HTTP 429, and
-    /// 5xx are retried on the client's [`LinearBackoff`]. Responses that are not transient
-    /// -- 2xx and other 4xx (e.g. 401/403/400) -- are returned as-is for the caller to
-    /// interpret, since retrying them would not help.
+    /// retried on the long exponential [`CONNECT_BACKOFF`], so a short resolver or network
+    /// outage doesn't fail the run, once per host per client (see [`ConnectBudget`], which
+    /// also gives up hosts). Other transport errors (a connection dropped mid-request, or
+    /// no response headers within [`READ_TIMEOUT`]), HTTP 429, and 5xx are retried on the
+    /// client's [`LinearBackoff`]. Responses that are not transient -- 2xx and other 4xx
+    /// (e.g. 401/403/400) -- are returned as-is for the caller to interpret, since retrying
+    /// them would not help.
     ///
     /// Only sending is retried: a body that stalls after this returns fails the caller's
     /// read.
@@ -509,8 +509,8 @@ impl RetryingClient {
     /// built fails at once as "building `label`".
     ///
     /// A transport error is returned without its request URL, for every client: a URL can
-    /// carry a credential in its query (Pinboard's `auth_token`), and `reqwest::Error` would
-    /// otherwise print it in both `Display` and `Debug`. `label` names the endpoint instead.
+    /// carry a credential in its query (Pinboard's `auth_token`), which `reqwest::Error`
+    /// prints in both `Display` and `Debug`. `label` names the endpoint instead.
     pub async fn send(
         &self,
         label: &str,
@@ -520,8 +520,8 @@ impl RetryingClient {
     }
 
     /// [`RetryingClient::send`], with `classify` deciding how each response is retried
-    /// instead of [`backoff_if_transient`]. A response it calls [`Verdict::Done`] comes back
-    /// as-is, for the caller to report.
+    /// instead of [`backoff_if_transient`]. A response it calls [`Verdict::Done`] comes
+    /// back as-is, for the caller to report.
     pub async fn send_with(
         &self,
         label: &str,
@@ -619,8 +619,8 @@ pub const REDACTED: &str = "[redacted]";
 
 /// `resp`'s body. When the caller acts on what the body says (`decides`), a read cut off
 /// partway is an error under `context`, without the request URL, since a partial body could
-/// pass for a different answer. Otherwise the body only feeds an error excerpt, and a failed
-/// read leaves it empty.
+/// pass for a different answer. Otherwise the body only feeds an error excerpt, and a
+/// failed read leaves it empty.
 pub async fn read_body(
     resp: reqwest::Response,
     decides: bool,

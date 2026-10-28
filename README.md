@@ -240,21 +240,21 @@ stays until you resolve it yourself.
 
 A note too long for a Pinboard API request URL is cut short when written, with a marker
 appended (logged when it happens). `cleanup` compares what a write would store with what
-writing the bookmark back unchanged would. So it doesn't rewrite a cut note every run,
-or cut a long note when the only change would be cut off anyway; a merge that adds
-nothing to the bookmark it lands on just deletes the one it absorbs. The one exception
-is a note Pinboard rejects even once cut: the client cuts it further on retry, and
-`cleanup` then rewrites it on every run.
+writing the bookmark back unchanged would store, so it doesn't rewrite a cut note every
+run, or cut a long note when the only change would be cut off anyway. A merge that adds
+nothing to the bookmark it lands on just deletes the one it absorbs. The one exception is
+a note Pinboard rejects even once cut: the client cuts it further on retry, and `cleanup`
+then rewrites it on every run.
 
-- **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your
-  configured `reddit_domain` (default `old.reddit.com`), unwrapping `over18`
-  interstitial redirects to the real post. A bookmark already on any `[[reddit]]`
-  account's `reddit_domain` stays there and is shaped with that account's tag settings,
-  and a post stored on several of them collapses onto the one listed first. It
-  normalizes tags (ensures every entry of `tags` and a correctly-cased
-  `subreddit:<sub>` tag, dropping bare/legacy duplicates except one that an account on
-  the bookmark's domain adds as a base, NSFW or comment tag), adds `reddit-comment` to
-  comment bookmarks, and — using Reddit's `/api/info` — marks `over_18` posts `nsfw`, replaces generic placeholder titles with
+- **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your configured
+  `reddit_domain` (default `old.reddit.com`), unwrapping `over18` interstitial redirects
+  to the real post. A bookmark already on any `[[reddit]]` account's `reddit_domain`
+  stays there and is shaped with that account's tag settings, and a post stored on
+  several of them collapses onto the one listed first. It normalizes tags (ensures every
+  entry of `tags` and a correctly-cased `subreddit:<sub>` tag, dropping bare/legacy
+  duplicates except one that an account on the bookmark's domain adds as a base, NSFW or
+  comment tag), adds `reddit-comment` to comment bookmarks, and — using Reddit's
+  `/api/info` — marks `over_18` posts `nsfw`, replaces generic placeholder titles with
   the real ones, and adds the author, flair and media-type tags `sync` writes. Each of
   those three is added only when the bookmark has no tag with its prefix yet, so a
   stored author or flair is never replaced. A comment is looked up by its own id and

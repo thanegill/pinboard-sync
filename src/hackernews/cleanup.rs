@@ -40,7 +40,9 @@ pub struct HackerNewsCleanupOpts {
 
 /// Normalize existing `news.ycombinator.com/item?id=*` bookmarks: re-fetch each item and
 /// re-shape it (stories rewrite to the article URL, deleting the old HN URL;
-/// comments/text posts update in place), preserving existing tags and the creation time.
+/// comments/text posts update in place), keeping existing tags, and the creation time
+/// unless `use_post_date` re-dates it. With `link_discussions`, then link each
+/// `link_tag`-tagged article bookmark to its discussion ([`link_discussions`]).
 pub async fn run<S: BookmarkStore + AccountState>(
     store: &S,
     client: &AlgoliaClient,

@@ -231,7 +231,7 @@ pub fn listing_entry(kind: &str, data: Value) -> RedditListingEntry {
 #[derive(Default)]
 pub struct FakeReddit {
     pub saved: Vec<RedditListingEntry>,
-    /// What `/api/info` knows; `info` answers with the entries whose fullname was asked for.
+    /// What `/api/info` knows; `info` returns the entries for the fullnames it is asked.
     pub info: Vec<RedditListingEntry>,
     /// When set, `info` fails with it instead of answering -- for exercising the
     /// expired-cookie path that has to reach the auth-failure hook.

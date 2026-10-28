@@ -405,8 +405,8 @@ pub struct RedditCleanupArgs {
     /// Account name whose cookie + domain/tags to use (default: the first reddit account).
     pub account: Option<String>,
     /// Reddit session cookie, `reddit_session=…` or its bare value (env REDDIT_COOKIE,
-    /// or *_FILE). Needed for the
-    /// `/api/info` lookups; not required with --no-nsfw --no-titles.
+    /// or *_FILE). Needed for the `/api/info` lookups; not required with --no-nsfw
+    /// --no-titles.
     #[arg(long)]
     pub reddit_cookie: Option<String>,
     /// Pinboard API token (env PINBOARD_TOKEN, or *_FILE).

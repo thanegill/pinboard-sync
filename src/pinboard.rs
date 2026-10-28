@@ -135,8 +135,7 @@ pub struct PinboardClient {
     /// The pause between successive `posts/add` writes.
     rate_limit: Duration,
     /// Set once the first write has happened, so [`Self::pace`] spaces only *successive*
-    /// writes. Pacing is the client's own concern, not the generic `BookmarkStore` port's.
-    /// (`Cell` is fine: the futures aren't `Send`, so the client never crosses threads.)
+    /// writes. A `Cell` is enough: the futures aren't `Send`, so it stays on one thread.
     wrote: Cell<bool>,
     /// API base, e.g. `https://api.pinboard.in/v1`.
     base: String,
@@ -198,8 +197,6 @@ impl PinboardClient {
     /// `timestamp` sets the bookmark time. `extended` is trimmed if needed to keep the GET
     /// URL under [`MAX_URL_BYTES`].
     async fn post_add(&self, b: &Bookmark) -> Result<()> {
-        // Space successive writes (Pinboard's rate limit) -- internal to the client, so
-        // the generic write loops don't manage pacing.
         self.pace().await;
         let tags = b.tags.joined();
         let dt = b.timestamp.and_then(crate::timefmt::to_pinboard_dt);
@@ -445,7 +442,7 @@ impl BackupSource for PinboardClient {
 
 impl BookmarkStore for PinboardClient {
     /// An `item not found` answering a retry counts as done: the attempt before it may have
-    /// deleted the bookmark before its response was lost. On a first attempt it is an error.
+    /// deleted the bookmark and lost the response. On a first attempt it is an error.
     async fn delete(&self, url: &Url) -> Result<()> {
         let params = [
             ("url", url.as_str()),

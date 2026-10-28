@@ -42,13 +42,13 @@ pub struct JobSettings {
     pub dates: DateOpts,
 }
 
-/// The new drafts for one account, ready to write: those not already on Pinboard
-/// ([`filter_new`]) and collapsed so each `dedup_key` appears once (keep-first, matching
-/// the cross-job [`merge_deduped`] so `limit` counts distinct items rather than letting
-/// duplicate-key drafts consume slots), each stamped with the account's resolved
-/// `read_later`/`public` flags and post date (kept only when `use_post_date` is on and
-/// the post is within the age cap relative to `now`, else cleared so Pinboard defaults to
-/// "now"), and truncated to the per-job `limit`, if any, which keeps the newest.
+/// The new drafts for one account, ready to write:
+/// - those not already on Pinboard ([`filter_new`]);
+/// - each `dedup_key` once, the first kept as in [`merge_deduped`], so `limit` counts
+///   distinct items;
+/// - stamped with the account's `read_later`/`public` and its post date, which
+///   [`DateOpts::sync_date`] keeps, or clears so Pinboard dates the bookmark now;
+/// - cut to the per-job `limit`, if any, keeping the newest.
 ///
 /// Returned oldest first, the reverse of the source's newest-first order, so a run cut
 /// short leaves the *newest* items unwritten: they sit on the source's first pages, where

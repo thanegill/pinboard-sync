@@ -25,16 +25,14 @@ use crate::urls::UrlExt;
 mod gists;
 
 /// Normalize existing GitHub repo bookmarks, then gist bookmarks, each pass reaching its
-/// own verdict. Only genuine repo-root URLs on the bare `github.com` host (`owner/repo`)
-/// are repos; deep links (issues/PRs/blob/tree) and other subdomains are left to the gist
-/// pass or alone. For each repo root, look it up via the API (which follows
-/// renames/transfers) and rewrite a moved repo's URL to the current one. Notes are rebuilt
-/// only when the tool wrote them ([`note_is_tool_generated`]); the base, `lang:` and owner
-/// tags only on a bookmark `sync github` wrote ([`is_synced_star`]), its title only while
-/// it is still `owner/repo`, and (under `use_post_date`) its star date only while its notes
-/// are the tool's too. Any other bookmark of a repo -- an HN story linking it, one saved by
-/// hand -- keeps its title, notes, tags and date. A URL change updates and deletes the old,
-/// preserving the creation time. A repo that is gone (404) keeps only its canonical URL.
+/// own verdict. A repo is a root URL on the bare `github.com` host (`owner/repo`); each is
+/// looked up via the API, which follows renames and transfers, and a moved one rewritten to
+/// its current URL. Only what the tool wrote is refreshed: notes in its shape
+/// ([`note_is_tool_generated`]), and on a star `sync github` wrote ([`is_synced_star`]) its
+/// tags, its title while still `owner/repo` and, under `use_post_date`, its star date while
+/// its title and notes are both the tool's; any other bookmark of a repo, such as an HN
+/// story linking it, keeps its title, notes, tags and date. A repo that is gone (404) keeps
+/// only its canonical URL.
 ///
 /// `configured` holds the tag config of every configured GitHub account. A star carrying
 /// any of their base tags counts as synced, and its tags are refreshed by the config of

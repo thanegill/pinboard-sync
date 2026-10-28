@@ -58,12 +58,10 @@ impl SourceError {
     /// Flatten into a plain `anyhow::Error`: a halt's message on its own (without the
     /// variant's prefix) or the inner error unwrapped.
     ///
-    /// Only once nothing needs the variant any more: `hook::handle_source_err`, after it
-    /// has decided on the hook; `doctor`, which reports each credential rather than acting
-    /// on it; and HackerNews, which is public and cannot need re-authentication. Everywhere
-    /// else the variant is what decides whether the `--on-auth-failure` hook fires, so
-    /// flattening early silently loses that hook -- don't reach for this to make a type
-    /// mismatch go away.
+    /// Only once nothing needs the variant any more, such as after
+    /// `hook::handle_source_err` has decided on the hook. The variant is what decides
+    /// whether the `--on-auth-failure` hook fires, so flattening early silently loses that
+    /// hook -- don't reach for this to make a type mismatch go away.
     pub fn into_anyhow(self) -> anyhow::Error {
         match self {
             SourceError::Halted(halt) => anyhow::anyhow!(halt.message().to_string()),
@@ -126,10 +124,7 @@ impl PartialEq<String> for DedupKey {
 
 /// Maps an existing Pinboard URL to a source's dedup key (matched against the `dedup_key`
 /// of fresh drafts), or `None` if the source doesn't manage that URL. Each source's scheme
-/// is a type in [`crate::keys`] that its client delegates to, built on the generic
-/// host+path [`url_key`](crate::keys::url_key): GitHub gates it to github.com hosts, Reddit
-/// uses the host-agnostic permalink path, and HackerNews uses `hn:<id>`, else for an
-/// article the Reddit or GitHub scheme on those hosts and the host+path key elsewhere.
+/// is a type in [`crate::keys`] that its client delegates to.
 pub trait UrlKey {
     fn dedup_key(&self, url: &Url) -> Option<DedupKey>;
 
@@ -180,8 +175,8 @@ pub fn page_is_caught_up<'a>(
 /// Deserialize each element of `values` into `T`, skipping (with a warning naming `what`)
 /// any element that fails, so one malformed item can't discard a whole page. A non-empty
 /// input where *every* element fails is treated as an error (a schema break, e.g. a renamed
-/// required field) rather than a silently empty result: `on_all_failed` builds that error in
-/// the caller's own error type. An empty input yields an empty vec. Shared by the GitHub
+/// required field) rather than a silently empty result: `on_all_failed` builds that error
+/// in the caller's own error type. An empty input yields an empty vec. Shared by the GitHub
 /// starred fetch and the Reddit listing deserializer.
 pub fn deserialize_lenient<T, E>(
     values: Vec<serde_json::Value>,

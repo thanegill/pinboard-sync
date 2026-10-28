@@ -650,8 +650,8 @@ The flake's `checks.nixos-module` runs it against the TOML the NixOS module rend
 ### `completions`
 
 `pinboard-sync completions <shell>` prints a completion script for `<shell>` —
-`bash`, `zsh`, and `fish` (plus `elvish` and `powershell`). Install it where your
-shell looks for completions, for example:
+`bash`, `zsh`, `fish` or `elvish`. Install it where your shell looks for completions,
+for example:
 
 ```sh
 # bash (current user)
@@ -664,9 +664,10 @@ pinboard-sync completions zsh > ~/.zfunc/_pinboard-sync
 pinboard-sync completions fish > ~/.config/fish/completions/pinboard-sync.fish
 ```
 
-Completions cover the subcommands, flags, and `<shell>`/source values; re-run after
-upgrading so they track the installed version. Reload your shell (or `compinit` for
-zsh) to pick them up.
+Completions cover the subcommands, flags, `<shell>` values and, in bash and zsh, file
+names, but not the `[=BOOL]` flags such as `--toread`. The script asks the installed
+binary for them as you type, so it keeps up with upgrades without being regenerated.
+Reload your shell (or `compinit` for zsh) to pick it up.
 
 `pinboard-sync man` prints a roff man page to stdout (`pinboard-sync man | man -l -`
 to read it).

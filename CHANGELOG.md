@@ -31,6 +31,22 @@ All notable changes to this project are documented here. The format is based on
   `--config A sync reddit --config B`, is an error. It used to take the last one.
 - `-v` adds up wherever it is given, so `-v sync -vv` is `-vvv`. Before, only the `-v`s
   at the deepest level that had any counted.
+- **Breaking:** the command line is parsed with bpaf instead of clap.
+  - `--help`, the man page and usage errors are laid out and worded differently, and the
+    man page now documents every subcommand. `--version` prints `Version: 0.6.0`.
+    `help <command>` works on the top level only: `sync help reddit` is now
+    `sync reddit --help`.
+  - A flag given twice is refused with "'--dry-run' was given twice; give it once",
+    whichever sides of the subcommand it was on.
+  - A command's flag goes to the command wherever it is given, so `sync hackernews`
+    accepts `sync`'s `--on-auth-failure` after the source as well as before it. An
+    `--all` a source can't take, or a second one (`cleanup github --all`,
+    `backup pinboard --all`, `sync reddit --all --all`), goes to the command, and it is
+    the run that refuses it, as it does `cleanup --all github`, not the parser.
+  - An argument that isn't UTF-8 is refused, a `config check` file name included.
+  - The completion scripts ask the installed binary for candidates as you type, so they
+    keep up with upgrades. They don't offer the `[=BOOL]` flags such as `--toread`, fish
+    and elvish complete no file names, and `completions powershell` is gone.
 - Four flags are renamed. Three take the spelling of the config key they override:
   `--max-age-days` is `--post-date-max-age-days`, `--stale-to-now` is
   `--cleanup-stale-to-now` and `--link-tag` is `--tag-link`. HackerNews' `--username` is

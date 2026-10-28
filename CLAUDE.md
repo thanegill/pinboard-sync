@@ -44,8 +44,8 @@ gate green.
 
 The flow is one pass: a source yields drafts → skip those already on Pinboard → write the
 rest. `main.rs` loads the config and dispatches to the drivers in
-[`src/commands.rs`](src/commands.rs) (`run_sync`, `run_cleanup`, `run_backup`). Clap types
-are in [`src/cli.rs`](src/cli.rs), secrets in [`src/secrets.rs`](src/secrets.rs), the
+[`src/commands.rs`](src/commands.rs) (`run_sync`, `run_cleanup`, `run_backup`). The bpaf
+parser is in [`src/cli.rs`](src/cli.rs), secrets in [`src/secrets.rs`](src/secrets.rs), the
 settings ladder (`resolve_setting`, `resolve_dates`, `resolve_job_settings`, `resolve_hook`)
 in [`src/settings.rs`](src/settings.rs), job building, `open_pinboard` and `AllRun` in
 [`src/jobs.rs`](src/jobs.rs) (`backup`'s in [`backup_jobs.rs`](src/jobs/backup_jobs.rs)),
@@ -258,7 +258,7 @@ source when one would apply to several accounts, using the resolver's own accept
 
 **`sync <source> [account]` / `cleanup <source> [account]` select one account** (by name,
 else the first, else an implicit CLI/env account). `--all` runs every configured account,
-exiting non-zero if any fail (`AllRun`); the two are a `jobs::Selection`, and clap refuses
+exiting non-zero if any fail (`AllRun`); the two are a `jobs::Selection`, and `cli` refuses
 an account name next to a source's `--all`. `cleanup --all` runs once per source, since it
 normalizes the shared bookmark set. `cleanup github` (see its module doc) refreshes only
 what the tool wrote: notes in `github_note`'s shape, the base/language/owner tags of
@@ -396,8 +396,19 @@ Nothing needs to follow one: `saved.json` pagination only changes query paramete
   through, sees a per-thread fake environment set with the `secrets::FakeSecretEnv` guard,
   so a test can't pick up the developer's real cookie, token or hook. `std::env::set_var`
   does nothing in a test; use `FakeSecretEnv` or a synthetic ladder (`first_cookie_on`).
-  Clap reads the process environment itself, so tests parse with `test_support::parse_cli`,
-  which drops every flag's `env` fallback.
+  The command line reads `PINBOARD_SYNC_ON_AUTH_FAILURE` the same way (bpaf's own `env` is
+  unused), so `test_support::parse_cli` parses exactly as the binary does.
+- **bpaf hands a command its own flags from anywhere on the line**, after its subcommand
+  too, and the subcommand only what is left. So a flag both levels take reaches the
+  subcommand only as a second occurrence, which `Cli::parse_from` refuses in plain code
+  after bpaf. That is also where any check that would name a value belongs, since bpaf's own
+  errors quote the word they failed on. `--all` is the exception (`cli::all_or`): the
+  subcommand alone is listed first, and bpaf keeps the first branch when both take the same
+  words, so a subcommand's own `--all` stays its own. An `--all` the subcommand can't take,
+  or a second one, goes to the command, and the run refuses it. The globals (`--config`,
+  `-v`) are parsed on the top level only, and each subcommand declares copies that never
+  match, so its `--help` lists them. bpaf panics building a help with its parsers out of
+  order (positionals and subcommands go last), so `cli`'s tests ask every level for one.
 - **A test that touches the filesystem takes its directory from
   `test_support::scratch_dir`**, a `tempfile::TempDir` removed on drop, so keep the guard
   bound while the path is in use. A fixed path under `temp_dir()` collides with a concurrent
@@ -416,12 +427,12 @@ Nothing needs to follow one: `saved.json` pagination only changes query paramete
   on after a closed pipe. The previews share their layout through
   [`src/preview.rs`](src/preview.rs), and tests read what a command wrote through
   `test_support::capturing_stdout`.
-- **The command line is parsed through `cli::parse_with`, never `Parser::parse`.** It
-  refuses a flag given at two levels (`--dry-run` before and after a source, `--config`
-  anywhere twice) and adds up `-v`, by declaring the globals at every level for the parse.
+- **The command line is parsed through `Cli::parse_from`, never bpaf's `run`.** Its
+  checks refuse a flag given at two levels (`--dry-run` before and after a source,
+  `--config` anywhere twice), and it fills the env-backed hooks after them.
   `Cli::parse_args` and `test_support::parse_cli` go through it.
 - **Service-specific, API-shaped structs carry a service prefix** (`GitHubRepo`,
   `HackerNewsItem`, `RedditSavedItem`, `AlgoliaSearchResponse`) — not bare `Repo`/`Item`.
   GitHub is spelled `GitHub` and HackerNews `HackerNews` in type names (e.g. `GitHubConfig`,
   `HackerNewsConfig`). The CLI enum variants (`SyncSource::Github`, `::Hackernews`) are the
-  exception: clap derives the subcommand names from them.
+  exception: they are spelled as their subcommands are.

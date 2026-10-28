@@ -179,9 +179,9 @@ fn sync_all_falls_back_to_on_auth_failure_env_when_flag_absent() {
 
 #[test]
 fn top_level_on_auth_failure_reaches_single_source_hook() {
-    // `--on-auth-failure` placed before the source subcommand must reach the
-    // job just like the `--all` path; the overrides from the source args alone only see the
-    // per-source flag.
+    // `--on-auth-failure` placed before the source subcommand must reach the job just like
+    // the `--all` path: the source's own copy never holds a command-line flag, so only
+    // `with_top_level_hook` carries it.
     let mut cmd = parse_sync(&[
         "--on-auth-failure",
         "top-hook",
@@ -200,7 +200,7 @@ fn top_level_on_auth_failure_reaches_single_source_hook() {
 }
 
 #[test]
-fn per_source_on_auth_failure_falls_back_when_no_top_level() {
+fn on_auth_failure_after_the_source_reaches_its_hook() {
     let mut cmd = parse_sync(&[
         "reddit",
         "--reddit-username",
@@ -210,7 +210,6 @@ fn per_source_on_auth_failure_falls_back_when_no_top_level() {
         "--on-auth-failure",
         "source-hook",
     ]);
-    assert_eq!(cmd.on_auth_failure, None);
     let args = reddit_sync_args(&mut cmd);
 
     let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
@@ -236,8 +235,9 @@ fn reddit_cleanup_args(cmd: &mut CleanupCmd) -> RedditCleanupArgs {
 
 #[test]
 fn top_level_use_post_date_reaches_single_source_cleanup() {
-    // `--use-post-date` placed before the source subcommand must reach the
-    // cleanup pass; the per-source `dates` alone only sees a flag placed after.
+    // `--use-post-date` placed before the source subcommand must reach the cleanup pass:
+    // the source's own `dates` never holds a command-line flag, so only `with_top_level`
+    // carries it.
     let mut cmd = parse_cleanup(&["--use-post-date", "reddit", "alice"]);
     assert_eq!(cmd.dates.use_post_date, Some(true));
     let args = reddit_cleanup_args(&mut cmd);
@@ -248,13 +248,9 @@ fn top_level_use_post_date_reaches_single_source_cleanup() {
 }
 
 #[test]
-fn per_source_cleanup_date_flag_falls_back_when_no_top_level() {
-    // A flag placed after the source subcommand still applies when the
-    // top-level `dates` is empty.
+fn a_cleanup_date_flag_after_the_source_still_applies() {
     let mut cmd = parse_cleanup(&["reddit", "alice", "--use-post-date=false"]);
-    assert_eq!(cmd.dates.use_post_date, None);
     let args = reddit_cleanup_args(&mut cmd);
-    assert_eq!(args.dates.use_post_date, Some(false));
 
     let overrides = args.dates.with_top_level(&cmd.dates);
     assert_eq!(overrides.use_post_date, Some(false));
@@ -291,12 +287,9 @@ fn top_level_dry_run_reaches_single_source_cleanup() {
 }
 
 #[test]
-fn per_source_dry_run_still_applies_without_top_level() {
-    // A `--dry-run` placed after the source subcommand still makes the pass dry.
+fn a_dry_run_after_the_source_still_applies() {
     let cmd = parse_cleanup(&["github", "--dry-run"]);
-    assert!(!cmd.dry_run);
     let source = cmd.source.expect("a source subcommand");
-    assert!(source_dry_run(&source));
     assert_eq!(
         WriteMode::from_flags(cmd.dry_run, source_dry_run(&source)),
         WriteMode::DryRun
@@ -367,14 +360,14 @@ fn backup_accepts_out_before_or_after_the_target() {
     assert_eq!(cmd.out.out.as_deref(), Some("/snap"));
 
     // `--out` after the target is honored too, as `--dry-run` is on `sync`.
-    let cmd = parse_backup(&["reddit", "main", "--out", "/snap"]);
-    match cmd.target {
-        Some(BackupTarget::Reddit(args)) => {
-            assert_eq!(args.account.as_deref(), Some("main"));
-            assert_eq!(args.out.out.as_deref(), Some("/snap"));
-        }
-        _ => panic!("expected the reddit target"),
-    }
+    let mut cmd = parse_backup(&["reddit", "main", "--out", "/snap"]);
+    let top_out = cmd.out.out.take();
+    let Some(BackupTarget::Reddit(args)) = cmd.target else {
+        panic!("expected the reddit target");
+    };
+    assert_eq!(args.account.as_deref(), Some("main"));
+    let dir = resolve_backup_dir([args.out.out, top_out], &Config::default()).expect("a dir");
+    assert_eq!(dir, PathBuf::from("/snap"));
 
     // Backing up a source never contacts Pinboard, so it takes no token.
     assert!(crate::test_support::parse_cli([

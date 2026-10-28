@@ -152,10 +152,9 @@ pub struct SyncOverrides {
 }
 
 impl SyncOverrides {
-    /// Take `--on-auth-failure` from before the source subcommand (on `SyncCmd`), else
-    /// the per-source value. The command line refuses it on both sides, so the per-source
-    /// value here is one from after the subcommand or from `PINBOARD_SYNC_ON_AUTH_FAILURE`,
-    /// which the flag outranks.
+    /// Take `--on-auth-failure` from `sync` (`SyncCmd`), which the command line gives the
+    /// flag wherever it was typed, else the per-source value. That one is then
+    /// `PINBOARD_SYNC_ON_AUTH_FAILURE`'s, which the flag outranks.
     #[must_use]
     pub fn with_top_level_hook(mut self, on_auth_failure: Option<String>) -> Self {
         self.on_auth_failure = on_auth_failure.or(self.on_auth_failure);

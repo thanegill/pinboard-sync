@@ -580,18 +580,12 @@ pub async fn assert_cleanup_changes_nothing(
     );
 }
 
-/// Parse `argv` as the binary does, but with no flag falling back to an environment
-/// variable: clap reads the process environment at parse time, which a test must not
-/// depend on. `cli`'s tests pin which flags the environment backs.
-pub fn parse_cli<T: Into<std::ffi::OsString> + Clone>(
+/// Parse `argv`, the binary's name first, as the binary does. The flags the environment
+/// backs read it through `secrets`, so a test sees only its own `FakeSecretEnv`, never the
+/// process environment; `cli`'s tests pin which flags those are.
+pub fn parse_cli<T: Into<std::ffi::OsString>>(
     argv: impl IntoIterator<Item = T>,
-) -> Result<crate::cli::Cli, clap::Error> {
-    use clap::CommandFactory;
-
-    fn without_env(command: clap::Command) -> clap::Command {
-        command
-            .mut_args(|arg| arg.env(None))
-            .mut_subcommands(without_env)
-    }
-    crate::cli::parse_with(without_env(crate::cli::Cli::command()), argv)
+) -> Result<crate::cli::Cli, bpaf::ParseFailure> {
+    let args: Vec<std::ffi::OsString> = argv.into_iter().skip(1).map(Into::into).collect();
+    crate::cli::Cli::parse_from(&args)
 }

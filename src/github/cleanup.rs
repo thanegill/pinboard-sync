@@ -396,7 +396,7 @@ mod tests {
             "https://github.com/o",
         ] {
             let (plan, waits) = crate::http::recording_waits(pass.plan(&stored_at(stored))).await;
-            assert!(matches!(plan, Ok(Plan::Skipped)), "{stored}");
+            assert_eq!(plan.unwrap(), Plan::Skipped, "{stored}");
             assert!(waits.is_empty(), "{stored} made a request");
         }
     }

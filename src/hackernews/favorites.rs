@@ -183,6 +183,7 @@ pub(super) fn is_caught_up(
 /// Outcome of parsing a favorites page. `Unrecognized` means the page had neither
 /// favorite rows nor the favorites-page marker: HN's markup likely changed, so the
 /// scrape should fail loudly rather than silently import nothing.
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum FavoritesPage {
     Recognized {
         ids: Vec<String>,

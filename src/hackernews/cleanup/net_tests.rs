@@ -320,7 +320,7 @@ async fn link_pass_counts_an_article_without_a_discussion_as_an_answer() {
         tags: strings(&["find-hn"]),
         ..stored_at("https://example.com/x")
     };
-    assert!(matches!(pass.plan(&article).await, Ok(Plan::Unchanged)));
+    assert_eq!(pass.plan(&article).await.unwrap(), Plan::Unchanged);
 }
 
 #[tokio::test]

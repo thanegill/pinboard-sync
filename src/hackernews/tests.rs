@@ -270,10 +270,7 @@ fn parse_favorite_ids_flags_markup_break() {
     // A recognizable HTML page whose favorites structure is gone: no rows and no
     // favorites marker means HN changed the markup.
     let html = r#"<html op="news"><body><div>Nothing here.</div></body></html>"#;
-    assert!(matches!(
-        parse_favorite_ids(html),
-        FavoritesPage::Unrecognized
-    ));
+    assert_eq!(parse_favorite_ids(html), FavoritesPage::Unrecognized);
 }
 
 #[test]

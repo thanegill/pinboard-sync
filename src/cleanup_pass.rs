@@ -41,6 +41,7 @@ use merge::{incumbent_of, merge_bookmarks};
 /// first is an answer from it, the second is a bookmark the pass never asked about.
 /// Only the first is evidence the source is reachable, which is what lets the driver
 /// tell one dead link apart from an outage.
+#[derive(Debug, PartialEq, Eq)]
 pub enum Plan {
     /// The bookmark's desired end-state; the driver diffs it and writes what changed.
     Bookmark(Bookmark),

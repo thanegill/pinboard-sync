@@ -2668,7 +2668,11 @@ async fn an_absorb_whose_delete_fails_is_half_applied() {
     let all = vec![mover.clone(), resident];
 
     let outcome = run_over(&pinboard, &all, &[mover], WriteMode::Live, &onto_target()).await;
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
     assert_eq!(outcome.changed, 0, "nothing in the account changed");
     assert_eq!(outcome.write_failed, 1);
 }
@@ -2711,7 +2715,7 @@ fn with_note_just_under_the_budget(pinboard: &FakePinboard, template: Bookmark) 
             pinboard.fit(candidate.clone()) == candidate
         })
         .last()
-        .unwrap();
+        .expect("one block fits the budget");
     with_blocks(count)
 }
 

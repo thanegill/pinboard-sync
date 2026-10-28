@@ -186,13 +186,17 @@ mod tests {
 
     #[test]
     fn differs_from_is_set_based() {
-        // A duplicate on one side must not read as a difference.
-        assert!(!tags(&["reddit"]).differs_from(&tags(&["reddit", "reddit"])));
-        // Order-insensitive.
-        assert!(!tags(&["a", "b"]).differs_from(&tags(&["b", "a"])));
-        // Genuinely different sets still differ.
-        assert!(tags(&["reddit"]).differs_from(&tags(&["reddit", "rust"])));
-        assert!(tags(&["a", "a"]).differs_from(&tags(&["a", "b"])));
+        let differs = |a: &[&str], b: &[&str]| tags(a).differs_from(&tags(b));
+        assert!(
+            !differs(&["reddit"], &["reddit", "reddit"]),
+            "a duplicate on one side"
+        );
+        assert!(!differs(&["a", "b"], &["b", "a"]), "another order");
+        assert!(
+            differs(&["reddit"], &["reddit", "rust"]),
+            "an extra tag on one side"
+        );
+        assert!(differs(&["a", "a"], &["a", "b"]), "a different tag");
     }
 
     #[test]

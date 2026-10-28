@@ -228,6 +228,32 @@ async fn an_env_secret_shared_by_several_accounts_is_warned_about_once() {
 }
 
 #[tokio::test]
+async fn a_shared_hackernews_username_is_warned_about() {
+    let _env = crate::secrets::FakeSecretEnv::set(&[("HN_USERNAME", "shared")]);
+    let account = |name: &str| HackerNewsAccount {
+        name: Some(name.into()),
+        ..Default::default()
+    };
+    let config = Config {
+        hackernews: vec![account("a"), account("b")],
+        ..Default::default()
+    };
+
+    let (_, logs) = crate::test_support::capturing_logs(async {
+        build_all_jobs(&config, &SyncOverrides::default())
+    })
+    .await;
+
+    assert_eq!(
+        warnings(&logs),
+        [
+            "WARN $HN_USERNAME is set in the environment, so all 2 configured hackernews \
+             accounts use it, whatever their own config sets"
+        ]
+    );
+}
+
+#[tokio::test]
 async fn an_env_secret_is_not_warned_about_for_one_account_or_under_its_flag() {
     let _env = crate::secrets::FakeSecretEnv::set(&[("REDDIT_COOKIE", "reddit_session=x")]);
     let one = Config {

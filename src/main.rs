@@ -210,6 +210,16 @@ mod tests {
     }
 
     #[test]
+    fn load_config_reads_the_flagged_file() {
+        let dir = crate::test_support::scratch_dir("load-config");
+        let path = dir.path().join("pinboard-sync.toml");
+        std::fs::write(&path, "[[github]]\nname = \"main\"\n").unwrap();
+
+        let config = load_config(Some(path.display().to_string())).expect("loads");
+        assert_eq!(config.github.len(), 1, "{config:?}");
+    }
+
+    #[test]
     fn config_check_takes_the_file_as_a_positional() {
         let argv = ["pinboard-sync", "config", "check", "pinboard-sync.toml"];
         match Cli::try_parse_from(argv).expect("parses").command {

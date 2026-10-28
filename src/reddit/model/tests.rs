@@ -199,6 +199,15 @@ fn tags_come_in_a_fixed_order() {
 }
 
 #[test]
+fn a_video_is_typed_by_its_flag_or_either_video_hint() {
+    assert_eq!(post_media_type(true, None), Some("video"));
+    assert_eq!(post_media_type(false, Some("hosted:video")), Some("video"));
+    assert_eq!(post_media_type(false, Some("rich:video")), Some("video"));
+    assert_eq!(post_media_type(false, Some("image")), Some("image"));
+    assert_eq!(post_media_type(false, Some("link")), None);
+}
+
+#[test]
 fn media_type_tag_is_gated_by_the_media_types_allowlist() {
     let img = item(
         "t3",

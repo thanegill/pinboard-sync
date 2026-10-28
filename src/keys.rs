@@ -35,8 +35,9 @@ pub fn url_key(url: &Url) -> Option<String> {
 /// `.git` suffixes are dropped. Those are the forms `cleanup github` canonicalizes to
 /// `github.com/owner/repo`, so a bookmark keys the same before and after it does. A gist
 /// root keys by its id alone (`gist.github.com/<id>`), so its owner-less form matches the
-/// `gist.github.com/<owner>/<id>` form cleanup moves it to. Other subdomains, and a gist's
-/// deep links, keep their own host and path.
+/// `gist.github.com/<owner>/<id>` form cleanup moves it to. Anything else, a deep link,
+/// an owner's page or another subdomain, keeps its own host and path, less its empty
+/// segments, so `o//r/issues/5` dedups with `o/r/issues/5` though cleanup moves neither.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GitHubKeys;
 
@@ -46,15 +47,15 @@ impl UrlKey for GitHubKeys {
             return Some(format!("{GIST_HOST}/{id}").into());
         }
         let key = url_key(url).filter(|_| url.host_is("github.com"))?;
-        let key = match key.strip_prefix("www.") {
-            Some(bare) => bare.to_string(),
-            None => key,
-        };
-        let repo_root = key
-            .strip_prefix("github.com/")
-            .and_then(|path| repo_path(path.split('/')))
-            .map(|(owner, name)| format!("github.com/{owner}/{name}"));
-        Some(repo_root.unwrap_or(key).into())
+        let key = key.strip_prefix("www.").unwrap_or(&key);
+        let (host, path) = key.split_once('/').unwrap_or((key, ""));
+        let mut segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let repo_root = repo_path(segments.iter().copied()).filter(|_| host == "github.com");
+        if let Some((owner, name)) = repo_root {
+            return Some(format!("github.com/{owner}/{name}").into());
+        }
+        segments.insert(0, host);
+        Some(segments.join("/").into())
     }
 }
 
@@ -143,6 +144,8 @@ impl UrlKey for HackerNewsKeys {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
     use crate::test_support::url;
 
@@ -248,6 +251,106 @@ mod tests {
             key(&format!("https://gist.github.com/someone/{id}/0123abc")),
             Some(format!("gist.github.com/someone/{id}/0123abc"))
         );
+    }
+
+    #[test]
+    fn github_keys_collapse_empty_segments_and_change_nothing_else() {
+        let key = |s: &str| {
+            GitHubKeys
+                .dedup_key(&url(s))
+                .map(|key| key.as_str().to_string())
+        };
+        let id = "aa5a315d61ae9438b18d";
+        for (doubled, single) in [
+            (
+                "https://github.com/o//r/issues/5",
+                "github.com/o/r/issues/5",
+            ),
+            (
+                "https://www.github.com//O/R//tree/main//",
+                "github.com/o/r/tree/main",
+            ),
+            ("https://github.com//owner", "github.com/owner"),
+            (
+                "https://docs.github.com/en//actions",
+                "docs.github.com/en/actions",
+            ),
+            (
+                &format!("https://gist.github.com/someone//{id}/raw"),
+                &format!("gist.github.com/someone/{id}/raw"),
+            ),
+        ] {
+            assert_eq!(key(doubled).as_deref(), Some(single), "{doubled}");
+            assert_eq!(
+                key(&format!("https://{single}")).as_deref(),
+                Some(single),
+                "a key without empty segments is the URL's host and path"
+            );
+        }
+        assert_eq!(
+            key("https://github.com/o/r.git//tree/main").as_deref(),
+            Some("github.com/o/r.git/tree/main"),
+            "a deep link keeps its `.git`"
+        );
+        assert_eq!(
+            HackerNewsKeys::default().dedup_key(&url("https://github.com/o//r/issues/5")),
+            HackerNewsKeys::default().dedup_key(&url("https://github.com/o/r/issues/5")),
+        );
+    }
+
+    /// A GitHub path segment that is no dot segment, which a URL parser would resolve
+    /// against its neighbours.
+    fn github_segment() -> impl Strategy<Value = String> {
+        "[A-Za-z0-9._-]{1,8}".prop_filter("not a dot segment", |segment| {
+            !matches!(segment.as_str(), "." | "..")
+        })
+    }
+
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config())]
+
+        #[test]
+        fn a_github_url_keys_the_same_with_doubled_slashes(
+            host in prop::sample::select(vec![
+                "github.com",
+                "www.github.com",
+                "GitHub.com",
+                "gist.github.com",
+                "docs.github.com",
+            ]),
+            segments in prop::collection::vec(
+                (prop::sample::select(vec!["/", "//"]), github_segment()),
+                1..=5,
+            ),
+            trailing in prop::sample::select(vec!["", "/", "//"]),
+            tail in prop::sample::select(vec!["", "?tab=readme-ov-file", "#L10"]),
+        ) {
+            let path = |doubled: bool| {
+                segments
+                    .iter()
+                    .map(|(separator, segment)| {
+                        format!("{}{segment}", if doubled { separator } else { "/" })
+                    })
+                    .collect::<String>()
+            };
+            let doubled = url(&format!("https://{host}{}{trailing}{tail}", path(true)));
+            let single = url(&format!("https://{host}{}{tail}", path(false)));
+            prop_assert_eq!(
+                GitHubKeys.dedup_key(&doubled),
+                GitHubKeys.dedup_key(&single),
+                "{} vs {}",
+                doubled,
+                single
+            );
+            let hackernews = HackerNewsKeys::default();
+            prop_assert_eq!(
+                hackernews.dedup_key(&doubled),
+                hackernews.dedup_key(&single),
+                "{} vs {}",
+                doubled,
+                single
+            );
+        }
     }
 
     #[test]

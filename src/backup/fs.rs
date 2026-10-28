@@ -136,8 +136,8 @@ mod tests {
         std::fs::write(&squatted, "SECRET-LEAK").unwrap();
         std::fs::set_permissions(&squatted, PermissionsExt::from_mode(0o644)).unwrap();
 
-        // create_new refuses a path that already exists rather than truncating it and
-        // inheriting its world-readable mode, so a squatted temp can't leak into a snapshot.
+        // create_new refuses an existing path rather than truncating it and keeping its
+        // world-readable mode, so a squatted temp can't leak into a snapshot.
         let err = open_new_private(&squatted).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read_to_string(&squatted).unwrap(), "SECRET-LEAK");

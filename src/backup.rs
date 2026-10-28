@@ -224,10 +224,9 @@ pub struct BackupFile {
 /// A filename-safe slug for an account name: lowercased, with every run of characters
 /// outside `[a-z0-9_-]` -- `.` included, so `a.b` and `a/b` slug alike and
 /// [`check_stem_collisions`] has to catch the clash -- collapsed to a single `-` and the
-/// ends trimmed. An unnamed
-/// account (or one that slugs to nothing) becomes `default`, matching `job_label`'s
-/// `source[default]`. Because `/` never survives and a bare `..` cannot be produced, a
-/// config-supplied name can't escape the snapshot directory.
+/// ends trimmed. An unnamed account (or one that slugs to nothing) becomes `default`,
+/// matching `job_label`'s `source[default]`. Because `/` never survives and a bare `..`
+/// cannot be produced, a config-supplied name can't escape the snapshot directory.
 pub fn slug(name: Option<&str>) -> String {
     let mut out = String::new();
     for ch in name.unwrap_or("").chars() {

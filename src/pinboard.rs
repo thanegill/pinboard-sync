@@ -442,7 +442,7 @@ impl BackupSource for PinboardClient {
 
 impl BookmarkStore for PinboardClient {
     /// An `item not found` answering a retry counts as done: the attempt before it may have
-    /// deleted the bookmark before its response was lost. On a first attempt it is an error.
+    /// deleted the bookmark and lost the response. On a first attempt it is an error.
     async fn delete(&self, url: &Url) -> Result<()> {
         let params = [
             ("url", url.as_str()),

@@ -175,8 +175,8 @@ pub fn page_is_caught_up<'a>(
 /// Deserialize each element of `values` into `T`, skipping (with a warning naming `what`)
 /// any element that fails, so one malformed item can't discard a whole page. A non-empty
 /// input where *every* element fails is treated as an error (a schema break, e.g. a renamed
-/// required field) rather than a silently empty result: `on_all_failed` builds that error in
-/// the caller's own error type. An empty input yields an empty vec. Shared by the GitHub
+/// required field) rather than a silently empty result: `on_all_failed` builds that error
+/// in the caller's own error type. An empty input yields an empty vec. Shared by the GitHub
 /// starred fetch and the Reddit listing deserializer.
 pub fn deserialize_lenient<T, E>(
     values: Vec<serde_json::Value>,

@@ -23,6 +23,14 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **Breaking:** a flag given both before and after its subcommand, such as
+  `sync --dry-run reddit --dry-run` or `backup --out A pinboard --out B`, is an error.
+  Before, `--dry-run` took either, `--out` the one after, and the hook and date flags the
+  one before. Give each flag once. A value from the environment doesn't count.
+- **Breaking:** `--config` given at two levels, such as
+  `--config A sync reddit --config B`, is an error. It used to take the last one.
+- `-v` adds up wherever it is given, so `-v sync -vv` is `-vvv`. Before, only the `-v`s
+  at the deepest level that had any counted.
 - Four flags are renamed. Three take the spelling of the config key they override:
   `--max-age-days` is `--post-date-max-age-days`, `--stale-to-now` is
   `--cleanup-stale-to-now` and `--link-tag` is `--tag-link`. HackerNews' `--username` is

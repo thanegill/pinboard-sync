@@ -194,6 +194,14 @@ The boolean flags take an optional value: `--toread` means `true`, `--toread=fal
 forces it off (so a config-set `true` can be overridden back to `false`). Bare
 `--public` likewise means `--public=true`.
 
+A flag a command shares with its subcommand, such as `--dry-run`, `--out`,
+`--on-auth-failure` or a `cleanup` date flag, goes on either side of the subcommand:
+`cleanup --dry-run reddit` and `cleanup reddit --dry-run` are the same run. Giving it on
+both sides is an error, whatever the two values. A value from the environment, such as
+`PINBOARD_SYNC_ON_AUTH_FAILURE`, doesn't count as a side. The same goes for `--config`,
+which every command takes: give it once, at any level. `-v` is the exception, and adds up
+wherever it is given, so `-v sync reddit -v` logs at trace.
+
 ### Logging
 
 Progress is logged to **stderr** at `info` level by default (the version on startup,

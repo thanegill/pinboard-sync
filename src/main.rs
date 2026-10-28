@@ -33,7 +33,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use clap::{CommandFactory, Parser};
+use clap::CommandFactory;
 use clap_complete::Shell;
 use log::{debug, error, info};
 
@@ -44,7 +44,7 @@ use config::Config;
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let _ = dotenvy::dotenv();
-    let cli = Cli::parse();
+    let cli = Cli::parse_args();
     init_logging(cli.verbose);
 
     let result = async {

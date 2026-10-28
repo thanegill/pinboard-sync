@@ -1,9 +1,15 @@
 //! The command line: clap's `Cli` and every subcommand's arguments, and the conversions
 //! from them into the overrides the job builders and cleanup passes resolve settings from.
 
+use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueHint};
+use clap::error::ErrorKind;
+use clap::parser::ValueSource;
+use clap::{
+    ArgAction, ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueHint,
+};
 use clap_complete::Shell;
 
 use crate::config::SyncLimit;
@@ -23,6 +29,128 @@ pub struct Cli {
     pub verbose: u8,
     #[command(subcommand)]
     pub command: Command,
+}
+
+impl Cli {
+    /// Parse the process's arguments as `Parser::parse` does, exiting with clap's usage
+    /// error on a bad command line, a flag given on both sides of a subcommand included.
+    pub fn parse_args() -> Cli {
+        parse_with(Cli::command(), std::env::args_os()).unwrap_or_else(|error| error.exit())
+    }
+}
+
+/// Parse `argv` against `command`, [`Cli::command`] or a test's variant of it, refusing a
+/// flag given on the command line at more than one level, before a subcommand and after
+/// it. `-v` is the exception: it counts at every level, so `-v sync -vv` is `-vvv`.
+pub fn parse_with<T: Into<OsString> + Clone>(
+    command: clap::Command,
+    argv: impl IntoIterator<Item = T>,
+) -> Result<Cli, clap::Error> {
+    let mut command = with_globals_at_every_level(command);
+    let matches = command.try_get_matches_from_mut(argv)?;
+    refuse_flags_given_twice(&mut command, &matches)?;
+    let mut cli = Cli::from_arg_matches(&matches).map_err(|error| error.format(&mut command))?;
+    let levels = levels_of(&matches);
+    cli.config = levels
+        .iter()
+        .find_map(|level| level.get_one::<String>("config").cloned());
+    cli.verbose = levels.iter().fold(0, |count, level| {
+        count.saturating_add(level.get_count("verbose"))
+    });
+    Ok(cli)
+}
+
+/// `command` with each of its global args declared at every level instead, so that each
+/// level's matches hold only what was given there. clap copies a global's value to every
+/// level, which hides where it was given and keeps only the `-v` count of the deepest level
+/// that had any.
+fn with_globals_at_every_level(command: clap::Command) -> clap::Command {
+    fn declare(command: clap::Command, args: &[clap::Arg]) -> clap::Command {
+        args.iter()
+            .fold(command, |command, arg| command.arg(arg.clone()))
+            .mut_subcommands(|subcommand| declare(subcommand, args))
+    }
+    let globals: Vec<clap::Arg> = command
+        .get_arguments()
+        .filter(|arg| arg.is_global_set())
+        .map(|arg| arg.clone().global(false))
+        .collect();
+    let command = globals.iter().fold(command, |command, arg| {
+        command.mut_arg(arg.get_id().clone(), |arg| arg.global(false))
+    });
+    command.mut_subcommands(|subcommand| declare(subcommand, &globals))
+}
+
+/// The matches of each level the command line reached: the top level, then each
+/// subcommand in turn.
+fn levels_of(matches: &ArgMatches) -> Vec<&ArgMatches> {
+    std::iter::successors(Some(matches), |level| {
+        level.subcommand().map(|(_, next)| next)
+    })
+    .collect()
+}
+
+/// Refuse a flag the command line gives at two levels, such as `--dry-run` before a
+/// subcommand and after it, or `--config` at the top and on a source: neither has a
+/// reason to win. The error is clap's, with the deepest subcommand's usage.
+fn refuse_flags_given_twice(
+    command: &mut clap::Command,
+    matches: &ArgMatches,
+) -> Result<(), clap::Error> {
+    let names: Vec<&str> = levels_of(matches)
+        .iter()
+        .filter_map(|level| level.subcommand_name())
+        .collect();
+    let Some(message) = flag_given_twice(command, matches, &names) else {
+        return Ok(());
+    };
+    let deepest = names.iter().fold(command, |command, name| {
+        command
+            .find_subcommand_mut(name)
+            .expect("clap matched this subcommand")
+    });
+    Err(deepest.error(ErrorKind::ArgumentConflict, message))
+}
+
+/// The complaint about the first long flag given at two of the levels along `names`, the
+/// subcommand path `matches` took, or `None`. A value from the environment or a default is
+/// not a placement, so `PINBOARD_SYNC_ON_AUTH_FAILURE`, which backs the per-source
+/// `--on-auth-failure`, beside the top-level flag is fine. A counted flag (`-v`) adds up
+/// instead, and `--all` is two different flags, every source's accounts before a source
+/// and that source's after it, so the run refuses the pair with its own message.
+fn flag_given_twice(
+    command: &clap::Command,
+    matches: &ArgMatches,
+    names: &[&str],
+) -> Option<String> {
+    let mut first_level: HashMap<&clap::Id, usize> = HashMap::new();
+    let mut level_command = command;
+    for (depth, level) in levels_of(matches).into_iter().enumerate() {
+        for arg in level_command.get_arguments() {
+            let Some(long) = arg.get_long() else {
+                continue;
+            };
+            let counted = matches!(arg.get_action(), ArgAction::Count);
+            let on_command_line =
+                level.value_source(arg.get_id().as_str()) == Some(ValueSource::CommandLine);
+            if counted || long == "all" || !on_command_line {
+                continue;
+            }
+            if let Some(&first) = first_level.get(arg.get_id()) {
+                return Some(format!(
+                    "'--{long}' was given both before and after '{}'; give it once",
+                    names[first]
+                ));
+            }
+            first_level.insert(arg.get_id(), depth);
+        }
+        if let Some(name) = names.get(depth) {
+            level_command = level_command
+                .find_subcommand(name)
+                .expect("clap matched this subcommand");
+        }
+    }
+    None
 }
 
 #[derive(Subcommand)]
@@ -74,7 +202,7 @@ pub struct BackupCmd {
 }
 
 /// The snapshot directory, flattened into `backup` *and* every target so it is accepted
-/// on either side of the subcommand (as `--dry-run` already is on `sync`).
+/// on either side of the subcommand, though not both (as `--dry-run` is on `sync`).
 #[derive(Args, Clone, Default)]
 pub struct OutFlag {
     /// Directory to write the snapshot into (overrides `[backup].directory`).
@@ -349,9 +477,9 @@ pub struct DateFlags {
 }
 
 impl DateFlags {
-    /// Let a date flag placed before the source subcommand (on `CleanupCmd`) take
-    /// effect, falling back to this per-source value. Mirrors sync's
-    /// `SyncOverrides::with_top_level_hook`.
+    /// Take each date flag from whichever side of the source subcommand gave it: before
+    /// it (on `CleanupCmd`) or after it (this value). The command line refuses both.
+    /// Mirrors sync's `SyncOverrides::with_top_level_hook`.
     #[must_use]
     pub fn with_top_level(self, top_overrides: &DateFlags) -> DateFlags {
         DateFlags {
@@ -533,6 +661,265 @@ impl From<RedditCleanupArgs> for RedditCleanupOverrides {
 mod tests {
     use super::*;
     use std::num::NonZeroUsize;
+
+    /// Each flag a command and its subcommand both take, given before the subcommand and
+    /// after it, as `(before, subcommand, after)`.
+    const ON_BOTH_SIDES: &[(&[&str], &str, &[&str])] = &[
+        (&["sync", "--dry-run"], "reddit", &["--dry-run"]),
+        (
+            &["sync", "--on-auth-failure", "a"],
+            "github",
+            &["--on-auth-failure", "b"],
+        ),
+        (&["cleanup", "--dry-run"], "github", &["--dry-run"]),
+        (
+            &["cleanup", "--post-date-max-age-days", "3"],
+            "reddit",
+            &["--post-date-max-age-days", "4"],
+        ),
+        (
+            &["cleanup", "--max-age-days", "3"],
+            "reddit",
+            &["--post-date-max-age-days", "4"],
+        ),
+        (
+            &["cleanup", "--post-date-max-age-days", "3"],
+            "github",
+            &["--max-age-days", "4"],
+        ),
+        (
+            &["cleanup", "--use-post-date"],
+            "hackernews",
+            &["--use-post-date=false"],
+        ),
+        (
+            &["cleanup", "--cleanup-stale-to-now"],
+            "github",
+            &["--cleanup-stale-to-now"],
+        ),
+        (&["backup", "--dry-run"], "reddit", &["--dry-run"]),
+        (&["backup", "--out", "/a"], "pinboard", &["--out", "/b"]),
+    ];
+
+    /// The long name of the flag `after` gives, as the refusal names it.
+    fn flag_of(after: &[&str]) -> String {
+        let flag = after[0].split('=').next().unwrap();
+        flag.replace("--max-age-days", "--post-date-max-age-days")
+    }
+
+    #[test]
+    fn a_flag_given_both_before_and_after_its_subcommand_is_refused() {
+        for (before, subcommand, after) in ON_BOTH_SIDES {
+            let argv: Vec<&str> = ["pinboard-sync"]
+                .iter()
+                .chain(*before)
+                .chain([subcommand])
+                .chain(*after)
+                .copied()
+                .collect();
+            let Err(error) = crate::test_support::parse_cli(&argv) else {
+                panic!("{argv:?} parsed");
+            };
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{argv:?}"
+            );
+            let message = error.to_string();
+            assert!(
+                message.contains(&format!(
+                    "'{}' was given both before and after '{subcommand}'",
+                    flag_of(after)
+                )),
+                "{argv:?}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_flag_given_on_one_side_of_its_subcommand_parses() {
+        for (before, subcommand, after) in ON_BOTH_SIDES {
+            let top: Vec<&str> = ["pinboard-sync"]
+                .iter()
+                .chain(*before)
+                .chain([subcommand])
+                .copied()
+                .collect();
+            let nested: Vec<&str> = ["pinboard-sync", before[0], subcommand]
+                .iter()
+                .chain(*after)
+                .copied()
+                .collect();
+            for argv in [top, nested] {
+                assert!(crate::test_support::parse_cli(&argv).is_ok(), "{argv:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn config_given_at_two_levels_is_refused() {
+        for argv in [
+            &["--config", "a", "sync", "--config", "b", "reddit"][..],
+            &["--config", "a", "sync", "reddit", "--config", "b"],
+            &["--config=a", "sync", "reddit", "--config=b"],
+            &["sync", "--config", "a", "github", "--config=b"],
+            &["cleanup", "--config=a", "hackernews", "--config", "b"],
+            &[
+                "--config",
+                "a",
+                "config",
+                "check",
+                "--config",
+                "b",
+                "file.toml",
+            ],
+        ] {
+            let argv: Vec<&str> = std::iter::once("pinboard-sync")
+                .chain(argv.iter().copied())
+                .collect();
+            let Err(error) = crate::test_support::parse_cli(&argv) else {
+                panic!("{argv:?} parsed");
+            };
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{argv:?}"
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains("'--config' was given both before and after"),
+                "{argv:?}: {error}"
+            );
+        }
+    }
+
+    /// `--config` given once is taken from whichever level gave it, and a `--config` that is
+    /// a value (of another flag, or a positional after `--`) is not a second one.
+    #[test]
+    fn config_given_once_parses_at_any_level() {
+        for (argv, config) in [
+            (&["--config", "a", "sync", "reddit"][..], Some("a")),
+            (&["sync", "--config=a", "reddit"], Some("a")),
+            (&["sync", "reddit", "--config", "a"], Some("a")),
+            (&["sync", "reddit"], None),
+            (
+                &[
+                    "--config",
+                    "a",
+                    "sync",
+                    "reddit",
+                    "--on-auth-failure=--config",
+                ],
+                Some("a"),
+            ),
+            (
+                &["--config", "a", "config", "check", "--", "--config"],
+                Some("a"),
+            ),
+        ] {
+            let argv: Vec<&str> = std::iter::once("pinboard-sync")
+                .chain(argv.iter().copied())
+                .collect();
+            let cli =
+                crate::test_support::parse_cli(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            assert_eq!(cli.config.as_deref(), config, "{argv:?}");
+        }
+    }
+
+    /// `-v` counts wherever it is given, clusters included: clap alone keeps only the
+    /// deepest level's count.
+    #[test]
+    fn verbose_adds_up_across_levels() {
+        for (argv, count) in [
+            (&["-v", "sync", "-vv", "reddit", "-v"][..], 4),
+            (&["-vv", "sync", "reddit"], 2),
+            (&["sync", "reddit", "-vvv"], 3),
+            (&["--verbose", "cleanup", "-v", "github", "--verbose"], 3),
+            (&["sync", "reddit"], 0),
+        ] {
+            let argv: Vec<&str> = std::iter::once("pinboard-sync")
+                .chain(argv.iter().copied())
+                .collect();
+            let cli =
+                crate::test_support::parse_cli(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            assert_eq!(cli.verbose, count, "{argv:?}");
+        }
+    }
+
+    /// A refusal names the subcommand right after the first `--config`, and shows the usage
+    /// of the deepest one, as clap's own errors do.
+    #[test]
+    fn a_refusal_names_where_the_flag_was_first_given() {
+        let argv = [
+            "pinboard-sync",
+            "--config",
+            "a",
+            "sync",
+            "reddit",
+            "--config",
+            "b",
+        ];
+        let Err(error) = crate::test_support::parse_cli(argv) else {
+            panic!("{argv:?} parsed");
+        };
+        let error = error.to_string();
+        assert!(
+            error.contains("'--config' was given both before and after 'sync'"),
+            "{error}"
+        );
+        assert!(
+            error.contains("Usage: pinboard-sync sync reddit [OPTIONS] [ACCOUNT]"),
+            "{error}"
+        );
+    }
+
+    /// `--all` before a source and after it are different flags, every source's accounts
+    /// and that source's; the run refuses the pair, so the parse lets it through.
+    #[test]
+    fn all_on_both_sides_is_left_to_the_run() {
+        for argv in [
+            ["pinboard-sync", "sync", "--all", "reddit", "--all"],
+            ["pinboard-sync", "backup", "--all", "github", "--all"],
+        ] {
+            assert!(crate::test_support::parse_cli(argv).is_ok(), "{argv:?}");
+        }
+    }
+
+    /// The environment backs the per-source `--on-auth-failure`, and a value from it is
+    /// not a placement: the top-level flag alongside it still parses, and wins.
+    #[test]
+    fn an_env_backed_value_is_not_a_second_placement() {
+        // A variable cargo sets for every test process, so the test needn't set one.
+        let command = Cli::command().mut_subcommand("sync", |sync| {
+            sync.mut_subcommand("reddit", |reddit| {
+                reddit.mut_arg("on_auth_failure", |arg| arg.env("CARGO_PKG_NAME"))
+            })
+        });
+        let parsed = parse_with(
+            command,
+            [
+                "pinboard-sync",
+                "sync",
+                "--on-auth-failure",
+                "top",
+                "reddit",
+            ],
+        );
+
+        let Command::Sync(cmd) = parsed.expect("parses").command else {
+            panic!("expected `sync`");
+        };
+        let Some(SyncSource::Reddit(args)) = cmd.source else {
+            panic!("expected `sync reddit`");
+        };
+        assert_eq!(
+            args.on_auth_failure.as_deref(),
+            Some(env!("CARGO_PKG_NAME"))
+        );
+        let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
+        assert_eq!(overrides.on_auth_failure.as_deref(), Some("top"));
+    }
 
     #[test]
     fn limit_flag_takes_auto_all_or_a_count() {

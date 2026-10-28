@@ -46,19 +46,33 @@ impl TryFrom<ConfiguredSecret> for SessionCookie {
 /// including one ending in base64 `=` padding, becomes `reddit_session=<value>`, since
 /// Reddit only recognises the session by that name. Other cookies without a
 /// `reddit_session` are sent with a warning: naming them would only produce a garbled
-/// header. Every form goes out [without blank pairs](without_blank_pairs), so a stray `;`
-/// doesn't turn a bare value into other cookies. See [`NoSession`] for what counts as no
-/// cookie. `source` names the setting in that warning.
+/// header, and `source` names the setting in that warning. Every form goes out [without
+/// wrapping quotes or blank pairs](without_blank_pairs), so a stray `;` doesn't turn a bare
+/// value into other cookies, and the header shapes to itself. See [`NoSession`] for what
+/// counts as no cookie.
 fn session_cookie(raw: &str, source: &str) -> Option<String> {
-    let value = without_blank_pairs(raw);
-    match CookieForm::try_from(value.as_str()).ok()? {
-        CookieForm::Named => Some(with_one_session(&value)),
-        CookieForm::Bare => Some(format!("reddit_session={value}")),
-        CookieForm::OtherCookies => {
-            warn!("{}", unnamed_cookie_warning(source));
-            Some(value)
-        }
+    let (header, form) = shaped(raw)?;
+    if form == CookieForm::OtherCookies {
+        warn!("{}", unnamed_cookie_warning(source));
     }
+    Some(header)
+}
+
+/// [`session_cookie`]'s header for `raw`, and the form it was read as. Dropping a session
+/// pair can leave the rest wrapped in quotes (`"a=1;reddit_session=x";reddit_session=y`),
+/// so a header that is still quoted is shaped again.
+fn shaped(raw: &str) -> Option<(String, CookieForm)> {
+    let value = without_blank_pairs(raw);
+    let form = CookieForm::try_from(value.as_str()).ok()?;
+    let header = match form {
+        CookieForm::Named => with_one_session(&value),
+        CookieForm::Bare => format!("reddit_session={value}"),
+        CookieForm::OtherCookies => value,
+    };
+    if quoted_inner(&header).is_some() {
+        return shaped(&header);
+    }
+    Some((header, form))
 }
 
 pub(super) fn unnamed_cookie_warning(source: &str) -> String {
@@ -88,14 +102,33 @@ pub(super) fn refused_cookie_advice(cookie_source: Option<&str>) -> String {
 /// Whether `raw` configures a Reddit session at all (see [`NoSession`]), so secret
 /// resolution can skip one that doesn't as it skips a blank value.
 pub fn is_configured_cookie(raw: &str) -> bool {
-    CookieForm::try_from(without_blank_pairs(raw).as_str()).is_ok()
+    shaped(raw).is_some()
 }
 
-/// `raw` [`unquoted`], without its [blank](is_blank) cookie pairs, so with no `;` at either
-/// end or next to another.
+/// `raw` without its [blank](is_blank) cookie pairs and without the surrounding double
+/// quotes an env file or shell assignment can leave, as many matched pairs of them as wrap
+/// it, whether they wrap it from the start or once blank pairs are dropped (`"abc";=`). So
+/// it has no `;` at either end or next to another, and is its own `without_blank_pairs`. A
+/// lone quote at either end is kept: it isn't a pair.
 fn without_blank_pairs(raw: &str) -> String {
-    unquoted(raw)
-        .split(';')
+    let is_edge = |c: char| c == ';' || c.is_whitespace();
+    let mut value = raw.trim_matches(is_edge).to_string();
+    loop {
+        if let Some(inner) = quoted_inner(&value) {
+            value = inner.trim_matches(is_edge).to_string();
+            continue;
+        }
+        let nonblank = nonblank_pairs(&value);
+        if nonblank == value {
+            return value;
+        }
+        value = nonblank;
+    }
+}
+
+/// `raw`'s non-[blank](is_blank) cookie pairs, rejoined and trimmed.
+fn nonblank_pairs(raw: &str) -> String {
+    raw.split(';')
         .filter(|pair| !is_blank(pair))
         .collect::<Vec<_>>()
         .join(";")
@@ -103,16 +136,9 @@ fn without_blank_pairs(raw: &str) -> String {
         .to_string()
 }
 
-/// `raw` trimmed of whitespace and `;`, without one pair of surrounding double quotes, as
-/// an env file or shell assignment can leave them. A lone quote at either end is kept: it
-/// isn't a pair.
-fn unquoted(raw: &str) -> &str {
-    let is_edge = |c: char| c == ';' || c.is_whitespace();
-    let trimmed = raw.trim_matches(is_edge);
-    trimmed
-        .strip_prefix('"')
-        .and_then(|inner| inner.strip_suffix('"'))
-        .map_or(trimmed, |inner| inner.trim_matches(is_edge))
+/// What a pair of double quotes around all of `value` wraps, or `None` when they don't.
+fn quoted_inner(value: &str) -> Option<&str> {
+    value.strip_prefix('"')?.strip_suffix('"')
 }
 
 /// How a configured cookie value is shaped; see [`session_cookie`].
@@ -262,11 +288,18 @@ mod tests {
     }
 
     #[test]
-    fn strips_only_a_matched_quote_pair_and_treats_bare_quotes_as_unset() {
+    fn strips_every_matched_quote_pair_and_treats_bare_quotes_as_unset() {
         let cases = [
             ("\"abc", "reddit_session=\"abc"),
             ("abc\"", "reddit_session=abc\""),
-            ("\"\"abc\"\"", "reddit_session=\"abc\""),
+            ("\"\"abc\"", "reddit_session=\"abc"),
+            ("\"\"abc\"\"", "reddit_session=abc"),
+            ("\"\"abc==\"\"", "reddit_session=abc=="),
+            ("\" \"abc\" \"", "reddit_session=abc"),
+            ("\"\"reddit_session=abc\"\"", "reddit_session=abc"),
+            ("\"abc==\";=", "reddit_session=abc=="),
+            ("=;\"abc==\"", "reddit_session=abc=="),
+            ("\"a=1;;b=2\"", "a=1;b=2"),
             (
                 "reddit_session=\"; reddit_session=abc",
                 "reddit_session=abc",
@@ -283,6 +316,32 @@ mod tests {
             "reddit_session=\"\"",
             "a=1; reddit_session=\" \"",
         ]);
+    }
+
+    #[test]
+    fn a_sent_cookie_shapes_to_itself() {
+        let cases = [
+            ("\"\"abc==\"\"", "reddit_session=abc=="),
+            ("\"abc==\";=", "reddit_session=abc=="),
+            ("=;\"abc==\"", "reddit_session=abc=="),
+            (
+                "\"a=1;reddit_session=abc\";reddit_session=def",
+                "a=1;reddit_session=abc",
+            ),
+            (
+                "reddit_session=;\"a=1;reddit_session=abc\"",
+                "a=1;reddit_session=abc",
+            ),
+            ("a=1;\"reddit_session=abc\"", "a=1;\"reddit_session=abc\""),
+        ];
+        assert_sends(&cases);
+        for (_, sent) in cases {
+            assert_eq!(
+                session_cookie(sent, TEST_COOKIE_SOURCE).as_deref(),
+                Some(sent),
+                "{sent:?}"
+            );
+        }
     }
 
     #[test]
@@ -305,6 +364,7 @@ mod tests {
             (" ;abc; \n", "reddit_session=abc"),
             ("YWJj==;", "reddit_session=YWJj=="),
             ("\"abc;\"", "reddit_session=abc"),
+            (" \"abc;\"\n", "reddit_session=abc"),
             ("\"abc\";", "reddit_session=abc"),
             (";;reddit_session=x;", "reddit_session=x"),
             ("a=1;;", "a=1"),

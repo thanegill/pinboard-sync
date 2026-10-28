@@ -317,28 +317,22 @@ impl Config {
         accounts: &[T],
         defaults: &SourceDefaults,
     ) -> Result<()> {
-        let redates_every_run = |account: Option<&T>| {
+        let check = |account: Option<&T>, scope: String| {
             crate::settings::resolve_dates(
                 &crate::cli::DateFlags::default(),
                 account,
                 defaults,
                 self,
             )
-            .redates_every_run()
+            .check_redating(&format!("config: {scope}"), source)
         };
-        let offender = match accounts {
-            [] => redates_every_run(None).then(|| format!("{source} (implicit CLI/env account)")),
-            _ => accounts
-                .iter()
-                .position(|account| redates_every_run(Some(account)))
-                .map(|index| format!("{source}[{index}]")),
-        };
-        match offender {
-            Some(scope) => Err(crate::settings::redates_every_run_error(&format!(
-                "config: {scope}"
-            ))),
-            None => Ok(()),
+        if accounts.is_empty() {
+            return check(None, format!("{source} (implicit CLI/env account)"));
         }
+        for (index, account) in accounts.iter().enumerate() {
+            check(Some(account), format!("{source}[{index}]"))?;
+        }
+        Ok(())
     }
 }
 
@@ -391,28 +385,29 @@ fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
 /// Error if `value` (a tag or tag prefix) contains whitespace or a comma — Pinboard tags
 /// can't contain either (its API splits the tag string on spaces, and its docs forbid
 /// commas), so one here silently corrupts and should fail loudly instead. The error names
-/// the field, never the value, which may be a credential pasted into the wrong key.
-pub(crate) fn check_taggable(field: &str, value: &str) -> Result<()> {
+/// the `setting` (a config field or a flag, as the message spells it), never the value,
+/// which may be a credential pasted into the wrong key.
+pub(crate) fn check_taggable(setting: &str, value: &str) -> Result<()> {
     if value.chars().any(char::is_whitespace) {
-        bail!("config: `{field}` must not contain whitespace");
+        bail!("{setting} must not contain whitespace");
     }
     if value.contains(',') {
-        bail!("config: `{field}` must not contain a comma");
+        bail!("{setting} must not contain a comma");
     }
     Ok(())
 }
 
-/// Error if an optional tag/prefix contains whitespace or a comma.
+/// Error if an optional tag/prefix in config `field` contains whitespace or a comma.
 fn check_tag(field: &str, value: &Option<String>) -> Result<()> {
     value
         .as_deref()
-        .map_or(Ok(()), |v| check_taggable(field, v))
+        .map_or(Ok(()), |v| check_taggable(&format!("config: `{field}`"), v))
 }
 
-/// Error if any tag in the list contains whitespace or a comma.
+/// Error if any tag in the config list `field` contains whitespace or a comma.
 fn check_tags(field: &str, values: &Option<Vec<String>>) -> Result<()> {
     for (index, v) in values.iter().flatten().enumerate() {
-        check_taggable(&format!("{field}[{index}]"), v)?;
+        check_taggable(&format!("config: `{field}[{index}]`"), v)?;
     }
     Ok(())
 }

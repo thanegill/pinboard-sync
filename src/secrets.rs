@@ -25,6 +25,7 @@ pub enum SecretRung {
 }
 
 impl SecretRung {
+    #[cfg(test)]
     pub const ALL: [SecretRung; 5] = [
         SecretRung::Flag,
         SecretRung::Env,
@@ -34,133 +35,186 @@ impl SecretRung {
     ];
 }
 
-/// The Reddit cookie setting a rung reads, as messages name it.
-pub fn reddit_cookie_source(rung: SecretRung) -> &'static str {
-    match rung {
-        SecretRung::Flag => "--reddit-cookie",
-        SecretRung::Env => "$REDDIT_COOKIE",
-        SecretRung::EnvFile => "$REDDIT_COOKIE_FILE",
-        SecretRung::ConfigInline => "the config's `cookie`",
-        SecretRung::ConfigFile => "the config's `cookie_file`",
+/// One secret's ladder: the setting each rung reads, as messages name it, and the check a
+/// candidate must pass for the ladder to take it. Every message that names where a secret
+/// came from, or where to set a missing one, is built from these.
+#[derive(Debug, Clone, Copy)]
+pub struct SecretSpec {
+    /// What the secret is, as "missing X" names it.
+    what: &'static str,
+    flag: &'static str,
+    /// The variable the `$VAR` and `$VAR_FILE` rungs read.
+    var: &'static str,
+    env: &'static str,
+    env_file: &'static str,
+    config_inline: &'static str,
+    /// `None` for a secret with no `*_file` key, which never reads that rung.
+    config_file: Option<&'static str>,
+    accepts: fn(&str) -> bool,
+}
+
+impl SecretSpec {
+    pub const PINBOARD_TOKEN: SecretSpec = SecretSpec {
+        what: "Pinboard token",
+        flag: "--pinboard-token",
+        var: "PINBOARD_TOKEN",
+        env: "$PINBOARD_TOKEN",
+        env_file: "$PINBOARD_TOKEN_FILE",
+        config_inline: "`[pinboard]`'s `token`",
+        config_file: Some("`[pinboard]`'s `token_file`"),
+        accepts: is_nonblank,
+    };
+    pub const REDDIT_USERNAME: SecretSpec = SecretSpec {
+        what: "Reddit username",
+        flag: "--reddit-username",
+        var: "REDDIT_USERNAME",
+        env: "$REDDIT_USERNAME",
+        env_file: "$REDDIT_USERNAME_FILE",
+        config_inline: "the config's `username`",
+        config_file: None,
+        accepts: is_nonblank,
+    };
+    pub const REDDIT_COOKIE: SecretSpec = SecretSpec {
+        what: "Reddit cookie",
+        flag: "--reddit-cookie",
+        var: "REDDIT_COOKIE",
+        env: "$REDDIT_COOKIE",
+        env_file: "$REDDIT_COOKIE_FILE",
+        config_inline: "the config's `cookie`",
+        config_file: Some("the config's `cookie_file`"),
+        accepts: reddit::cookie::is_configured_cookie,
+    };
+    pub const GITHUB_TOKEN: SecretSpec = SecretSpec {
+        what: "GitHub token",
+        flag: "--github-token",
+        var: "GITHUB_TOKEN",
+        env: "$GITHUB_TOKEN",
+        env_file: "$GITHUB_TOKEN_FILE",
+        config_inline: "the config's `token`",
+        config_file: Some("the config's `token_file`"),
+        accepts: is_nonblank,
+    };
+    pub const HN_USERNAME: SecretSpec = SecretSpec {
+        what: "HackerNews username",
+        flag: "--username",
+        var: "HN_USERNAME",
+        env: "$HN_USERNAME",
+        env_file: "$HN_USERNAME_FILE",
+        config_inline: "the config's `username`",
+        config_file: None,
+        accepts: is_nonblank,
+    };
+
+    /// The setting `rung` reads, as messages name it.
+    pub fn source(self, rung: SecretRung) -> &'static str {
+        match rung {
+            SecretRung::Flag => self.flag,
+            SecretRung::Env => self.env,
+            SecretRung::EnvFile => self.env_file,
+            SecretRung::ConfigInline => self.config_inline,
+            SecretRung::ConfigFile => self.config_file.unwrap_or(self.config_inline),
+        }
     }
-}
 
-/// The GitHub token setting a rung reads, as messages name it.
-pub fn github_token_source(rung: SecretRung) -> &'static str {
-    match rung {
-        SecretRung::Flag => "--github-token",
-        SecretRung::Env => "$GITHUB_TOKEN",
-        SecretRung::EnvFile => "$GITHUB_TOKEN_FILE",
-        SecretRung::ConfigInline => "the config's `token`",
-        SecretRung::ConfigFile => "the config's `token_file`",
+    /// Every setting the secret can come from, in ladder order, as "A, B, C, or the
+    /// config's `x` or `x_file`" for a message to follow "set". The two config rungs share
+    /// one entry rather than naming the config twice.
+    pub fn settings(self) -> String {
+        let config = match self.config_file {
+            Some(file) => {
+                let (owner, _) = self.config_inline.rsplit_once(' ').unwrap_or_default();
+                let file_key = file.strip_prefix(owner).unwrap_or(file).trim_start();
+                format!("{} or {file_key}", self.config_inline)
+            }
+            None => self.config_inline.to_string(),
+        };
+        format!(
+            "{}, {}, {}, or {config}",
+            self.flag, self.env, self.env_file
+        )
     }
-}
 
-/// Every setting a Reddit cookie can come from, as "A, B, C, or the config's `x` or
-/// `x_file`" for a message to follow "set".
-pub fn reddit_cookie_settings() -> String {
-    settings_list(reddit_cookie_source)
-}
+    /// "missing X (set ...)", naming every setting the secret can come from.
+    pub fn missing(self) -> String {
+        format!("missing {} (set {})", self.what, self.settings())
+    }
 
-/// Every setting a GitHub token can come from, as "A, B, C, or the config's `x` or
-/// `x_file`" for a message to follow "set".
-pub fn github_token_settings() -> String {
-    settings_list(github_token_source)
-}
+    /// Whether the ladder would take `value` for this secret rather than skip it.
+    pub fn accepts(self, value: &str) -> bool {
+        (self.accepts)(value)
+    }
 
-/// The setting each rung reads, in ladder order. The two config rungs share one entry,
-/// "the config's `x` or `x_file`", rather than naming the config twice.
-fn settings_list(setting: fn(SecretRung) -> &'static str) -> String {
-    let [flag, env, env_file, config_inline, config_file] = SecretRung::ALL.map(setting);
-    let config_file_key = config_file
-        .strip_prefix("the config's ")
-        .unwrap_or(config_file);
-    format!("{flag}, {env}, {env_file}, or {config_inline} or {config_file_key}")
-}
+    /// The secret through the ladder — CLI flag → `$VAR` → `$VAR_FILE` → config inline
+    /// value → config file path — with the setting it came from. File-sourced values are
+    /// read and trimmed; the first candidate [`Self::accepts`] takes wins.
+    pub fn resolve(
+        self,
+        flag: Option<String>,
+        cfg_inline: Option<String>,
+        cfg_file: Option<&str>,
+    ) -> Option<ConfiguredSecret> {
+        self.first_accepted(secret_ladder(flag, self.var, cfg_inline, cfg_file))
+    }
 
-/// Resolve a value through the ladder: CLI flag → `$VAR` → `$VAR_FILE` → config
-/// inline value → config file path. File-sourced values are read and trimmed; the
-/// first non-empty candidate wins.
-pub fn resolve_secret(
-    flag: Option<String>,
-    var: &str,
-    cfg_inline: Option<String>,
-    cfg_file: Option<&str>,
-) -> Option<String> {
-    first_nonempty(secret_ladder(flag, var, cfg_inline, cfg_file).map(|(_, value)| value))
+    /// The first of `candidates` the ladder takes, with the setting it came from.
+    fn first_accepted(
+        self,
+        candidates: impl IntoIterator<Item = (SecretRung, Option<String>)>,
+    ) -> Option<ConfiguredSecret> {
+        candidates.into_iter().find_map(|(rung, value)| {
+            let value = value.filter(|value| self.accepts(value))?;
+            Some(ConfiguredSecret {
+                value,
+                source: self.source(rung),
+            })
+        })
+    }
+
+    /// `$VAR` or `$VAR_FILE`, whichever the ladder would take this secret from, if either.
+    /// An unreadable `$VAR_FILE` is left for each account's own resolution to warn about.
+    fn env_setting(self) -> Option<&'static str> {
+        let read_quietly = |path: &str| try_read_file_secret(path).ok().flatten();
+        let (rung, _) = secret_ladder_reading(read_quietly, None, self.var, None, None)
+            .into_iter()
+            .find(|(_, value)| value.as_deref().is_some_and(|value| self.accepts(value)))?;
+        match rung {
+            SecretRung::Env | SecretRung::EnvFile => Some(self.source(rung)),
+            SecretRung::Flag | SecretRung::ConfigInline | SecretRung::ConfigFile => None,
+        }
+    }
 }
 
 pub fn missing_reddit_cookie() -> String {
     format!(
         "missing Reddit cookie (set {}, or pass --no-nsfw --no-titles and disable \
          use_post_date)",
-        reddit_cookie_settings()
+        SecretSpec::REDDIT_COOKIE.settings()
     )
 }
 
-pub fn missing_github_token() -> String {
-    format!("missing GitHub token (set {})", github_token_settings())
-}
-
-/// The Reddit cookie through [`resolve_secret`]'s ladder, skipping a candidate that
-/// configures no session (see [`reddit::cookie::is_configured_cookie`]) as a blank one is
-/// skipped.
+/// The Reddit cookie through its ladder, skipping a candidate that configures no session
+/// (see [`reddit::cookie::is_configured_cookie`]) as a blank one is skipped.
 pub fn resolve_reddit_cookie(
     flag: Option<String>,
     account: Option<&RedditAccount>,
 ) -> Option<ConfiguredSecret> {
-    first_configured_cookie(secret_ladder(
+    SecretSpec::REDDIT_COOKIE.resolve(
         flag,
-        "REDDIT_COOKIE",
         account.and_then(|a| a.cookie.clone()),
         account.and_then(|a| a.cookie_file.as_deref()),
-    ))
+    )
 }
 
-/// The GitHub token through [`resolve_secret`]'s ladder, with the setting it came from.
+/// The GitHub token through its ladder, with the setting it came from.
 pub fn resolve_github_token(
     flag: Option<String>,
     account: Option<&GitHubAccount>,
 ) -> Option<ConfiguredSecret> {
-    first_configured_token(secret_ladder(
+    SecretSpec::GITHUB_TOKEN.resolve(
         flag,
-        "GITHUB_TOKEN",
         account.and_then(|a| a.token.clone()),
         account.and_then(|a| a.token_file.as_deref()),
-    ))
-}
-
-/// The first non-blank GitHub token, with the setting it came from.
-fn first_configured_token(
-    candidates: impl IntoIterator<Item = (SecretRung, Option<String>)>,
-) -> Option<ConfiguredSecret> {
-    first_configured(candidates, is_nonblank, github_token_source)
-}
-
-/// The first candidate that configures a Reddit session, with the setting it came from.
-fn first_configured_cookie(
-    candidates: impl IntoIterator<Item = (SecretRung, Option<String>)>,
-) -> Option<ConfiguredSecret> {
-    first_configured(
-        candidates,
-        reddit::cookie::is_configured_cookie,
-        reddit_cookie_source,
     )
-}
-
-/// The first candidate `is_configured` accepts, with the setting `source` names its rung.
-fn first_configured(
-    candidates: impl IntoIterator<Item = (SecretRung, Option<String>)>,
-    is_configured: impl Fn(&str) -> bool,
-    source: impl Fn(SecretRung) -> &'static str,
-) -> Option<ConfiguredSecret> {
-    candidates.into_iter().find_map(|(rung, value)| {
-        let value = value.filter(|value| is_configured(value))?;
-        Some(ConfiguredSecret {
-            value,
-            source: source(rung),
-        })
-    })
 }
 
 fn secret_ladder(
@@ -192,61 +246,15 @@ fn secret_ladder_reading(
     ]
 }
 
-/// A secret the ladder reads from `$VAR` and `$VAR_FILE`, with the check a candidate must
-/// pass for the ladder to take it.
-#[derive(Clone, Copy)]
-pub struct EnvSecret {
-    var: &'static str,
-    is_configured: fn(&str) -> bool,
-}
-
-impl EnvSecret {
-    pub const REDDIT_USERNAME: EnvSecret = EnvSecret {
-        var: "REDDIT_USERNAME",
-        is_configured: is_nonblank,
-    };
-    pub const REDDIT_COOKIE: EnvSecret = EnvSecret {
-        var: "REDDIT_COOKIE",
-        is_configured: reddit::cookie::is_configured_cookie,
-    };
-    pub const GITHUB_TOKEN: EnvSecret = EnvSecret {
-        var: "GITHUB_TOKEN",
-        is_configured: is_nonblank,
-    };
-    pub const HN_USERNAME: EnvSecret = EnvSecret {
-        var: "HN_USERNAME",
-        is_configured: is_nonblank,
-    };
-
-    /// Whether the ladder would take `value` for this secret rather than skip it.
-    pub fn accepts(self, value: &str) -> bool {
-        (self.is_configured)(value)
-    }
-
-    /// `$VAR` or `$VAR_FILE`, whichever the ladder would take this secret from, if either.
-    /// An unreadable `$VAR_FILE` is left for each account's own resolution to warn about.
-    fn env_setting(self) -> Option<String> {
-        let read_quietly = |path: &str| try_read_file_secret(path).ok().flatten();
-        let (rung, _) = secret_ladder_reading(read_quietly, None, self.var, None, None)
-            .into_iter()
-            .find(|(_, value)| value.as_deref().is_some_and(|value| self.accepts(value)))?;
-        match rung {
-            SecretRung::Env => Some(format!("${}", self.var)),
-            SecretRung::EnvFile => Some(format!("${}_FILE", self.var)),
-            SecretRung::Flag | SecretRung::ConfigInline | SecretRung::ConfigFile => None,
-        }
-    }
-}
-
 /// Warn when an environment rung of `secrets` applies to more than one configured account
 /// of `source`. The ladder puts `$VAR` and `$VAR_FILE` above every account's own value, so
 /// each of those accounts silently uses the one global value. Names the settings, never
 /// their values.
-pub fn warn_if_env_shared(source: &str, secrets: &[EnvSecret], accounts: usize) {
+pub fn warn_if_env_shared(source: &str, secrets: &[SecretSpec], accounts: usize) {
     if accounts < 2 {
         return;
     }
-    let shared: Vec<String> = secrets.iter().filter_map(|s| s.env_setting()).collect();
+    let shared: Vec<&str> = secrets.iter().filter_map(|s| s.env_setting()).collect();
     let (verb, pronoun) = match shared.len() {
         0 => return,
         1 => ("is", "it"),
@@ -305,12 +313,9 @@ fn try_read_file_secret(path: &str) -> std::io::Result<Option<String>> {
 }
 
 pub fn resolve_pinboard_token(flag: Option<String>, pb: &PinboardConfig) -> Option<String> {
-    resolve_secret(
-        flag,
-        "PINBOARD_TOKEN",
-        pb.token.clone(),
-        pb.token_file.as_deref(),
-    )
+    SecretSpec::PINBOARD_TOKEN
+        .resolve(flag, pb.token.clone(), pb.token_file.as_deref())
+        .map(|token| token.value)
 }
 
 #[cfg(test)]
@@ -357,15 +362,54 @@ mod tests {
     #[test]
     fn settings_lists_name_every_rung_in_ladder_order() {
         assert_eq!(
-            reddit_cookie_settings(),
+            SecretSpec::REDDIT_COOKIE.settings(),
             "--reddit-cookie, $REDDIT_COOKIE, $REDDIT_COOKIE_FILE, or the config's `cookie` \
              or `cookie_file`"
         );
         assert_eq!(
-            github_token_settings(),
+            SecretSpec::GITHUB_TOKEN.settings(),
             "--github-token, $GITHUB_TOKEN, $GITHUB_TOKEN_FILE, or the config's `token` or \
              `token_file`"
         );
+        assert_eq!(
+            SecretSpec::PINBOARD_TOKEN.settings(),
+            "--pinboard-token, $PINBOARD_TOKEN, $PINBOARD_TOKEN_FILE, or `[pinboard]`'s \
+             `token` or `token_file`"
+        );
+        assert_eq!(
+            SecretSpec::REDDIT_USERNAME.settings(),
+            "--reddit-username, $REDDIT_USERNAME, $REDDIT_USERNAME_FILE, or the config's \
+             `username`"
+        );
+        assert_eq!(
+            SecretSpec::HN_USERNAME.settings(),
+            "--username, $HN_USERNAME, $HN_USERNAME_FILE, or the config's `username`"
+        );
+    }
+
+    #[test]
+    fn a_missing_secret_message_lists_its_settings() {
+        assert_eq!(
+            SecretSpec::GITHUB_TOKEN.missing(),
+            "missing GitHub token (set --github-token, $GITHUB_TOKEN, $GITHUB_TOKEN_FILE, or \
+             the config's `token` or `token_file`)"
+        );
+    }
+
+    /// The environment rungs' names are spelled out for messages, so each must be the
+    /// variable the ladder actually reads.
+    #[test]
+    fn each_secret_names_the_variables_it_reads() {
+        for spec in [
+            SecretSpec::PINBOARD_TOKEN,
+            SecretSpec::REDDIT_USERNAME,
+            SecretSpec::REDDIT_COOKIE,
+            SecretSpec::GITHUB_TOKEN,
+            SecretSpec::HN_USERNAME,
+        ] {
+            assert_eq!(spec.env, format!("${}", spec.var));
+            assert_eq!(spec.env_file, format!("${}_FILE", spec.var));
+        }
     }
 
     #[test]
@@ -386,12 +430,13 @@ mod tests {
     }
 
     fn first_cookie_on(ladder: [Option<&str>; 5]) -> Option<(String, &'static str)> {
-        first_configured_cookie(
-            SecretRung::ALL
-                .into_iter()
-                .zip(ladder.map(|v| v.map(String::from))),
-        )
-        .map(|cookie| (cookie.value, cookie.source))
+        SecretSpec::REDDIT_COOKIE
+            .first_accepted(
+                SecretRung::ALL
+                    .into_iter()
+                    .zip(ladder.map(|v| v.map(String::from))),
+            )
+            .map(|cookie| (cookie.value, cookie.source))
     }
 
     #[test]
@@ -467,7 +512,7 @@ mod tests {
         };
 
         let (_, logs) = crate::test_support::capturing_logs(async {
-            warn_if_env_shared("github", &[EnvSecret::GITHUB_TOKEN], 2);
+            warn_if_env_shared("github", &[SecretSpec::GITHUB_TOKEN], 2);
             for _ in 0..2 {
                 assert!(resolve_github_token(None, Some(&account)).is_some());
             }
@@ -500,7 +545,9 @@ mod tests {
             Some(" \n".to_string()),
             Some("tok".into()),
         ];
-        let from_file = first_configured_token(SecretRung::ALL.into_iter().zip(ladder)).unwrap();
+        let from_file = SecretSpec::GITHUB_TOKEN
+            .first_accepted(SecretRung::ALL.into_iter().zip(ladder))
+            .unwrap();
         assert_eq!(
             (from_file.value.as_str(), from_file.source),
             ("tok", "the config's `token_file`")

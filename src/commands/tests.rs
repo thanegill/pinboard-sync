@@ -6,8 +6,16 @@ use clap::Parser;
 
 #[test]
 fn link_tag_override_rejects_whitespace_and_commas() {
-    assert!(resolve_hackernews_cleanup_config(None, Some("find hn".into())).is_err());
-    assert!(resolve_hackernews_cleanup_config(None, Some("find,hn".into())).is_err());
+    let refused = |tag: &str| {
+        resolve_hackernews_cleanup_config(None, Some(tag.into()))
+            .unwrap_err()
+            .to_string()
+    };
+    assert_eq!(
+        refused("find hn"),
+        "`--link-tag` must not contain whitespace"
+    );
+    assert_eq!(refused("find,hn"), "`--link-tag` must not contain a comma");
 }
 
 #[test]
@@ -358,19 +366,50 @@ fn backup_all_conflicts_with_a_target_and_a_bare_backup_is_rejected() {
 }
 
 #[test]
+fn backup_pinboard_without_a_token_names_every_setting_it_can_come_from() {
+    let error = build_backup_plan(&parse_backup(&["pinboard"]), &Config::default())
+        .err()
+        .expect("no token is set");
+    assert_eq!(
+        format!("{error:#}"),
+        "missing Pinboard token (set --pinboard-token, $PINBOARD_TOKEN, $PINBOARD_TOKEN_FILE, \
+         or `[pinboard]`'s `token` or `token_file`)"
+    );
+}
+
+#[test]
 fn backup_dir_prefers_the_flag_then_the_config_then_errors() {
     let mut config = Config::default();
-    assert!(resolve_backup_dir(None, &config).is_err());
+    assert!(resolve_backup_dir([None, None], &config).is_err());
 
     config.backup.directory = Some("/from-config".into());
     assert_eq!(
-        resolve_backup_dir(None, &config).unwrap(),
+        resolve_backup_dir([None, None], &config).unwrap(),
         PathBuf::from("/from-config")
     );
     assert_eq!(
-        resolve_backup_dir(Some("/from-flag".into()), &config).unwrap(),
+        resolve_backup_dir([Some("/from-flag".into()), None], &config).unwrap(),
         PathBuf::from("/from-flag")
     );
+    let refused = |flags: [Option<&str>; 2]| {
+        resolve_backup_dir(flags.map(|flag| flag.map(String::from)), &config)
+            .unwrap_err()
+            .to_string()
+    };
+    assert_eq!(
+        resolve_backup_dir([Some("/after".into()), Some("/before".into())], &config).unwrap(),
+        PathBuf::from("/after"),
+        "the `--out` after the target wins"
+    );
+    for blank in ["", " "] {
+        for flags in [
+            [Some(blank), None],
+            [None, Some(blank)],
+            [Some("/y"), Some(blank)],
+        ] {
+            assert_eq!(refused(flags), "`--out` must not be empty", "{flags:?}");
+        }
+    }
 }
 
 /// Each source's name reaches its jobs' labels and backup file stems, which are part of
@@ -490,23 +529,24 @@ async fn cleanup_error(config_text: &str, argv: &[&str]) -> String {
 
 #[tokio::test]
 async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() {
-    let refused = |pass: &str| {
+    let refused = |pass: &str, cap_from: &str, stale_from: &str| {
         format!(
-            "{pass} with its flags resolves `post_date_max_age_days` to 0 with \
-             `cleanup_stale_to_now` on, so cleanup would re-date its stale bookmarks on \
-             every run; raise the cap or turn `cleanup_stale_to_now` off"
+            "{pass} resolves `post_date_max_age_days` to 0 (from {cap_from}) with \
+             `cleanup_stale_to_now` on (from {stale_from}), so cleanup would re-date its \
+             stale bookmarks on every run; raise the cap or turn `cleanup_stale_to_now` off"
         )
     };
+    let flags = |pass: &str| refused(pass, "`--max-age-days`", "`--stale-to-now`");
     let both = ["--max-age-days", "0", "--stale-to-now"];
     for source in ["github", "reddit", "hackernews"] {
-        let pass = refused(&format!("`cleanup {source}`"));
+        let pass = format!("`cleanup {source}`");
         assert_eq!(
             cleanup_error("", &[&[source][..], &both].concat()).await,
-            pass
+            flags(&pass)
         );
         assert_eq!(
             cleanup_error("", &[&both[..], &[source]].concat()).await,
-            pass
+            flags(&pass)
         );
         assert_eq!(
             cleanup_error(
@@ -514,7 +554,7 @@ async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() 
                 &[source, "--max-age-days", "0"]
             )
             .await,
-            pass
+            refused(&pass, "`--max-age-days`", "`[pinboard]`")
         );
     }
 
@@ -522,7 +562,7 @@ async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() 
                         [[hackernews]]\nusername = \"u\"\n";
     assert_eq!(
         cleanup_error(every_source, &[&["--all"][..], &both].concat()).await,
-        refused("`cleanup --all` (github pass)")
+        flags("`cleanup --all` (github pass)")
     );
     assert_eq!(
         cleanup_error(
@@ -530,7 +570,11 @@ async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() 
             &["--all", "--stale-to-now"]
         )
         .await,
-        refused("`cleanup --all` (reddit pass)")
+        refused(
+            "`cleanup --all` (reddit pass)",
+            "`[defaults.reddit]`",
+            "`--stale-to-now`"
+        )
     );
 
     for argv in [

@@ -2,10 +2,10 @@
 
 Guidance for Claude Code working in this repository.
 
-`pinboard-sync` is a Rust CLI that syncs saved/favorited items from multiple
-services (Reddit, GitHub, HackerNews) to a Pinboard account, with a `cleanup`
-subcommand that normalizes existing bookmarks. See [README.md](README.md) for what
-it does, authentication, and usage — don't duplicate that here.
+`pinboard-sync` is a Rust CLI that syncs saved/favorited items from multiple services
+(Reddit, GitHub, HackerNews) to a Pinboard account, with a `cleanup` subcommand that
+normalizes existing bookmarks. See [README.md](README.md) for what it does, authentication,
+and usage — don't duplicate that here.
 
 ## Commands
 
@@ -39,530 +39,334 @@ gate green.
 ## Architecture
 
 The flow is one pass: a source yields drafts → skip those already on Pinboard → write the
-rest. `main.rs` loads the config and dispatches each subcommand to its driver in
-[`src/commands.rs`](src/commands.rs) (`run_sync`, `run_cleanup`, `run_backup`); the clap
-types are in [`src/cli.rs`](src/cli.rs), secret resolution in
-[`src/secrets.rs`](src/secrets.rs), the settings ladder (`resolve_setting`, `resolve_dates`,
-`resolve_job_settings`, `resolve_hook`) in [`src/settings.rs`](src/settings.rs), job
-building, the Pinboard client setup (`open_pinboard`) and the `--all` failure tally
-(`AllRun`) in [`src/jobs.rs`](src/jobs.rs), with `backup`'s targets in
-[`src/jobs/backup_jobs.rs`](src/jobs/backup_jobs.rs), the auth-failure hook in
-[`src/hook.rs`](src/hook.rs), and `doctor` in [`src/doctor.rs`](src/doctor.rs). The sync
-write loop is in [`src/sync.rs`](src/sync.rs). **Every `cleanup` source shares one driver**
-([`src/cleanup_pass.rs`](src/cleanup_pass.rs)): a source implements `CleanupPass::plan` (the
-desired end-state for one bookmark, as a `Plan` — see below — with `Err` for a per-item
-failure), and `run_pass` owns the loop common to all of them: plan every bookmark, group the
-plans by target URL, then diff each plan against the stored one, skip unchanged, render the
-dry-run lines, write via `apply_update` (deleting the old URL on a rewrite), and tally into
-a `PassOutcome`. Colliding rewrites — several bookmarks normalizing to one URL — are
-field-merged into a single record via `apply_merge` (which deletes the absorbed URLs) rather
-than clobbering each other. `run_pass` itself only sequences the phases, each its own
-function: `plan_all` (the `Plan`s, and the `untouchable` URLs it could not read),
-`group_by_target`, `residents_of`, `hold_back_visibility_mismatches`, then per group
-`refuse_group`, `write_single` or `write_merge`;
+rest. `main.rs` loads the config and dispatches to the drivers in
+[`src/commands.rs`](src/commands.rs) (`run_sync`, `run_cleanup`, `run_backup`). Clap types
+are in [`src/cli.rs`](src/cli.rs), secrets in [`src/secrets.rs`](src/secrets.rs), the
+settings ladder (`resolve_setting`, `resolve_dates`, `resolve_job_settings`, `resolve_hook`)
+in [`src/settings.rs`](src/settings.rs), job building, `open_pinboard` and `AllRun` in
+[`src/jobs.rs`](src/jobs.rs) (`backup`'s in [`backup_jobs.rs`](src/jobs/backup_jobs.rs)),
+the hook in [`src/hook.rs`](src/hook.rs), `doctor` in [`src/doctor.rs`](src/doctor.rs), and
+the sync write loop in [`src/sync.rs`](src/sync.rs).
+
+**Every `cleanup` source shares one driver**, [`src/cleanup_pass.rs`](src/cleanup_pass.rs),
+whose module doc gives the loop. A source implements `CleanupPass::plan` (one bookmark's
+end-state as a `Plan`, or `Err` for a per-item failure) and `run_pass` does the rest,
+sequencing phases, each its own function: `plan_all`, `group_by_target`, `residents_of`,
+`hold_back_visibility_mismatches`, then per group `refuse_group`, `write_single` or
+`write_merge`, tallying into a `PassOutcome`.
 [`src/cleanup_pass/merge.rs`](src/cleanup_pass/merge.rs) holds the merge rules
 (`merge_bookmarks`, `incumbent_of`).
 
-**A failed lookup is not a failed run.** `PassOutcome` counts `plan_failed` (a link we
-couldn't read from the source) separately from `write_failed` (Pinboard refusing us, on
-either `apply_update` or `apply_merge`), and `PassOutcome::into_result` — the single place
-the exit code is decided — fails only on the latter, plus a halt (a dead credential, an
-exhausted quota or an edge block) and lookups failing in the **majority**
-(`plan_failed > reached.max(1)` — one failed lookup is always survivable, which matters for
-a pass whose steady-state population is one or two, like the discussion-link pass that
-strips its own marker tag). The majority test rather than "all of them" because a `plan`
-failure is never one dead link: every permanent per-item condition reaches the driver as a
-`Plan` (a deleted or blocked repo is a `Plan::Bookmark` keeping its canonical URL; a URL the
-pass doesn't handle is `Plan::Skipped`), leaving `plan_failed` to mean post-retry 5xx,
-network trouble and unlabelled throttling. A handful of those is a blip worth riding out;
-most of them failing means most of the work silently did not happen. This is deliberate:
-`cleanup` runs as a scheduled service, and a permanently dead URL must not wedge it into a
-failed state forever. `SourceError::ReauthRequired`, `SourceError::RateLimited` and
-`SourceError::Blocked` stop the pass (a dead credential, an exhausted quota and an edge
-block all fail every remaining lookup too) but the plans already made are still written —
-which is why `plan` returns `SourceError` rather than a flattened `anyhow::Error`.
-`PassOutcome::halted` records *which* it was as a `Halt`, and `into_result` maps each back
-to its own `SourceError` so the `cleanup` command fires the auth-failure hook for
-`Halt::Reauth` only — no credential change clears a rate limit or an edge block.
+**A failed lookup is not a failed run.** `PassOutcome::into_result`, the single place the
+exit code is decided, fails on `write_failed` (Pinboard refusing a write), a halt, or
+`plan_failed` (a lookup that failed) in the **majority**: `plan_failed > reached.max(1)`, so
+one failed lookup is always survivable, which matters for a pass whose steady-state
+population is one or two, like the discussion-link pass that strips its own marker tag. Not
+"all", because every permanent per-item condition reaches the driver as a `Plan` (a deleted
+or blocked repo is a `Plan::Bookmark` keeping its canonical URL), leaving `plan_failed` to
+mean post-retry 5xx, network trouble and unlabelled throttling: a few are a blip, most means
+most of the work silently did not happen. `cleanup` runs as a scheduled service, and a
+permanently dead URL must not wedge it into a failed state forever.
+
+**A halt stops the pass but still writes the plans already made.**
+`SourceError::ReauthRequired`, `RateLimited` and `Blocked` each fail every remaining lookup
+too, which is why `plan` returns `SourceError` rather than a flattened `anyhow::Error`.
+`PassOutcome::halted` records which it was as a `Halt`, and `into_result` maps each back to
+its own `SourceError` so the `cleanup` command fires the auth-failure hook for
+`Halt::Reauth` only: no credential change clears a rate limit or an edge block.
 
 **The run has one live view of the account, not a snapshot.** `posts/all` is read once into
 an `AccountView` ([`src/bookmark.rs`](src/bookmark.rs)), and `CleanupStore` wraps the real
-store so every write updates that view as it goes. Passes ask it what occupies a URL
-(`AccountState::resident`) and build their slice from it (`snapshot`). Both halves are
-load-bearing: **a plan can target a URL its own filter excludes** — HN's item pass rewrites
-a story bookmark to its *article* URL, which is not an HN item URL — and **`cleanup --all`
-runs github, then reddit, then hackernews over one account**, each writing, so a snapshot
-taken before the first is stale for the others. Recording is not a call anyone can forget:
-`apply_update`/`apply_merge` are default trait methods over `update` + `delete`, so
-intercepting those two covers both. `dry_run` lives on the store rather than beside it, and
-a dry run still advances the view while withholding the network — otherwise a preview would
-show a different set of changes than the run it previews.
+store so every write updates it (see both types' docs); passes read occupancy
+(`AccountState::resident`) and their slice (`snapshot`) from it. Both halves are
+load-bearing: **a plan can target a URL its own filter excludes** (HN's item pass rewrites a
+story bookmark to its *article* URL), and **`cleanup --all` runs github, then reddit, then
+hackernews over one account**, each writing, so a snapshot taken before the first is stale
+for the others. A dry run still advances the view, so a preview matches the run.
 
 **No bookmark is replaced by a plan that isn't about it.** Pinboard holds one record per
-URL, so the end state at a collision target *must* be a single bookmark; merging via
-`merge_bookmarks` is what makes that lossless and convergent, and the movers' old URLs are
-absorbed.
+URL, so plans colliding at a target are field-merged by `merge_bookmarks` into one record,
+absorbing the movers' old URLs. At most one record *stays* there, and it leads: the
+`resident` (the live view's occupant, never planned by this pass) or the `incumbent` (the
+member whose *stored* URL is already the target; its *plan* leads). A bookmark is never a
+resident of its own plan, or it would merge its stored record back in and resurrect what the
+plan removed. The survivor's `read_later` and `timestamp` are restored after the merge
+(`write_merge`'s comments say why), which is also what lets the converged-state check use
+`diff`, which ignores `read_later` and `public`. **Resident and incumbent get identical
+treatment on purpose**: whether the occupant falls inside the pass's slice is invisible to
+the user, and must not decide whether their bookmark is protected. A target whose occupant
+is planned to move *away* has no record that stays; that is safe only because the occupant's
+own plan moves it, the fixpoint refuses the group heading here if that write is refused, and
+the write loop marks the URL occupied if it *fails*. Keep all three.
 
-**Every group has at most one record that stays, and it leads the merge.** That is either
-the `resident` — the live view's occupant, which this pass never planned — or the
-`incumbent`, the group member whose *stored* URL is already the target. They are mutually
-exclusive by construction (a bookmark is excluded from its own plan's residency, or it would
-merge its stored record back in and resurrect what the plan removed). Whichever it is goes
-first, so its title, note and tag order are the base the others extend, and its `read_later`
-and `timestamp` are restored afterwards — `merge_bookmarks`'s any()/earliest rules are meant
-for peers, so without that a merge would re-date a bookmark even with dating off. The date
-restore falls back to the merge's earliest when the survivor's own is `None` (absent or
-unparseable on read), since writing `None` omits `dt` and lets `replace=yes` re-date the
-record to today. For an
-incumbent it is the *plan* that leads and the *plan's* state that is restored, since the plan
-is this pass's intended end-state for that record. **Resident and incumbent get identical
-treatment on purpose**: whether the occupant happens to fall inside the pass's own slice is
-an implementation detail the user cannot see, and it decided whether their bookmark was
-protected. A GitHub rename where both names are starred goes down the incumbent path, and
-that is the common case, not the rare one.
+**A merge never decides visibility.** A plan whose `public` doesn't match the record that
+stays drops out of its group, since the merge would either publish a private note or unshare
+a shared bookmark. With no record that stays, peers must agree or none writes: the
+all()-rule would pick "private" with nothing to justify it, unsharing a shared bookmark and
+then deleting it. **Only the mismatched plan is refused, not its group**: blocking the
+record that stays would let one duplicate freeze an unrelated bookmark's cleanup for good.
+The held-back plan's URL stays occupied, so a rewrite onto it is refused too.
 
-Two targets have no record that stays, and both fall back to `merge_bookmarks`'s peer rules
-for `read_later` (if any) and the date (earliest): a URL nothing occupies, and one whose
-occupant is itself planned to move *away*. The second is safe only because that occupant's
-own plan writes it to its new URL — and if that write is refused the fixpoint refuses the
-group heading here too, while if it *fails* the write loop marks the URL occupied and
-re-closes the refusal set. Nothing else protects it, so don't remove any of the three.
-
-**`public` is the exception: peers must agree, or none of them writes.** There is no record
-to defer to, so `merge_bookmarks`'s all()-rule would be the tool picking a visibility with
-nothing to justify the choice — and picking "private" silently unshares a bookmark the user
-chose to share and then deletes it. The rule is therefore uniform: a merge never decides
-visibility, whether the target holds a record or not.
-
-Targets can be `untouchable`: nothing is written there, the rewrite is refused and
-counted in `PassOutcome::refused`. A target the pass **could not read** — a failed lookup, or
-one a halt stopped it short of — because what is stored there may be stale. And, separately,
-a single plan whose **`public` doesn't match** the record that stays at its target drops out
-of that group: a merge fuses their notes into one record and would have to either publish a
-private annotation or unshare a bookmark the user chose to share, and the tool picks neither,
-in either direction. **Only that plan is refused, not the group it targets** — the record
-that stays usually has a plan of its own, and blocking it too would let one mismatched
-duplicate freeze an unrelated bookmark's cleanup for good. The held-back plan's *own* URL is
-still marked occupied, though, so a third bookmark rewriting onto it is refused in turn.
-
-Every refusal propagates — whatever didn't move keeps its own URL occupied — through
-`propagate_refusals`, a fixpoint because each refusal can occupy the URL that refuses the
-next. **Call it after any failure that leaves a record stranded at a URL another group could
-target** (`write_single`/`write_merge` return every member's stored URL after a write that
-did not land, and the write loop marks them and re-closes) — not after every error: a *half-applied* write (the record landed, a delete failed)
-strands nothing, because the record is at its new URL and the old one is gone or is a URL no
-plan may write. It runs once up front, which is what makes pre-write refusals
-order-independent (and why the visibility check runs before it), and again after a write that
-did not land. Propagating a failure
-is not optional politeness: refusing a group without closing over *its* members strands them
-in turn, so protecting one record costs several. A write failure is still order-dependent in
-one respect — groups already written can't be recalled — which is why it stays a failure
-rather than becoming a refusal.
-
-A mismatch reaches the driver as `Refusal::OccupiedByRefused` and a failed write as
-`Refusal::WriteFailed`; the distinction is for the operator, since one means the plan
-disagrees with the account and the other that something is wrong with the writes. *Why* a
-mover stayed is logged at the point of refusal, naming both URLs and both visibilities.
-
-Together those are what let the converged-state guard use `diff` (which ignores
-`public`/`read_later`), but by two different mechanisms — `public` because a disagreeing
-member never joins, `read_later` because it is *restored* from the surviving record
-afterwards. Members are free to disagree about `read_later`, so removing that restore would
-let the merge's any()-rule flip it on.
+**Refusals propagate, before any write and after a failed one.** A target the pass could not
+read (a failed lookup, or one a halt stopped short of) is `untouchable`: nothing is written
+there, since what is stored may be stale, and the rewrite counts in `PassOutcome::refused`.
+A refused group keeps its members' URLs occupied, so `propagate_refusals` closes the set to
+a fixpoint once before any write, making pre-write refusals order-independent, and again
+after a write that did not land (`write_single`/`write_merge` return every member's stored
+URL to mark), not after a half-applied one, which strands nothing. Skipping a propagation is
+worse than not protecting at all: the members of a group refused without it are stranded in
+turn. The `Refusal` and `propagate_refusals` docs give the rest.
 
 **`Plan` says whether the source was reached, not just whether to write.** `plan` returns
 `Plan::Bookmark` (an end-state), `Plan::Unchanged` (*the source answered*, nothing to do),
-or `Plan::Skipped` (not this pass's bookmark — no lookup made). The last two both write
-nothing but mean opposite things about the source's health, and only the first two count
-toward `PassOutcome::reached`. Without that split, the every-lookup-failed guard is
-worthless: `cleanup github` skips deep links and gists locally, and if those counted as
-successes a genuinely unreachable GitHub would look fine. Conversely HackerNews'
-`search_by_url` finding no discussion is `Unchanged`, not `Skipped` — the query ran. When
-a source runs several passes, each reaches its **own** verdict rather than pooling
-tallies, so a pass that can't fail can't vouch for one that can.
+or `Plan::Skipped` (not this pass's bookmark — no lookup made). Only the first two count
+toward `PassOutcome::reached`, as the last two mean opposite things about the source's
+health. Without that split, the every-lookup-failed guard is worthless: `cleanup github`
+skips deep links and gists locally, and if those counted as successes a genuinely
+unreachable GitHub would look fine. HackerNews' `search_by_url` finding nothing is
+`Unchanged`: the query ran. When a source runs several passes, each reaches its **own**
+verdict rather than pooling tallies, so a pass that can't fail can't vouch for one that can.
 
-The per-source planners live in [`src/reddit/cleanup.rs`](src/reddit/cleanup.rs),
-[`src/github/cleanup.rs`](src/github/cleanup.rs), and [`src/hackernews/cleanup.rs`](src/hackernews/cleanup.rs).
+The per-source planners are each source's `cleanup.rs`: [reddit](src/reddit/cleanup.rs),
+[github](src/github/cleanup.rs) and [hackernews](src/hackernews/cleanup.rs).
 
 **`Bookmark` is service-agnostic; `PinboardBookmark` is the wire shape.** The domain
-[`Bookmark`](src/bookmark.rs) lives in [`src/bookmark.rs`](src/bookmark.rs) along with
-the `BookmarkStore` port — everything not specific to the Pinboard client.
-[`src/pinboard.rs`](src/pinboard.rs) is just the client behind that port: it deserializes
-`posts/all` into `PinboardBookmark` and converts each via `TryFrom` into the domain `Bookmark`. Because the
-`url` is a parsed [`Url`], a bookmark whose `href` (or a source item's URL) doesn't parse
-is skipped with a warning rather than aborting the run — `all()` and each source's
-`fetch()` `filter_map` over the fallible conversion. Consumers then never re-parse the URL
-(`bookmark.url.host_is(…)`, `HackerNewsItemId::try_from(&bookmark.url)`, etc.). The cleanup driver reads stored bookmarks and plans their end-state in
-that one type; `Bookmark::diff` returns the written fields that changed (timestamps
-compared by instant, not formatted string), which the driver uses both to skip unchanged
-bookmarks and to render the dry-run. A write takes a whole `Bookmark`; `post_add` maps it
-to the API params (`public`/`read_later` → `shared`/`toread`, `timestamp` → `dt`) at the
-boundary.
+`Bookmark` and the `BookmarkStore` port live in [`src/bookmark.rs`](src/bookmark.rs) (its
+module doc gives the split); [`src/pinboard.rs`](src/pinboard.rs) is just the client behind
+that port, converting `posts/all` via `TryFrom` and mapping a write back to API params in
+`post_add`. Because the `url` is a parsed [`Url`], a bookmark or source item whose URL
+doesn't parse is skipped with a warning rather than aborting the run (`all()` and each
+`fetch()` `filter_map` over the conversion), and consumers never re-parse it.
 
 **Every source is a `Source`, and one sync loop drives them all.** The port lives in
-[`src/source.rs`](src/source.rs): `Source::fetch()` returns `Vec<BookmarkDraft>` (a
-`Bookmark` plus the `dedup_key`), and the `UrlKey::dedup_key()` supertrait method maps an
-existing Pinboard URL to that source's dedup key. `run_sync_jobs` (`commands.rs`) fetches
-drafts, and `sync::prepare_new_drafts`, bounded by `UrlKey` alone since that is all it uses,
-builds the set of existing keys by mapping the account's bookmarks through
-`source.dedup_key` (`UrlKey::synced_keys`) and keeps the drafts whose `dedup_key` isn't
-present. **A key must survive cleanup's canonicalization**, or sync re-adds what cleanup
-moved: HN keys a Reddit or GitHub article with `reddit_key` / `github_key`
-(`hackernews_key`, all three in [`src/keys.rs`](src/keys.rs)), so a change to either, or to
-what `cleanup reddit` / `cleanup github` rewrite a URL to, has to keep HN converging. `sync`
-fetches through `SyncJob::fetch`, which picks the traversal from the job's
-`config::SyncLimit` (`limit` / `--limit`, parsed by one `FromStr` + `Deserialize` pair):
-`auto`, the default, calls `Source::fetch_incremental(existing)`, which defaults to the full
-fetch and which a source may override to stop paging once it reaches items already on
-Pinboard (all three do, through one rule, `source::page_is_caught_up`); `all` and a cap `N`
-call the full `fetch()`. A capped run writes only the newest drafts, so an incremental read
-would never reach the rest again. **`prepare_new_drafts` returns each job's drafts oldest
-first** (after the cap picks the newest N), the reverse of the newest-first read, and that
-is what keeps an interrupted `auto` run recoverable: the unwritten remainder is the newest
-items, on the first pages, so the next run's incremental read sees them and pages down to
-the written ones. Written newest first, page 1 would be fully on Pinboard and the next run
-would stop there for good. A failed write still doesn't stop the batch, so a failed write is
-stranded once a full page of newer items after it succeeds (a page holding it still reads as
-not caught up, so it is retried). There is no `0`: "no cap" is either `auto` or `all`, so
-`0` is rejected rather than guessed. A bad value's error names the field, never the value.
-`backup`, `doctor` and `cleanup github`'s `use_post_date` star dates call `fetch()`, so they
-keep the full traversal. To add a source, implement `Source`, add its account array to
-`config.rs`, and implement [`src/jobs.rs`](src/jobs.rs)'s `SourceAccount` for the account
-type: its `SOURCE` name (the job labels, backup file stems and `doctor` lines), where its
-accounts and `[defaults.<source>]` live, how its client is built, and its auth-failure hook.
-`sync`, `backup` and `doctor` reach every source through that one trait (`build_job::<A>`
-and friends); only the `SourceClient` enum and the call lists name them. The clients also
-sit behind the `BookmarkStore` port (Pinboard; `add`/`update` both take a `&Bookmark`) so
-the loops are unit-tested with in-memory fakes
-([`src/test_support.rs`](src/test_support.rs)); real clients are covered by `net_tests`
-against a wiremock server via test-only `with_base_url(s)` constructors.
+[`src/source.rs`](src/source.rs): `Source::fetch()` returns `BookmarkDraft`s (a `Bookmark`
+plus its `dedup_key`), and the `UrlKey::dedup_key()` supertrait method maps an existing
+Pinboard URL to that source's key, so `sync::prepare_new_drafts` keeps the drafts not
+already synced. **A key must survive cleanup's canonicalization**, or sync re-adds what
+cleanup moved: HN keys a Reddit or GitHub article with `reddit_key` / `github_key`
+([`src/keys.rs`](src/keys.rs)), so a change to either, or to what `cleanup reddit` /
+`cleanup github` rewrite a URL to, has to keep HN converging. To add a source, implement
+`Source`, add its account array to `config.rs`, and implement [`src/jobs.rs`](src/jobs.rs)'s
+`SourceAccount`, the one trait `sync`, `backup` and `doctor` reach every source through.
+Loops are unit-tested against in-memory fakes
+([`src/test_support.rs`](src/test_support.rs)), real clients by `net_tests` against a
+wiremock server via test-only `with_base_url(s)` constructors.
+
+**`sync` reads incrementally by default.** `SyncJob::fetch` picks the traversal from the
+job's `config::SyncLimit`: `auto` calls `Source::fetch_incremental(existing)`, which every
+source overrides to stop paging at the first page that would give `sync` nothing to write
+(`source::page_is_caught_up`); `all` and a cap `N` call the full `fetch()`, since a capped
+run writes only the newest drafts and an incremental read would never reach the rest.
+**`prepare_new_drafts` returns drafts oldest first**, which is what keeps an interrupted
+`auto` run recoverable (its doc says why). `backup`, `doctor` and `cleanup github`'s star
+dates call `fetch()`. Known gaps, all recovered by `--limit all`: an older item deleted from
+Pinboard is not re-added, a failed write followed by a full page of newer successes is never
+retried, and a page whose items all reached Pinboard another way stops the read early.
 
 **Sources:** Reddit ([`reddit.rs`](src/reddit.rs) — cookie-authenticated
-`saved.json`/`api/info.json`, plus the `PostInfo` port for cleanup), GitHub
-([`github.rs`](src/github.rs) — `/user/starred` with Link-header pagination, 100 per page,
-`sort=created&direction=desc` pinned rather than left to GitHub's defaults because the
-incremental read depends on newest-starred-first), HackerNews (below). Reddit's saved
-listing is newest-saved first with no sort parameter. Both stop their incremental read at
-the first page whose drafts all have their `dedup_key` among `synced_keys`
-(`page_is_caught_up`: an entry that makes no draft adds nothing, an empty page proves
-nothing). Each page is shaped once and its drafts kept, so a dropped entry warns once
-(Reddit's `walk_saved` hands pages to a callback for this). They share HackerNews' two known
-gaps below and a third that applies to all three: a page whose items are all already on
-Pinboard stops the read even with missing items below it, whether on a first sync whose
-newest items got there another way or because such items landed above an unwritten one
-between runs. `--limit all` recovers all three. HackerNews
-([`hackernews.rs`](src/hackernews.rs) — scrapes `/favorites` for item IDs
-([`favorites.rs`](src/hackernews/favorites.rs)) then batch-reads item details from the
-Algolia HN search API ([`algolia.rs`](src/hackernews/algolia.rs)) — `objectID:… OR …`,
-chunked, so hundreds of favorites cost a couple of queries, not one per item). The favorites
-pages are the costly half (they are what HN answers with 429), so `sync` stops following
-"More" in each stream (stories, comments) at the first page that would give it nothing to
-write (`is_caught_up`). To tell, `fetch_incremental` looks each page's items up on Algolia
-as it is read (one query per page) and checks every draft's `dedup_key` against Pinboard's,
-the same test `sync::filter_new` applies. That is deliberately not "is this item ID
-bookmarked": a favorited story whose article was already saved by hand dedups by URL and
-never gets an `HN Link:` note, and an ID test would page down to every such item on every
-run. Items gone from Algolia make no draft, so they don't hold the walk open either.
-Favorites list newest first, so later pages hold nothing new, with two known gaps: an older
-favorite deleted from Pinboard is not re-added, and a failed write followed by a full page
-of newer successes is never retried. `sync hackernews --limit all` reads every page and
-recovers them. `backup` keeps the full traversal with its batched lookup.
-`cleanup hackernews --link-discussions` (default off) is the reverse: for article bookmarks
-carrying the `link_tag` marker (default `find-hn`), it looks each up on HN by URL (one
-Algolia query each) and adds the discussion link.
-[`src/reddit/model.rs`](src/reddit/model.rs) holds Reddit's bookmark/tag shaping.
+`saved.json`/`api/info.json`, plus the `PostInfo` port for cleanup;
+[`model.rs`](src/reddit/model.rs) shapes bookmarks and tags), GitHub
+([`github.rs`](src/github.rs) — `/user/starred`, `sort=created&direction=desc` pinned
+because the incremental read depends on newest-starred-first), and HackerNews
+([`hackernews.rs`](src/hackernews.rs) — scrapes `/favorites` for item IDs in
+[`favorites.rs`](src/hackernews/favorites.rs), then batch-reads them from Algolia in
+[`algolia.rs`](src/hackernews/algolia.rs)). **HackerNews' caught-up test checks drafts, not
+item IDs** (`favorites::is_caught_up`): a favorited story whose article was saved by hand
+dedups by URL and never gets an `HN Link:` note, so an ID test would page down to every such
+item on every run. `cleanup hackernews --link-discussions` is the reverse, adding the HN
+discussion to article bookmarks carrying the `link_tag` marker (default `find-hn`).
 
-**The Reddit cookie is shaped in one place**,
-[`src/reddit/cookie.rs`](src/reddit/cookie.rs). `RedditClient::build` turns the configured
-cookie into a `SessionCookie` (via `reddit::cookie::session_cookie`), so every entry point
-sends the same header. `reddit_session` is the only name Reddit knows the session by, so a
-bare value (which may end in base64 `=` padding) is sent as `reddit_session=<value>`. A
-value counts as already named only when `reddit_session=` starts it or follows a `;`, never
-by substring, and of several `reddit_session` pairs only the first non-empty one is sent.
-Only a matched pair of surrounding quotes is stripped, and a value of nothing but
-whitespace, quotes and the `;`/`=` separators counts as empty. Pairs that are empty by that
-rule are dropped from every cookie before it is shaped, so a stray `;` leaves `abc;` a bare
-value and `a=1;;` just `a=1`. A value that sets no session — blank, or only empty
-`reddit_session=` pairs — is no cookie, and `secrets`'s `resolve_reddit_cookie` skips it
-through `reddit::cookie::is_configured_cookie` so the secret ladder falls through it exactly
-as it does a blank value.
+**The Reddit cookie is shaped in one place**, [`src/reddit/cookie.rs`](src/reddit/cookie.rs)
+(its docs give the rules): `RedditClient::build` turns it into the `SessionCookie` every
+entry point sends. `secrets`'s `resolve_reddit_cookie` skips a value that sets no session
+(`is_configured_cookie`), as it does a blank one.
 
 **`backup` has one port and one driver, and captures raw bodies in the same traversal.**
-[`src/backup.rs`](src/backup.rs) is `cleanup_pass.rs`'s sibling: a service implements
-`BackupSource::dump` (returning a `BackupDump` — captured `RawPage`s plus normalized
-`ExportBookmark`s), and the driver owns everything shared — `layout` (pure: payload →
-named files), `write_files` (atomic, mode 0600, per-file sanity check), the manifest and
-the dry-run rendering. Clients never learn where a file goes. Raw fidelity comes from a
-`RawSink` threaded through each client's *existing* pagination: `sync`/`cleanup` pass
-`RawSink::disabled()` (one branch, retains nothing, so their typed `from_str` path is
-unchanged), `backup` passes `collecting()`. Never re-walk pagination for a raw pass — the
-two halves must describe one instant. `PinboardClient` implements `BackupSource` too, so
-the destination is a target like any source. `ExportBookmark` is deliberately *not* a
-`Serialize` on the domain `Bookmark`: the snapshot format is a stable output contract, and
-a domain rename must not silently change an operator's files.
+[`src/backup.rs`](src/backup.rs) is `cleanup_pass.rs`'s sibling (its module doc gives the
+stages): a service implements `BackupSource::dump`, and the driver owns `layout`,
+`write_files`, the manifest and the dry-run, so clients never learn where a file goes. Raw
+bodies come from a `RawSink` threaded through each client's *existing* pagination:
+`sync`/`cleanup` pass `RawSink::disabled()`, `backup` passes `collecting()`. Never re-walk
+pagination for a raw pass — the two halves must describe one instant. `PinboardClient`
+implements `BackupSource` too. `ExportBookmark` is deliberately *not* a `Serialize` on the
+domain `Bookmark`: the snapshot format is a stable output contract, and a domain rename must
+not silently change an operator's files.
 
-**All tags are config-driven; there are no tag CLI flags.** Each source has a tag config
-struct (`RedditConfig`, `GitHubConfig`, `HackerNewsConfig`) of overridable fields with
-built-in defaults; the `tags` list (default e.g. `["reddit"]`) is the base tag plus any
-extras, and `push_tag`/`push_prefixed` in [`src/tags.rs`](src/tags.rs) render them (empty
-string disables a tag). `reddit::model`'s tag tests
-([`src/reddit/model/tests.rs`](src/reddit/model/tests.rs)) are the spec — keep them in sync
-with rule changes. Pinboard tags can't contain spaces (the API splits the tag string on
-them) or commas (its API docs forbid them), so `push_prefixed` slugs internal whitespace and
-commas in the value (e.g. the GitHub language `Jupyter Notebook` → `lang:jupyter-notebook`)
-and `Config::parse` rejects both in config-supplied tags/prefixes. Reddit's URL host is the
-configurable `reddit_domain` (used by both sync `bookmark_url` and cleanup's
-`normalize_url`); `reddit_key` stays host-agnostic so dedup matches across subdomains, and
-takes that domain too, so a mirror outside reddit.com still counts as a Reddit host. Each
-Reddit account's client, and HackerNews keying an article on Reddit, match against every
+**All tags are config-driven; there are no tag CLI flags.** Each source's tag config
+(`RedditConfig`, `GitHubConfig`, `HackerNewsConfig`) has defaulted fields, rendered by
+`push_tag`/`push_prefixed` in [`src/tags.rs`](src/tags.rs) (empty string disables a tag).
+The tag tests in [`src/reddit/model/tests.rs`](src/reddit/model/tests.rs) are the spec —
+keep them in sync with rule changes. Pinboard tags can't contain whitespace or commas, so
+`push_prefixed` slugs them in the value (`lang:jupyter-notebook`) and `Config::parse`
+rejects both in config-supplied tags/prefixes.
+
+**Every configured `reddit_domain` counts as Reddit.** An account's domain is its URL host
+for both sync `bookmark_url` and cleanup's `normalize_url`; `reddit_key` stays host-agnostic
+so dedup matches across subdomains, and takes the domain too, so a mirror outside reddit.com
+still keys. Each Reddit client, and HackerNews keying an article on Reddit, match every
 configured account's domain (`Config::reddit_domains`, which is why `SourceAccount::client`
-takes the whole `Config`), so a save on another account's mirror still keys.
-`cleanup reddit` takes every account's config (`RedditCleanupOpts::configured`): it leaves a
-bookmark on whichever configured domain it is on rather than moving it to the running
-account's (so passes run as different accounts never move it back and forth), shapes it with
-the tags of the account that domain belongs to, and collapses a post on several onto the one
-configured first.
+takes the whole `Config`). `cleanup reddit` takes every account's config
+(`RedditCleanupOpts::configured`): it leaves a bookmark on whichever configured domain it is
+on, so passes run as different accounts never move it back and forth, shapes it with that
+domain's account's tags, and collapses a post on several onto the one configured first.
 
-**Config + secret resolution.** [`src/config.rs`](src/config.rs) parses the
-`--config` TOML: one `[pinboard]` destination, `[hooks]`, and per-source account
-arrays (`[[reddit]]`/`[[github]]`/`[[hackernews]]`), each mapping to its tag config.
-Secrets resolve through one ladder in [`src/secrets.rs`](src/secrets.rs) (`resolve_secret`): CLI flag → `$VAR`
-→ `$VAR_FILE` (a path whose trimmed contents are the value) → config inline → config
-`*_file`. The `--config` path is the exception: it resolves flag → `$PINBOARD_SYNC_CONFIG`
-only (a direct file path, no `_FILE` form — it is already a file). **The `_FILE` form is
-load-bearing** — it's how the
-NixOS service feeds sops-nix secret *paths* without putting values in the unit
-environment. Don't add a secret that only reads `$VAR`. `secret_ladder` tags each value
-with its `SecretRung`, so `resolve_reddit_cookie` and `resolve_github_token` return a
-`secrets::ConfiguredSecret` naming the setting it came from, and every Reddit cookie
-warning and re-auth message and every GitHub token error names that setting, never the
-value. A message listing every setting a secret can come from builds that list from the
-same rung labels (`secrets::reddit_cookie_settings`/`github_token_settings`), never by
-hand. The env rungs sit above every account's own value, so when one would apply to
-several configured accounts of a source, each multi-account builder warns once for that
-source (`jobs::warn_shared_env_secrets`, from each source's `SourceAccount::env_secrets`).
-Whether an env rung applies is read off the ladder itself (`secrets::EnvSecret`), with the
-same acceptance check the resolver uses, so an empty `_FILE` or a cookie naming no session
-is not warned about.
+**Config + secret resolution.** [`src/config.rs`](src/config.rs) parses the `--config` TOML:
+one `[pinboard]` destination, `[hooks]`, and per-source account arrays
+(`[[reddit]]`/`[[github]]`/`[[hackernews]]`). Secrets resolve through one ladder in
+[`src/secrets.rs`](src/secrets.rs) (`SecretSpec::resolve`): CLI flag → `$VAR` → `$VAR_FILE`
+(a path whose trimmed contents are the value) → config inline → config `*_file`; `--config`
+itself resolves flag → `$PINBOARD_SYNC_CONFIG` only, since it is already a file. **The
+`_FILE` form is load-bearing**: it's how the NixOS service feeds sops-nix secret *paths*
+without putting values in the unit environment, so never add a `$VAR`-only secret.
+
+**A message names the setting a secret came from, never the value.** Each secret is one
+`SecretSpec`, whose `resolve` returns a `secrets::ConfiguredSecret` naming the setting for
+every Reddit cookie warning, re-auth message and GitHub token error; a list of the settings
+a secret can come from is built with `SecretSpec::settings`, never by hand. The env rungs
+sit above every account's own value, so `jobs::warn_shared_env_secrets` warns once per
+source when one would apply to several accounts, using the resolver's own acceptance check.
 
 **`sync <source> [account]` / `cleanup <source> [account]` select one account** (by name,
-else the first, else an implicit CLI/env account). `--all` (per-source or top-level) runs
-every configured account, aggregating failures via `AllRun` and exiting non-zero if any
-fail. `cleanup --all` runs once per source (github, reddit, hackernews), since it normalizes
-the shared bookmark set. `cleanup github` canonicalizes repo-root URLs and looks each repo
-up via the API to rewrite renamed/moved repos. It refreshes only what the tool wrote: notes
-in `github_note`'s shape, the base/language tags of bookmarks carrying any configured
-account's base tag (refreshed with that account's tag config), their title only while it is
-still `owner/repo`, and their star date only while the notes are the tool's too. A repo root
-is often another source's bookmark (an HN story linking it, or one a rename merged a star
-into), so never widen that.
+else the first, else an implicit CLI/env account). `--all` runs every configured account,
+exiting non-zero if any fail (`AllRun`); `cleanup --all` runs once per source, since it
+normalizes the shared bookmark set. `cleanup github` (see its module doc) refreshes only
+what the tool wrote: notes in `github_note`'s shape, the base/language tags of bookmarks
+carrying any configured account's base tag (with that account's tag config), their title
+only while it is still `owner/repo`, and their star date only while the notes are the tool's
+too. A repo root is often another source's bookmark (an HN story linking it, or one a rename
+merged a star into), so never widen that.
 
 **`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
-`SyncJob { client: SourceClient, hook, settings }`, `settings` a `sync::JobSettings` holding the
-resolved `limit`, write flags and `DateOpts` — the same value `sync::prepare_new_drafts` reads;
-`SourceClient` is an enum over the
-three clients implementing `Source`, so `build_jobs` + `run_sync_jobs` handle one
-account and `--all` uniformly. Per-account settings
-(`toread`/`public`/`limit`/`use_post_date`/…) resolve CLI flag → account →
-`[defaults.<source>]` → `[pinboard]` through the generic `resolve_setting` helper and
-`resolve_dates` (into the `DateOpts` sync and every cleanup pass share), reading the shared override fields via the `config::Account` trait. `run_sync_jobs` fetches every job's source
-concurrently via `futures::future::join_all` (reads only, on one task — the client
-futures aren't `Send`, so no `tokio::spawn`), then writes the merged, URL-deduped
-drafts **sequentially** through one rate-limited writer (`sync::write_drafts`).
-Reads parallel, writes serial — `posts/all` is fetched once up front and shared.
-`completions <shell>` and `config example` are utility subcommands the Nix package
-install consumes. `config check <file>` validates a file with `Config::parse`, the same
-parse and validation `--config` gets, and resolves no secret. The flake's module check
-runs it on the rendered TOML.
+`SyncJob { client: SourceClient, hook, settings }` (`SourceClient` an enum over the three
+clients), so `build_jobs` + `run_sync_jobs` handle one account and `--all` uniformly.
+Per-account settings resolve CLI flag → account → `[defaults.<source>]` → `[pinboard]`
+through `resolve_setting` and `resolve_dates`, each as a `settings::Resolved` carrying its
+`Tier`, so a refusal (`ResolvedDates::check_redating`) names where a setting came from,
+never its value. `run_sync_jobs` fetches every source concurrently via
+`futures::future::join_all` (on one task — the client futures aren't `Send`, so no
+`tokio::spawn`), then writes the merged, URL-deduped drafts **sequentially** through one
+rate-limited writer (`sync::write_drafts`), reading `posts/all` once for all jobs.
+`completions <shell>` and `config example` are utility subcommands the Nix package install
+consumes; `config check <file>` runs `Config::parse` without resolving a secret.
 
 **Re-auth vs other errors drive a side effect.** `SourceError::ReauthRequired` (Reddit
 401/403 that isn't the "blocked by network security" page, a Reddit redirect to `/login`,
 GitHub 401) fires the `--on-auth-failure` hook and exits non-zero; `SourceError::Other`
-(transient/parse) doesn't. HackerNews is public and never re-auths. **`cleanup` fires it
-too, not just `sync`** — which is why the three `cleanup` entry points return
-`Result<(), SourceError>` rather than `anyhow::Result`: flattening the variant at that
-boundary would lose the hook. Every re-auth-capable read in `cleanup` is covered, not only
-the pass — GitHub's `repo()` mid-pass (via `Halt`), GitHub's `fetch()` for `use_post_date`
-star dates, and Reddit's `/api/info`, whose expired cookie is by far the most common in
-practice. [`src/hook.rs`](src/hook.rs)'s `handle_source_err` is the single place the hook is
-fired, shared with `sync`; `cleanup` resolves the command through
-`PINBOARD_SYNC_ON_AUTH_FAILURE` → account → `[defaults.<source>]` → `[hooks]` (no
-`--on-auth-failure` flag on `cleanup`, unlike `sync`, whose per-source flag is itself
-env-backed). **Reading that env var is load-bearing**: [`nix/module.nix`](nix/module.nix)
-exports `onAuthFailure` only into the unit environment — it never reaches the generated TOML
-— and runs the `cleanup --all` timer with it, so resolving from config alone would leave the
-hook dead for the deployment it exists to serve. Every client sends through its
-`http::RetryingClient` ([`src/http.rs`](src/http.rs)) — the `reqwest::Client` plus its
-`max_attempts`, base delay and `ConnectBudget`, fixed where the client is built — and its
-`send`/`send_with` are the one retrying send. That backs off on network errors / 429 / 5xx
-but returns other statuses as-is. It builds the request once and hands it to tower's
-`retry::Retry` over the request's `reqwest::Client`; every decision lives in
-`http::RetryPolicy`, whose waits go through `http::sleep`, and its unit tests drive the same
-policy over a `tower::service_fn` mock of canned outcomes. reqwest's `read_timeout`
-(`READ_TIMEOUT`, 60s) times out both the wait for response headers, counted from the send so
-it must stay above `CONNECT_TIMEOUT` (a const assert holds it there), and any gap between
-body chunks. A header timeout is a plain transport error and takes the linear retries. A
-body stall happens after `send` has returned, so it is not retried and fails the caller's
-read. There is deliberately no overall `timeout`, which would cap a slow but steady
-`posts/all`. Which responses retry, and how, is a classifier returning an `http::Verdict`
-(`Done`, `Backoff`, `RetryOnceAfter(wait)`): `send` uses `backoff_if_transient`, and
-`send_with` takes any other. The one other today is the HackerNews favorites pages'
-`retry_after_up_to(FAVORITES_MAX_RETRY_AFTER)`, which shares the 5xx rule: four quick
-retries of a 429 there only prolong HN's block, so a 429 is retried at most once, and only
-after a `Retry-After` (delta-seconds or HTTP-date) of at most `FAVORITES_MAX_RETRY_AFTER`
-(120s). Any other 429 comes back as the response and becomes `SourceError::RateLimited`. The
-one wait is per page request, so a run that keeps drawing short `Retry-After`s can wait on
-each page. Their 5xx/transport/connect retries are unchanged, and Algolia and the other
-clients keep backing off on 429. A request that could not establish a connection
-(`is_connect`: any connector failure, so DNS, TCP connect, or the TLS handshake) gets its
-own exponential `CONNECT_BACKOFF` (5s … 80s, ~2.5 minutes in all), on top of and separate
-from the caller's linear `max_attempts` budget, so a resolver restart during a NixOS switch
-doesn't fail a timer-started run; tests inject a zero schedule through
-`send_with_connect_backoff`. That long wait is **once per host per client**: each client's
-`RetryingClient` owns a `ConnectBudget`, keyed by the request URL's host and port
-(HackerNews reaches both its site and Algolia), whose entry is spent when one request waits
-out the whole schedule and still can't connect. After that the host's connect errors take
-the linear policy. A request whose last *linear* attempt still got no response, whether it
-could not connect or connected but saw no headers within `READ_TIMEOUT` (`http::Reach`),
-**gives the host up** if no attempt to the host has had a response for at least the whole
-schedule (`failing_since`, an `Outage` that starts with the first unanswered attempt, is
-timed on the monotonic clock, and is reset by any response, 5xx and 429 included, or by any
-other kind of failure; idle time between requests counts). Connect failures and header
-timeouts share that one run, so alternating them can't reset it. An unanswered HTTP/2 ping
-is `is_timeout` too, so it counts the same; an h2 reset or killed connection does not. An
-outage that runs on past the long wait is given up by the next request, a server that
-accepts connections but never answers by the first request whose read timeouts outlast the
-schedule, and a fresh outage after the host has answered again must last the schedule's
-length, so a brief resolver restart can't end the run. A body that stalls after `send`
-returned does not count: the host answered. `RetryPolicy` stamps each attempt's start
-(`attempt_started`, set when a retry's wait ends), and `retry` checks the give-up before
-handing the request to tower, so a given-up host sees no attempt. Every later request to a
-given-up host fails at once as "`<label>` not sent: giving up: `<host>` unreachable since
-`<outage start>`". Without that, an outage that starts mid-run costs 2 to 3 minutes per
-remaining item (4 or 5 linear attempts × the 30s connect timeout), or 4 to 5.5 for a silent
-server, hours for a `cleanup` over hundreds of bookmarks. The give-up is a plain
+(transient/parse) doesn't. HackerNews never re-auths. **`cleanup` fires it too**, for every
+re-auth-capable read: GitHub's `repo()` mid-pass (via `Halt`), GitHub's `fetch()` for star
+dates, and Reddit's `/api/info`, whose expired cookie is by far the most common case. That
+is why the three `cleanup` entry points return `Result<(), SourceError>` rather than
+`anyhow::Result`: flattening the variant would lose the hook. [`src/hook.rs`](src/hook.rs)'s
+`handle_source_err` is the single place the hook is fired; `cleanup` resolves the command
+through `PINBOARD_SYNC_ON_AUTH_FAILURE` → account → `[defaults.<source>]` → `[hooks]` (it
+has no `--on-auth-failure` flag). **Reading that env var is load-bearing**:
+[`nix/module.nix`](nix/module.nix) exports `onAuthFailure` only into the unit environment,
+never the generated TOML, and runs the `cleanup --all` timer with it, so resolving from
+config alone would leave the hook dead where it matters most.
+
+**Every client sends through its `http::RetryingClient`** ([`src/http.rs`](src/http.rs),
+whose item docs give the mechanics), with its retry settings fixed where the client is
+built. It backs off on network errors / 429 / 5xx and returns other statuses as-is. A
+classifier returning an `http::Verdict` decides which responses retry: `send` uses
+`backoff_if_transient`, while the HackerNews favorites pages pass
+`retry_after_up_to(FAVORITES_MAX_RETRY_AFTER)` to `send_with`, because quick retries of a
+429 there only prolong HN's block: it is retried at most once, after a `Retry-After` of at
+most 120s, and a 429 that comes back becomes `SourceError::RateLimited`. There is
+deliberately no overall `timeout`, which would cap a slow but steady `posts/all`.
+
+**A connect failure gets one long wait per host, then the host is given up.** A request that
+could not connect (`is_connect`: DNS, TCP or TLS) retries on the exponential
+`CONNECT_BACKOFF` (~2.5 minutes), separate from the linear budget, so a resolver restart
+during a NixOS switch doesn't fail a timer-started run. Each client's `ConnectBudget` spends
+that wait once per host, and gives a host up once it has gone the whole schedule without a
+response; every later request to it then fails at once. Otherwise a mid-run outage costs
+minutes per remaining item, hours for a big `cleanup`. The give-up is a plain
 `SourceError::Other`, deliberately not a `Halt`: in `cleanup` each remaining lookup lands in
-`plan_failed` at no cost and the majority rule decides the run, exactly as it would for the
-same failures arriving slowly; it never fires the auth-failure hook. Nothing un-gives-up a
-host within a run. `send` strips the request URL from every client's transport error before
-wrapping it, because Pinboard's `auth_token` rides in the query string and `reqwest::Error`
-prints the URL in `Display` and `Debug`. Never put a request URL with a query into a
-message: Pinboard errors name the endpoint (no query) instead. An error quotes a response
-body only through `http::error_with_body`, which puts a one-line excerpt of at most 300
-bytes in the error and logs the whole body at debug level (`-v`, or
-`RUST_LOG=pinboard_sync=debug`), in any build, escaped as one string literal so a hostile
-body can't forge log lines. Tests read the log through `test_support::capturing_logs`. Every
-caller passes its client's secrets (the GitHub token; the Reddit `Cookie` header and its
-session value; none for Algolia), and `http::redact` replaces them in the whole body before
-either the log line or the excerpt is made, so the cut can't leave part of one behind.
-Pinboard's echo can take more forms, so any text from a Pinboard response that goes into an
-error (a non-success body via `PinboardClient::status_error`, or a `result_code`) goes
-through `redacted_error`, which redacts the token, its secret part (which also covers it
-percent-encoded) and any `auth_token=` value from the whole text first. A body worth seeing
-under `-v` that no error quotes (Reddit's unrecognised 401/403 page) goes through
-`http::log_body_at_debug`, the same escaped line, under the same redaction rule.
+`plan_failed` at no cost and the majority rule decides the run, and no hook fires.
+
+**Never put a request URL with a query into a message.** Pinboard's `auth_token` rides in
+the query string, so `send` strips the URL from every transport error (`reqwest::Error`
+prints it in `Display` and `Debug`), and Pinboard errors name the endpoint instead. An error
+quotes a response body only through `http::error_with_body`, and a body worth seeing under
+`-v` that no error quotes goes through `http::log_body_at_debug`; each caller passes its
+client's secrets, which `http::redact` removes from the whole body before anything is cut or
+logged. Pinboard response text in an error goes through `redacted_error`, which also covers
+the token's other echoed forms. Tests read the log through `test_support::capturing_logs`.
 
 **`SourceError::RateLimited` is the third case, and deliberately not either of those.**
-GitHub answers both its primary and secondary rate limits with a **403 or 429** — the
-same statuses a real permission denial uses — so `github::rate_limit_message` matches on
-the headers instead: `x-ratelimit-remaining: 0` (with `x-ratelimit-reset` for the
-instant) or a `retry-after`. It must not become `ReauthRequired` (no credential change
-clears a quota, and firing the hook would send the operator after the wrong problem) nor
-a permanent skip (`github::permanent_refusal`: a 451, or a 403 with a `block` body or
-`X-GitHub-SSO: required`, which defers to `rate_limit_message` first). Retrying is not
-the answer either: `send`'s 2s-linear backoff over 4 attempts totals ~12s, while a
-primary limit resets up to an hour out and GitHub asks for a minute on secondary
-limits, so it would only fail more slowly.
-The 403 form isn't retried; the **429** form still is, by the default
-`backoff_if_transient` classifier, and those ~12s are simply wasted before the response
-is read — harmless, and the reason a `rate_limit_message` unit test uses a synthesized
-`HeaderMap` rather than a 429 over wiremock. Stopping the pass is the response instead. A HackerNews favorites-page 429
-(see above) is `RateLimited` too: the `sync` run still fails, but no hook fires.
+GitHub answers its rate limits with a **403 or 429**, the statuses a real permission denial
+uses, so `github::rate_limit_message` matches on the headers instead. It must not become
+`ReauthRequired` (no credential change clears a quota, and the hook would send the operator
+after the wrong problem) nor a permanent skip (`github::permanent_refusal`, which defers to
+`rate_limit_message` first), and retrying won't help: `send`'s backoff totals ~12s, while a
+primary limit resets up to an hour out. Stopping the pass is the response instead. The 429
+form is still retried by `backoff_if_transient`, wasting those ~12s harmlessly, which is why
+its unit test uses a synthesized `HeaderMap`, not a wiremock 429.
 
-**`SourceError::Blocked` is the fourth: Reddit's edge refusing the request by policy.**
-Reddit's block is recognisable only by its body (it sends `retry-after: 0`, which must not
-be read as a rate limit), so `reddit_body` reads it: `reddit::edge_page` recognises a 403
-`text/html` body by its phrase. "Blocked by network security" (redlib-org/redlib#591)
-returns `Blocked`; any other 401/403 — Reddit's API 403 is short JSON — is still a dead
-cookie and `ReauthRequired`. That includes the ~1.5KB "whoa there, pardner ... blocked due
-to a network policy" page, which Reddit serves for a junk cookie or bearer token (and for
-blocked IP ranges), so it stays a credential problem with an IP hint added. A block
-arrives with a valid cookie (#78), so firing the hook would send the operator to re-copy a
-credential that isn't the problem. It shares
-`RateLimited`'s handling (no hook; a pass that hits it halts via `Halt::Blocked`) but keeps
-its own variant so the message names a block, which no reset is known to lift. No Reddit
-`plan` makes a request today: a block on `/api/info` stops `cleanup reddit` before
-`run_pass`, as an expired cookie does.
+**`SourceError::Blocked` is the fourth: Reddit's edge refusing the request by policy.** It
+is known only by its body (its `retry-after: 0` must not be read as a rate limit), so
+`reddit_body` checks a 403 with `reddit::edge_page`: "blocked by network security" is
+`Blocked`, and any other 401/403 is `ReauthRequired`, including the "whoa there, pardner"
+page, which Reddit also serves for a junk cookie. A block arrives with a valid cookie (#78),
+so the hook would send the operator to re-copy a credential that isn't the problem. It
+shares `RateLimited`'s handling (no hook; a pass halts via `Halt::Blocked`) but keeps its
+own variant so the message names a block, which no reset is known to lift.
 
 **The Reddit client never follows a redirect.** Reddit answers a request without a session
-it accepts with a 302 to `/login` (seen for a request with no cookie), and following it can
-land on a login page that answers 403 — which the 401/403 arm would misreport as a 403 on
-the endpoint itself. So `RedditClient` is
-built with `redirect::Policy::none()`, and `reddit_body` maps a 3xx whose `Location` path
-is `/login` or under `/login/` to `ReauthRequired` and any other 3xx to `Other`.
-`saved.json` pagination only changes query parameters on one URL and `/api/info` is a
-single GET, so nothing relied on following a redirect.
+it accepts with a 302 to `/login`, and following it can land on a login page that answers
+403, which the 401/403 arm would misreport as a 403 on the endpoint itself. So
+`RedditClient` is built with `redirect::Policy::none()`, and `reddit_body` maps a 3xx to or
+under `/login` to `ReauthRequired` and any other to `Other`. Nothing needs to follow one:
+`saved.json` pagination only changes query parameters, and `/api/info` is a single GET.
 
-**Pinboard field names are inverted.** In `posts/add`, `description` is the *title*
-and `extended` is the notes (delicious backcompat). Bookmarks are written
-`replace=yes` (idempotent) and `shared=no` (private) by default.
+**Pinboard field names are inverted.** In `posts/add`, `description` is the *title* and
+`extended` is the notes (delicious backcompat). Bookmarks are written `replace=yes`
+(idempotent) and `shared=no` (private) by default.
 
 ## Gotchas
 
-- **native-tls, not rustls.** Reddit's anti-bot edge 403s rustls's TLS fingerprint
-  but accepts native-tls's, so `reqwest` is built with `native-tls`. On Linux that's
-  OpenSSL via `openssl-sys`, so [`nix/package.nix`](nix/package.nix) carries
-  `pkg-config` + `openssl` and the closure includes OpenSSL. Keep it this way.
-- **`native-tls-alpn` is load-bearing too.** Reddit's edge also 403s (with its
-  network-security page) a TLS 1.3 ClientHello that carries no ALPN extension, which is
-  what plain `native-tls` sends ([#78](https://github.com/thanegill/pinboard-sync/issues/78));
-  header case and order are not the cause. reqwest is also built with `http2`, so the
-  ClientHello offers ALPN `h2, http/1.1` and each connection speaks what the server picks
-  ([#91](https://github.com/thanegill/pinboard-sync/issues/91)). Every client starts from
-  `http::client_builder()` (the 30s `CONNECT_TIMEOUT` keeps a black-holed host from
-  stalling each attempt for the OS connect timeout, the 60s `READ_TIMEOUT` bounds a
-  server that goes silent, and HTTP/2 pings close a dead pooled connection, since a read
-  timeout over h2 resets only the stream and the retry would reuse it). Build new
-  clients from it;
-  `http::net_tests::client_hello_offers_alpn_h2_and_http1` guards the ClientHello. Over
-  h2 a dead connection or reset stream is a transport error, not `is_connect`, so it gets
-  the linear retries; the `h2c_server` tests in `http::net_tests` pin that down. `-v`
-  logs which protocol each response came over.
-- **The Nix package build runs the tests** (`buildRustPackage` `doCheck`), so a
-  failing test blocks `nix build`/`nix flake check`. The `net_tests` modules bind a
-  socket, which the sandbox forbids — the package's `checkFlags = [ "--skip=net_tests" ]`
-  excludes them there; they still run under `cargo test`. Keep all *other* tests
-  hermetic (no network/sockets). A `net_tests` case that points a real client at a dead
-  port sleeps the real ~2.5-minute `CONNECT_BACKOFF` unless it runs inside
-  `http::recording_waits`; only `http.rs`'s own tests can inject a zero schedule.
+- **native-tls, not rustls.** Reddit's anti-bot edge 403s rustls's TLS fingerprint but
+  accepts native-tls's, so `reqwest` is built with `native-tls`. On Linux that's OpenSSL via
+  `openssl-sys`, so [`nix/package.nix`](nix/package.nix) carries `pkg-config` + `openssl`
+  and the closure includes OpenSSL. Keep it this way.
+- **`native-tls-alpn` is load-bearing too.** Reddit's edge also 403s a TLS 1.3 ClientHello
+  with no ALPN extension, which plain `native-tls` sends
+  ([#78](https://github.com/thanegill/pinboard-sync/issues/78)); header case and order are
+  not the cause. With `http2` too, the ClientHello offers ALPN `h2, http/1.1`
+  ([#91](https://github.com/thanegill/pinboard-sync/issues/91)). Build every new client from
+  `http::client_builder()`. `client_hello_offers_alpn_h2_and_http1` and the `h2c_server`
+  tests in `http::net_tests` guard the ClientHello and h2's retry path.
+- **The Nix package build runs the tests** (`buildRustPackage` `doCheck`), so a failing test
+  blocks `nix build`/`nix flake check`. The `net_tests` modules bind a socket, which the
+  sandbox forbids — the package's `checkFlags = [ "--skip=net_tests" ]` excludes them there;
+  they still run under `cargo test`. Keep all *other* tests hermetic (no network/sockets). A
+  `net_tests` case that points a real client at a dead port sleeps the real ~2.5-minute
+  `CONNECT_BACKOFF` unless it runs inside `http::recording_waits`.
 - **Large test modules live in their own files**, `src/<module>/tests.rs` (or
-  `net_tests.rs`) behind `#[cfg(test)] mod tests;`, so the module path — and with it the
-  `--skip=net_tests` match — is the same as an inline module. They are still child modules
-  (`use super::*` sees private items); `include_str!` paths in them are relative to the
-  test file, not the module. Small test modules stay inline.
-- **No paused clock under a real socket.** `start_paused` auto-advances to the next
-  timer whenever the runtime idles, including on wiremock I/O, so any timer live during a
-  request (a connect timeout, say) fires early; only a test whose expected outcome *is*
-  that timer firing may pair them. To skip the clients' pauses between pages, run the
-  fetch inside `http::recording_waits`, which records each `http::sleep` instead of
-  sleeping. A client's new pause goes through `http::sleep` for that reason.
+  `net_tests.rs`) behind `#[cfg(test)] mod tests;`, so the module path — and the
+  `--skip=net_tests` match — is the same as inline. `include_str!` paths in them are
+  relative to the test file, not the module.
+- **No paused clock under a real socket.** `start_paused` auto-advances to the next timer
+  whenever the runtime idles, including on wiremock I/O, so any timer live during a request
+  fires early, unless that firing *is* the expected outcome. To skip the clients' pauses,
+  run the fetch inside `http::recording_waits`, which records each `http::sleep` instead, so
+  a client's new pause must go through `http::sleep`.
 - **Tests never read a secret from the real environment.** Under `cfg(test)`,
   `secret_ladder`'s `$VAR`/`$VAR_FILE` rungs read a per-thread fake environment, set with
-  the `secrets::FakeSecretEnv` guard, so a test that builds a job can't pick up the
-  developer's real cookie or token. `std::env::set_var` on a secret does nothing in a
-  test; use `FakeSecretEnv` or a synthetic ladder (`first_cookie_on`).
+  the `secrets::FakeSecretEnv` guard, so a test can't pick up the developer's real cookie or
+  token. `std::env::set_var` on a secret does nothing in a test; use `FakeSecretEnv` or a
+  synthetic ladder (`first_cookie_on`).
 - **A test that touches the filesystem takes its directory from
-  `test_support::scratch_dir`**, a `tempfile::TempDir` unique per call and removed on
-  drop; keep the guard bound while the path is in use. A fixed path under
-  `temp_dir()` collides with a concurrent `cargo test` (another worktree, the Nix
-  build) and deletes its files mid-run.
-- **`nix build`/`nix flake check` only see git-tracked files.** A new untracked
-  module (or `config.example.toml`, used via `include_str!`) fails the sandbox build
-  with `file not found`, even though dev-shell `cargo` passes — that discrepancy is
-  the tell. `git add` new files before building with Nix. The package source is also
-  narrowed to `Cargo.toml`, `Cargo.lock` and `src/` ([`nix/package.nix`](nix/package.nix)'s
-  fileset), so a file the build reads from anywhere else has to be added there too.
-- The User-Agent / client identifier (`http::USER_AGENT`) derives from `CARGO_PKG_NAME`/`CARGO_PKG_VERSION`.
+  `test_support::scratch_dir`**, a `tempfile::TempDir` removed on drop, so keep the guard
+  bound while the path is in use. A fixed path under `temp_dir()` collides with a concurrent
+  `cargo test` (another worktree, the Nix build) and deletes its files.
+- **`nix build`/`nix flake check` only see git-tracked files.** A new untracked module (or
+  `config.example.toml`, used via `include_str!`) fails the sandbox build with
+  `file not found`, even though dev-shell `cargo` passes — that discrepancy is the tell.
+  `git add` new files before building with Nix. The package source is also narrowed to
+  `Cargo.toml`, `Cargo.lock` and `src/` ([`nix/package.nix`](nix/package.nix)'s fileset), so
+  a file the build reads from anywhere else has to be added there too.
+- The User-Agent (`http::USER_AGENT`) derives from `CARGO_PKG_NAME`/`CARGO_PKG_VERSION`.
 - **Service-specific, API-shaped structs carry a service prefix** (`GitHubRepo`,
   `HackerNewsItem`, `RedditSavedItem`, `AlgoliaSearchResponse`) — not bare `Repo`/`Item`.
   GitHub is spelled `GitHub` and HackerNews `HackerNews` in type names (e.g. `GitHubConfig`,

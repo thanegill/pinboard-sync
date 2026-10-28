@@ -26,8 +26,7 @@ use crate::reddit::cleanup::RedditCleanupOverrides;
 use crate::reddit::model::RedditConfig;
 use crate::reddit::RedditClient;
 use crate::secrets::{
-    first_nonempty, missing_github_token, missing_reddit_cookie, resolve_github_token,
-    resolve_reddit_cookie,
+    first_nonempty, missing_reddit_cookie, resolve_github_token, resolve_reddit_cookie, SecretSpec,
 };
 use crate::settings::resolve_cleanup_dates;
 use crate::source::{BookmarkDraft, SourceError};
@@ -175,7 +174,7 @@ async fn run_sync_jobs(
 /// Each run replaces the previous snapshot in place.
 pub async fn run_backup(cmd: BackupCmd, config: &Config) -> Result<()> {
     let plan = build_backup_plan(&cmd, config)?;
-    let dir = resolve_backup_dir(plan.out.or_else(|| cmd.out.out.clone()), config)?;
+    let dir = resolve_backup_dir([plan.out, cmd.out.out.clone()], config)?;
     back_up(plan.jobs, plan.skipped, &dir, plan.dry_run || cmd.dry_run).await
 }
 
@@ -241,11 +240,15 @@ async fn back_up(
     run.finish()
 }
 
-/// The snapshot directory: the `--out` flag, else `[backup].directory`. There is no
-/// built-in default — writing a snapshot into an unexpected working directory is worse
-/// than an error.
-fn resolve_backup_dir(flag: Option<String>, config: &Config) -> Result<PathBuf> {
-    first_nonempty([flag, config.backup.directory.clone()])
+/// The snapshot directory: the `--out` after the target, else the one before it, else
+/// `[backup].directory`. There is no built-in default — writing a snapshot into an
+/// unexpected working directory is worse than an error — and an empty `--out` in either
+/// place is refused, as an empty `[backup].directory` is, rather than skipped.
+fn resolve_backup_dir(flags: [Option<String>; 2], config: &Config) -> Result<PathBuf> {
+    if flags.iter().flatten().any(|dir| dir.trim().is_empty()) {
+        bail!("`--out` must not be empty");
+    }
+    first_nonempty(flags.into_iter().chain([config.backup.directory.clone()]))
         .map(PathBuf::from)
         .context("no backup directory (pass --out DIR or set [backup].directory in the config)")
 }
@@ -331,8 +334,14 @@ fn cleanup_all_target<'a, A: SourceAccount>(
         return Ok(None);
     };
     let pass = format!("`cleanup --all` ({} pass)", A::SOURCE);
-    let dates =
-        resolve_cleanup_dates(&pass, overrides, Some(account), A::defaults(config), config)?;
+    let dates = resolve_cleanup_dates(
+        &pass,
+        A::SOURCE,
+        overrides,
+        Some(account),
+        A::defaults(config),
+        config,
+    )?;
     Ok(Some(CleanupTarget { account, dates }))
 }
 
@@ -353,6 +362,7 @@ async fn run_cleanup_github(
     let account = config::select_account(&config.github, args.account.as_deref())?;
     let dates = resolve_cleanup_dates(
         "`cleanup github`",
+        "github",
         &overrides,
         account,
         &config.defaults.github,
@@ -373,7 +383,8 @@ async fn cleanup_github_account<S: BookmarkStore + AccountState>(
     dates: DateOpts,
     config: &Config,
 ) -> Result<()> {
-    let token = resolve_github_token(token_flag, account).with_context(missing_github_token)?;
+    let token = resolve_github_token(token_flag, account)
+        .with_context(|| SecretSpec::GITHUB_TOKEN.missing())?;
     let client = GitHubClient::new(token, account.map(GitHubConfig::from).unwrap_or_default())?;
     cleanup_github_with_client(store, &client, account, dates, config).await
 }
@@ -405,6 +416,7 @@ async fn run_cleanup_reddit(
     let account = config::select_account(&config.reddit, args.account.as_deref())?;
     let dates = resolve_cleanup_dates(
         "`cleanup reddit`",
+        "reddit",
         &args.dates.with_top_level(top_overrides),
         account,
         &config.defaults.reddit,
@@ -464,6 +476,7 @@ async fn run_cleanup_hackernews(
     let account = config::select_account(&config.hackernews, args.account.as_deref())?;
     let dates = resolve_cleanup_dates(
         "`cleanup hackernews`",
+        "hackernews",
         &args.dates.with_top_level(top_overrides),
         account,
         &config.defaults.hackernews,
@@ -484,7 +497,7 @@ fn resolve_hackernews_cleanup_config(
 ) -> Result<HackerNewsConfig> {
     let mut hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
     if let Some(tag) = link_tag {
-        config::check_taggable("--link-tag", &tag)?;
+        config::check_taggable("`--link-tag`", &tag)?;
         hn_config.link_tag = tag;
     }
     Ok(hn_config)

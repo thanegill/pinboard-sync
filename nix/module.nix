@@ -68,9 +68,9 @@ let
 
   # Credential file paths the rendered config table supplies itself: the `[pinboard]`
   # destination `token_file`, a reddit account `cookie_file`, or a github account
-  # `token_file` (HackerNews is public). These satisfy the binary's `resolve_secret`
-  # ladder without `environmentFile` or a `*File` option, so they count toward the
-  # credentials assertion. Only the enabled/rendered accounts (post-`pruneAccounts`).
+  # `token_file` (HackerNews is public). These satisfy the binary's secret ladder without
+  # `environmentFile` or a `*File` option, so they count toward the credentials assertion.
+  # Only the enabled/rendered accounts (post-`pruneAccounts`).
   #
   # Unlike the `*File` options (systemd LoadCredential) and `environmentFile`, which
   # systemd reads as root before dropping privileges, these paths are opened by the

@@ -19,9 +19,13 @@ All notable changes to this project are documented here. The format is based on
 
 - A config pairing `post_date_max_age_days = 0` with `cleanup_stale_to_now` is rejected.
 - `cleanup` refuses the same pairing when `--max-age-days` or `--stale-to-now` sets it.
+- Either refusal names where each half was set: the flag, the account,
+  `[defaults.<source>]` or `[pinboard]`.
 - The flake is built with flake-parts. Its `flake-utils` input is now `flake-parts`, and
   its `nixosModules` are module attrsets tagged `_class = "nixos"` rather than bare
   functions: importing them works as before, calling one as a function does not.
+- An empty `--out` is an error, as an empty `[backup].directory` already was. It used to
+  fall back to `[backup].directory`.
 
 ### Removed
 
@@ -29,6 +33,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- A missing Reddit or HackerNews username or Pinboard token names every setting it can come
+  from, `$REDDIT_USERNAME_FILE`, `$HN_USERNAME_FILE` and `$PINBOARD_TOKEN_FILE` included,
+  as the cookie and GitHub token messages already did.
+- A `--link-tag` with whitespace or a comma is refused as `--link-tag`'s own error, no
+  longer one that starts `config:` as if the config had set it.
 - A Reddit cookie with a stray `;` (`abc;`, `a=1;;`) is sent without it, so a bare value
   still counts as the session.
 - Error excerpts and `-v` body logs redact the GitHub token and Reddit cookie too.

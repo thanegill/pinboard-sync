@@ -7,11 +7,94 @@ use crate::jobs::SyncOverrides;
 use crate::sync::JobSettings;
 use crate::timefmt::DateOpts;
 
+/// The tier of the settings ladder a value came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    Flag,
+    Account,
+    SourceDefault,
+    /// The `[pinboard]` global, or the built-in default it falls back to.
+    Global,
+}
+
+impl Tier {
+    /// The tier as a message names it, for the setting whose CLI flag is `flag`, of
+    /// `source`'s accounts. It names where the value was set, never the value.
+    pub fn describe(self, flag: &str, source: &str) -> String {
+        match self {
+            Tier::Flag => format!("`{flag}`"),
+            Tier::Account => "the account".to_string(),
+            Tier::SourceDefault => format!("`[defaults.{source}]`"),
+            Tier::Global => "`[pinboard]`".to_string(),
+        }
+    }
+}
+
+/// A setting's value and the [`Tier`] it was resolved from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resolved<T> {
+    pub value: T,
+    pub from: Tier,
+}
+
 /// Resolve a setting through its precedence tiers, highest first: the CLI flag, else
 /// the account override, else the per-source default, else the resolved `[pinboard]`
 /// global. The first present (`Some`) value wins; the global is the guaranteed fallback.
-pub fn resolve_setting<T>(flag: Option<T>, account: Option<T>, source: Option<T>, global: T) -> T {
-    flag.or(account).or(source).unwrap_or(global)
+pub fn resolve_setting<T>(
+    flag: Option<T>,
+    account: Option<T>,
+    source: Option<T>,
+    global: T,
+) -> Resolved<T> {
+    [
+        (Tier::Flag, flag),
+        (Tier::Account, account),
+        (Tier::SourceDefault, source),
+    ]
+    .into_iter()
+    .find_map(|(from, value)| {
+        Some(Resolved {
+            value: value?,
+            from,
+        })
+    })
+    .unwrap_or(Resolved {
+        value: global,
+        from: Tier::Global,
+    })
+}
+
+/// The `use_post_date` trio as [`resolve_dates`] resolves it, each with its tier.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedDates {
+    pub use_post_date: Resolved<bool>,
+    pub max_age_days: Resolved<u64>,
+    pub stale_to_now: Resolved<bool>,
+}
+
+impl ResolvedDates {
+    pub fn opts(self) -> DateOpts {
+        DateOpts {
+            use_post_date: self.use_post_date.value,
+            max_age_days: self.max_age_days.value,
+            stale_to_now: self.stale_to_now.value,
+        }
+    }
+
+    /// Refuse dates for which [`DateOpts::redates_every_run`] holds, naming `scope` and
+    /// the tier of each half (`source` names its defaults table), never a value.
+    pub fn check_redating(self, scope: &str, source: &str) -> anyhow::Result<()> {
+        if !self.opts().redates_every_run() {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "{scope} resolves `post_date_max_age_days` to 0 (from {}) with \
+             `cleanup_stale_to_now` on (from {}), so cleanup would re-date its stale \
+             bookmarks on every run; raise the cap or turn `cleanup_stale_to_now` off",
+            self.max_age_days.from.describe("--max-age-days", source),
+            self.stale_to_now.from.describe("--stale-to-now", source),
+        )
+    }
 }
 
 /// The `use_post_date` trio for an account, each resolved through [`resolve_setting`]
@@ -23,8 +106,8 @@ pub fn resolve_dates(
     account: Option<&impl config::Account>,
     src: &config::SourceDefaults,
     config: &Config,
-) -> DateOpts {
-    DateOpts {
+) -> ResolvedDates {
+    ResolvedDates {
         use_post_date: resolve_setting(
             overrides.use_post_date,
             account.and_then(|a| a.use_post_date()),
@@ -49,31 +132,21 @@ pub fn resolve_dates(
     }
 }
 
-/// [`resolve_dates`] for a cleanup pass, refusing a resolution that
-/// [`DateOpts::redates_every_run`]. Config validation rules that out for the config tiers
-/// alone; this catches the same pairing when a flag supplies either half. `pass` names
-/// the pass in the error, e.g. "`cleanup github`".
+/// [`resolve_dates`] for a cleanup pass of `source`'s account, refused by
+/// [`ResolvedDates::check_redating`]. Config validation rules the pairing out for the
+/// config tiers alone; this catches it when a flag supplies either half. `pass` names the
+/// pass in the error, e.g. "`cleanup github`".
 pub fn resolve_cleanup_dates(
     pass: &str,
+    source: &str,
     overrides: &DateFlags,
     account: Option<&impl config::Account>,
     src: &config::SourceDefaults,
     config: &Config,
 ) -> anyhow::Result<DateOpts> {
     let dates = resolve_dates(overrides, account, src, config);
-    if dates.redates_every_run() {
-        return Err(redates_every_run_error(&format!("{pass} with its flags")));
-    }
-    Ok(dates)
-}
-
-/// Why `scope`'s dating settings are refused. It names the settings, never a value.
-pub fn redates_every_run_error(scope: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "{scope} resolves `post_date_max_age_days` to 0 with `cleanup_stale_to_now` on, so \
-         cleanup would re-date its stale bookmarks on every run; raise the cap or turn \
-         `cleanup_stale_to_now` off"
-    )
+    dates.check_redating(pass, source)?;
+    Ok(dates.opts())
 }
 
 /// The per-account settings [`build_job`](crate::jobs::build_job) resolves: the
@@ -93,20 +166,23 @@ pub fn resolve_job_settings(
             account.and_then(|a| a.limit()),
             src.limit,
             config.pinboard.limit.unwrap_or_default(),
-        ),
+        )
+        .value,
         read_later: resolve_setting(
             overrides.flags.toread,
             account.and_then(|a| a.toread()),
             src.toread,
             config.pinboard.toread,
-        ),
+        )
+        .value,
         public: resolve_setting(
             overrides.flags.public,
             account.and_then(|a| a.public()),
             src.public,
             config.pinboard.public,
-        ),
-        dates: resolve_dates(&DateFlags::from(&overrides.flags), account, src, config),
+        )
+        .value,
+        dates: resolve_dates(&DateFlags::from(&overrides.flags), account, src, config).opts(),
     }
 }
 
@@ -130,17 +206,30 @@ mod tests {
 
     #[test]
     fn resolve_setting_picks_the_highest_present_tier() {
-        // flag → account → source → global, first `Some` wins.
-        assert_eq!(resolve_setting(Some(1), Some(2), Some(3), 5), 1); // flag tops all
-        assert_eq!(resolve_setting(None, Some(2), Some(3), 5), 2); // account over source
-        assert_eq!(resolve_setting(None, None, Some(3), 5), 3); // source over global
-        assert_eq!(resolve_setting::<usize>(None, None, None, 5), 5); // global fallback
+        // flag → account → source → global, first `Some` wins, and says which it was.
+        let resolved = |value, from| Resolved { value, from };
+        assert_eq!(
+            resolve_setting(Some(1), Some(2), Some(3), 5),
+            resolved(1, Tier::Flag)
+        );
+        assert_eq!(
+            resolve_setting(None, Some(2), Some(3), 5),
+            resolved(2, Tier::Account)
+        );
+        assert_eq!(
+            resolve_setting(None, None, Some(3), 5),
+            resolved(3, Tier::SourceDefault)
+        );
+        assert_eq!(
+            resolve_setting(None, None, None, 5),
+            resolved(5, Tier::Global)
+        );
 
         // A `Some(false)` flag is a real value, so it forces a `true` lower tier off —
         // the behavior a bare clap flag could not express (this is why `--public[=BOOL]`).
-        assert!(!resolve_setting(Some(false), Some(true), Some(true), true));
-        assert!(resolve_setting(Some(true), None, None, false));
-        assert!(resolve_setting(None, None, None, true)); // global fallback
+        assert!(!resolve_setting(Some(false), Some(true), Some(true), true).value);
+        assert!(resolve_setting(Some(true), None, None, false).value);
+        assert!(resolve_setting(None, None, None, true).value); // global fallback
     }
 
     #[test]
@@ -153,7 +242,7 @@ mod tests {
             stale_to_now: Some(true),
             ..Default::default()
         };
-        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config);
+        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config).opts();
         assert!(d.stale_to_now);
 
         // flag forces it off against a true global
@@ -164,7 +253,7 @@ mod tests {
             stale_to_now: Some(false),
             ..Default::default()
         };
-        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config);
+        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config).opts();
         assert!(!d.stale_to_now);
     }
 
@@ -179,17 +268,17 @@ mod tests {
             max_age_days: Some(99),
             ..Default::default()
         };
-        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config);
+        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config).opts();
         assert_eq!(d.max_age_days, 99);
 
         // no flag → global
-        let d = resolve_dates(&DateFlags::default(), None::<&RedditAccount>, src, &config);
+        let d = resolve_dates(&DateFlags::default(), None::<&RedditAccount>, src, &config).opts();
         assert_eq!(d.max_age_days, 10);
 
         // global unset → built-in default
         let config = Config::default();
         let src = &config.defaults.reddit;
-        let d = resolve_dates(&DateFlags::default(), None::<&RedditAccount>, src, &config);
+        let d = resolve_dates(&DateFlags::default(), None::<&RedditAccount>, src, &config).opts();
         assert_eq!(d.max_age_days, config::DEFAULT_MAX_AGE_DAYS);
     }
 }

@@ -333,3 +333,32 @@ fn each_skipped_target_counts_as_a_failed_account() {
     let error = run.finish().expect_err("a skipped target fails the run");
     assert_eq!(error.to_string(), "2 account(s) failed");
 }
+
+/// Every setting the ladder reads for a secret, `$VAR_FILE` included, is one an operator
+/// can use, so a "missing X" message names all of them.
+#[test]
+fn a_missing_secret_names_every_setting_it_can_come_from() {
+    let config = Config::default();
+    let overrides = SyncOverrides::default();
+    let error = |job: Result<SyncJob>| format!("{:#}", job.err().expect("no secret is set"));
+    assert_eq!(
+        error(build_job::<RedditAccount>(None, &overrides, &config)),
+        "missing Reddit username (set --reddit-username, $REDDIT_USERNAME, \
+         $REDDIT_USERNAME_FILE, or the config's `username`)"
+    );
+    assert_eq!(
+        error(build_job::<HackerNewsAccount>(None, &overrides, &config)),
+        "missing HackerNews username (set --username, $HN_USERNAME, $HN_USERNAME_FILE, or \
+         the config's `username`)"
+    );
+    assert_eq!(
+        format!(
+            "{:#}",
+            build_pinboard_client(None, &config)
+                .err()
+                .expect("no token")
+        ),
+        "missing Pinboard token (set --pinboard-token, $PINBOARD_TOKEN, $PINBOARD_TOKEN_FILE, \
+         or `[pinboard]`'s `token` or `token_file`)"
+    );
+}

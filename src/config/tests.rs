@@ -444,8 +444,9 @@ fn rejects_a_zero_cap_with_stale_to_now_as_each_account_resolves_it() {
     assert_eq!(
         rejected("[pinboard]\npost_date_max_age_days = 0\ncleanup_stale_to_now = true"),
         "config: reddit (implicit CLI/env account) resolves `post_date_max_age_days` to 0 \
-         with `cleanup_stale_to_now` on, so cleanup would re-date its stale bookmarks on \
-         every run; raise the cap or turn `cleanup_stale_to_now` off"
+         (from `[pinboard]`) with `cleanup_stale_to_now` on (from `[pinboard]`), so cleanup \
+         would re-date its stale bookmarks on every run; raise the cap or turn \
+         `cleanup_stale_to_now` off"
     );
     assert!(rejected(
         "[pinboard]\ncleanup_stale_to_now = true\n\
@@ -456,7 +457,10 @@ fn rejects_a_zero_cap_with_stale_to_now_as_each_account_resolves_it() {
         "[defaults.hackernews]\ncleanup_stale_to_now = true\n\
          [[hackernews]]\n[[hackernews]]\nusername = \"u\"\npost_date_max_age_days = 0"
     )
-    .starts_with("config: hackernews[1] resolves "));
+    .starts_with(
+        "config: hackernews[1] resolves `post_date_max_age_days` to 0 (from the account) with \
+         `cleanup_stale_to_now` on (from `[defaults.hackernews]`)"
+    ));
 
     // An account overriding either half resolves to a combination that settles.
     assert!(Config::parse(
@@ -695,5 +699,14 @@ fn account_name_falls_back_to_username() {
         }
         .account_name(),
         None
+    );
+}
+
+#[test]
+fn a_config_tag_refusal_says_it_came_from_the_config() {
+    let error = Config::parse("[[github]]\ntag_lang_prefix = \"a b\"").unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "config: `github[0].tag_lang_prefix` must not contain whitespace"
     );
 }

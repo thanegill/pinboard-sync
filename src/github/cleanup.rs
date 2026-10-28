@@ -10,7 +10,7 @@ use anyhow::Context;
 use time::OffsetDateTime;
 use url::Url;
 
-use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo, HOMEPAGE_SEPARATOR};
+use super::{github_note, repo_name, GitHubClient, GitHubConfig, GitHubRepo, HOMEPAGE_SEPARATOR};
 use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, two_pass_verdict, CleanupPass, Plan};
@@ -199,9 +199,10 @@ impl RepoName {
 
 /// The [`RepoName`] of a genuine repo-root URL: the host must be the `github.com` repo host
 /// (bare or the `www.` alias, not another subdomain) and the path exactly two non-empty
-/// segments, ignoring a trailing slash and an optional `.git` suffix. `None` for anything
-/// else -- a deep link (`/issues`, `/tree/...`), a gist or other subdomain, or a non-GitHub
-/// host -- which cleanup leaves untouched.
+/// segments, ignoring a trailing slash, the second a [`repo_name`]. `None` for anything
+/// else -- a deep link (`/issues`, `/tree/...`), a gist or other subdomain, a non-GitHub
+/// host, or a name that is no repo's (`/owner/.git`, `/owner/..git`) -- which cleanup
+/// leaves untouched.
 fn repo_root(url: &Url) -> Option<RepoName> {
     if !is_repo_host(url.host_str()?) {
         return None;
@@ -210,10 +211,9 @@ fn repo_root(url: &Url) -> Option<RepoName> {
     let [owner, repo] = segments[..] else {
         return None;
     };
-    let repo = repo.strip_suffix(".git").unwrap_or(repo);
     Some(RepoName {
         owner: owner.to_string(),
-        name: repo.to_string(),
+        name: repo_name(repo)?.to_string(),
     })
 }
 
@@ -345,9 +345,9 @@ mod tests {
     use crate::source::UrlKey;
     use crate::test_support::{stored_at, url};
 
-    /// A deep link, a gist or a bare owner is not this pass's bookmark: it is skipped
-    /// before any lookup, so it says nothing about whether GitHub is reachable and must
-    /// not count toward `PassOutcome::reached`.
+    /// A deep link, a gist, a bare owner, or a name `.git` leaves empty or a dot segment is
+    /// not this pass's bookmark: it is skipped before any lookup, so it says nothing about
+    /// whether GitHub is reachable and must not count toward `PassOutcome::reached`.
     #[tokio::test]
     async fn a_bookmark_that_is_no_repo_root_is_skipped_without_a_lookup() {
         let client = GitHubClient::with_base_url(
@@ -364,6 +364,9 @@ mod tests {
             "https://github.com/o/r/issues/5",
             "https://gist.github.com/user/abcd1234",
             "https://github.com/o",
+            "https://github.com/o/.git",
+            "https://github.com/o/..git",
+            "https://github.com/o/%2E%2E.git",
         ] {
             let (plan, waits) = crate::http::recording_waits(pass.plan(&stored_at(stored))).await;
             assert_eq!(plan.unwrap(), Plan::Skipped, "{stored}");
@@ -401,6 +404,18 @@ mod tests {
         );
         assert_eq!(repo_root(&url("https://api.github.com/o/r")), None);
         assert_eq!(repo_root(&url("https://github.com/o")), None);
+        // A name that `.git` leaves empty or a dot segment would build the owner's or the
+        // site's URL.
+        for stored in [
+            "https://github.com/o/.git",
+            "https://www.github.com/o/.git/",
+            "https://github.com/o/..git",
+            "https://github.com/o/...git",
+            "https://github.com/o/%2e.git",
+            "https://github.com/o/%2E%2E.git",
+        ] {
+            assert_eq!(repo_root(&url(stored)), None, "{stored}");
+        }
         assert_eq!(repo_root(&url("https://example.com/o/r")), None);
     }
 

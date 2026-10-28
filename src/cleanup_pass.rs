@@ -104,8 +104,8 @@ pub struct PassOutcome {
     /// Rewrites this pass declined to make: a target that must not be written at all (see
     /// [`Refusal`]), or a plan held back over visibility or over a note its merge would cut
     /// off. Not a failure, but work that did not happen, so it is reported. Counted per
-    /// *group* for an untouchable target and per *plan* for one held back, so it counts
-    /// abandoned writes, not bookmarks.
+    /// *group* for an untouchable target and per *plan* for one held back, unless its group
+    /// is refused whole, so it counts abandoned writes, not bookmarks, and none twice.
     pub refused: usize,
     /// Bookmarks the source gave an answer for -- the evidence that it is reachable.
     /// Excludes [`Plan::Skipped`], which never asked it anything.
@@ -263,7 +263,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     let (first_appearance, mut groups) = group_by_target(&pairs);
     let group_order = write_order(&first_appearance, &groups);
     let residents = residents_of(store, &pairs, &group_order, &untouchable);
-    hold_back_visibility_mismatches(
+    let mut held_back = hold_back_visibility_mismatches(
         &group_order,
         &mut groups,
         &residents,
@@ -271,7 +271,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         dry_run,
         &mut outcome,
     );
-    hold_back_cut_notes(
+    for (key, count) in hold_back_cut_notes(
         store,
         &group_order,
         &mut groups,
@@ -279,7 +279,9 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         &mut untouchable,
         dry_run,
         &mut outcome,
-    );
+    ) {
+        *held_back.entry(key).or_default() += count;
+    }
 
     // The URLs a planned write still owns. A rewrite's old URL is never deleted when it is
     // one of these, because that write's record will live there and deleting it would
@@ -299,12 +301,15 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
 
     for key in &group_order {
         let group = groups.remove(*key).expect("key came from group_order");
+        // Each plan held back from this group is one write abandoned, unless the group is
+        // refused whole: then they are part of the one write the refusal abandons.
+        let held_here = held_back.get(*key).copied().unwrap_or(0);
         // The hold-backs can empty a group outright, when every plan heading here was held
         // back. There is nothing left to refuse *or* write, so this comes before the
-        // untouchable check: those plans were already counted as they were held back, and
-        // reporting the group again would inflate `refused` past the number of writes
-        // actually abandoned. It is also what guarantees `write_merge` a member to lead.
+        // untouchable check, and reporting the group too would count those plans twice.
+        // It is also what guarantees `write_merge` a member to lead.
         if group.is_empty() {
+            outcome.refused += held_here;
             continue;
         }
         // The target must not be written, so leave the rewriting bookmark(s) at their old
@@ -314,6 +319,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             refuse_group(key, *reason, dry_run, &mut outcome);
             continue;
         }
+        outcome.refused += held_here;
         // Pinboard keys on URL, so the end state at this target has to be one record.
         // Anything already stored there joins the group rather than being replaced by it;
         // which member leads that merge is settled in `write_merge`.
@@ -530,7 +536,7 @@ struct HeldBack<'p> {
 }
 
 /// Drop from each group the plans that disagree about visibility with what stays at its
-/// target, counting each as refused and marking its own URL occupied.
+/// target, marking each one's own URL occupied, and return how many each target lost.
 ///
 /// A merge fuses the members' notes and tags into one record, so a bookmark may only join
 /// when it agrees with the record that stays there about who may read it. Widening would
@@ -550,7 +556,8 @@ fn hold_back_visibility_mismatches<'p>(
     untouchable: &mut HashMap<Url, Refusal>,
     dry_run: bool,
     outcome: &mut PassOutcome,
-) {
+) -> HashMap<Url, usize> {
+    let mut held_from: HashMap<Url, usize> = HashMap::new();
     let mut held_back: Vec<HeldBack> = Vec::new();
     for key in group_order {
         if untouchable.contains_key(*key) {
@@ -599,7 +606,7 @@ fn hold_back_visibility_mismatches<'p>(
         staying,
     } in held_back
     {
-        outcome.refused += 1;
+        *held_from.entry(target.clone()).or_default() += 1;
         let describe = |public| if public { "public" } else { "private" };
         match staying {
             Some(staying) => warn!(
@@ -634,15 +641,16 @@ fn hold_back_visibility_mismatches<'p>(
             .entry(mover)
             .or_insert(Refusal::OccupiedByRefused);
     }
+    held_from
 }
 
-/// Drop from each merging group the members that would make the merge lose text, counting
-/// each as refused and marking its own URL occupied. The merge is built up from the record
-/// that leads it, adding the others in merge order and keeping each only when, with it,
-/// what the target will hold still has all of the note a lone rewrite of each member would
-/// keep, short of plan text the member doesn't store that the leading plan has too
-/// ([`Merge::would_lose`]), and the leading note keeps all it would keep on its own: other
-/// members' tags take room from the note too.
+/// Drop from each merging group the members that would make the merge lose text, marking
+/// each one's own URL occupied, and return how many each target lost. The merge is built up
+/// from the record that leads it, adding the others in merge order and keeping each only
+/// when, with it, what the target will hold still has all of the note a lone rewrite of
+/// each member would keep, short of plan text the member doesn't store that the leading
+/// plan has too ([`Merge::would_lose`]), and the leading note keeps all it would keep on
+/// its own: other members' tags take room from the note too.
 ///
 /// Absorbing a member deletes it, and leaving its URL to another group writes over it, so
 /// either way the text the cut lost would be gone; a cut leading note loses its tail for
@@ -658,7 +666,8 @@ fn hold_back_cut_notes<'p, S: BookmarkStore>(
     untouchable: &mut HashMap<Url, Refusal>,
     dry_run: bool,
     outcome: &mut PassOutcome,
-) {
+) -> HashMap<Url, usize> {
+    let mut held_from: HashMap<Url, usize> = HashMap::new();
     for key in group_order {
         if untouchable.contains_key(*key) {
             continue;
@@ -696,7 +705,7 @@ fn hold_back_cut_notes<'p, S: BookmarkStore>(
                 continue;
             };
             merging.pop();
-            outcome.refused += 1;
+            *held_from.entry((*key).clone()).or_default() += 1;
             warn!("not merging {} into {key}: {why}", member.stored.url);
             if dry_run {
                 emit_preview(
@@ -714,6 +723,7 @@ fn hold_back_cut_notes<'p, S: BookmarkStore>(
         }
         members.retain(|member| !held.contains(&member.stored.url));
     }
+    held_from
 }
 
 /// The index among `members` of the one that leads their merge at `key`: none when a

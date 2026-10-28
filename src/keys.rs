@@ -196,7 +196,11 @@ mod tests {
             Some("github.com/o/r.git/tree/main"),
             "only a repo root drops `.git`"
         );
-        for nameless in ["https://github.com/o/.git", "https://github.com/o/..git"] {
+        for nameless in [
+            "https://github.com/o/.git",
+            "https://github.com/o/..git",
+            "https://github.com/o/.git.git",
+        ] {
             assert_eq!(
                 key(nameless).as_deref(),
                 Some(&nameless["https://".len()..]),

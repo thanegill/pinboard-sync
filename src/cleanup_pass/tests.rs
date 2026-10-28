@@ -2911,3 +2911,52 @@ async fn a_repeated_tag_is_stored_once() {
     assert_eq!(run(&pinboard, &books, &pass).await.changed, 1);
     assert_eq!(pinboard.updated.borrow()[0].tags, ["a", "b", "c"]);
 }
+
+#[test]
+fn a_two_pass_verdict_reports_both_failures_first_pass_first() {
+    let failed = |message: &str| Err(SourceError::Other(anyhow!("{message}")));
+    let error = two_pass_verdict(
+        ("repos", failed("repo trouble")),
+        ("gists", failed("gist trouble")),
+    )
+    .unwrap_err();
+    assert!(matches!(error, SourceError::Other(_)), "{error:?}");
+    assert_eq!(
+        format!("{error:#}"),
+        "repo trouble; and for gists: gist trouble"
+    );
+
+    assert!(two_pass_verdict(("repos", Ok(())), ("gists", Ok(()))).is_ok());
+    for (first, second) in [(failed("only"), Ok(())), (Ok(()), failed("only"))] {
+        let error = two_pass_verdict(("repos", first), ("gists", second)).unwrap_err();
+        assert_eq!(format!("{error:#}"), "only");
+    }
+}
+
+/// A halt from either pass leads, so that its variant survives and a dead credential still
+/// fires the hook; with two halts, a dead credential outranks the other.
+#[test]
+fn a_two_pass_verdict_keeps_and_leads_with_a_halt() {
+    let other = || Err(SourceError::Other(anyhow!("other trouble")));
+    let reauth = || Err(SourceError::Halted(Halt::Reauth("token expired".into())));
+    let limited = || Err(SourceError::Halted(Halt::RateLimited("spent".into())));
+
+    for (first, second, rest) in [
+        (other(), reauth(), "repos: other trouble"),
+        (reauth(), other(), "gists: other trouble"),
+        (limited(), reauth(), "repos: rate limited: spent"),
+        (reauth(), limited(), "gists: rate limited: spent"),
+    ] {
+        let error = two_pass_verdict(("repos", first), ("gists", second)).unwrap_err();
+        let SourceError::Halted(Halt::Reauth(message)) = &error else {
+            panic!("expected reauth, got {error:?}");
+        };
+        assert_eq!(message, &format!("token expired; and for {rest}"));
+    }
+
+    let error = two_pass_verdict(("repos", other()), ("gists", limited())).unwrap_err();
+    let SourceError::Halted(Halt::RateLimited(message)) = &error else {
+        panic!("expected a rate limit, got {error:?}");
+    };
+    assert_eq!(message, "spent; and for repos: other trouble");
+}

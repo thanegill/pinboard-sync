@@ -195,6 +195,39 @@ impl PassOutcome {
     }
 }
 
+/// Combine the verdicts of a cleanup's two passes, each of which reached its own so that
+/// neither can vouch for the other. Each is given as `(name, verdict)`. When both failed,
+/// both are reported: one leads and the other follows after `; and for <name>: `. The
+/// first pass leads unless the second outranks it. A dead credential outranks any other
+/// halt, because the outer error is the one whose variant survives, and the variant is
+/// what decides the auth-failure hook. Any halt outranks an ordinary failure, since why a
+/// pass stopped is the headline.
+pub fn two_pass_verdict(
+    (first_name, first): (&str, Result<(), SourceError>),
+    (second_name, second): (&str, Result<(), SourceError>),
+) -> Result<(), SourceError> {
+    let (first, second) = match (first, second) {
+        (Err(first), Err(second)) => (first, second),
+        (Err(e), Ok(())) | (Ok(()), Err(e)) => return Err(e),
+        (Ok(()), Ok(())) => return Ok(()),
+    };
+    let rank = |error: &SourceError| match error {
+        SourceError::Other(_) => 0,
+        SourceError::Halted(Halt::RateLimited(_) | Halt::Blocked(_)) => 1,
+        SourceError::Halted(Halt::Reauth(_)) => 2,
+    };
+    let (lead, other, other_name) = if rank(&second) > rank(&first) {
+        (second, first, first_name)
+    } else {
+        (first, second, second_name)
+    };
+    let note = |message: String| format!("{message}; and for {other_name}: {other:#}");
+    Err(match lead {
+        SourceError::Halted(halt) => halt.map_message(note).into(),
+        SourceError::Other(error) => SourceError::Other(anyhow!(note(format!("{error:#}")))),
+    })
+}
+
 /// Run `pass` over `bookmarks` (already filtered to the source), as the module doc
 /// describes; under the store's dry-run, print what would change instead. `noun` names the
 /// source in the scan log. Never fails outright: every failure, a dead credential included,

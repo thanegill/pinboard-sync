@@ -139,7 +139,7 @@ impl CleanupPass for GitHubCleanupPass<'_> {
         // Only genuine repo-root URLs on the bare github.com host are normalized;
         // deep links (issues/PRs/blob/tree) and gist/other subdomains are left untouched
         // without an API call, so they say nothing about whether GitHub is reachable.
-        let Some((owner, repo)) = repo_root(&bookmark.url) else {
+        let Some(RepoName { owner, name: repo }) = repo_root(&bookmark.url) else {
             return Ok(Plan::Skipped);
         };
         // Default to the canonicalization, then refresh from the API when the repo still
@@ -206,12 +206,26 @@ fn is_repo_host(host: &str) -> bool {
     matches!(host, "github.com" | "www.github.com")
 }
 
-/// The `(owner, repo)` of a genuine repo-root URL: the host must be the `github.com`
-/// repo host (bare or the `www.` alias, not another subdomain) and the path exactly
-/// two non-empty segments, ignoring a trailing slash and an optional `.git` suffix.
-/// `None` for anything else -- a deep link (`/issues`, `/tree/...`), a gist or other
-/// subdomain, or a non-GitHub host -- which cleanup leaves untouched.
-fn repo_root(url: &Url) -> Option<(String, String)> {
+/// A repo's `owner/name`, as a repo-root URL spells it.
+#[derive(Debug, PartialEq, Eq)]
+struct RepoName {
+    owner: String,
+    name: String,
+}
+
+impl RepoName {
+    /// Whether this is `owner/name`, compared as GitHub does, ignoring case.
+    fn is(&self, owner: &str, name: &str) -> bool {
+        self.owner.eq_ignore_ascii_case(owner) && self.name.eq_ignore_ascii_case(name)
+    }
+}
+
+/// The [`RepoName`] of a genuine repo-root URL: the host must be the `github.com` repo host
+/// (bare or the `www.` alias, not another subdomain) and the path exactly two non-empty
+/// segments, ignoring a trailing slash and an optional `.git` suffix. `None` for anything
+/// else -- a deep link (`/issues`, `/tree/...`), a gist or other subdomain, or a non-GitHub
+/// host -- which cleanup leaves untouched.
+fn repo_root(url: &Url) -> Option<RepoName> {
     if !is_repo_host(url.host_str()?) {
         return None;
     }
@@ -220,7 +234,10 @@ fn repo_root(url: &Url) -> Option<(String, String)> {
         return None;
     };
     let repo = repo.strip_suffix(".git").unwrap_or(repo);
-    Some((owner.to_string(), repo.to_string()))
+    Some(RepoName {
+        owner: owner.to_string(),
+        name: repo.to_string(),
+    })
 }
 
 /// Whether `sync github` wrote this bookmark under `cfg`: it carries that config's
@@ -248,12 +265,7 @@ fn base_tag(cfg: &GitHubConfig) -> Option<&str> {
 /// description unwrapped, as syncs before the `<blockquote>` retrofit wrote it. On a
 /// `synced` star any lone `<blockquote>` counts, so an upstream description edit still
 /// refreshes; elsewhere it may be a passage the user quoted when saving the page.
-fn note_is_tool_generated(
-    note: &str,
-    repo: &GitHubRepo,
-    names: &[(String, String)],
-    synced: bool,
-) -> bool {
+fn note_is_tool_generated(note: &str, repo: &GitHubRepo, names: &[RepoName], synced: bool) -> bool {
     let body = match note.rsplit_once("\n\nProject homepage: ") {
         Some((body, homepage)) if !homepage.contains('\n') => body,
         _ => note,
@@ -274,7 +286,7 @@ fn note_is_tool_generated(
 
 /// Whether a synced star's (plain-text) `title` is still the `owner/repo` sync gave it,
 /// under either of the repo's `names`, rather than one the user edited.
-fn title_is_tool_generated(title: &str, names: &[(String, String)]) -> bool {
+fn title_is_tool_generated(title: &str, names: &[RepoName]) -> bool {
     let title = title.trim();
     title.is_empty()
         || title
@@ -289,9 +301,9 @@ fn is_lone_blockquote(text: &str) -> bool {
         .is_some_and(|inner| !inner.contains("<blockquote>") && !inner.contains("</blockquote>"))
 }
 
-/// The `(owner, repo)` a bookmark's repo goes by: under its stored URL and, after a
-/// rename or transfer, its current one.
-fn repo_names(stored_url: &Url, repo: Option<&GitHubRepo>) -> Vec<(String, String)> {
+/// The names a bookmark's repo goes by: under its stored URL and, after a rename or
+/// transfer, its current one.
+fn repo_names(stored_url: &Url, repo: Option<&GitHubRepo>) -> Vec<RepoName> {
     let current = repo.and_then(|repo| Url::parse(&repo.html_url).ok());
     [Some(stored_url), current.as_ref()]
         .into_iter()
@@ -300,20 +312,18 @@ fn repo_names(stored_url: &Url, repo: Option<&GitHubRepo>) -> Vec<(String, Strin
         .collect()
 }
 
-/// Whether `owner/name` is one of `names`, compared as GitHub does, ignoring case.
-fn is_one_of(owner: &str, name: &str, names: &[(String, String)]) -> bool {
-    names.iter().any(|(known_owner, known_name)| {
-        owner.eq_ignore_ascii_case(known_owner) && name.eq_ignore_ascii_case(known_name)
-    })
+/// Whether `owner/name` is one of `names` ([`RepoName::is`]).
+fn is_one_of(owner: &str, name: &str, names: &[RepoName]) -> bool {
+    names.iter().any(|known| known.is(owner, name))
 }
 
 /// Whether `text` is a bare URL of the root of the repo going by `names`.
-fn links_to_repo(text: &str, names: &[(String, String)]) -> bool {
+fn links_to_repo(text: &str, names: &[RepoName]) -> bool {
     Url::parse(text)
         .ok()
         .as_ref()
         .and_then(repo_root)
-        .is_some_and(|(owner, name)| is_one_of(&owner, &name, names))
+        .is_some_and(|linked| is_one_of(&linked.owner, &linked.name, names))
 }
 
 /// Refresh the language and owner tags from the current repo under each of `configs`,
@@ -393,23 +403,24 @@ mod tests {
 
     #[test]
     fn repo_root_only_matches_bare_github_repo_roots() {
+        let owner_repo = Some(RepoName {
+            owner: "Owner".into(),
+            name: "Repo".into(),
+        });
         // Bare owner/repo on github.com, with .git and trailing slash tolerated.
-        assert_eq!(
-            repo_root(&url("https://github.com/Owner/Repo")),
-            Some(("Owner".into(), "Repo".into()))
-        );
+        assert_eq!(repo_root(&url("https://github.com/Owner/Repo")), owner_repo);
         assert_eq!(
             repo_root(&url("https://github.com/Owner/Repo.git")),
-            Some(("Owner".into(), "Repo".into()))
+            owner_repo
         );
         assert_eq!(
             repo_root(&url("https://github.com/Owner/Repo/")),
-            Some(("Owner".into(), "Repo".into()))
+            owner_repo
         );
         // The www. alias is the same repo host as the bare github.com.
         assert_eq!(
             repo_root(&url("https://www.github.com/Owner/Repo")),
-            Some(("Owner".into(), "Repo".into()))
+            owner_repo
         );
         // Deep links, other subdomains, and non-GitHub hosts are not repo roots.
         assert_eq!(repo_root(&url("https://github.com/o/r/issues/5")), None);

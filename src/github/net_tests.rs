@@ -301,7 +301,7 @@ async fn an_echoed_token_is_redacted_from_the_error_and_the_logged_body() {
         .respond_with(ResponseTemplate::new(422).set_body_string("bad request: Bearer SECRET422"))
         .mount(&server)
         .await;
-    let client = GitHubClient::with_base_url("SECRET422 ".into(), Default::default(), server.uri());
+    let client = GitHubClient::with_base_url("SECRET422".into(), Default::default(), server.uri());
     let (errors, logs) = crate::test_support::capturing_logs(async {
         [
             client.fetch().await.unwrap_err(),

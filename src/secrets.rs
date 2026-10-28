@@ -145,8 +145,8 @@ impl SecretSpec {
     }
 
     /// The secret through the ladder — CLI flag → `$VAR` → `$VAR_FILE` → config inline
-    /// value → config file path — with the setting it came from. File-sourced values are
-    /// read and trimmed; the first candidate [`Self::accepts`] takes wins.
+    /// value → config file path — with the setting it came from. Every value is trimmed;
+    /// the first candidate [`Self::accepts`] takes wins.
     pub fn resolve(
         self,
         flag: Option<String>,
@@ -162,8 +162,8 @@ impl SecretSpec {
         candidates: impl IntoIterator<Item = (SecretRung, Option<String>)>,
     ) -> Option<ConfiguredSecret> {
         candidates.into_iter().find_map(|(rung, value)| {
-            let value = value.filter(|value| self.accepts(value))?;
-            Some(ConfiguredSecret {
+            let value = value?.trim().to_string();
+            self.accepts(&value).then(|| ConfiguredSecret {
                 value,
                 source: self.source(rung),
             })
@@ -176,7 +176,11 @@ impl SecretSpec {
         let read_quietly = |path: &str| try_read_file_secret(path).ok().flatten();
         let (rung, _) = secret_ladder_reading(read_quietly, None, self.var, None, None)
             .into_iter()
-            .find(|(_, value)| value.as_deref().is_some_and(|value| self.accepts(value)))?;
+            .find(|(_, value)| {
+                value
+                    .as_deref()
+                    .is_some_and(|value| self.accepts(value.trim()))
+            })?;
         match rung {
             SecretRung::Env | SecretRung::EnvFile => Some(self.source(rung)),
             SecretRung::Flag | SecretRung::ConfigInline | SecretRung::ConfigFile => None,
@@ -525,6 +529,40 @@ mod tests {
         assert!(
             warned.iter().all(|line| line.starts_with(&unreadable)),
             "{warned:?}"
+        );
+    }
+
+    /// A pasted value often carries a newline or a stray space; every rung drops it, as the
+    /// `*_FILE` rungs always did, so the value sent is the one configured.
+    #[test]
+    fn every_rung_takes_its_value_trimmed() {
+        let env = FakeSecretEnv::set(&[("GITHUB_TOKEN", " from-env\n")]);
+        let value = |token: Option<ConfiguredSecret>| token.map(|token| token.value);
+        assert_eq!(
+            value(resolve_github_token(Some("\tfrom-flag \n".into()), None)).as_deref(),
+            Some("from-flag")
+        );
+        assert_eq!(
+            value(resolve_github_token(None, None)).as_deref(),
+            Some("from-env")
+        );
+        drop(env);
+        let account = GitHubAccount {
+            token: Some(" inline\r\n".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            value(resolve_github_token(None, Some(&account))).as_deref(),
+            Some("inline")
+        );
+        assert_eq!(
+            first_cookie_on([Some(" reddit_session=abc\n"), None, None, None, None]),
+            Some(("reddit_session=abc".into(), "--reddit-cookie"))
+        );
+        assert_eq!(
+            resolve_pinboard_token(Some("user:tok \n".into()), &PinboardConfig::default())
+                .as_deref(),
+            Some("user:tok")
         );
     }
 

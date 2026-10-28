@@ -354,7 +354,7 @@ impl GitHubClient {
             config,
             base,
             token_source: token.source,
-            token: token.value.trim().to_string(),
+            token: token.value,
         })
     }
 

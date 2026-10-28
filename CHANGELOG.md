@@ -39,6 +39,8 @@ All notable changes to this project are documented here. The format is based on
   functions: importing them works as before, calling one as a function does not.
 - An empty `--out` is an error, as an empty `[backup].directory` already was. It used to
   fall back to `[backup].directory`.
+- A token or username set by flag, environment variable or inline config is trimmed of
+  surrounding whitespace, as one read from a `*_FILE` already was.
 
 ### Deprecated
 

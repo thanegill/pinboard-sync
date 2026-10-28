@@ -17,6 +17,7 @@ nix develop --command cargo test
 nix develop --command cargo test <name>      # single test
 nix develop --command cargo clippy --all-targets -- -D warnings
 nix develop --command cargo fmt --check
+nix develop --command cargo machete          # fails on an unused dependency
 nix develop --command cargo mutants --in-diff <diff>  # mutation-tests the lines a diff file changes
 nix flake check                              # builds the package (runs tests) + evaluates the NixOS module and config-checks its TOML + lints the Nix files
 nix fmt                                      # formats the Nix files (nixfmt, via nixfmt-tree)
@@ -35,6 +36,10 @@ rendered TOML. It greps the rendered units for the hook's `Environment=` on sync
 cleanup, the cleanup unit's `cleanup --all`, and every user value's `%` escaped.
 `checks.nix-lint` runs `nixfmt --check`, statix and deadnix over every `.nix` file. CI
 runs `nix flake check` on x86_64-linux, in its `flake` job.
+
+CI's `lint` job runs `cargo machete`. A dependency it can't see used, like one reached
+only through a macro, goes in `ignored` under `[package.metadata.cargo-machete]`, with a
+comment saying why.
 
 `cargo clippy -D warnings` and `cargo fmt --check` are the gate — keep both clean.
 Commit often: each working feature or structural piece, with its tests, keeping the

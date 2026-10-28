@@ -1,6 +1,6 @@
 use super::tests::assert_error_hides;
 use super::*;
-use crate::test_support::strings;
+use crate::test_support::{strings, SHORT_READ_TIMEOUT};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -540,8 +540,6 @@ async fn a_body_that_stalls_does_not_count_against_its_host() {
     drop(release);
 }
 
-const SHORT_READ_TIMEOUT: Duration = Duration::from_millis(300);
-
 fn short_read_timeout_client() -> reqwest::Client {
     client_builder_with_read_timeout(SHORT_READ_TIMEOUT)
         .no_proxy()
@@ -667,4 +665,45 @@ async fn a_slow_body_that_keeps_arriving_is_not_cut_off() {
         start.elapsed() > SHORT_READ_TIMEOUT,
         "the body must take longer than one read timeout in all"
     );
+}
+
+/// `client_builder` bounds a silent server by [`READ_TIMEOUT`] itself, counted from the
+/// send. The request rides a connection the first one pooled, over HTTP/1.1, so the only
+/// live timer is the read timeout, and the paused clock jumps straight to it.
+#[tokio::test]
+async fn client_builder_times_a_silent_server_out_at_the_read_timeout() {
+    use std::io::{Read, Write};
+
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let port = serve_one(move |mut socket| {
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            .unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0u8];
+        while !head.ends_with(b"\r\n\r\n") {
+            socket.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+        }
+        let _ = held.recv();
+    });
+    let http = client_builder().no_proxy().build().unwrap();
+    let url = format!("http://127.0.0.1:{port}/");
+    let first = http.get(&url).send().await.unwrap().text().await.unwrap();
+    assert_eq!(first, "ok");
+
+    tokio::time::pause();
+    let start = tokio::time::Instant::now();
+    let second = tokio::time::timeout(READ_TIMEOUT * 2, http.get(&url).send())
+        .await
+        .expect("the read timeout never fired");
+    let elapsed = start.elapsed();
+
+    let err = second.unwrap_err();
+    assert!(err.is_timeout(), "unexpected error: {err:?}");
+    assert!(
+        (READ_TIMEOUT..READ_TIMEOUT + Duration::from_secs(1)).contains(&elapsed),
+        "timed out after {elapsed:?}, not READ_TIMEOUT ({READ_TIMEOUT:?})"
+    );
+    drop(release);
 }

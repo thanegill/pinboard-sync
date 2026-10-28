@@ -14,16 +14,20 @@ fn store<'a>(
     CleanupStore::new(pinboard, AccountView::new(all.to_vec()), mode)
 }
 
-/// [`run_pass`] over `books`, with the account seeded from them and dating off.
+/// [`run_pass`] over `slice`, with the account seeded from `all` and dating off.
+async fn run_over<C: CleanupPass>(
+    pinboard: &FakePinboard,
+    all: &[Bookmark],
+    slice: &[Bookmark],
+    mode: WriteMode,
+    pass: &C,
+) -> PassOutcome {
+    run_pass(&store(pinboard, all, mode), slice, "test", NO_DATING, pass).await
+}
+
+/// [`run_over`] the whole account `books`.
 async fn run<C: CleanupPass>(pinboard: &FakePinboard, books: &[Bookmark], pass: &C) -> PassOutcome {
-    run_pass(
-        &store(pinboard, books, WriteMode::Live),
-        books,
-        "test",
-        NO_DATING,
-        pass,
-    )
-    .await
+    run_over(pinboard, books, books, WriteMode::Live, pass).await
 }
 
 /// [`run`] as a dry run.
@@ -32,14 +36,7 @@ async fn run_dry<C: CleanupPass>(
     books: &[Bookmark],
     pass: &C,
 ) -> PassOutcome {
-    run_pass(
-        &store(pinboard, books, WriteMode::DryRun),
-        books,
-        "test",
-        NO_DATING,
-        pass,
-    )
-    .await
+    run_over(pinboard, books, books, WriteMode::DryRun, pass).await
 }
 
 /// A `CleanupPass` whose `plan` is a closure, so each test scripts its own outcome.
@@ -546,8 +543,7 @@ async fn chained_rewrite_does_not_delete_another_writes_target() {
         let outcome = run(&pinboard, &books, &pass).await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
-        let updated = pinboard.updated.borrow();
-        let mut written: Vec<&str> = updated.iter().map(|c| c.url.as_str()).collect();
+        let mut written = pinboard.updated_urls();
         written.sort_unstable();
         assert_eq!(written, vec!["https://collide-b/", "https://new-z/"]);
 
@@ -595,14 +591,7 @@ async fn a_refused_rewrite_leaves_its_own_record_protected() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 2, "both rewrites must be refused");
     assert!(
         pinboard.updated.borrow().is_empty(),
@@ -636,14 +625,7 @@ async fn a_matching_public_group_merges_and_stays_public() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -865,14 +847,7 @@ async fn a_mismatched_member_drops_out_while_the_rest_of_the_group_merges() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 1, "only the private one is held back");
     assert_eq!(outcome.changed, 1);
     let updated = pinboard.updated.borrow();
@@ -1004,14 +979,7 @@ async fn a_merge_whose_delete_fails_reports_the_write_that_landed() {
         ..FakePinboard::default()
     };
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(
         outcome.write_failed, 1,
         "the stranded URL still fails the run"
@@ -1242,12 +1210,7 @@ async fn a_chain_is_written_from_its_far_end() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.changed, 3);
-    let written: Vec<String> = pinboard
-        .updated
-        .borrow()
-        .iter()
-        .map(|call| call.url.clone())
-        .collect();
+    let written = pinboard.updated_urls();
     assert_eq!(
         written,
         strings(&["https://elsewhere/", "https://a/", "https://b/"]),
@@ -1315,12 +1278,7 @@ async fn a_swap_still_writes_both_bookmarks() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.changed, 2);
-    let mut written: Vec<String> = pinboard
-        .updated
-        .borrow()
-        .iter()
-        .map(|call| call.url.clone())
-        .collect();
+    let mut written = pinboard.updated_urls();
     written.sort_unstable();
     assert_eq!(written, strings(&["https://x/", "https://y/"]));
     assert!(
@@ -1416,14 +1374,7 @@ async fn a_visibility_mismatch_refuses_instead_of_merging() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 1);
     assert_eq!(outcome.changed, 0);
     assert!(
@@ -1462,14 +1413,7 @@ async fn a_visibility_mismatch_protects_the_movers_own_url() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 2);
     assert!(
         pinboard.updated.borrow().is_empty(),
@@ -1497,14 +1441,7 @@ async fn merging_does_not_reset_a_residents_unparseable_date() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1540,14 +1477,7 @@ async fn merging_a_resident_keeps_its_read_later_and_date() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1588,18 +1518,10 @@ async fn a_converged_merge_is_not_rewritten_every_run() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
-    let updated = pinboard.updated.borrow();
-    let written: Vec<&str> = updated.iter().map(|c| c.url.as_str()).collect();
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
+    let written = pinboard.updated_urls();
     assert!(
-        !written.contains(&"https://collide/"),
+        !written.iter().any(|url| url == "https://collide/"),
         "the settled record must not be rewritten: {written:?}"
     );
     assert_eq!(outcome.refused, 0);
@@ -1662,14 +1584,7 @@ async fn rewrite_onto_a_resident_outside_the_slice_merges_with_it() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1717,14 +1632,7 @@ async fn a_rewrite_onto_an_unoccupied_url_still_goes_through() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1878,14 +1786,7 @@ async fn run_rename_collision(
             ..unchanged_plan(bookmark)
         }))
     });
-    run_pass(
-        &store(pinboard, &books, WriteMode::Live),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await
+    run_over(pinboard, &books, &books, WriteMode::Live, &pass).await
 }
 
 #[tokio::test]
@@ -2286,14 +2187,7 @@ async fn a_dry_run_previews_a_merge_and_its_absorbed_urls() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::DryRun),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::DryRun, &pass).await;
     assert!(
         pinboard.updated.borrow().is_empty(),
         "{:?}",
@@ -2332,10 +2226,7 @@ async fn a_merge_onto_a_trimmed_note_is_not_rewritten_every_run() {
     // The resident holds the trimmed form of the note the mover plans onto it, and the
     // mover's old URL is another plan's target, so it is never absorbed. Merging appends
     // the blocks the trim cut off; fitted, the merge is the stored record again.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let resident = pinboard.fit(Bookmark {
         note: note_pinboard_trims(),
         ..bookmark("https://collide/")
@@ -2363,18 +2254,10 @@ async fn a_merge_onto_a_trimmed_note_is_not_rewritten_every_run() {
         }))
     });
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
-    let updated = pinboard.updated.borrow();
-    let written: Vec<&str> = updated.iter().map(|c| c.url.as_str()).collect();
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
+    let written = pinboard.updated_urls();
     assert!(
-        !written.contains(&"https://collide/"),
+        !written.iter().any(|url| url == "https://collide/"),
         "the trimmed record must not be rewritten: {written:?}"
     );
     assert_eq!(outcome.write_failed, 0);
@@ -2384,10 +2267,7 @@ async fn a_merge_onto_a_trimmed_note_is_not_rewritten_every_run() {
 async fn a_whole_note_too_long_to_write_is_not_cut_when_nothing_changed() {
     // Saved through Pinboard's web form, which has no URL limit. Cleanup has nothing to
     // change, so it must not write the bookmark back, cut.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let mut stored = bookmark("https://long/");
     stored.note = note_pinboard_trims();
     let mut resident = bookmark("https://collide/");
@@ -2417,16 +2297,8 @@ async fn a_whole_note_too_long_to_write_is_not_cut_when_nothing_changed() {
         }))
     });
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
-    let updated = pinboard.updated.borrow();
-    let written: Vec<&str> = updated.iter().map(|c| c.url.as_str()).collect();
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
+    let written = pinboard.updated_urls();
     assert_eq!(
         written,
         ["https://x/incoming"],
@@ -2437,10 +2309,7 @@ async fn a_whole_note_too_long_to_write_is_not_cut_when_nothing_changed() {
 
 #[tokio::test]
 async fn a_dry_run_previews_the_note_as_pinboard_will_store_it() {
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let mut resident = bookmark("https://target/");
     resident.note = "resident".into();
     let books = vec![bookmark("https://single/"), bookmark("https://mover/")];
@@ -2458,11 +2327,11 @@ async fn a_dry_run_previews_the_note_as_pinboard_will_store_it() {
         }))
     });
 
-    let (outcome, logs) = crate::test_support::capturing_logs(run_pass(
-        &store(&pinboard, &all, WriteMode::DryRun),
+    let (outcome, logs) = crate::test_support::capturing_logs(run_over(
+        &pinboard,
+        &all,
         &books,
-        "test",
-        NO_DATING,
+        WriteMode::DryRun,
         &pass,
     ))
     .await;
@@ -2485,10 +2354,7 @@ async fn a_dry_run_previews_the_note_as_pinboard_will_store_it() {
 #[tokio::test]
 async fn a_change_wholly_past_the_cut_is_not_written() {
     // Writing it would only cut the stored note: the appended line is cut off again.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let mut stored = bookmark("https://long/");
     stored.note = note_pinboard_trims();
     let books = vec![stored];
@@ -2557,14 +2423,7 @@ async fn a_dry_run_previews_a_refusal() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::DryRun),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::DryRun, &pass).await;
     assert_eq!(outcome.refused, 1);
     assert_eq!(
         outcome.preview,
@@ -2664,14 +2523,7 @@ async fn a_dry_run_names_a_target_held_by_a_visibility_refusal() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::DryRun),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::DryRun, &pass).await;
     assert_eq!(outcome.refused, 2);
     assert_eq!(
         outcome.preview,
@@ -2789,21 +2641,11 @@ fn onto_target() -> FakePass<impl Fn(&Bookmark) -> Result<Plan, SourceError>> {
 async fn a_merge_that_stores_nothing_new_only_absorbs() {
     // Writing the merge would cut the resident's whole note and keep nothing of the
     // mover's, so the mover is absorbed by deleting it and the resident is not written.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let (resident, mover) = long_resident_and_short_mover();
     let all = vec![mover.clone(), resident.clone()];
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &[mover],
-        "test",
-        NO_DATING,
-        &onto_target(),
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &[mover], WriteMode::Live, &onto_target()).await;
     assert!(
         pinboard.updated.borrow().is_empty(),
         "{:?}",
@@ -2819,40 +2661,33 @@ async fn a_merge_that_stores_nothing_new_only_absorbs() {
 #[tokio::test]
 async fn an_absorb_whose_delete_fails_is_half_applied() {
     let pinboard = FakePinboard {
-        trims_notes: true,
         fail_delete_urls: ["https://mover/".to_string()].into(),
-        ..Default::default()
+        ..FakePinboard::trimming()
     };
     let (resident, mover) = long_resident_and_short_mover();
     let all = vec![mover.clone(), resident];
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &[mover],
-        "test",
-        NO_DATING,
-        &onto_target(),
-    )
-    .await;
-    assert!(pinboard.updated.borrow().is_empty());
+    let outcome = run_over(&pinboard, &all, &[mover], WriteMode::Live, &onto_target()).await;
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
     assert_eq!(outcome.changed, 0, "nothing in the account changed");
     assert_eq!(outcome.write_failed, 1);
 }
 
 #[tokio::test]
 async fn an_absorb_warns_that_the_movers_note_does_not_fit() {
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let (resident, mover) = long_resident_and_short_mover();
     let all = vec![mover.clone(), resident];
 
-    let (_, logs) = crate::test_support::capturing_logs(run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
+    let (_, logs) = crate::test_support::capturing_logs(run_over(
+        &pinboard,
+        &all,
         &[mover],
-        "test",
-        NO_DATING,
+        WriteMode::Live,
         &onto_target(),
     ))
     .await;
@@ -2880,7 +2715,7 @@ fn with_note_just_under_the_budget(pinboard: &FakePinboard, template: Bookmark) 
             pinboard.fit(candidate.clone()) == candidate
         })
         .last()
-        .unwrap();
+        .expect("one block fits the budget");
     with_blocks(count)
 }
 
@@ -2904,10 +2739,7 @@ fn appending_a_link(
 async fn an_append_to_a_note_just_under_the_budget_is_not_written() {
     // The stored note fits whole, but with the line appended the fit cuts it short of its
     // own end, so the write would only lose the stored note's tail.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let stored = with_note_just_under_the_budget(&pinboard, bookmark("https://near/"));
     let books = vec![stored];
 
@@ -2924,10 +2756,7 @@ async fn an_append_to_a_note_just_under_the_budget_is_not_written() {
 async fn an_append_beside_a_tag_change_keeps_the_whole_stored_note() {
     // As the discussion-link pass plans: the link line goes past the cut, so only the tag
     // swap is written, over the stored note as it is.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let stored = with_note_just_under_the_budget(
         &pinboard,
         Bookmark {
@@ -2951,10 +2780,7 @@ async fn an_append_beside_a_tag_change_keeps_the_whole_stored_note() {
 async fn an_append_beside_a_longer_tag_cuts_the_stored_note_once() {
     // The longer tag leaves the stored note no room to stay whole, so the write cuts it,
     // and the next run, with the plan unchanged, settles on that.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let stored = with_note_just_under_the_budget(
         &pinboard,
         Bookmark {
@@ -2982,10 +2808,7 @@ async fn an_append_beside_a_longer_tag_cuts_the_stored_note_once() {
         "{}",
         after[0].note
     );
-    let again = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let again = FakePinboard::trimming();
     assert_eq!(run(&again, &after, &pass).await.changed, 0);
 }
 
@@ -2993,23 +2816,13 @@ async fn an_append_beside_a_longer_tag_cuts_the_stored_note_once() {
 async fn a_merge_appending_to_a_note_just_under_the_budget_only_absorbs() {
     // The mover's note would be cut off past the resident's whole note, so the merge adds
     // nothing, keeps the resident as it is and only deletes the mover.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let resident = with_note_just_under_the_budget(&pinboard, bookmark("https://target/"));
     let mut mover = bookmark("https://mover/");
     mover.note = "HN Link: https://news.ycombinator.com/item?id=1".into();
     let all = vec![mover.clone(), resident.clone()];
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &[mover],
-        "test",
-        NO_DATING,
-        &onto_target(),
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &[mover], WriteMode::Live, &onto_target()).await;
     assert!(
         pinboard.updated.borrow().is_empty(),
         "{:?}",
@@ -3023,10 +2836,7 @@ async fn a_merge_appending_to_a_note_just_under_the_budget_only_absorbs() {
 #[tokio::test]
 async fn a_whole_note_ending_like_a_cut_is_still_written() {
     // The planned note fits whole; ending in the marker text says nothing about a cut.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let kept = format!("abc{TRUNCATION_MARKER}");
     let mut stored = bookmark("https://short/");
     stored.note = format!("{kept}\n\nHN Link: https://news.ycombinator.com/item?id=1");
@@ -3046,21 +2856,11 @@ async fn a_whole_note_ending_like_a_cut_is_still_written() {
 
 #[tokio::test]
 async fn a_dry_run_previews_an_absorb_without_fields() {
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let (resident, mover) = long_resident_and_short_mover();
     let all = vec![mover.clone(), resident];
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::DryRun),
-        &[mover],
-        "test",
-        NO_DATING,
-        &onto_target(),
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &[mover], WriteMode::DryRun, &onto_target()).await;
     assert_eq!(
         outcome.preview,
         [

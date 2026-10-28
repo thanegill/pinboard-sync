@@ -1271,8 +1271,7 @@ async fn many_file_gist_server(description: &str) -> MockServer {
 async fn clean_trimmed(account: Vec<Bookmark>, server: &MockServer) -> (usize, Vec<Bookmark>) {
     let pinboard = FakePinboard {
         all: account.clone(),
-        trims_notes: true,
-        ..Default::default()
+        ..FakePinboard::trimming()
     };
     run(
         &pinboard.cleanup_store(),

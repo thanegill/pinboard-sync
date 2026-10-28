@@ -192,10 +192,13 @@ pub const NO_DATING: DateOpts = DateOpts {
     stale_to_now: false,
 };
 
+/// The read timeout of a test client that must time out quickly.
+pub const SHORT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// An existing Pinboard bookmark at `url`, with every other field empty.
 pub fn stored_at(url: &str) -> Bookmark {
     Bookmark {
-        url: Url::parse(url).unwrap(),
+        url: self::url(url),
         title: String::new(),
         note: String::new(),
         tags: Tags::default(),
@@ -303,9 +306,8 @@ pub struct UpdateCall {
     pub dt: String,
 }
 
-/// A call that actually changed the account. `added`/`updated`/`deleted` record every
-/// *attempt*; this records only the ones that succeeded, which is what the account can be
-/// rebuilt from.
+/// A call that actually changed the account, in call order, which is what the account can
+/// be rebuilt from. Unlike [`FakePinboard::deleted`], it leaves out a failed delete.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     Write(Bookmark),
@@ -334,8 +336,11 @@ pub fn replay(seed: &[Bookmark], ops: &[Op]) -> Vec<Bookmark> {
 pub struct FakePinboard {
     /// The account a cleanup store over this fake starts from.
     pub all: Vec<Bookmark>,
+    /// Each `add` that succeeded, as sent.
     pub added: RefCell<Vec<AddCall>>,
+    /// Each `update` that succeeded, as sent.
     pub updated: RefCell<Vec<UpdateCall>>,
+    /// Every URL `delete` was asked to remove, including a delete that then failed.
     pub deleted: RefCell<Vec<String>>,
     /// URLs whose `add` should fail, to exercise log-and-skip behavior.
     pub fail_add_urls: HashSet<String>,
@@ -350,12 +355,38 @@ pub struct FakePinboard {
     /// Trim a note too long for a `posts/add` URL as the Pinboard client does, both in
     /// [`BookmarkStore::fit`] and in what `add` and `update` record.
     pub trims_notes: bool,
-    /// The client whose fit `trims_notes` applies, built on first use. Public only so a
-    /// test can build the fake with `..Default::default()`.
+    /// The client `fit` and `kept_of_cut` delegate to when `trims_notes` is set, built on
+    /// first use. Public only so a test can build the fake with `..Default::default()`.
     pub trimmer: std::cell::OnceCell<PinboardClient>,
 }
 
 impl FakePinboard {
+    /// An empty fake that trims notes as the Pinboard client does (`trims_notes`).
+    pub fn trimming() -> Self {
+        FakePinboard {
+            trims_notes: true,
+            ..Default::default()
+        }
+    }
+
+    /// The URL of each `add` that succeeded, in call order.
+    pub fn added_urls(&self) -> Vec<String> {
+        self.added
+            .borrow()
+            .iter()
+            .map(|add| add.url.clone())
+            .collect()
+    }
+
+    /// The URL of each `update` that succeeded, in call order.
+    pub fn updated_urls(&self) -> Vec<String> {
+        self.updated
+            .borrow()
+            .iter()
+            .map(|update| update.url.clone())
+            .collect()
+    }
+
     /// The production cleanup store over this fake, its view seeded with `all`.
     pub fn cleanup_store(&self) -> CleanupStore<'_, Self> {
         CleanupStore::new(self, AccountView::new(self.all.clone()), WriteMode::Live)
@@ -374,6 +405,13 @@ impl FakePinboard {
     pub fn dry_cleanup_store(&self) -> CleanupStore<'_, Self> {
         CleanupStore::new(self, AccountView::new(self.all.clone()), WriteMode::DryRun)
     }
+
+    fn trimming_client(&self) -> &PinboardClient {
+        self.trimmer.get_or_init(|| {
+            PinboardClient::with_base_url("user:tok".into(), "http://pinboard.invalid".into())
+                .unwrap()
+        })
+    }
 }
 
 impl BookmarkStore for FakePinboard {
@@ -381,16 +419,12 @@ impl BookmarkStore for FakePinboard {
         if !self.trims_notes {
             return b;
         }
-        let pinboard = self.trimmer.get_or_init(|| {
-            PinboardClient::with_base_url("user:tok".into(), "http://pinboard.invalid".into())
-                .unwrap()
-        });
-        pinboard.fit(b)
+        self.trimming_client().fit(b)
     }
 
     fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str> {
         self.trims_notes
-            .then(|| note.strip_suffix(crate::pinboard::TRUNCATION_MARKER))
+            .then(|| self.trimming_client().kept_of_cut(note))
             .flatten()
     }
 
@@ -442,13 +476,12 @@ pub const ROUND_TRIP_DATINGS: [DateOpts; 3] = [
     NO_DATING,
     DateOpts {
         use_post_date: true,
-        max_age_days: 30,
-        stale_to_now: false,
+        ..NO_DATING
     },
     DateOpts {
         use_post_date: true,
-        max_age_days: 30,
         stale_to_now: true,
+        ..NO_DATING
     },
 ];
 
@@ -471,10 +504,7 @@ pub async fn synced_account<S: Source>(source: &S, dates: DateOpts) -> Vec<Bookm
         dates,
     };
     let new = prepare_new_drafts(source, drafts, &[], &settings, now);
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let tally = write_drafts(&pinboard, &new, WriteMode::Live).await;
     assert_eq!(tally.failed, 0);
     replay(&[], &pinboard.ops.take())
@@ -508,8 +538,7 @@ pub async fn assert_cleanup_changes_nothing(
 ) {
     let pinboard = FakePinboard {
         all: account,
-        trims_notes: true,
-        ..Default::default()
+        ..FakePinboard::trimming()
     };
     let (result, logs) = capturing_logs(cleanup(&pinboard.cleanup_store())).await;
     result.unwrap();

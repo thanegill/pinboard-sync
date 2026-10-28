@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_support::{
     assert_quotes_capped_excerpt, capturing_logs, long_error_page, stored_at, tag_list,
-    ERROR_PAGE_TAIL,
+    ERROR_PAGE_TAIL, SHORT_READ_TIMEOUT,
 };
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
@@ -267,13 +267,92 @@ async fn add_retries_after_414_then_succeeds() {
         .mount(&server)
         .await;
 
-    client(&server)
+    let long = Bookmark {
+        note: "long notes ".repeat(2000),
+        ..post()
+    };
+    let (result, logs) = capturing_logs(client(&server).add(&long)).await;
+    result.unwrap();
+
+    let sent = sent_notes(&server).await;
+    assert_eq!(sent.len(), 2);
+    assert!(
+        sent[1].len() < sent[0].len(),
+        "the retry must send a shorter note: {} then {} bytes",
+        sent[0].len(),
+        sent[1].len()
+    );
+    assert!(sent[1].ends_with(TRUNCATION_MARKER), "{}", sent[1]);
+    assert_eq!(
+        crate::test_support::warnings(&logs),
+        [format!(
+            "WARN note trimmed to fit the request URL for https://old.reddit.com/r/x/: {} \
+             bytes -> {}",
+            long.note.len(),
+            sent[1].len()
+        )]
+    );
+}
+
+/// The `extended` value of every request `server` received, in order.
+async fn sent_notes(server: &MockServer) -> Vec<String> {
+    server
+        .received_requests()
+        .await
+        .expect("recording requests")
+        .iter()
+        .map(|request| {
+            request
+                .url
+                .query_pairs()
+                .find(|(key, _)| key == "extended")
+                .map(|(_, value)| value.into_owned())
+                .expect("posts/add sends extended")
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn add_stops_halving_the_budget_at_its_floor() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/add"))
+        .respond_with(ResponseTemplate::new(414))
+        .mount(&server)
+        .await;
+
+    let err = client(&server)
         .add(&Bookmark {
             note: "long notes ".repeat(2000),
             ..post()
         })
         .await
-        .unwrap();
+        .unwrap_err();
+
+    assert!(err.to_string().contains("414"), "{err:#}");
+    // MAX_URL_BYTES, then halved down to MIN_URL_BYTES, and no further.
+    let budgets = std::iter::successors(Some(MAX_URL_BYTES), |budget| {
+        (*budget > MIN_URL_BYTES).then_some(budget / 2)
+    });
+    assert_eq!(sent_notes(&server).await.len(), budgets.count());
+}
+
+#[tokio::test]
+async fn add_does_not_warn_for_a_note_that_fits() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/add"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+        .mount(&server)
+        .await;
+
+    let (result, logs) = capturing_logs(client(&server).add(&Bookmark {
+        note: "a short note".into(),
+        ..post()
+    }))
+    .await;
+    result.unwrap();
+    assert_eq!(crate::test_support::warnings(&logs), Vec::<&str>::new());
 }
 
 #[tokio::test]
@@ -431,8 +510,6 @@ async fn delete_succeeds_on_done() {
 fn item_not_found() -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(json!({"result_code": "item not found"}))
 }
-
-const SHORT_READ_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// The first delete is carried out but its response never arrives within the read
 /// timeout, so the retry finds the bookmark already gone: that is the delete succeeding.

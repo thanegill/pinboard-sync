@@ -73,20 +73,8 @@ fn draft(url: &str) -> BookmarkDraft {
     }
 }
 
-fn added_urls(pinboard: &FakePinboard) -> Vec<String> {
-    pinboard
-        .added
-        .borrow()
-        .iter()
-        .map(|add| add.url.clone())
-        .collect()
-}
-
 fn post(name: &str, permalink: &str) -> crate::reddit::model::RedditListingEntry {
-    listing_entry(
-        "t3",
-        json!({ "name": name, "subreddit": "rust", "permalink": permalink, "title": "T" }),
-    )
+    listing_entry("t3", post_data(name, permalink))
 }
 
 fn post_at(
@@ -94,10 +82,13 @@ fn post_at(
     permalink: &str,
     created_utc: i64,
 ) -> crate::reddit::model::RedditListingEntry {
-    listing_entry(
-        "t3",
-        json!({ "name": name, "subreddit": "rust", "permalink": permalink, "title": "T", "created_utc": created_utc }),
-    )
+    let mut data = post_data(name, permalink);
+    data["created_utc"] = json!(created_utc);
+    listing_entry("t3", data)
+}
+
+fn post_data(name: &str, permalink: &str) -> serde_json::Value {
+    json!({ "name": name, "subreddit": "rust", "permalink": permalink, "title": "T" })
 }
 
 fn settings(use_post_date: bool, max_age_days: u64, limit: Option<NonZeroUsize>) -> JobSettings {
@@ -452,9 +443,10 @@ async fn write_drafts_logs_and_skips_a_failing_bookmark() {
     // The bad one is skipped; the ones on either side still go through.
     assert_eq!(outcome.written, 2);
     assert_eq!(outcome.failed, 1);
-    let added = pinboard.added.borrow();
-    let urls: Vec<&str> = added.iter().map(|a| a.url.as_str()).collect();
-    assert_eq!(urls, vec!["https://a.test/", "https://c.test/"]);
+    assert_eq!(
+        pinboard.added_urls(),
+        ["https://a.test/", "https://c.test/"]
+    );
 }
 
 #[tokio::test]
@@ -473,7 +465,7 @@ async fn new_drafts_are_written_oldest_first() {
     let pinboard = FakePinboard::default();
     let _ = write_drafts(&pinboard, &new, WriteMode::Live).await;
     assert_eq!(
-        added_urls(&pinboard),
+        pinboard.added_urls(),
         ["https://a.test/", "https://b.test/", "https://c.test/"]
     );
 }
@@ -496,7 +488,7 @@ async fn a_capped_job_writes_its_newest_drafts_oldest_first() {
     let pinboard = FakePinboard::default();
     let _ = write_drafts(&pinboard, &new, WriteMode::Live).await;
     assert_eq!(
-        added_urls(&pinboard),
+        pinboard.added_urls(),
         ["https://c.test/", "https://d.test/"]
     );
 }
@@ -546,7 +538,7 @@ async fn write_after_interrupting(source: &PagedSource, killed_after: usize) -> 
     );
     let _ = write_drafts(&pinboard, &second_run, WriteMode::Live).await;
 
-    let mut written = added_urls(&pinboard);
+    let mut written = pinboard.added_urls();
     written.sort();
     written
 }
@@ -604,7 +596,7 @@ async fn jobs_are_written_in_turn_each_oldest_first_and_the_earlier_keeps_a_shar
     let _ = write_drafts(&pinboard, &merge_deduped(per_job), WriteMode::Live).await;
 
     assert_eq!(
-        added_urls(&pinboard),
+        pinboard.added_urls(),
         [
             "https://a1.test/",
             "https://shared.test/",

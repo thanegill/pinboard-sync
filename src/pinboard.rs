@@ -713,6 +713,48 @@ mod tests {
     }
 
     #[test]
+    fn kept_of_cut_is_the_note_before_the_marker() {
+        let c = test_client();
+        let cut = format!("the kept part{TRUNCATION_MARKER}");
+        assert_eq!(c.kept_of_cut(&cut), Some("the kept part"));
+        assert_eq!(c.kept_of_cut(TRUNCATION_MARKER), Some(""));
+        assert_eq!(c.kept_of_cut("a whole note"), None);
+    }
+
+    /// A note whose cut, marker included, would be exactly as long as the note is kept
+    /// whole; one byte less budget and it is cut.
+    #[test]
+    fn a_cut_no_shorter_than_the_note_keeps_it_whole() {
+        let c = test_client();
+        // A euro sign is 3 bytes, 9 encoded: the 15-byte marker costs as much as 5.
+        let note = "€".repeat(40);
+        let marker_cost = url_len(&c, TRUNCATION_MARKER) - url_len(&c, "");
+        let kept_chars = 35;
+        let budget = url_len(&c, "") + 9 * kept_chars + marker_cost;
+        assert_eq!(
+            3 * kept_chars + TRUNCATION_MARKER.len(),
+            note.len(),
+            "the 35-char cut plus the marker is exactly the note's length"
+        );
+
+        assert_eq!(c.fit_extended(FIXED, &note, budget), note);
+        let one_char_less = c.fit_extended(FIXED, &note, budget - 1);
+        assert_eq!(
+            one_char_less,
+            format!("{}{TRUNCATION_MARKER}", "€".repeat(kept_chars - 1))
+        );
+    }
+
+    #[test]
+    fn a_budget_the_fixed_params_fill_exactly_cuts_the_whole_note() {
+        let c = test_client();
+        let budget = url_len(&c, "");
+        let long = "A full paragraph of notes that is well past the marker length.";
+
+        assert_eq!(c.fit_extended(FIXED, long, budget), TRUNCATION_MARKER);
+    }
+
+    #[test]
     fn note_untouched_when_fixed_params_alone_exceed_budget() {
         let c = test_client();
         // A budget the fixed params overrun on their own, so trimming the note can't help.

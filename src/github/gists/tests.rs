@@ -174,10 +174,13 @@ fn gist_root_id_finds_the_id_with_or_without_an_owner() {
         root(&format!("https://gist.github.com/{ID}")),
         Some(ID.into())
     );
-    assert_eq!(
-        root(&format!("https://gist.github.com/Someone/{ID}.git/")),
-        Some(ID.into())
-    );
+    for suffix in [".git/", ".GIT", ".Git", ".git.git", ".GIT.git/"] {
+        assert_eq!(
+            root(&format!("https://gist.github.com/Someone/{ID}{suffix}")),
+            Some(ID.into()),
+            "{suffix}"
+        );
+    }
     assert_eq!(
         root("https://gist.github.com/someone/0123456789abcdef0123456789ABCDEF"),
         Some("0123456789abcdef0123456789abcdef".into())
@@ -218,21 +221,24 @@ const LOGIN: &str = "[A-Za-z0-9]([A-Za-z0-9-]{0,10}[A-Za-z0-9])?";
 proptest! {
     #![proptest_config(crate::test_support::proptest_config())]
 
-    /// The stored owner may differ from the API's, as after a rename: the key ignores it.
+    /// The stored owner may differ from the API's, as after a rename, and the id may carry
+    /// `.git` suffixes in any case: the key ignores both.
     #[test]
     fn a_gist_root_keys_the_same_once_canonicalized(
         id in gist_id(),
         owner in proptest::option::of(LOGIN),
         stored_owner in proptest::option::of(LOGIN),
         scheme in prop::sample::select(vec!["http", "https"]),
-        suffix in prop::sample::select(vec!["", ".git", "/", "?file=a.rs", "#file-a-rs"]),
+        git_suffix in "(\\.[gG][iI][tT]){0,2}",
+        suffix in prop::sample::select(vec!["", "/", "?file=a.rs", "#file-a-rs"]),
     ) {
         let path = match &stored_owner {
             Some(stored_owner) => format!("{stored_owner}/{id}"),
             None => id.clone(),
         };
-        let stored = url(&format!("{scheme}://{GIST_HOST}/{path}{suffix}"));
+        let stored = url(&format!("{scheme}://{GIST_HOST}/{path}{git_suffix}{suffix}"));
         let id = id.to_ascii_lowercase();
+        prop_assert_eq!(gist_root_id(&stored), Some(id.clone()), "{}", stored);
         let canonical = gist(json!({
             "id": id,
             "html_url": format!("https://{GIST_HOST}/{id}"),

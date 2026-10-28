@@ -304,6 +304,34 @@ even once cut: the client cuts it further on retry, and `cleanup` rewrites it ea
   bookmarks carrying the marker tag (`find-hn` by default, override with `--tag-link`), it
   looks each up on HN by URL and adds the discussion link to the notes.
 
+**`cleanup` runs as one account per source**: the one named, else the first, and under
+`cleanup --all` each source's first. That account's dating settings apply to every
+bookmark of the source, and with several accounts its tag settings can rewrite what
+another account's `sync` wrote:
+
+- **HackerNews** adds the running account's base, comment, author and special-type tags
+  to every favorited comment and text post, whichever account synced it. Keep the tag
+  settings the same across HackerNews accounts.
+- **GitHub** refreshes a star with the tag settings of the account whose base tag it
+  carries, the running account's where two share one. Two accounts sharing `github-star`
+  then add their other `tags`, and their own language and owner tags, to each other's
+  stars. Where one's `tag_lang_prefix` starts the other's, as `lang:` starts
+  `lang:work:`, cleanup run as the first also drops the other's `lang:work:rust`.
+  `tag_author_prefix` behaves the same way, and gists the same by their `gist_tags`
+  markers. Give each account its own base tag and a first `gist_tags` entry (its base
+  tag, by default) that no other account's `gist_tags` holds (so never `github-gist`);
+  or give them all the same tag settings.
+- **Reddit** shapes a bookmark on the running account's `reddit_domain` with that
+  account's tags, so accounts sharing a domain add their own tags to each other's
+  bookmarks. Give each account its own `reddit_domain`, or the same tag settings.
+
+Separately, `cleanup reddit` moves, re-tags and (under `use_post_date`) re-dates an HN
+story that `sync hackernews` saved as a link to a Reddit post, and `cleanup github`
+canonicalizes the URL of one linking a repo and follows the repo's renames.
+`sync hackernews` still recognizes a moved or canonicalized link, so it does not add it
+again, but not a renamed repo's: a sync that reads that far back adds the story again at
+the old URL, and the next `cleanup github` merges it back.
+
 ## What `backup` does
 
 Where `sync` and `cleanup` *write to Pinboard*, `backup` only reads: it snapshots every

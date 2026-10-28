@@ -76,14 +76,30 @@ pub struct PinboardBookmark {
     pub toread: String,
 }
 
+/// A wire bookmark whose `href` doesn't parse as a URL.
+#[derive(Debug, thiserror::Error)]
+#[error("unparseable URL {href}: {source}")]
+pub struct UnparseableHref {
+    href: String,
+    source: url::ParseError,
+}
+
 impl TryFrom<PinboardBookmark> for Bookmark {
     /// Fails only when the wire `href` doesn't parse as a URL; `all()` skips (and warns
     /// on) such entries. A non-empty `time` that won't parse is *not* fatal: it becomes
     /// `timestamp: None` (logged) so the bookmark stays in the set sync dedups against —
     /// dropping it would make sync re-add the URL and reset its date/title/tags/notes.
-    type Error = url::ParseError;
+    type Error = UnparseableHref;
     fn try_from(b: PinboardBookmark) -> Result<Self, Self::Error> {
-        let url = Url::parse(&b.url)?;
+        let url = match Url::parse(&b.url) {
+            Ok(url) => url,
+            Err(source) => {
+                return Err(UnparseableHref {
+                    href: b.url,
+                    source,
+                })
+            }
+        };
         let timestamp = if b.time.is_empty() {
             None
         } else {
@@ -243,9 +259,8 @@ fn redact_auth_token_values(text: &str) -> String {
 fn wire_to_bookmarks(wire: Vec<PinboardBookmark>) -> Vec<Bookmark> {
     wire.into_iter()
         .filter_map(|b| {
-            let href = b.url.clone();
             Bookmark::try_from(b)
-                .map_err(|e| warn!("skipping bookmark with unparseable URL {href}: {e}"))
+                .map_err(|e| warn!("skipping bookmark with {e}"))
                 .ok()
         })
         .collect()

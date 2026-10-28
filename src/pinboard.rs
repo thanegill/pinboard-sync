@@ -202,12 +202,9 @@ impl PinboardClient {
         // the generic write loops don't manage pacing.
         self.pace().await;
         let tags = b.tags.joined();
-        let dt = b
-            .timestamp
-            .and_then(crate::timefmt::to_pinboard_dt)
-            .unwrap_or_default();
+        let dt = b.timestamp.and_then(crate::timefmt::to_pinboard_dt);
         let endpoint = self.url("posts/add");
-        let fixed = self.add_params(b, &tags, &dt);
+        let fixed = self.add_params(b, &tags, dt.as_deref());
 
         // Trim the notes to the budget; if Pinboard still rejects the URL as too long
         // (its limit is undocumented), halve the budget and retry rather than dropping
@@ -255,12 +252,12 @@ impl PinboardClient {
 
     /// Every `posts/add` param except `extended`: these are never trimmed, and set the
     /// budget `extended` has to fit within. `tags` and `dt` are `b`'s, rendered for the
-    /// wire; an empty `dt` is left out.
+    /// wire; with no `dt` the param is left out.
     fn add_params<'a>(
         &'a self,
         b: &'a Bookmark,
         tags: &'a str,
-        dt: &'a str,
+        dt: Option<&'a str>,
     ) -> Vec<(&'a str, &'a str)> {
         let mut fixed = vec![
             ("url", b.url.as_str()),
@@ -272,7 +269,7 @@ impl PinboardClient {
             ("auth_token", self.auth_token.as_str()),
             ("format", "json"),
         ];
-        if !dt.is_empty() {
+        if let Some(dt) = dt {
             fixed.push(("dt", dt));
         }
         fixed
@@ -289,7 +286,7 @@ impl PinboardClient {
             .timestamp
             .and_then(crate::timefmt::to_pinboard_dt)
             .unwrap_or_else(|| DT_PLACEHOLDER.to_string());
-        let fixed = self.add_params(b, &tags, &dt);
+        let fixed = self.add_params(b, &tags, Some(&dt));
         self.fit_extended(&fixed, &b.note, budget)
     }
 

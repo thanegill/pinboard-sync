@@ -832,7 +832,6 @@ mod tests {
         }
 
         #[test]
-        #[ignore = "RedditKeys keys every over18 interstitial as `/over18`, not as its dest"]
         fn an_over18_url_keys_the_same_once_cleaned_up(
             stored in stored_reddit_url(),
             own in prop::sample::select(DOMAINS.to_vec()),

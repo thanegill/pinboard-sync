@@ -182,94 +182,7 @@ impl PinboardClient {
         }
         self.wrote.set(true);
     }
-}
 
-impl BackupSource for PinboardClient {
-    /// Pinboard is a backup target like any source, and like them it fetches **once**:
-    /// `posts/all` is rate-limited to one call per five minutes, far longer than the
-    /// retry budget, so a second call inside one run would 429 and fail the target. The
-    /// `meta=yes` body is both the raw half and the input to the parsed half, which is
-    /// also what makes the two describe the same instant.
-    async fn dump(&self) -> Result<BackupDump, SourceError> {
-        let body = self.export_all().await?;
-        // Not `?`: a body that parses as JSON but no longer matches the wire shape (a
-        // renamed `href`, say) is exactly when the raw half is worth keeping, so the
-        // failure rides along in `records` and the raw file is still written.
-        let records = serde_json::from_str::<Vec<PinboardBookmark>>(&body)
-            .context("parsing Pinboard posts/all")
-            .map(|wire| {
-                wire_to_bookmarks(wire)
-                    .iter()
-                    .map(ExportBookmark::from)
-                    .collect()
-            });
-        Ok(BackupDump {
-            raw: vec![RawPage {
-                stream: "",
-                kind: RawKind::Json,
-                body,
-            }],
-            records,
-            // `posts/all` is unpaginated: one response is the whole account.
-            truncated: None,
-        })
-    }
-}
-
-/// [`error_with_body`] for text from a Pinboard response, which could echo the request
-/// line and the token in it. The token is redacted from the whole text first, so neither
-/// the error nor the debug-logged body carries it, and the excerpt's cut can't leave half
-/// a token behind.
-fn redacted_error(what: &str, text: &str, auth_token: &str) -> anyhow::Error {
-    error_with_body(what, &redact_token(text, auth_token), &[])
-}
-
-/// `text` with every occurrence of the `user:SECRET` token, and of its `SECRET` alone
-/// (which also covers the token percent-encoded as `user%3ASECRET`), replaced, as is any
-/// `auth_token=` value (a quoted request line cut short mid-token). Nothing else changes.
-fn redact_token(text: &str, auth_token: &str) -> String {
-    let secret = auth_token
-        .split_once(':')
-        .map_or(auth_token, |(_, secret)| secret);
-    redact(&redact_auth_token_values(text), &[auth_token, secret])
-}
-
-/// `text` with the value of every `auth_token=` parameter replaced, up to the next `&`,
-/// quote, `<` or whitespace.
-fn redact_auth_token_values(text: &str) -> String {
-    const KEY: &str = "auth_token=";
-    let mut redacted = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(key_at) = rest.find(KEY) {
-        let (before_value, value_onward) = rest.split_at(key_at + KEY.len());
-        redacted.push_str(before_value);
-        let value_len = value_onward
-            .find(|c: char| matches!(c, '&' | '"' | '\'' | '<') || c.is_whitespace())
-            .unwrap_or(value_onward.len());
-        if value_len > 0 {
-            redacted.push_str(REDACTED);
-        }
-        rest = &value_onward[value_len..];
-    }
-    redacted.push_str(rest);
-    redacted
-}
-
-/// Convert wire bookmarks to the domain type, skipping (and warning on) any whose `href`
-/// doesn't parse as a URL rather than aborting the whole run for one bad entry. An
-/// unparseable `time` is not fatal -- the conversion keeps the bookmark with no timestamp
-/// (see `Bookmark::try_from`) so it stays in the set sync dedups against.
-fn wire_to_bookmarks(wire: Vec<PinboardBookmark>) -> Vec<Bookmark> {
-    wire.into_iter()
-        .filter_map(|b| {
-            Bookmark::try_from(b)
-                .map_err(|e| warn!("skipping bookmark with {e}"))
-                .ok()
-        })
-        .collect()
-}
-
-impl PinboardClient {
     /// Every bookmark in the account (`posts/all`).
     pub async fn all(&self) -> Result<Vec<Bookmark>> {
         let resp = self.get_posts_all("no").await?;
@@ -278,51 +191,7 @@ impl PinboardClient {
             serde_json::from_str(&body).context("parsing Pinboard posts/all")?;
         Ok(wire_to_bookmarks(wire))
     }
-}
 
-impl BookmarkStore for PinboardClient {
-    /// An `item not found` answering a retry counts as done: the attempt before it may have
-    /// deleted the bookmark before its response was lost. On a first attempt it is an error.
-    async fn delete(&self, url: &Url) -> Result<()> {
-        let params = [
-            ("url", url.as_str()),
-            ("auth_token", self.auth_token.as_str()),
-            ("format", "json"),
-        ];
-        let resp = self
-            .get_with_backoff(&self.url("posts/delete"), &params)
-            .await?;
-        let retried = answered_a_retry(&resp);
-        let parsed: AddResponse = resp
-            .json()
-            .await
-            .context("parsing Pinboard posts/delete response")?;
-        if retried && parsed.result_code == "item not found" {
-            debug!("posts/delete retry found {url} already gone");
-            return Ok(());
-        }
-        parsed.into_result("Pinboard posts/delete failed", &self.auth_token)
-    }
-
-    async fn add(&self, b: &Bookmark) -> Result<()> {
-        self.post_add(b).await
-    }
-
-    async fn update(&self, b: &Bookmark) -> Result<()> {
-        self.post_add(b).await
-    }
-
-    fn fit(&self, mut b: Bookmark) -> Bookmark {
-        b.note = self.fitted_note(&b, MAX_URL_BYTES);
-        b
-    }
-
-    fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str> {
-        note.strip_suffix(TRUNCATION_MARKER)
-    }
-}
-
-impl PinboardClient {
     /// `posts/add` with `replace=yes`, mapping a domain [`Bookmark`] to the Pinboard
     /// parameters (`public`/`read_later` -> `shared`/`toread`, `timestamp` -> `dt`). A set
     /// `timestamp` sets the bookmark time. `extended` is trimmed if needed to keep the GET
@@ -542,6 +411,133 @@ impl PinboardClient {
     pub fn rate_limit(&self) -> Duration {
         self.rate_limit
     }
+}
+
+impl BackupSource for PinboardClient {
+    /// Pinboard is a backup target like any source, and like them it fetches **once**:
+    /// `posts/all` is rate-limited to one call per five minutes, far longer than the
+    /// retry budget, so a second call inside one run would 429 and fail the target. The
+    /// `meta=yes` body is both the raw half and the input to the parsed half, which is
+    /// also what makes the two describe the same instant.
+    async fn dump(&self) -> Result<BackupDump, SourceError> {
+        let body = self.export_all().await?;
+        // Not `?`: a body that parses as JSON but no longer matches the wire shape (a
+        // renamed `href`, say) is exactly when the raw half is worth keeping, so the
+        // failure rides along in `records` and the raw file is still written.
+        let records = serde_json::from_str::<Vec<PinboardBookmark>>(&body)
+            .context("parsing Pinboard posts/all")
+            .map(|wire| {
+                wire_to_bookmarks(wire)
+                    .iter()
+                    .map(ExportBookmark::from)
+                    .collect()
+            });
+        Ok(BackupDump {
+            raw: vec![RawPage {
+                stream: "",
+                kind: RawKind::Json,
+                body,
+            }],
+            records,
+            // `posts/all` is unpaginated: one response is the whole account.
+            truncated: None,
+        })
+    }
+}
+
+impl BookmarkStore for PinboardClient {
+    /// An `item not found` answering a retry counts as done: the attempt before it may have
+    /// deleted the bookmark before its response was lost. On a first attempt it is an error.
+    async fn delete(&self, url: &Url) -> Result<()> {
+        let params = [
+            ("url", url.as_str()),
+            ("auth_token", self.auth_token.as_str()),
+            ("format", "json"),
+        ];
+        let resp = self
+            .get_with_backoff(&self.url("posts/delete"), &params)
+            .await?;
+        let retried = answered_a_retry(&resp);
+        let parsed: AddResponse = resp
+            .json()
+            .await
+            .context("parsing Pinboard posts/delete response")?;
+        if retried && parsed.result_code == "item not found" {
+            debug!("posts/delete retry found {url} already gone");
+            return Ok(());
+        }
+        parsed.into_result("Pinboard posts/delete failed", &self.auth_token)
+    }
+
+    async fn add(&self, b: &Bookmark) -> Result<()> {
+        self.post_add(b).await
+    }
+
+    async fn update(&self, b: &Bookmark) -> Result<()> {
+        self.post_add(b).await
+    }
+
+    fn fit(&self, mut b: Bookmark) -> Bookmark {
+        b.note = self.fitted_note(&b, MAX_URL_BYTES);
+        b
+    }
+
+    fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str> {
+        note.strip_suffix(TRUNCATION_MARKER)
+    }
+}
+
+/// [`error_with_body`] for text from a Pinboard response, which could echo the request
+/// line and the token in it. The token is redacted from the whole text first, so neither
+/// the error nor the debug-logged body carries it, and the excerpt's cut can't leave half
+/// a token behind.
+fn redacted_error(what: &str, text: &str, auth_token: &str) -> anyhow::Error {
+    error_with_body(what, &redact_token(text, auth_token), &[])
+}
+
+/// `text` with every occurrence of the `user:SECRET` token, and of its `SECRET` alone
+/// (which also covers the token percent-encoded as `user%3ASECRET`), replaced, as is any
+/// `auth_token=` value (a quoted request line cut short mid-token). Nothing else changes.
+fn redact_token(text: &str, auth_token: &str) -> String {
+    let secret = auth_token
+        .split_once(':')
+        .map_or(auth_token, |(_, secret)| secret);
+    redact(&redact_auth_token_values(text), &[auth_token, secret])
+}
+
+/// `text` with the value of every `auth_token=` parameter replaced, up to the next `&`,
+/// quote, `<` or whitespace.
+fn redact_auth_token_values(text: &str) -> String {
+    const KEY: &str = "auth_token=";
+    let mut redacted = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(key_at) = rest.find(KEY) {
+        let (before_value, value_onward) = rest.split_at(key_at + KEY.len());
+        redacted.push_str(before_value);
+        let value_len = value_onward
+            .find(|c: char| matches!(c, '&' | '"' | '\'' | '<') || c.is_whitespace())
+            .unwrap_or(value_onward.len());
+        if value_len > 0 {
+            redacted.push_str(REDACTED);
+        }
+        rest = &value_onward[value_len..];
+    }
+    redacted.push_str(rest);
+    redacted
+}
+
+/// Convert wire bookmarks to the domain type, skipping (and warning on) any whose `href`
+/// doesn't parse as a URL rather than aborting the whole run for one bad entry. An
+/// unparseable `time` is not fatal -- the conversion keeps the bookmark with no timestamp
+/// (see `Bookmark::try_from`) so it stays in the set sync dedups against.
+fn wire_to_bookmarks(wire: Vec<PinboardBookmark>) -> Vec<Bookmark> {
+    wire.into_iter()
+        .filter_map(|b| {
+            Bookmark::try_from(b)
+                .map_err(|e| warn!("skipping bookmark with {e}"))
+                .ok()
+        })
+        .collect()
 }
 
 /// Hermetic tests (no socket): `fit_extended` only builds URLs, never sends them.

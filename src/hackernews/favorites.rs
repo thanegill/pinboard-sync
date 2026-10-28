@@ -5,14 +5,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use anyhow::Context;
 use log::{debug, warn};
 use scraper::{Html, Selector};
 use url::Url;
 
 use super::{HackerNewsClient, HackerNewsItemId};
 use crate::backup::{RawKind, RawSink};
-use crate::http::retry_after_up_to;
+use crate::http::{read_body, retry_after_up_to};
 use crate::source::{page_is_caught_up, BookmarkDraft, DedupKey, Halt, SourceError};
 
 /// The longest `Retry-After` a favorites-page 429 is waited out for, once. A 429 asking
@@ -196,11 +195,7 @@ impl HackerNewsClient {
                 anyhow::anyhow!("hn {stream} for '{}' returned {status}", self.username).into(),
             );
         }
-        Ok(resp
-            .text()
-            .await
-            .map_err(reqwest::Error::without_url)
-            .with_context(|| format!("reading {label} page {page}"))?)
+        Ok(read_body(resp, true, || format!("reading {label} page {page}")).await?)
     }
 
     /// Resolve an HN "More" href (typically relative, e.g. `favorites?id=u&p=2`)

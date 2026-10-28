@@ -126,7 +126,10 @@ async fn run_sync_jobs_fails_the_run_for_accounts_it_could_not_build() {
     let pinboard = PinboardClient::new("user:token".into(), std::time::Duration::ZERO).unwrap();
     let error = run_sync_jobs(
         Vec::new(),
-        AllRun { failed: 1 },
+        AllRun {
+            failed: 1,
+            ..AllRun::default()
+        },
         &pinboard,
         &[],
         WriteMode::Live,
@@ -317,6 +320,20 @@ async fn run_sync_refuses_all_with_no_configured_account() {
         error.to_string(),
         "--all requires a --config with at least one configured account"
     );
+}
+
+/// `sync <source> --all` names the source it found no account of, as `backup` does.
+#[tokio::test]
+async fn run_sync_refuses_a_source_all_with_no_account_of_that_source() {
+    for source in ["reddit", "github", "hackernews"] {
+        let error = run_sync(parse_sync(&[source, "--all"]), &Config::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("--all requires a --config with at least one configured {source} account")
+        );
+    }
 }
 
 #[tokio::test]

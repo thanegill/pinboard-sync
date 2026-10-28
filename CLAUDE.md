@@ -133,7 +133,8 @@ skips deep links locally (and a deleted gist is `Unchanged`: the lookup answered
 those counted as successes a genuinely unreachable GitHub would look fine. HackerNews'
 `search_by_url` finding nothing is `Unchanged`: the query ran. When a source runs several
 passes, each reaches its **own** verdict rather than pooling tallies, so a pass that can't
-fail can't vouch for one that can.
+fail can't vouch for one that can. `two_pass_verdict` combines the two verdicts, reporting
+both failures and keeping a halt's variant so a dead credential still fires the hook.
 
 The per-source planners are each source's `cleanup.rs`: [reddit](src/reddit/cleanup.rs),
 [github](src/github/cleanup.rs) and [hackernews](src/hackernews/cleanup.rs).

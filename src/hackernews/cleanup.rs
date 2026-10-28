@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-use anyhow::anyhow;
 use log::debug;
 use url::Url;
 
@@ -13,7 +12,7 @@ use super::{
 };
 use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
-use crate::cleanup_pass::{run_pass, CleanupPass, PassOutcome, Plan};
+use crate::cleanup_pass::{run_pass, two_pass_verdict, CleanupPass, PassOutcome, Plan};
 use crate::htmltext::collapse_whitespace;
 use crate::keys::HackerNewsKeys;
 use crate::source::SourceError;
@@ -77,18 +76,13 @@ pub async fn run<S: BookmarkStore + AccountState>(
     };
     // Both passes ran, so report both failures: letting the first `?` short-circuit
     // would hide a wholesale failure of the second behind the first's message.
-    match (
-        items.into_result(),
-        links.map_or(Ok(()), PassOutcome::into_result),
-    ) {
-        // Flattening the pair loses each one's variant, which costs nothing here:
-        // HackerNews is public, so neither pass can produce a re-auth to act on.
-        (Err(items_err), Err(links_err)) => Err(SourceError::Other(anyhow!(
-            "{items_err:#}; and for discussion links: {links_err:#}"
-        ))),
-        (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
-        (Ok(()), Ok(())) => Ok(()),
-    }
+    two_pass_verdict(
+        ("items", items.into_result()),
+        (
+            "discussion links",
+            links.map_or(Ok(()), PassOutcome::into_result),
+        ),
+    )
 }
 
 /// For each article bookmark tagged `link_tag`, look it up on HN by URL and, if it has a

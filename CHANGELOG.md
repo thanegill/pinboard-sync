@@ -44,6 +44,13 @@ All notable changes to this project are documented here. The format is based on
 - An `--all` run's per-account errors and the `--on-auth-failure` hook's messages go
   through the logger, so they read `ERROR ...`/`INFO ...` like a single-account run's
   instead of `error: ...` and bare text.
+- `sync <source> --all` with no account of that source names the source, as `backup
+  <source> --all` already did.
+- `sync --help` describes `--on-auth-failure` in one line, naming
+  `PINBOARD_SYNC_ON_AUTH_FAILURE`, instead of printing notes about the code.
+- When both of `cleanup github`'s passes fail, the error reports the repo pass first, then
+  `; and for gists: ...`, as `cleanup hackernews` reports its two. A pass that halted, such
+  as one with a dead token, leads instead.
 
 ### Deprecated
 
@@ -149,6 +156,8 @@ All notable changes to this project are documented here. The format is based on
   whose id isn't a number, and `sync` and `backup` skip such a HackerNews favorites row.
   Each warns, and a favorites page none of whose rows has a numeric id fails as changed
   markup does.
+- A `sync --all` run where an account fails and bookmarks fail to write reports both, as
+  `1 account(s) failed; 3 bookmark(s) failed to write`, instead of only the first.
 
 ## [0.6.0] - 2026-10-25
 

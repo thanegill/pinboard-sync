@@ -181,13 +181,8 @@ pub struct SyncCmd {
     /// Show what would be written without touching Pinboard (with --all).
     #[arg(long)]
     pub dry_run: bool,
-    /// Shell command run when a source's credential needs refreshing (a 401/403).
-    ///
-    /// The `PINBOARD_SYNC_ON_AUTH_FAILURE` env var backs the per-source flag, not
-    /// this one, so an explicit per-source `--on-auth-failure` outranks the env
-    /// var (`with_top_level_hook` prefers a present top-level value). The `--all`
-    /// path, which has no per-source flag, reads that env var itself via
-    /// `on_auth_failure_from_env`.
+    /// Shell command run when a source's credential needs refreshing (a 401/403; env
+    /// PINBOARD_SYNC_ON_AUTH_FAILURE).
     #[arg(long)]
     pub on_auth_failure: Option<String>,
     #[command(subcommand)]
@@ -715,6 +710,26 @@ mod tests {
             assert_eq!(env_of(&path), env, "{path:?}");
         }
         assert_eq!(env_of(&["sync"]), None);
+    }
+
+    /// `sync --help` tells the user what the hook flag does and where else it comes from,
+    /// not how the code resolves it.
+    #[test]
+    fn sync_help_describes_the_hook_without_internals() {
+        use clap::CommandFactory;
+        let help = Cli::command()
+            .find_subcommand_mut("sync")
+            .expect("sync")
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("PINBOARD_SYNC_ON_AUTH_FAILURE"), "{help}");
+        for internal in [
+            "with_top_level_hook",
+            "on_auth_failure_from_env",
+            "`--all` path",
+        ] {
+            assert!(!help.contains(internal), "{internal} in:\n{help}");
+        }
     }
 
     /// `--help` offers each renamed flag under its new name only.

@@ -13,7 +13,7 @@ use url::Url;
 use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo, HOMEPAGE_SEPARATOR};
 use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
-use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
+use crate::cleanup_pass::{run_pass, two_pass_verdict, CleanupPass, Plan};
 use crate::config::own_then_configured;
 use crate::htmltext::{collapse_whitespace, html_to_plain};
 use crate::keys::url_key;
@@ -75,23 +75,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
     // Each pass reaches its own verdict, so a pass of repo lookups can't vouch for the
     // gist lookups or the reverse.
     let gists = gists::run(store, client, dates, configured).await;
-    match (repos, gists) {
-        (Err(repos), Err(gists)) => Err(also_failed(gists, &repos)),
-        (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
-        (Ok(()), Ok(())) => Ok(()),
-    }
-}
-
-/// The gist pass's `error`, noting that the repo pass failed too, as `repos`. Keeps the
-/// gist error's variant, which is what decides the auth-failure hook.
-fn also_failed(error: SourceError, repos: &SourceError) -> SourceError {
-    let note = |message: String| format!("{message}; and for repos: {repos:#}");
-    match error {
-        SourceError::Halted(halt) => halt.map_message(note).into(),
-        SourceError::Other(error) => {
-            SourceError::Other(anyhow::anyhow!(note(format!("{error:#}"))))
-        }
-    }
+    two_pass_verdict(("repos", repos), ("gists", gists))
 }
 
 /// `own` followed by each of `configured` with a base tag no earlier config has, so every

@@ -22,7 +22,7 @@ use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::{client_builder, RetryingClient};
 use crate::keys::{HackerNewsKeys, RedditKeys};
-use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
+use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
 use crate::tags::{push_prefixed, push_tag, push_tags};
 use favorites::{FavoritesStream, FAVORITES_PAGE_PAUSE};
 use url::Url;
@@ -150,7 +150,7 @@ impl HackerNewsItem {
                 Ok(parsed) => {
                     let key = keys
                         .dedup_key(&parsed)
-                        .unwrap_or_else(|| parsed.to_string());
+                        .unwrap_or_else(|| parsed.as_str().into());
                     (parsed, key)
                 }
                 Err(e) => {
@@ -276,7 +276,7 @@ impl HackerNewsClient {
     /// looked up in batches at the end.
     async fn fetch_capturing(
         &self,
-        synced_keys: Option<&HashSet<String>>,
+        synced_keys: Option<&HashSet<DedupKey>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
         let stories = self
@@ -324,7 +324,7 @@ impl BackupSource for HackerNewsClient {
 }
 
 impl UrlKey for HackerNewsClient {
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         self.keys.dedup_key(url)
     }
 }
@@ -345,8 +345,8 @@ impl std::fmt::Display for HackerNewsItemId {
 impl HackerNewsItemId {
     /// The key `sync` dedups a favorited HN item on: `hn:<id>`, matching however the
     /// bookmark is stored.
-    pub(crate) fn dedup_key(&self) -> String {
-        format!("hn:{self}")
+    pub(crate) fn dedup_key(&self) -> DedupKey {
+        format!("hn:{self}").into()
     }
 }
 

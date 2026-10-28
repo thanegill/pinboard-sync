@@ -17,7 +17,7 @@ use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore, WriteM
 use crate::keys::RedditKeys;
 use crate::reddit::model::{RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
-use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
+use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
 use crate::timefmt::DateOpts;
 
 tokio::task_local! {
@@ -229,7 +229,7 @@ impl Source for FakeReddit {
 }
 
 impl UrlKey for FakeReddit {
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         RedditKeys::new([RedditConfig::default().domain]).dedup_key(url)
     }
 }

@@ -1,7 +1,7 @@
 use std::num::NonZeroUsize;
 
 use super::*;
-use crate::source::{page_is_caught_up, Source, SourceError, UrlKey};
+use crate::source::{page_is_caught_up, DedupKey, Source, SourceError, UrlKey};
 use crate::test_support::{listing_entry, replay, stored_at as bookmark, FakePinboard, FakeReddit};
 use crate::timefmt::from_unix;
 use serde_json::json;
@@ -26,8 +26,8 @@ impl PagedSource {
 }
 
 impl UrlKey for PagedSource {
-    fn dedup_key(&self, url: &Url) -> Option<String> {
-        Some(url.to_string())
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
+        Some(url.as_str().into())
     }
 }
 

@@ -151,7 +151,7 @@ impl From<&Bookmark> for ExportBookmark {
 impl From<&BookmarkDraft> for ExportBookmark {
     fn from(d: &BookmarkDraft) -> Self {
         Self {
-            dedup_key: Some(d.dedup_key.clone()),
+            dedup_key: Some(d.dedup_key.as_str().to_string()),
             ..Self::from(&d.bookmark)
         }
     }

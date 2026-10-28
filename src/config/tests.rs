@@ -526,8 +526,8 @@ fn accepts_any_host_cleanup_can_set_and_reddit_keys_match() {
         )
         .unwrap_or_else(|| panic!("{domain}: cleanup could not set the host"));
         assert_eq!(
-            RedditKeys::new([domain]).dedup_key(&moved).as_deref(),
-            Some("/r/rust/comments/abc/x"),
+            RedditKeys::new([domain]).dedup_key(&moved),
+            Some("/r/rust/comments/abc/x".into()),
             "{domain}"
         );
     }

@@ -26,7 +26,7 @@ use crate::secrets::{
     self, resolve_github_token, resolve_pinboard_token, resolve_reddit_cookie, SecretSpec,
 };
 use crate::settings::{resolve_hook, resolve_job_settings};
-use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
+use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
 use crate::sync::JobSettings;
 
 /// A target an `--all` run could not build, and why. `sync` and `backup` both carry these
@@ -232,7 +232,7 @@ impl BackupSource for SourceClient {
 }
 
 impl UrlKey for SourceClient {
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         match self {
             SourceClient::Reddit(c) => c.dedup_key(url),
             SourceClient::GitHub(c) => c.dedup_key(url),

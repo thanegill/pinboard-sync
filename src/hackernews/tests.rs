@@ -28,7 +28,7 @@ fn a_page_is_caught_up_only_when_it_has_no_new_draft() {
     })
     .collect();
     let client = HackerNewsClient::new("u".into(), HackerNewsConfig::default()).unwrap();
-    let synced_keys: HashSet<String> = [
+    let synced_keys: HashSet<DedupKey> = [
         "https://news.ycombinator.com/item?id=1",
         "https://example.com/two",
         "https://news.ycombinator.com/item?id=3",
@@ -94,7 +94,7 @@ fn story_whose_article_url_is_an_hn_item_keys_on_the_id() {
     assert_eq!(d.bookmark.url.as_str(), article);
     assert_eq!(d.dedup_key, "hn:999");
     let client = HackerNewsClient::new("u".into(), HackerNewsConfig::default()).unwrap();
-    assert_eq!(client.dedup_key(&d.bookmark.url).as_deref(), Some("hn:999"));
+    assert_eq!(client.dedup_key(&d.bookmark.url), Some("hn:999".into()));
 }
 
 #[test]
@@ -292,13 +292,12 @@ fn hn_item_id_extracts_only_from_hn_item_urls() {
 fn dedup_key_distinguishes_hn_items_from_articles() {
     let c = HackerNewsClient::new("u".into(), HackerNewsConfig::default()).unwrap();
     assert_eq!(
-        c.dedup_key(&url("https://news.ycombinator.com/item?id=42"))
-            .as_deref(),
-        Some("hn:42")
+        c.dedup_key(&url("https://news.ycombinator.com/item?id=42")),
+        Some("hn:42".into())
     );
     assert_eq!(
-        c.dedup_key(&url("https://example.com/x")).as_deref(),
-        Some("example.com/x")
+        c.dedup_key(&url("https://example.com/x")),
+        Some("example.com/x".into())
     );
 }
 

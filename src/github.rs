@@ -21,7 +21,8 @@ use crate::http::{client_builder, RetryingClient, USER_AGENT};
 use crate::keys::GitHubKeys;
 use crate::secrets::ConfiguredSecret;
 use crate::source::{
-    deserialize_lenient, page_is_caught_up, BookmarkDraft, Halt, Source, SourceError, UrlKey,
+    deserialize_lenient, page_is_caught_up, BookmarkDraft, DedupKey, Halt, Source, SourceError,
+    UrlKey,
 };
 use crate::tags::{push_prefixed, push_tags};
 use gists::{GistConfig, GitHubGist};
@@ -180,7 +181,7 @@ impl GitHubRepo {
             .ok()?;
         let dedup_key = GitHubKeys
             .dedup_key(&url)
-            .unwrap_or_else(|| url.to_string());
+            .unwrap_or_else(|| url.as_str().into());
 
         let note = github_note(
             self.description.as_deref(),
@@ -502,7 +503,7 @@ impl GitHubClient {
     /// the gists, so a numeric `limit` writes the stars first.
     async fn fetch_capturing(
         &self,
-        synced_keys: Option<&HashSet<String>>,
+        synced_keys: Option<&HashSet<DedupKey>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
         let mut drafts = self.fetch_stars(synced_keys, sink).await?;
@@ -519,7 +520,7 @@ impl GitHubClient {
     /// The starred gists, a second stream: it stops at its own caught-up page.
     async fn fetch_gists(
         &self,
-        synced_keys: Option<&HashSet<String>>,
+        synced_keys: Option<&HashSet<DedupKey>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
         self.walk_drafts(&STARRED_GISTS, synced_keys, sink, |gist: GitHubGist| {
@@ -550,7 +551,7 @@ impl GitHubClient {
     /// The starred repos, each dated by its star time.
     async fn fetch_stars(
         &self,
-        synced_keys: Option<&HashSet<String>>,
+        synced_keys: Option<&HashSet<DedupKey>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
         self.walk_drafts(&STARS, synced_keys, sink, |starred: GitHubStarredRepo| {
@@ -564,7 +565,7 @@ impl GitHubClient {
     async fn walk_drafts<T: serde::de::DeserializeOwned>(
         &self,
         stream: &PagedStream,
-        synced_keys: Option<&HashSet<String>>,
+        synced_keys: Option<&HashSet<DedupKey>>,
         sink: &mut RawSink,
         shape: impl Fn(T) -> Option<BookmarkDraft>,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
@@ -680,7 +681,7 @@ impl BackupSource for GitHubClient {
 
 impl UrlKey for GitHubClient {
     /// [`GitHubKeys`], so a `www.` or `.git` form of a repo dedups against its star.
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         GitHubKeys.dedup_key(url)
     }
 }

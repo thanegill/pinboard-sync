@@ -22,7 +22,7 @@ anyhow = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "time"] }
 # join_all: fetch sources concurrently on one task (no Send bound, no spawn).
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 # Why native-tls, not rustls: Reddit's anti-bot edge rejects rustls's TLS ClientHello

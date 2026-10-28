@@ -39,7 +39,7 @@ use cli::{Cli, Command, ConfigAction};
 use commands::{run_backup, run_cleanup, run_sync};
 use config::Config;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let _ = dotenvy::dotenv();
     let cli = Cli::parse();

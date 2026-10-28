@@ -21,7 +21,7 @@ use url::Url;
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawSink};
 use crate::bookmark::Bookmark;
 use crate::config::own_then_configured;
-use crate::http::{client_builder, RetryingClient, DEFAULT_BACKOFF, USER_AGENT};
+use crate::http::{client_builder, read_body, RetryingClient, DEFAULT_BACKOFF, USER_AGENT};
 use crate::keys::RedditKeys;
 use crate::reddit::cookie::{refused_cookie_advice, SessionCookie};
 use crate::reddit::model::{RedditConfig, RedditListing, RedditListingEntry};
@@ -435,20 +435,15 @@ async fn reddit_body(
         .unwrap_or_default()
         .to_string();
     let refused = status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN;
-    let body = match resp.text().await {
-        Ok(body) => body,
-        Err(read_error) if status.is_success() || refused => {
-            let doing = if refused {
-                format!("reading {what} response ({status})")
-            } else {
-                format!("reading {what} response")
-            };
-            return Err(anyhow::Error::new(read_error.without_url())
-                .context(doing)
-                .into());
+    let decides = status.is_success() || refused;
+    let body = read_body(resp, decides, || {
+        if refused {
+            format!("reading {what} response ({status})")
+        } else {
+            format!("reading {what} response")
         }
-        Err(_) => String::new(),
-    };
+    })
+    .await?;
     if refused {
         let reauth = format!(
             "{what} returned {status}. {}",

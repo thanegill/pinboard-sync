@@ -617,6 +617,22 @@ pub const ELLIPSIS: &str = "…";
 /// Stands in for a secret [`redact`] removed.
 pub const REDACTED: &str = "[redacted]";
 
+/// `resp`'s body. When the caller acts on what the body says (`decides`), a read cut off
+/// partway is an error under `context`, without the request URL, since a partial body could
+/// pass for a different answer. Otherwise the body only feeds an error excerpt, and a failed
+/// read leaves it empty.
+pub async fn read_body(
+    resp: reqwest::Response,
+    decides: bool,
+    context: impl FnOnce() -> String,
+) -> Result<String> {
+    match resp.text().await {
+        Ok(body) => Ok(body),
+        Err(read_error) if decides => Err(read_error.without_url()).with_context(context),
+        Err(_) => Ok(String::new()),
+    }
+}
+
 /// The error `"{what}: {excerpt}"`, quoting a response body as [`error_excerpt`] cuts it,
 /// or just `"{what}"` when the body is blank, with [`body_debug_line`] logged at debug
 /// level first so `-v` shows what the excerpt left out. Both carry the body with `secrets`

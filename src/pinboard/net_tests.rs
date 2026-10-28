@@ -474,7 +474,7 @@ async fn successive_adds_wait_out_the_rate_limit_between_them() {
     let rate_limit = Duration::from_secs(7);
     let pinboard = PinboardClient::build(
         "user:tok".into(),
-        rate_limit.as_secs(),
+        rate_limit,
         server.uri(),
         client_builder(),
     )

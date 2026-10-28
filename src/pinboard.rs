@@ -18,8 +18,8 @@ use crate::source::SourceError;
 
 const PINBOARD_BASE: &str = "https://api.pinboard.in/v1";
 
-/// Seconds to wait between successful `posts/add` calls (Pinboard asks for ~3s).
-pub const RATE_LIMIT_SECS: u64 = 3;
+/// The wait between successful `posts/add` calls (Pinboard asks for ~3s).
+pub const RATE_LIMIT: Duration = Duration::from_secs(3);
 const MAX_RETRIES: u32 = 5;
 const RETRY_DELAY: Duration = Duration::from_secs(3);
 
@@ -112,8 +112,8 @@ pub struct PinboardClient {
     http: RetryingClient,
     /// `username:TOKEN`.
     auth_token: String,
-    /// Seconds to pause between successive `posts/add` writes.
-    rate_limit_secs: u64,
+    /// The pause between successive `posts/add` writes.
+    rate_limit: Duration,
     /// Set once the first write has happened, so [`Self::pace`] spaces only *successive*
     /// writes. Pacing is the client's own concern, not the generic `BookmarkStore` port's.
     /// (`Cell` is fine: the client is never used across threads — the futures aren't `Send`.)
@@ -123,10 +123,10 @@ pub struct PinboardClient {
 }
 
 impl PinboardClient {
-    pub fn new(auth_token: String, rate_limit_secs: u64) -> Result<Self> {
+    pub fn new(auth_token: String, rate_limit: Duration) -> Result<Self> {
         Self::build(
             auth_token,
-            rate_limit_secs,
+            rate_limit,
             PINBOARD_BASE.to_string(),
             client_builder(),
         )
@@ -134,7 +134,7 @@ impl PinboardClient {
 
     fn build(
         auth_token: String,
-        rate_limit_secs: u64,
+        rate_limit: Duration,
         base: String,
         http: reqwest::ClientBuilder,
     ) -> Result<Self> {
@@ -145,7 +145,7 @@ impl PinboardClient {
         Ok(Self {
             http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
             auth_token,
-            rate_limit_secs,
+            rate_limit,
             wrote: Cell::new(false),
             base,
         })
@@ -159,7 +159,7 @@ impl PinboardClient {
     /// the first (a failed attempt still hit the API, so it counts).
     async fn pace(&self) {
         if self.wrote.get() {
-            crate::http::sleep(Duration::from_secs(self.rate_limit_secs)).await;
+            crate::http::sleep(self.rate_limit).await;
         }
         self.wrote.set(true);
     }
@@ -479,17 +479,22 @@ impl PinboardClient {
     /// pacing so `net_tests` don't sleep.
     #[cfg(test)]
     pub fn with_base_url(auth_token: String, base: String) -> Result<Self> {
-        Self::build(auth_token, 0, base, client_builder())
+        Self::build(auth_token, Duration::ZERO, base, client_builder())
     }
 
     #[cfg(test)]
     pub fn with_read_timeout(base: String, read_timeout: Duration) -> Result<Self> {
         Self::build(
             "user:tok".into(),
-            0,
+            Duration::ZERO,
             base,
             client_builder().read_timeout(read_timeout),
         )
+    }
+
+    #[cfg(test)]
+    pub fn rate_limit(&self) -> Duration {
+        self.rate_limit
     }
 }
 

@@ -7,6 +7,8 @@
 
 pub mod backup_jobs;
 
+use std::time::Duration;
+
 use anyhow::{bail, Context, Result};
 use log::{debug, info};
 use url::Url;
@@ -17,7 +19,7 @@ use crate::cli::SyncFlags;
 use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit};
 use crate::github::{GitHubClient, GitHubConfig};
 use crate::hackernews::{HackerNewsClient, HackerNewsConfig};
-use crate::pinboard::{PinboardClient, RATE_LIMIT_SECS};
+use crate::pinboard::{PinboardClient, RATE_LIMIT};
 use crate::reddit::model::RedditConfig;
 use crate::reddit::RedditClient;
 use crate::secrets::{
@@ -415,7 +417,10 @@ fn build_pinboard_client(token_flag: Option<String>, config: &Config) -> Result<
 
 /// The client for an already-resolved token, at the configured write pacing.
 fn pinboard_client_for_token(token: String, config: &Config) -> Result<PinboardClient> {
-    let rate_limit = config.pinboard.rate_limit_secs.unwrap_or(RATE_LIMIT_SECS);
+    let rate_limit = config
+        .pinboard
+        .rate_limit_secs
+        .map_or(RATE_LIMIT, Duration::from_secs);
     PinboardClient::new(token, rate_limit)
 }
 

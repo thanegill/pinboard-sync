@@ -2,6 +2,19 @@ use super::*;
 use crate::test_support::warnings;
 use std::num::NonZeroUsize;
 
+#[test]
+fn the_pinboard_write_pause_is_rate_limit_secs_else_three_seconds() {
+    let pause = |rate_limit_secs| {
+        let mut config = Config::default();
+        config.pinboard.rate_limit_secs = rate_limit_secs;
+        pinboard_client_for_token("user:tok".into(), &config)
+            .unwrap()
+            .rate_limit()
+    };
+    assert_eq!(pause(Some(7)), Duration::from_secs(7));
+    assert_eq!(pause(None), Duration::from_secs(3));
+}
+
 /// Override values chosen so each setting is distinct from the others and from the
 /// `Config::default()` globals — so a builder that wires a flag into the *wrong*
 /// `SyncJob` field (e.g. `public` into the `read_later` slot) fails the assertions.

@@ -532,6 +532,49 @@ mod tests {
         );
     }
 
+    /// The environment rung a secret would come from: `$VAR` before `$VAR_FILE`, and only
+    /// a value the ladder would take, so a blank one or a cookie naming no session is none.
+    #[test]
+    fn env_setting_names_the_env_rung_the_ladder_would_take() {
+        let dir = scratch_dir("env-setting");
+        let file = dir.path().join("token");
+        std::fs::write(&file, "from-file\n").unwrap();
+        let file = file.to_str().unwrap();
+        let env_setting = |vars: &[(&str, &str)], spec: SecretSpec| {
+            let _env = FakeSecretEnv::set(vars);
+            spec.env_setting()
+        };
+
+        assert_eq!(env_setting(&[], SecretSpec::GITHUB_TOKEN), None);
+        assert_eq!(
+            env_setting(&[("GITHUB_TOKEN_FILE", file)], SecretSpec::GITHUB_TOKEN),
+            Some("$GITHUB_TOKEN_FILE")
+        );
+        assert_eq!(
+            env_setting(
+                &[("GITHUB_TOKEN", "tok"), ("GITHUB_TOKEN_FILE", file)],
+                SecretSpec::GITHUB_TOKEN
+            ),
+            Some("$GITHUB_TOKEN")
+        );
+        assert_eq!(
+            env_setting(
+                &[("GITHUB_TOKEN", " \n"), ("GITHUB_TOKEN_FILE", file)],
+                SecretSpec::GITHUB_TOKEN
+            ),
+            Some("$GITHUB_TOKEN_FILE"),
+            "a blank $GITHUB_TOKEN is skipped"
+        );
+        assert_eq!(
+            env_setting(
+                &[("REDDIT_COOKIE", "reddit_session=")],
+                SecretSpec::REDDIT_COOKIE
+            ),
+            None,
+            "a cookie that sets no session is no cookie"
+        );
+    }
+
     /// A pasted value often carries a newline or a stray space; every rung drops it, as the
     /// `*_FILE` rungs always did, so the value sent is the one configured.
     #[test]

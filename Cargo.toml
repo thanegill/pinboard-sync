@@ -2,8 +2,16 @@
 name = "pinboard-sync"
 version = "0.6.0"
 edition = "2021"
+# str::floor_char_boundary
+rust-version = "1.91"
 description = "Sync saved/favorited items from multiple services to a Pinboard account"
 license = "MIT"
+
+[lints.clippy]
+cast_lossless = "warn"
+manual_let_else = "warn"
+ref_option = "warn"
+single_match_else = "warn"
 
 [[bin]]
 name = "pinboard-sync"

@@ -203,8 +203,8 @@ jobs:
       # Point both the version tag and the rolling `latest` tag at the stamped release
       # commit (the bump pushed above), so a consumer tracking `latest` resolves to a
       # commit that also carries its `vX.Y.Z` tag. Force-pushed with GITHUB_TOKEN, which
-      # can't trigger another workflow run — so re-pointing the `vX.Y.Z` tag here (it does
-      # match the release trigger) does not re-run this workflow.
+      # can't trigger another workflow run, so re-pointing the `vX.Y.Z` tag here
+      # (it does match the release trigger) does not re-run this workflow.
       - name: Point the version tag and `latest` at this release
         env:
           GH_TOKEN: ${{ github.token }}

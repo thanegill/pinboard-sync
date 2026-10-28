@@ -133,7 +133,7 @@ async fn filter_new_skips_present_then_write_adds_the_rest() {
     assert_eq!(new[0].bookmark.tags, vec!["reddit", "subreddit:rust"]);
 
     let pinboard = FakePinboard::default();
-    let outcome = write_drafts(&pinboard, &new, false).await;
+    let outcome = write_drafts(&pinboard, &new, WriteMode::Live).await;
     assert_eq!(outcome.written, 1);
     assert_eq!(outcome.failed, 0);
     assert_eq!(pinboard.added.borrow().len(), 1);
@@ -174,7 +174,7 @@ async fn dry_run_writes_nothing() {
     };
     let new = filter_new(&reddit, reddit.fetch().await.unwrap(), &[]);
     let pinboard = FakePinboard::default();
-    let outcome = write_drafts(&pinboard, &new, true).await;
+    let outcome = write_drafts(&pinboard, &new, WriteMode::DryRun).await;
     assert_eq!(outcome.written, 0);
     assert!(pinboard.added.borrow().is_empty());
 }
@@ -195,7 +195,7 @@ async fn write_drafts_passes_each_drafts_toread_and_shared() {
         draft("https://b.test/", false, false),
     ];
     let pinboard = FakePinboard::default();
-    let _ = write_drafts(&pinboard, &drafts, false).await;
+    let _ = write_drafts(&pinboard, &drafts, WriteMode::Live).await;
     let added = pinboard.added.borrow();
     assert_eq!(added.len(), 2);
     assert!(added[0].toread && added[0].shared);
@@ -217,7 +217,7 @@ async fn write_drafts_sends_post_date_as_dt_when_set() {
         draft("https://b.test/", None),
     ];
     let pinboard = FakePinboard::default();
-    let _ = write_drafts(&pinboard, &drafts, false).await;
+    let _ = write_drafts(&pinboard, &drafts, WriteMode::Live).await;
     let added = pinboard.added.borrow();
     assert_eq!(added[0].dt, "2010-12-11T19:48:02Z");
     assert_eq!(added[1].dt, "");
@@ -237,7 +237,7 @@ async fn caller_can_cap_the_number_written() {
     assert_eq!(new.len(), 3);
     new.truncate(2);
     let pinboard = FakePinboard::default();
-    let outcome = write_drafts(&pinboard, &new, false).await;
+    let outcome = write_drafts(&pinboard, &new, WriteMode::Live).await;
     assert_eq!(outcome.written, 2);
     assert_eq!(pinboard.added.borrow().len(), 2);
 }
@@ -382,7 +382,7 @@ async fn merge_deduped_writes_a_url_shared_across_jobs_once() {
     assert_eq!(merged.len(), 1);
 
     let pinboard = FakePinboard::default();
-    let outcome = write_drafts(&pinboard, &merged, false).await;
+    let outcome = write_drafts(&pinboard, &merged, WriteMode::Live).await;
     assert_eq!(outcome.written, 1);
     assert_eq!(pinboard.added.borrow().len(), 1);
 }
@@ -442,7 +442,7 @@ async fn write_drafts_logs_and_skips_a_failing_bookmark() {
     let mut pinboard = FakePinboard::default();
     pinboard.fail_add_urls.insert("https://bad.test/".into());
 
-    let outcome = write_drafts(&pinboard, &drafts, false).await;
+    let outcome = write_drafts(&pinboard, &drafts, WriteMode::Live).await;
     // The bad one is skipped; the ones on either side still go through.
     assert_eq!(outcome.written, 2);
     assert_eq!(outcome.failed, 1);
@@ -465,7 +465,7 @@ async fn new_drafts_are_written_oldest_first() {
         EPOCH,
     );
     let pinboard = FakePinboard::default();
-    let _ = write_drafts(&pinboard, &new, false).await;
+    let _ = write_drafts(&pinboard, &new, WriteMode::Live).await;
     assert_eq!(
         added_urls(&pinboard),
         ["https://a.test/", "https://b.test/", "https://c.test/"]
@@ -488,7 +488,7 @@ async fn a_capped_job_writes_its_newest_drafts_oldest_first() {
         EPOCH,
     );
     let pinboard = FakePinboard::default();
-    let _ = write_drafts(&pinboard, &new, false).await;
+    let _ = write_drafts(&pinboard, &new, WriteMode::Live).await;
     assert_eq!(
         added_urls(&pinboard),
         ["https://c.test/", "https://d.test/"]
@@ -528,7 +528,7 @@ async fn write_after_interrupting(source: &PagedSource, killed_after: usize) -> 
         &job,
         EPOCH,
     );
-    let _ = write_drafts(&pinboard, &first_run[..killed_after], false).await;
+    let _ = write_drafts(&pinboard, &first_run[..killed_after], WriteMode::Live).await;
 
     let account = replay(&[], &pinboard.ops.borrow());
     let second_run = prepare_new_drafts(
@@ -538,7 +538,7 @@ async fn write_after_interrupting(source: &PagedSource, killed_after: usize) -> 
         &job,
         EPOCH,
     );
-    let _ = write_drafts(&pinboard, &second_run, false).await;
+    let _ = write_drafts(&pinboard, &second_run, WriteMode::Live).await;
 
     let mut written = added_urls(&pinboard);
     written.sort();
@@ -595,7 +595,7 @@ async fn jobs_are_written_in_turn_each_oldest_first_and_the_earlier_keeps_a_shar
         ));
     }
     let pinboard = FakePinboard::default();
-    let _ = write_drafts(&pinboard, &merge_deduped(per_job), false).await;
+    let _ = write_drafts(&pinboard, &merge_deduped(per_job), WriteMode::Live).await;
 
     assert_eq!(
         added_urls(&pinboard),

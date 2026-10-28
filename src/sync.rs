@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use log::{debug, error};
 use time::OffsetDateTime;
 
-use crate::bookmark::{Bookmark, BookmarkStore};
+use crate::bookmark::{Bookmark, BookmarkStore, WriteMode};
 use crate::config::SyncLimit;
 use crate::source::{BookmarkDraft, UrlKey};
 use crate::timefmt::DateOpts;
@@ -103,16 +103,16 @@ pub struct WriteTally {
 /// Write `drafts` to Pinboard sequentially (the store spaces its own `posts/add` calls).
 /// A single bookmark that fails to write (e.g. a rejected URL) is logged and skipped so
 /// the rest still go through; the failure is reflected in the returned [`WriteTally`]
-/// for a non-zero exit. Writes nothing in `dry_run`.
+/// for a non-zero exit. Writes nothing in [`WriteMode::DryRun`].
 pub async fn write_drafts<P: BookmarkStore>(
     pinboard: &P,
     drafts: &[BookmarkDraft],
-    dry_run: bool,
+    mode: WriteMode,
 ) -> WriteTally {
     let mut outcome = WriteTally::default();
     for draft in drafts {
         let bm = &draft.bookmark;
-        if dry_run {
+        if mode.is_dry_run() {
             // The source post date as Pinboard's `dt`, when set (the sync loop has already
             // applied the use_post_date flag + age cap); empty = let Pinboard default.
             let dt = bm

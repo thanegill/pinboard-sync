@@ -34,7 +34,7 @@ async fn cleanup_surfaces_an_expired_token_as_reauth() {
     };
     let client = github_client(&server);
 
-    let err = run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    let err = run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap_err();
 
@@ -97,7 +97,7 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
     };
     let client = github_client(&server);
 
-    let err = run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    let err = run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap_err();
 
@@ -147,7 +147,7 @@ async fn cleanup_survives_a_permanently_blocked_repo() {
     };
     let client = github_client(&server);
 
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .expect("one dead repo must not fail the whole run");
 
@@ -183,7 +183,7 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
         ..Default::default()
     };
     let client = github_client(&server);
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -230,7 +230,7 @@ async fn cleanup_leaves_deep_links_untouched() {
         ..Default::default()
     };
     let client = github_client(&server);
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -263,7 +263,7 @@ async fn cleanup_canonicalizes_non_canonical_repo_root() {
         ..Default::default()
     };
     let client = github_client(&server);
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -302,7 +302,7 @@ async fn cleanup_folds_www_host_onto_github_com() {
         ..Default::default()
     };
     let client = github_client(&server);
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -341,7 +341,7 @@ async fn cleanup_rewrites_notes_only_to_retrofit_the_blockquote() {
         ..Default::default()
     };
     let client = github_client(&server);
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -389,7 +389,7 @@ async fn cleanup_leaves_an_hn_story_of_a_repo_as_hn_wrote_it() {
     };
     let client = github_client(&server);
 
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -431,7 +431,7 @@ async fn cleanup_refreshes_the_stars_of_every_configured_account_by_their_own_ta
     let client = github_client(&server);
 
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &client,
         NO_DATING,
         &[GitHubConfig::default(), work],
@@ -482,7 +482,7 @@ async fn cleanup_gives_an_unsynced_bookmark_a_note_but_not_a_title_or_tags() {
     };
     let client = github_client(&server);
 
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -672,7 +672,7 @@ async fn cleanup_redates_only_synced_stars_to_their_star_time() {
         stale_to_now: false,
     };
 
-    run(&pinboard.cleanup_store(false), &client, dates, &[])
+    run(&pinboard.cleanup_store(), &client, dates, &[])
         .await
         .unwrap();
 
@@ -693,7 +693,7 @@ async fn run_and_store(
         all: seed.clone(),
         ..Default::default()
     };
-    run(&pinboard.cleanup_store(false), client, dates, &[])
+    run(&pinboard.cleanup_store(), client, dates, &[])
         .await
         .unwrap();
     let mut stored = crate::test_support::replay(&seed, &pinboard.ops.borrow());
@@ -739,7 +739,7 @@ async fn cleanup_keeps_entity_text_in_a_stored_title() {
         ..Default::default()
     };
     let client = github_client(&server);
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -866,7 +866,7 @@ async fn cleanup_without_gist_bookmarks_reads_no_gists() {
     };
 
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &github_client(&server),
         NO_DATING,
         &[],
@@ -904,7 +904,7 @@ async fn a_failed_starred_gist_read_fails_the_gist_pass() {
         };
 
         let (result, _) = crate::http::recording_waits(run(
-            &pinboard.cleanup_store(false),
+            &pinboard.cleanup_store(),
             &github_client(&server),
             NO_DATING,
             &[],
@@ -1019,14 +1019,9 @@ async fn cleanup_refreshes_another_accounts_gist_by_its_own_tags() {
     };
     let client = GitHubClient::with_base_url("tok".into(), configured[0].clone(), server.uri());
 
-    run(
-        &pinboard.cleanup_store(false),
-        &client,
-        NO_DATING,
-        &configured,
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &configured)
+        .await
+        .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1, "{updated:?}");
@@ -1094,7 +1089,7 @@ async fn cleanup_redates_a_synced_gist_by_its_gist_post_date() {
             all: vec![stored.clone()],
             ..Default::default()
         };
-        run(&pinboard.cleanup_store(false), &client, dates, &[])
+        run(&pinboard.cleanup_store(), &client, dates, &[])
             .await
             .unwrap();
         let updated = pinboard.updated.borrow();
@@ -1127,7 +1122,7 @@ async fn a_dead_token_on_the_repos_skips_the_gists() {
     };
 
     let err = run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &github_client(&server),
         NO_DATING,
         &[],
@@ -1157,7 +1152,7 @@ async fn a_dead_token_on_a_gist_lookup_is_a_reauth() {
     };
 
     let err = run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &github_client(&server),
         NO_DATING,
         &[],
@@ -1194,7 +1189,7 @@ async fn a_dead_token_on_the_gists_is_a_reauth_even_after_failed_repos() {
     };
 
     let (result, _) = crate::http::recording_waits(run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &github_client(&server),
         NO_DATING,
         &[],
@@ -1263,7 +1258,7 @@ async fn synced_trimmed(server: &MockServer) -> Vec<Bookmark> {
         },
         time::OffsetDateTime::now_utc(),
     );
-    let tally = crate::sync::write_drafts(&pinboard, &new, false).await;
+    let tally = crate::sync::write_drafts(&pinboard, &new, crate::bookmark::WriteMode::Live).await;
     assert_eq!(tally.failed, 0);
     let mut synced = crate::test_support::replay(&[], &pinboard.ops.take());
     for bookmark in &mut synced {
@@ -1281,7 +1276,7 @@ async fn clean_trimmed(account: Vec<Bookmark>, server: &MockServer) -> (usize, V
         ..Default::default()
     };
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &github_client(server),
         NO_DATING,
         &[GitHubConfig::default()],

@@ -14,7 +14,7 @@ use tempfile::TempDir;
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore};
+use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore, WriteMode};
 use crate::config::SyncLimit;
 use crate::keys::RedditKeys;
 use crate::pinboard::{PinboardBookmark, PinboardClient};
@@ -341,8 +341,13 @@ pub struct FakePinboard {
 
 impl FakePinboard {
     /// The production cleanup store over this fake, its view seeded with `all`.
-    pub fn cleanup_store(&self, dry_run: bool) -> CleanupStore<'_, Self> {
-        CleanupStore::new(self, AccountView::new(self.all.clone()), dry_run)
+    pub fn cleanup_store(&self) -> CleanupStore<'_, Self> {
+        CleanupStore::new(self, AccountView::new(self.all.clone()), WriteMode::Live)
+    }
+
+    /// [`Self::cleanup_store`] for a dry run.
+    pub fn dry_cleanup_store(&self) -> CleanupStore<'_, Self> {
+        CleanupStore::new(self, AccountView::new(self.all.clone()), WriteMode::DryRun)
     }
 }
 
@@ -434,7 +439,7 @@ pub async fn synced_account<S: Source>(source: &S, dates: DateOpts) -> Vec<Bookm
     };
     let new = prepare_new_drafts(source, drafts, &[], &settings, now);
     let pinboard = FakePinboard::default();
-    let tally = write_drafts(&pinboard, &new, false).await;
+    let tally = write_drafts(&pinboard, &new, WriteMode::Live).await;
     assert_eq!(tally.failed, 0);
     replay(&[], &pinboard.ops.take())
         .into_iter()
@@ -469,7 +474,7 @@ pub async fn assert_cleanup_changes_nothing(
         all: account,
         ..Default::default()
     };
-    let (result, logs) = capturing_logs(cleanup(&pinboard.cleanup_store(false))).await;
+    let (result, logs) = capturing_logs(cleanup(&pinboard.cleanup_store())).await;
     result.unwrap();
     let complaints: Vec<&String> = logs
         .iter()

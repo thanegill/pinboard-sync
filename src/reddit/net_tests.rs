@@ -547,7 +547,7 @@ async fn cleanup_looks_up_comments_by_their_own_fullname_in_the_post_batch() {
         configured: Vec::new(),
     };
 
-    run(&pinboard.cleanup_store(false), Some(&client), &opts)
+    run(&pinboard.cleanup_store(), Some(&client), &opts)
         .await
         .unwrap();
 

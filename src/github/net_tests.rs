@@ -586,7 +586,7 @@ async fn cleanup_with_post_dates_reads_every_star_page() {
     };
 
     cleanup::run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &github_client(&server),
         DateOpts {
             use_post_date: true,

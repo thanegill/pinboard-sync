@@ -393,7 +393,7 @@ async fn dry_run_writes_nothing_and_refuses_what_the_real_run_would() {
     let scratch = scratch_dir("backup-dry-run");
     let dir = scratch.path();
 
-    run_job(&FakeSource("[1]"), "pinboard", dir, true)
+    run_job(&FakeSource("[1]"), "pinboard", dir, WriteMode::DryRun)
         .await
         .unwrap();
     assert!(!dir.join("raw").exists(), "a dry run touches no files");
@@ -402,9 +402,14 @@ async fn dry_run_writes_nothing_and_refuses_what_the_real_run_would() {
     // validating a config behind a captive portal would otherwise see "would be
     // written" and conclude the setup is good. (A non-JSON body is rejected by the
     // merge before `check_writable` sees it; either way the run fails.)
-    let err = run_job(&FakeSource("<html>portal</html>"), "pinboard", dir, true)
-        .await
-        .unwrap_err();
+    let err = run_job(
+        &FakeSource("<html>portal</html>"),
+        "pinboard",
+        dir,
+        WriteMode::DryRun,
+    )
+    .await
+    .unwrap_err();
     assert!(
         format!("{err:#}").contains("parsing captured response page 1"),
         "{err:#}"
@@ -433,7 +438,7 @@ async fn a_truncated_dump_is_written_but_reported_failed() {
     // The files are still written — a partial snapshot beats none — but the target
     // is reported failed so it lands in the manifest's `failed` list. Silently
     // replacing a complete snapshot with a truncated one is the failure mode here.
-    let outcome = run_job(&TruncatedSource, "github-main", dir, false)
+    let outcome = run_job(&TruncatedSource, "github-main", dir, WriteMode::Live)
         .await
         .unwrap();
     let msg = format!("{:#}", outcome.unusable.expect("reported unusable"));
@@ -630,7 +635,7 @@ async fn a_dry_run_reports_the_same_verdict_as_the_real_run() {
     // The whole point of `--dry-run` is validating a config before trusting the
     // timer. If it reported a clean plan for a target the real run flags, an operator
     // would conclude the setup is good and only find out from the journal.
-    let dry = run_job(&TruncatedSource, "github-main", dir, true)
+    let dry = run_job(&TruncatedSource, "github-main", dir, WriteMode::DryRun)
         .await
         .unwrap();
     assert!(
@@ -639,7 +644,7 @@ async fn a_dry_run_reports_the_same_verdict_as_the_real_run() {
     );
     assert!(!dir.join("raw").exists(), "and still write nothing");
 
-    let real = run_job(&TruncatedSource, "github-main", dir, false)
+    let real = run_job(&TruncatedSource, "github-main", dir, WriteMode::Live)
         .await
         .unwrap();
     assert_eq!(dry.unusable, real.unusable);
@@ -666,7 +671,7 @@ async fn a_stale_removal_never_costs_the_report_of_what_was_written() {
     std::fs::create_dir_all(dir.join("normalized")).unwrap();
     std::fs::write(dir.join("normalized/reddit-main.json"), "[]").unwrap();
 
-    let outcome = run_job(&ShapeBrokenSource, "reddit-main", dir, false)
+    let outcome = run_job(&ShapeBrokenSource, "reddit-main", dir, WriteMode::Live)
         .await
         .unwrap();
 
@@ -695,7 +700,7 @@ async fn a_stale_removal_that_fails_reports_it_without_losing_the_write() {
     // A read-only parent makes the unlink fail while leaving the file readable.
     std::fs::set_permissions(&normalized, PermissionsExt::from_mode(0o500)).unwrap();
 
-    let outcome = run_job(&ShapeBrokenSource, "reddit-main", dir, false)
+    let outcome = run_job(&ShapeBrokenSource, "reddit-main", dir, WriteMode::Live)
         .await
         .unwrap();
     std::fs::set_permissions(&normalized, PermissionsExt::from_mode(0o700)).unwrap();

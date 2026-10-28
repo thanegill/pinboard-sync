@@ -329,7 +329,7 @@ async fn assert_cleanup_reddit_converges(domain: &str, article: &str, cleaned_ur
         dates: NO_DATING,
         configured: vec![config],
     };
-    run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts)
+    run(&pinboard.cleanup_store(), None::<&FakeReddit>, &opts)
         .await
         .unwrap();
     let cleaned = replay(&synced, &pinboard.ops.borrow());

@@ -266,6 +266,28 @@ impl AccountView {
     }
 }
 
+/// Whether a run writes, or only previews what it would write (`--dry-run`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteMode {
+    Live,
+    DryRun,
+}
+
+impl WriteMode {
+    /// The mode set by `--dry-run`, given before the subcommand, after it, or both.
+    pub fn from_flags(before: bool, after: bool) -> Self {
+        if before || after {
+            WriteMode::DryRun
+        } else {
+            WriteMode::Live
+        }
+    }
+
+    pub fn is_dry_run(self) -> bool {
+        self == WriteMode::DryRun
+    }
+}
+
 /// The cleanup driver's read side of the account. Separate from [`BookmarkStore`] because
 /// only the driver needs it, and it must answer from the run's live view rather than a
 /// fetch. `dry_run` lives here rather than being passed alongside so the driver's preview
@@ -296,11 +318,11 @@ pub struct CleanupStore<'a, P> {
 }
 
 impl<'a, P: BookmarkStore> CleanupStore<'a, P> {
-    pub fn new(inner: &'a P, view: AccountView, dry_run: bool) -> Self {
+    pub fn new(inner: &'a P, view: AccountView, mode: WriteMode) -> Self {
         Self {
             inner,
             view: std::cell::RefCell::new(view),
-            dry_run,
+            dry_run: mode.is_dry_run(),
         }
     }
 }

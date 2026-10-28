@@ -1,5 +1,5 @@
 use super::*;
-use crate::bookmark::{AccountState, AccountView, CleanupStore};
+use crate::bookmark::{AccountState, AccountView, CleanupStore, WriteMode};
 use crate::pinboard::TRUNCATION_MARKER;
 use crate::test_support::{stored_at, strings, url as u, FakePinboard, Op, NO_DATING};
 use anyhow::anyhow;
@@ -9,15 +9,15 @@ use anyhow::anyhow;
 fn store<'a>(
     pinboard: &'a FakePinboard,
     all: &[Bookmark],
-    dry_run: bool,
+    mode: WriteMode,
 ) -> CleanupStore<'a, FakePinboard> {
-    CleanupStore::new(pinboard, AccountView::new(all.to_vec()), dry_run)
+    CleanupStore::new(pinboard, AccountView::new(all.to_vec()), mode)
 }
 
 /// [`run_pass`] over `books`, with the account seeded from them and dating off.
 async fn run<C: CleanupPass>(pinboard: &FakePinboard, books: &[Bookmark], pass: &C) -> PassOutcome {
     run_pass(
-        &store(pinboard, books, false),
+        &store(pinboard, books, WriteMode::Live),
         books,
         "test",
         NO_DATING,
@@ -33,7 +33,7 @@ async fn run_dry<C: CleanupPass>(
     pass: &C,
 ) -> PassOutcome {
     run_pass(
-        &store(pinboard, books, true),
+        &store(pinboard, books, WriteMode::DryRun),
         books,
         "test",
         NO_DATING,
@@ -574,7 +574,7 @@ async fn a_refused_rewrite_leaves_its_own_record_protected() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -615,7 +615,7 @@ async fn a_matching_public_group_merges_and_stays_public() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -766,7 +766,7 @@ async fn the_view_never_drifts_from_the_account() {
         fail_update_urls: ["https://f/moved".to_string()].into_iter().collect(),
         ..FakePinboard::default()
     };
-    let store = store(&pinboard, &seed, false);
+    let store = store(&pinboard, &seed, WriteMode::Live);
 
     // The resident is held out of the first slice, so `b/mover` is a genuine resident
     // merge rather than a collision between two plans.
@@ -840,7 +840,7 @@ async fn a_mismatched_member_drops_out_while_the_rest_of_the_group_merges() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -979,7 +979,7 @@ async fn a_merge_whose_delete_fails_reports_the_write_that_landed() {
     };
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1387,7 +1387,7 @@ async fn a_visibility_mismatch_refuses_instead_of_merging() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1429,7 +1429,7 @@ async fn a_visibility_mismatch_protects_the_movers_own_url() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1464,7 +1464,7 @@ async fn merging_does_not_reset_a_residents_unparseable_date() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1504,7 +1504,7 @@ async fn merging_a_resident_keeps_its_read_later_and_date() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1552,7 +1552,7 @@ async fn a_converged_merge_is_not_rewritten_every_run() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1626,7 +1626,7 @@ async fn rewrite_onto_a_resident_outside_the_slice_merges_with_it() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1665,7 +1665,7 @@ async fn a_rewrite_onto_an_unoccupied_url_still_goes_through() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1806,7 +1806,7 @@ async fn run_rename_collision(
         }))
     });
     run_pass(
-        &store(pinboard, &books, false),
+        &store(pinboard, &books, WriteMode::Live),
         &books,
         "test",
         NO_DATING,
@@ -2088,7 +2088,7 @@ async fn a_dry_run_pass_still_advances_the_view() {
         }))
     });
     let pinboard = FakePinboard::default();
-    let store = store(&pinboard, &books, true);
+    let store = store(&pinboard, &books, WriteMode::DryRun);
 
     let outcome = run_pass(&store, &books, "test", NO_DATING, &pass).await;
     assert_eq!(outcome.changed, 1);
@@ -2133,7 +2133,7 @@ async fn dry_run_renders_every_field_and_writes_nothing() {
         stale_to_now: false,
     };
     let outcome = run_pass(
-        &store(&pinboard, &books, true),
+        &store(&pinboard, &books, WriteMode::DryRun),
         &books,
         "test",
         dates,
@@ -2186,7 +2186,7 @@ async fn a_dry_run_previews_a_merge_and_its_absorbed_urls() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, true),
+        &store(&pinboard, &all, WriteMode::DryRun),
         &slice,
         "test",
         NO_DATING,
@@ -2251,7 +2251,7 @@ async fn a_merge_onto_a_trimmed_note_is_not_rewritten_every_run() {
     });
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -2305,7 +2305,7 @@ async fn a_whole_note_too_long_to_write_is_not_cut_when_nothing_changed() {
     });
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -2346,7 +2346,7 @@ async fn a_dry_run_previews_the_note_as_pinboard_will_store_it() {
     });
 
     let (outcome, logs) = crate::test_support::capturing_logs(run_pass(
-        &store(&pinboard, &all, true),
+        &store(&pinboard, &all, WriteMode::DryRun),
         &books,
         "test",
         NO_DATING,
@@ -2441,7 +2441,7 @@ async fn a_dry_run_previews_a_refusal() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, true),
+        &store(&pinboard, &all, WriteMode::DryRun),
         &slice,
         "test",
         NO_DATING,
@@ -2548,7 +2548,7 @@ async fn a_dry_run_names_a_target_held_by_a_visibility_refusal() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, true),
+        &store(&pinboard, &all, WriteMode::DryRun),
         &slice,
         "test",
         NO_DATING,
@@ -2586,13 +2586,20 @@ async fn stale_to_now_settles_after_one_run() {
     };
 
     let first = FakePinboard::default();
-    let outcome = run_pass(&store(&first, &books, false), &books, "test", dates, &pass).await;
+    let outcome = run_pass(
+        &store(&first, &books, WriteMode::Live),
+        &books,
+        "test",
+        dates,
+        &pass,
+    )
+    .await;
     assert_eq!(outcome.changed, 1);
     let after_first = crate::test_support::replay(&books, &first.ops.borrow());
 
     let second = FakePinboard::default();
     let outcome = run_pass(
-        &store(&second, &after_first, false),
+        &store(&second, &after_first, WriteMode::Live),
         &after_first,
         "test",
         dates,
@@ -2621,7 +2628,7 @@ async fn stale_to_now_dates_at_whole_seconds() {
     };
     let pinboard = FakePinboard::default();
     let outcome = run_pass(
-        &store(&pinboard, &books, false),
+        &store(&pinboard, &books, WriteMode::Live),
         &books,
         "test",
         dates,

@@ -213,6 +213,17 @@ pub const NO_DATING: DateOpts = DateOpts {
 /// The read timeout of a test client that must time out quickly.
 pub const SHORT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
 
+/// The config every property test runs under: 64 cases unless `PROPTEST_CASES` sets
+/// another count, and no regression files, which proptest would otherwise write to
+/// `proptest-regressions/` on a failure.
+pub fn proptest_config() -> proptest::test_runner::Config {
+    proptest::test_runner::contextualize_config(proptest::test_runner::Config {
+        cases: 64,
+        failure_persistence: None,
+        ..proptest::test_runner::Config::default()
+    })
+}
+
 /// An existing Pinboard bookmark at `url`, with every other field empty.
 pub fn stored_at(url: &str) -> Bookmark {
     Bookmark {

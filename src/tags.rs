@@ -140,6 +140,10 @@ pub fn prefixed(prefix: &str, value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use proptest::prelude::*;
+
     use super::*;
     use crate::test_support::strings;
 
@@ -252,5 +256,62 @@ mod tests {
         let parsed = Tags::parse("  reddit  subreddit:rust ");
         assert_eq!(parsed, ["reddit", "subreddit:rust"]);
         assert_eq!(parsed.joined(), "reddit subreddit:rust");
+    }
+
+    /// A tag as config or a source supplies it: no whitespace, which Pinboard splits on.
+    const TAG: &str = "\\S{1,12}";
+
+    /// A tag from an alphabet small enough that two short lists often hold the same set.
+    const SMALL_TAG: &str = "[ab]{1,2}";
+
+    fn as_set(tags: &Tags) -> BTreeSet<&String> {
+        tags.iter().collect()
+    }
+
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config())]
+
+        #[test]
+        fn parse_reads_back_what_joined_wrote(words in prop::collection::vec(TAG, 0..8)) {
+            let mut written = Tags::default();
+            for word in &words {
+                written.push(word);
+            }
+            prop_assert_eq!(Tags::parse(&written.joined()), written);
+        }
+
+        #[test]
+        fn joined_is_stable_under_a_parse(stored in any::<String>()) {
+            let parsed = Tags::parse(&stored);
+            prop_assert_eq!(Tags::parse(&parsed.joined()), parsed);
+        }
+
+        #[test]
+        fn differs_from_compares_as_sets(
+            a in prop::collection::vec(SMALL_TAG, 0..5),
+            b in prop::collection::vec(SMALL_TAG, 0..5),
+        ) {
+            let (a, b) = (Tags::from(a), Tags::from(b));
+            let mut sorted = a.clone();
+            sorted.sort();
+            prop_assert!(!a.differs_from(&a));
+            prop_assert!(!a.differs_from(&sorted));
+            prop_assert_eq!(a.differs_from(&b), b.differs_from(&a));
+            prop_assert_eq!(a.differs_from(&b), as_set(&a) != as_set(&b));
+        }
+
+        #[test]
+        fn prefixed_makes_one_tag(
+            prefix in "[^\\s,]{1,6}",
+            value in prop_oneof![any::<String>(), "[\\s,]{1,4}"],
+        ) {
+            let separator = |c: char| c.is_whitespace() || c == ',';
+            let tag = prefixed(&prefix, &value);
+            prop_assert_eq!(tag.is_some(), !value.chars().all(separator), "{:?}", value);
+            if let Some(tag) = tag {
+                prop_assert!(!tag.contains(separator), "{tag:?}");
+                prop_assert_eq!(Tags::parse(&tag), [tag.clone()]);
+            }
+        }
     }
 }

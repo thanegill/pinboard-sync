@@ -50,6 +50,8 @@ pub fn blockquote(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -131,6 +133,51 @@ mod tests {
     fn markdown_keeps_code_block_contents() {
         let md = html_to_markdown("<pre><code>fn main() {}</code></pre>");
         assert!(md.contains("fn main() {}"), "got: {md:?}");
+    }
+
+    fn html_escaped(text: &str) -> String {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#x27;")
+    }
+
+    /// Text that is mostly entities, near-entities, markup and line breaks, which
+    /// arbitrary text almost never contains. The HTML parser drops NUL anywhere and a
+    /// U+FEFF (a byte-order mark) at the start of its input, so neither is drawn.
+    fn entity_laden_text() -> impl Strategy<Value = String> {
+        let piece = prop_oneof![
+            "[^\\x00\\x{feff}]{0,4}",
+            prop::sample::select(vec![
+                "&", "&amp;", "&lt;", "&gt", "&quot;", "&#38;", "&#x26;", "&nbsp;", "&not",
+                "&notit;", "<b>", "</b>", "\r\n", " ",
+            ])
+            .prop_map(String::from),
+        ];
+        prop::collection::vec(piece, 0..8).prop_map(|pieces| pieces.concat())
+    }
+
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config())]
+
+        /// Not idempotent on every input, by design: `&amp;amp;` decodes one level per
+        /// call. Text with no `&` has no entity to decode, so a second call is a no-op.
+        #[test]
+        fn plain_is_idempotent_on_text_without_entities(
+            text in entity_laden_text().prop_map(|text| text.replace('&', "")),
+        ) {
+            let once = html_to_plain(&text);
+            prop_assert_eq!(html_to_plain(&once), once);
+        }
+
+        #[test]
+        fn plain_undoes_exactly_one_html_escape(text in entity_laden_text()) {
+            prop_assert_eq!(
+                html_to_plain(&html_escaped(&text)),
+                collapse_whitespace(&text, " ")
+            );
+        }
     }
 
     #[test]

@@ -49,19 +49,19 @@ async fn main() -> ExitCode {
         match cli.command {
             Command::Sync(cmd) => {
                 log_start("sync");
-                run_sync(cmd, &load_config(cli.config.clone())?).await
+                run_sync(cmd, &load_config(cli.config)?).await
             }
             Command::Cleanup(cmd) => {
                 log_start("cleanup");
-                run_cleanup(cmd, &load_config(cli.config.clone())?).await
+                run_cleanup(cmd, &load_config(cli.config)?).await
             }
             Command::Doctor => {
                 log_start("doctor");
-                doctor::run_doctor(&load_config(cli.config.clone())?).await
+                doctor::run_doctor(&load_config(cli.config)?).await
             }
             Command::Backup(cmd) => {
                 log_start("backup");
-                run_backup(cmd, &load_config(cli.config.clone())?).await
+                run_backup(cmd, &load_config(cli.config)?).await
             }
             Command::Completions { shell } => {
                 print_completions(shell);

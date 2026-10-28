@@ -96,7 +96,7 @@ pub enum BackupTarget {
 // Backing up a source never contacts Pinboard, so none of the source targets take a
 // Pinboard token — the one place `backup` deliberately diverges from `sync`/`cleanup`.
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct RedditBackupArgs {
     /// Account name to select from the config (default: the first reddit account).
     pub account: Option<String>,
@@ -121,7 +121,7 @@ pub struct RedditBackupArgs {
     pub dry_run: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct GitHubBackupArgs {
     /// Account name to select from the config (default: the first github account).
     pub account: Option<String>,
@@ -141,7 +141,7 @@ pub struct GitHubBackupArgs {
     pub dry_run: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct HackerNewsBackupArgs {
     /// Account name to select from the config (default: the first hackernews account).
     pub account: Option<String>,
@@ -160,7 +160,7 @@ pub struct HackerNewsBackupArgs {
 
 /// Pinboard has no `account`/`--all`: `[pinboard]` is a single destination table, not an
 /// array of accounts like the sources.
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct PinboardBackupArgs {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
@@ -203,7 +203,7 @@ pub enum SyncSource {
     Hackernews(HackerNewsSyncArgs),
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct RedditSyncArgs {
     /// Account name to select from the config (default: the first reddit account).
     pub account: Option<String>,
@@ -228,7 +228,7 @@ pub struct RedditSyncArgs {
     pub dry_run: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct GitHubSyncArgs {
     /// Account name to select from the config (default: the first github account).
     pub account: Option<String>,
@@ -248,7 +248,7 @@ pub struct GitHubSyncArgs {
     pub dry_run: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct HackerNewsSyncArgs {
     /// Account name to select from the config (default: the first hackernews account).
     pub account: Option<String>,
@@ -267,7 +267,7 @@ pub struct HackerNewsSyncArgs {
 
 /// The Pinboard and write/dating flags every `sync <source>` takes, flattened into each so
 /// the declarations live in one place.
-#[derive(Args, Clone, Default)]
+#[derive(Args, Default)]
 pub struct SyncFlags {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
@@ -361,7 +361,7 @@ impl DateFlags {
     }
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct GitHubCleanupArgs {
     /// Account name whose token/tags to use (default: the first github account).
     pub account: Option<String>,
@@ -378,7 +378,7 @@ pub struct GitHubCleanupArgs {
     pub dry_run: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct HackerNewsCleanupArgs {
     /// Account name whose tag config to use (default: the first hackernews account).
     pub account: Option<String>,
@@ -399,7 +399,7 @@ pub struct HackerNewsCleanupArgs {
     pub dry_run: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct RedditCleanupArgs {
     /// Account name whose cookie + domain/tags to use (default: the first reddit account).
     pub account: Option<String>,
@@ -509,10 +509,10 @@ impl From<HackerNewsSyncArgs> for SyncOverrides {
     }
 }
 
-impl From<&RedditCleanupArgs> for RedditCleanupOverrides {
-    fn from(args: &RedditCleanupArgs) -> Self {
+impl From<RedditCleanupArgs> for RedditCleanupOverrides {
+    fn from(args: RedditCleanupArgs) -> Self {
         RedditCleanupOverrides {
-            cookie: args.reddit_cookie.clone(),
+            cookie: args.reddit_cookie,
             mark_nsfw: !args.no_nsfw,
             fix_titles: !args.no_titles,
         }

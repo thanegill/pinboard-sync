@@ -37,11 +37,11 @@ use crate::{backup, config, github, hackernews, reddit, sync, timefmt};
 
 pub async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     let top_dry_run = cmd.dry_run;
-    let plan = build_sync_plan(cmd, config)?;
+    let mut plan = build_sync_plan(cmd, config)?;
     let mut run = AllRun::default();
     run.record_skipped(plan.skipped, "could not be built");
     let (pinboard, bookmarks) =
-        open_pinboard(plan.overrides.flags.pinboard_token.clone(), config).await?;
+        open_pinboard(plan.overrides.flags.pinboard_token.take(), config).await?;
     // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
     // after it (per-source); honor either placement. (`--verbose` is global.)
     run_sync_jobs(
@@ -78,22 +78,22 @@ fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<SyncPlan> {
             let (jobs, skipped) = build_all_jobs(config, &overrides);
             (jobs, overrides, skipped)
         }
-        (false, Some(SyncSource::Reddit(args))) => {
-            let (account, all) = (args.account.clone(), args.all);
+        (false, Some(SyncSource::Reddit(mut args))) => {
+            let (account, all) = (args.account.take(), args.all);
             let selection = Selection::new(account.as_deref(), all)?;
             let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
             let (jobs, skipped) = build_jobs::<RedditAccount>(selection, &overrides, config)?;
             (jobs, overrides, skipped)
         }
-        (false, Some(SyncSource::Github(args))) => {
-            let (account, all) = (args.account.clone(), args.all);
+        (false, Some(SyncSource::Github(mut args))) => {
+            let (account, all) = (args.account.take(), args.all);
             let selection = Selection::new(account.as_deref(), all)?;
             let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
             let (jobs, skipped) = build_jobs::<GitHubAccount>(selection, &overrides, config)?;
             (jobs, overrides, skipped)
         }
-        (false, Some(SyncSource::Hackernews(args))) => {
-            let (account, all) = (args.account.clone(), args.all);
+        (false, Some(SyncSource::Hackernews(mut args))) => {
+            let (account, all) = (args.account.take(), args.all);
             let selection = Selection::new(account.as_deref(), all)?;
             let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
             let (jobs, skipped) = build_jobs::<HackerNewsAccount>(selection, &overrides, config)?;
@@ -172,10 +172,11 @@ async fn run_sync_jobs(
 /// Write a snapshot of every selected service: the verbatim API responses under `raw/`
 /// and the same items as domain bookmarks under `normalized/`, plus a `manifest.json`.
 /// Each run replaces the previous snapshot in place.
-pub async fn run_backup(cmd: BackupCmd, config: &Config) -> Result<()> {
-    let plan = build_backup_plan(&cmd, config)?;
-    let dir = resolve_backup_dir([plan.out, cmd.out.out.clone()], config)?;
-    back_up(plan.jobs, plan.skipped, &dir, plan.dry_run || cmd.dry_run).await
+pub async fn run_backup(mut cmd: BackupCmd, config: &Config) -> Result<()> {
+    let (top_out, top_dry_run) = (cmd.out.out.take(), cmd.dry_run);
+    let plan = build_backup_plan(cmd, config)?;
+    let dir = resolve_backup_dir([plan.out, top_out], config)?;
+    back_up(plan.jobs, plan.skipped, &dir, plan.dry_run || top_dry_run).await
 }
 
 /// Run every job of a backup plan into `dir`, then write the manifest, failing the run
@@ -422,7 +423,7 @@ async fn cleanup_github_with_client<S: BookmarkStore + AccountState>(
 }
 
 async fn run_cleanup_reddit(
-    args: RedditCleanupArgs,
+    mut args: RedditCleanupArgs,
     top_dry_run: bool,
     top_overrides: &DateFlags,
     config: &Config,
@@ -439,8 +440,9 @@ async fn run_cleanup_reddit(
         &config.defaults.reddit,
         config,
     )?;
-    let reddit = RedditCleanup::build(account, RedditCleanupOverrides::from(&args), dates, config)?;
-    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
+    let pinboard_token = args.pinboard_token.take();
+    let reddit = RedditCleanup::build(account, RedditCleanupOverrides::from(args), dates, config)?;
+    let (pinboard, bookmarks) = open_pinboard(pinboard_token, config).await?;
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
     reddit.run(&store, account, config).await
 }
@@ -521,7 +523,7 @@ async fn run_cleanup_hackernews(
         config,
     )?;
     let hn = hackernews_cleanup_client(account, args.link_tag)?;
-    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
+    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
     cleanup_hackernews_with_client(&store, &hn, args.link_discussions, dates).await

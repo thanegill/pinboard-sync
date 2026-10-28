@@ -42,11 +42,11 @@ fn parse_sync(extra: &[&str]) -> SyncCmd {
 }
 
 /// The `sync reddit` args of a parsed `sync`.
-fn reddit_sync_args(cmd: &SyncCmd) -> RedditSyncArgs {
-    let Some(SyncSource::Reddit(args)) = &cmd.source else {
+fn reddit_sync_args(cmd: &mut SyncCmd) -> RedditSyncArgs {
+    let Some(SyncSource::Reddit(args)) = cmd.source.take() else {
         panic!("expected `sync reddit` args");
     };
-    args.clone()
+    args
 }
 
 /// Both `--all` forms must carry the accounts they could not build out in
@@ -138,7 +138,7 @@ fn top_level_on_auth_failure_reaches_single_source_hook() {
     // `--on-auth-failure` placed before the source subcommand must reach the
     // job just like the `--all` path; the overrides from the source args alone only see the
     // per-source flag.
-    let cmd = parse_sync(&[
+    let mut cmd = parse_sync(&[
         "--on-auth-failure",
         "top-hook",
         "reddit",
@@ -147,7 +147,7 @@ fn top_level_on_auth_failure_reaches_single_source_hook() {
         "--reddit-cookie",
         "reddit_session=x",
     ]);
-    let args = reddit_sync_args(&cmd);
+    let args = reddit_sync_args(&mut cmd);
     assert_eq!(args.on_auth_failure, None);
 
     let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
@@ -158,7 +158,7 @@ fn top_level_on_auth_failure_reaches_single_source_hook() {
 #[test]
 fn per_source_on_auth_failure_falls_back_when_no_top_level() {
     let _env = lock_on_auth_failure_env();
-    let cmd = parse_sync(&[
+    let mut cmd = parse_sync(&[
         "reddit",
         "--reddit-username",
         "alice",
@@ -168,7 +168,7 @@ fn per_source_on_auth_failure_falls_back_when_no_top_level() {
         "source-hook",
     ]);
     assert_eq!(cmd.on_auth_failure, None);
-    let args = reddit_sync_args(&cmd);
+    let args = reddit_sync_args(&mut cmd);
 
     let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
     let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
@@ -191,12 +191,12 @@ fn explicit_per_source_on_auth_failure_beats_env() {
         ])
     });
     std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
-    let cmd = parsed.expect("parses");
+    let mut cmd = parsed.expect("parses");
 
     // The env only backs the per-source flag, so the top level stays empty and
     // the explicit per-source flag wins over the env value.
     assert_eq!(cmd.on_auth_failure, None);
-    let args = reddit_sync_args(&cmd);
+    let args = reddit_sync_args(&mut cmd);
     assert_eq!(args.on_auth_failure.as_deref(), Some("explicit-hook"));
 
     let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
@@ -218,10 +218,10 @@ fn on_auth_failure_env_fills_per_source_when_flag_absent() {
         ])
     });
     std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
-    let cmd = parsed.expect("parses");
+    let mut cmd = parsed.expect("parses");
 
     assert_eq!(cmd.on_auth_failure, None);
-    let args = reddit_sync_args(&cmd);
+    let args = reddit_sync_args(&mut cmd);
 
     let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
     let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
@@ -237,20 +237,20 @@ fn parse_cleanup(extra: &[&str]) -> CleanupCmd {
 }
 
 /// The `cleanup reddit` args of a parsed `cleanup`.
-fn reddit_cleanup_args(cmd: &CleanupCmd) -> RedditCleanupArgs {
-    let Some(CleanupSource::Reddit(args)) = &cmd.source else {
+fn reddit_cleanup_args(cmd: &mut CleanupCmd) -> RedditCleanupArgs {
+    let Some(CleanupSource::Reddit(args)) = cmd.source.take() else {
         panic!("expected `cleanup reddit` args");
     };
-    args.clone()
+    args
 }
 
 #[test]
 fn top_level_use_post_date_reaches_single_source_cleanup() {
     // `--use-post-date` placed before the source subcommand must reach the
     // cleanup pass; the per-source `dates` alone only sees a flag placed after.
-    let cmd = parse_cleanup(&["--use-post-date", "reddit", "alice"]);
+    let mut cmd = parse_cleanup(&["--use-post-date", "reddit", "alice"]);
     assert_eq!(cmd.dates.use_post_date, Some(true));
-    let args = reddit_cleanup_args(&cmd);
+    let args = reddit_cleanup_args(&mut cmd);
     assert_eq!(args.dates.use_post_date, None);
 
     let overrides = args.dates.with_top_level(&cmd.dates);
@@ -261,9 +261,9 @@ fn top_level_use_post_date_reaches_single_source_cleanup() {
 fn per_source_cleanup_date_flag_falls_back_when_no_top_level() {
     // A flag placed after the source subcommand still applies when the
     // top-level `dates` is empty.
-    let cmd = parse_cleanup(&["reddit", "alice", "--use-post-date=false"]);
+    let mut cmd = parse_cleanup(&["reddit", "alice", "--use-post-date=false"]);
     assert_eq!(cmd.dates.use_post_date, None);
-    let args = reddit_cleanup_args(&cmd);
+    let args = reddit_cleanup_args(&mut cmd);
     assert_eq!(args.dates.use_post_date, Some(false));
 
     let overrides = args.dates.with_top_level(&cmd.dates);
@@ -385,7 +385,7 @@ fn backup_all_conflicts_with_a_target_and_a_bare_backup_is_rejected() {
     let config = Config::default();
 
     let cmd = parse_backup(&["--all", "pinboard"]);
-    let err = build_backup_plan(&cmd, &config)
+    let err = build_backup_plan(cmd, &config)
         .err()
         .expect("should be rejected");
     assert!(
@@ -394,7 +394,7 @@ fn backup_all_conflicts_with_a_target_and_a_bare_backup_is_rejected() {
     );
 
     let cmd = parse_backup(&[]);
-    let err = build_backup_plan(&cmd, &config)
+    let err = build_backup_plan(cmd, &config)
         .err()
         .expect("should be rejected");
     assert!(err.to_string().contains("specify a target"), "{err}");
@@ -402,7 +402,7 @@ fn backup_all_conflicts_with_a_target_and_a_bare_backup_is_rejected() {
 
 #[test]
 fn backup_pinboard_without_a_token_names_every_setting_it_can_come_from() {
-    let error = build_backup_plan(&parse_backup(&["pinboard"]), &Config::default())
+    let error = build_backup_plan(parse_backup(&["pinboard"]), &Config::default())
         .err()
         .expect("no token is set");
     assert_eq!(
@@ -470,7 +470,7 @@ fn backup_all_names_each_source_in_its_labels_and_stems() {
         }],
         ..Default::default()
     };
-    let plan = build_backup_plan(&parse_backup(&["--all"]), &config).expect("plans");
+    let plan = build_backup_plan(parse_backup(&["--all"]), &config).expect("plans");
     let named: Vec<(&str, &str)> = plan
         .jobs
         .iter()
@@ -511,7 +511,7 @@ async fn backup_all_backs_up_the_rest_when_one_account_cannot_be_built() {
     };
     config.pinboard.token = Some("user:tok".into());
 
-    let plan = build_backup_plan(&parse_backup(&["--all"]), &config).expect("plans");
+    let plan = build_backup_plan(parse_backup(&["--all"]), &config).expect("plans");
     let labels: Vec<&str> = plan.jobs.iter().map(|job| job.label.as_str()).collect();
     assert_eq!(labels, ["reddit[alice]", "pinboard"]);
     assert_eq!(skipped_labels(&plan.skipped), ["github[default]"]);
@@ -546,7 +546,7 @@ fn backup_source_all_backs_up_the_rest_when_one_account_cannot_be_built() {
         ],
         ..Default::default()
     };
-    let plan = build_backup_plan(&parse_backup(&["github", "--all"]), &config).expect("plans");
+    let plan = build_backup_plan(parse_backup(&["github", "--all"]), &config).expect("plans");
     let labels: Vec<&str> = plan.jobs.iter().map(|job| job.label.as_str()).collect();
     assert_eq!(labels, ["github[main]"]);
     assert_eq!(skipped_labels(&plan.skipped), ["github[tokenless]"]);

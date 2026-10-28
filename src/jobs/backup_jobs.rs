@@ -11,7 +11,7 @@ use super::{
     SkippedTarget, SourceAccount, SourceClient, SyncOverrides,
 };
 use crate::backup::{self, BackupSource};
-use crate::cli::{BackupCmd, BackupTarget, OutFlag};
+use crate::cli::{BackupCmd, BackupTarget};
 use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccount};
 use crate::hook::on_auth_failure_from_env;
 use crate::pinboard::PinboardClient;
@@ -57,8 +57,8 @@ pub struct BackupPlan {
     pub dry_run: bool,
 }
 
-pub fn build_backup_plan(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan> {
-    match (cmd.all, &cmd.target) {
+pub fn build_backup_plan(cmd: BackupCmd, config: &Config) -> Result<BackupPlan> {
+    match (cmd.all, cmd.target) {
         (true, Some(_)) => bail!("--all cannot be combined with a target subcommand"),
         (true, None) => {
             let overrides = SyncOverrides {
@@ -101,36 +101,43 @@ pub fn build_backup_plan(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan>
             }
             Ok(plan)
         }
-        (false, Some(BackupTarget::Reddit(args))) => build_source_backup_plan::<RedditAccount>(
-            Selection::new(args.account.as_deref(), args.all)?,
-            &SyncOverrides::from(args.clone()),
-            &args.out,
-            args.dry_run,
-            config,
-        ),
-        (false, Some(BackupTarget::Github(args))) => build_source_backup_plan::<GitHubAccount>(
-            Selection::new(args.account.as_deref(), args.all)?,
-            &SyncOverrides::from(args.clone()),
-            &args.out,
-            args.dry_run,
-            config,
-        ),
-        (false, Some(BackupTarget::Hackernews(args))) => {
+        (false, Some(BackupTarget::Reddit(mut args))) => {
+            let (account, out, dry_run) = (args.account.take(), args.out.out.take(), args.dry_run);
+            build_source_backup_plan::<RedditAccount>(
+                Selection::new(account.as_deref(), args.all)?,
+                &SyncOverrides::from(args),
+                out,
+                dry_run,
+                config,
+            )
+        }
+        (false, Some(BackupTarget::Github(mut args))) => {
+            let (account, out, dry_run) = (args.account.take(), args.out.out.take(), args.dry_run);
+            build_source_backup_plan::<GitHubAccount>(
+                Selection::new(account.as_deref(), args.all)?,
+                &SyncOverrides::from(args),
+                out,
+                dry_run,
+                config,
+            )
+        }
+        (false, Some(BackupTarget::Hackernews(mut args))) => {
+            let (account, out, dry_run) = (args.account.take(), args.out.out.take(), args.dry_run);
             build_source_backup_plan::<HackerNewsAccount>(
-                Selection::new(args.account.as_deref(), args.all)?,
-                &SyncOverrides::from(args.clone()),
-                &args.out,
-                args.dry_run,
+                Selection::new(account.as_deref(), args.all)?,
+                &SyncOverrides::from(args),
+                out,
+                dry_run,
                 config,
             )
         }
         (false, Some(BackupTarget::Pinboard(args))) => {
-            let job = build_pinboard_backup_job(args.pinboard_token.clone(), config)?
+            let job = build_pinboard_backup_job(args.pinboard_token, config)?
                 .with_context(|| SecretSpec::PINBOARD_TOKEN.missing())?;
             Ok(BackupPlan {
                 jobs: vec![job],
                 skipped: Vec::new(),
-                out: args.out.out.clone(),
+                out: args.out.out,
                 dry_run: args.dry_run,
             })
         }
@@ -143,14 +150,14 @@ pub fn build_backup_plan(cmd: &BackupCmd, config: &Config) -> Result<BackupPlan>
 fn build_source_backup_plan<A: SourceAccount>(
     selection: Selection,
     overrides: &SyncOverrides,
-    out: &OutFlag,
+    out: Option<String>,
     dry_run: bool,
     config: &Config,
 ) -> Result<BackupPlan> {
     let mut plan = BackupPlan {
         jobs: Vec::new(),
         skipped: Vec::new(),
-        out: out.out.clone(),
+        out,
         dry_run,
     };
     match selection {
@@ -228,6 +235,7 @@ fn build_pinboard_backup_job(flag: Option<String>, config: &Config) -> Result<Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::OutFlag;
     use crate::test_support::{lock_on_auth_failure_env, warnings};
 
     fn backup_all() -> BackupCmd {
@@ -255,7 +263,7 @@ mod tests {
             ..Default::default()
         };
         std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
-        let plan = build_backup_plan(&backup_all(), &config);
+        let plan = build_backup_plan(backup_all(), &config);
         std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
 
         let plan = plan.expect("plans");
@@ -270,10 +278,9 @@ mod tests {
             ..Default::default()
         };
 
-        let (_, logs) = crate::test_support::capturing_logs(async {
-            build_backup_plan(&backup_all(), &config)
-        })
-        .await;
+        let (_, logs) =
+            crate::test_support::capturing_logs(async { build_backup_plan(backup_all(), &config) })
+                .await;
 
         assert_eq!(
             warnings(&logs).first().copied(),

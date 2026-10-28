@@ -630,8 +630,11 @@ mod net_tests {
             ..Default::default()
         };
         let home = &config.github[0];
-        let client =
-            GitHubClient::with_base_url("tok".into(), GitHubConfig::from(home), server.uri());
+        let client = GitHubClient::with_base_url(
+            "tok".into(),
+            GitHubConfig::resolve(Some(home), &config.defaults.github),
+            server.uri(),
+        );
 
         cleanup_github_with_client(
             &pinboard.cleanup_store(false),

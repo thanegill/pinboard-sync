@@ -159,15 +159,18 @@ source overrides to stop paging at the first page that would give `sync` nothing
 run writes only the newest drafts and an incremental read would never reach the rest.
 **`prepare_new_drafts` returns drafts oldest first**, which is what keeps an interrupted
 `auto` run recoverable (its doc says why). `backup`, `doctor` and `cleanup github`'s star
-dates call `fetch()`. Known gaps, all recovered by `--limit all`: an older item deleted from
-Pinboard is not re-added, a failed write followed by a full page of newer successes is never
-retried, and a page whose items all reached Pinboard another way stops the read early.
+dates read every page (the star dates through `fetch_stars`, the stars stream alone). Known
+gaps, all recovered by `--limit all`: an older item deleted from Pinboard is not re-added, a
+failed write followed by a full page of newer successes is never retried, and a page whose
+items all reached Pinboard another way stops the read early.
 
 **Sources:** Reddit ([`reddit.rs`](src/reddit.rs) — cookie-authenticated
 `saved.json`/`api/info.json`, plus the `PostInfo` port for cleanup;
 [`model.rs`](src/reddit/model.rs) shapes bookmarks and tags), GitHub
 ([`github.rs`](src/github.rs) — `/user/starred`, `sort=created&direction=desc` pinned
-because the incremental read depends on newest-starred-first), and HackerNews
+because the incremental read depends on newest-starred-first, then unless `gists = false`
+`/gists/starred` as a second stream, shaped in [`gists.rs`](src/github/gists.rs); both go
+through `GitHubClient::walk`, and each stops at its own caught-up page), and HackerNews
 ([`hackernews.rs`](src/hackernews.rs) — scrapes `/favorites` for item IDs in
 [`favorites.rs`](src/hackernews/favorites.rs), then batch-reads them from Algolia in
 [`algolia.rs`](src/hackernews/algolia.rs)). **HackerNews' caught-up test checks drafts, not
@@ -253,9 +256,9 @@ consumes; `config check <file>` runs `Config::parse` without resolving a secret.
 401/403 that isn't the "blocked by network security" page, a Reddit redirect to `/login`,
 GitHub 401) fires the `--on-auth-failure` hook and exits non-zero; `SourceError::Other`
 (transient/parse) doesn't. HackerNews never re-auths. **`cleanup` fires it too**, for every
-re-auth-capable read: GitHub's `repo()` mid-pass (via `Halt`), GitHub's `fetch()` for star
-dates, and Reddit's `/api/info`, whose expired cookie is by far the most common case. That
-is why the three `cleanup` entry points return `Result<(), SourceError>` rather than
+re-auth-capable read: GitHub's `repo()` mid-pass (via `Halt`), GitHub's `fetch_stars()` for
+star dates, and Reddit's `/api/info`, whose expired cookie is by far the most common case.
+That is why the three `cleanup` entry points return `Result<(), SourceError>` rather than
 `anyhow::Result`: flattening the variant would lose the hook. [`src/hook.rs`](src/hook.rs)'s
 `handle_source_err` is the single place the hook is fired; `cleanup` resolves the command
 through `PINBOARD_SYNC_ON_AUTH_FAILURE` → account → `[defaults.<source>]` → `[hooks]` (it

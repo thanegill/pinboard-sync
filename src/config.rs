@@ -13,6 +13,7 @@ use std::str::FromStr;
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 
+use crate::github::gists::{GistConfig, GistPostDate};
 use crate::github::GitHubConfig;
 use crate::hackernews::HackerNewsConfig;
 use crate::reddit::model::RedditConfig;
@@ -48,7 +49,7 @@ pub struct Defaults {
     #[serde(default)]
     pub reddit: SourceDefaults,
     #[serde(default)]
-    pub github: SourceDefaults,
+    pub github: GitHubDefaults,
     #[serde(default)]
     pub hackernews: SourceDefaults,
 }
@@ -65,6 +66,57 @@ pub struct SourceDefaults {
     pub use_post_date: Option<bool>,
     pub post_date_max_age_days: Option<u64>,
     pub cleanup_stale_to_now: Option<bool>,
+}
+
+/// `[defaults.github]`: the [`SourceDefaults`] every source has, plus GitHub's own.
+#[derive(Debug, Default, Deserialize)]
+#[serde(from = "GitHubDefaultsTable")]
+pub struct GitHubDefaults {
+    pub common: SourceDefaults,
+    pub gist_post_date: Option<GistPostDate>,
+}
+
+/// `[defaults.github]` as written: [`SourceDefaults`]' keys alongside GitHub's own.
+/// Spelled out rather than `#[serde(flatten)]`ed, which can't be combined with
+/// `deny_unknown_fields`.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitHubDefaultsTable {
+    toread: Option<bool>,
+    public: Option<bool>,
+    limit: Option<SyncLimit>,
+    on_auth_failure: Option<String>,
+    use_post_date: Option<bool>,
+    post_date_max_age_days: Option<u64>,
+    cleanup_stale_to_now: Option<bool>,
+    gist_post_date: Option<GistPostDate>,
+}
+
+impl From<GitHubDefaultsTable> for GitHubDefaults {
+    fn from(table: GitHubDefaultsTable) -> Self {
+        let GitHubDefaultsTable {
+            toread,
+            public,
+            limit,
+            on_auth_failure,
+            use_post_date,
+            post_date_max_age_days,
+            cleanup_stale_to_now,
+            gist_post_date,
+        } = table;
+        Self {
+            common: SourceDefaults {
+                toread,
+                public,
+                limit,
+                on_auth_failure,
+                use_post_date,
+                post_date_max_age_days,
+                cleanup_stale_to_now,
+            },
+            gist_post_date,
+        }
+    }
 }
 
 /// `backup` output settings. The directory lives in the config because the NixOS timer
@@ -277,7 +329,7 @@ impl Config {
         check_unique_names("hackernews", &self.hackernews)?;
         check_distinct_slugs("hackernews", &self.hackernews, NAME_OR_USERNAME)?;
         self.check_stale_to_now_cap("reddit", &self.reddit, &self.defaults.reddit)?;
-        self.check_stale_to_now_cap("github", &self.github, &self.defaults.github)?;
+        self.check_stale_to_now_cap("github", &self.github, &self.defaults.github.common)?;
         self.check_stale_to_now_cap("hackernews", &self.hackernews, &self.defaults.hackernews)?;
 
         for (index, account) in self.reddit.iter().enumerate() {
@@ -296,6 +348,12 @@ impl Config {
             check_tags(&at("tags"), &account.tags)?;
             check_tag(&at("tag_lang_prefix"), &account.tag_lang_prefix)?;
             check_tag(&at("tag_author_prefix"), &account.tag_author_prefix)?;
+            check_tags(&at("gist_tags"), &account.gist_tags)?;
+            check_tag(&at("gist_tag_lang_prefix"), &account.gist_tag_lang_prefix)?;
+            check_tag(
+                &at("gist_tag_author_prefix"),
+                &account.gist_tag_author_prefix,
+            )?;
         }
         for (index, account) in self.hackernews.iter().enumerate() {
             let at = |field: &str| format!("hackernews[{index}].{field}");
@@ -536,17 +594,50 @@ pub struct GitHubAccount {
     pub tag_author_prefix: Option<String>,
     /// Tags applied to every bookmark (default `["github-star"]`); a full override.
     pub tags: Option<Vec<String>>,
+    /// Whether to sync the account's starred gists (default on).
+    pub gists: Option<bool>,
+    /// Tags applied to every gist (default `tags` plus `github-gist`); a full override.
+    pub gist_tags: Option<Vec<String>>,
+    pub gist_tag_lang_prefix: Option<String>,
+    pub gist_tag_author_prefix: Option<String>,
+    /// Override `[defaults.github]`'s `gist_post_date` for this account.
+    pub gist_post_date: Option<GistPostDate>,
 }
 
-/// The account's non-secret [`GitHubConfig`] (tag vocabulary), each field falling back
-/// to its built-in default.
-impl From<&GitHubAccount> for GitHubConfig {
-    fn from(account: &GitHubAccount) -> Self {
+impl GitHubConfig {
+    /// The non-secret [`GitHubConfig`] (tag vocabulary and gist settings) of `account`,
+    /// or of the implicit CLI/env account when `None`. Each field falls back to its
+    /// built-in default, a gist tag field to the stars' own, and `gist_post_date` to
+    /// `[defaults.github]` and then `now`.
+    pub fn resolve(account: Option<&GitHubAccount>, defaults: &GitHubDefaults) -> Self {
         let d = GitHubConfig::default();
+        let field = |pick: fn(&GitHubAccount) -> &Option<String>, default: String| {
+            account.and_then(|a| pick(a).clone()).unwrap_or(default)
+        };
+        let tags = account.and_then(|a| a.tags.clone()).unwrap_or(d.tags);
+        let lang_prefix = field(|a| &a.tag_lang_prefix, d.lang_prefix);
+        let author_prefix = field(|a| &a.tag_author_prefix, d.author_prefix);
+        let inherited = GistConfig::inheriting(&tags, &lang_prefix, &author_prefix);
+        let gists = GistConfig {
+            enabled: account.and_then(|a| a.gists).unwrap_or(inherited.enabled),
+            tags: account
+                .and_then(|a| a.gist_tags.clone())
+                .unwrap_or(inherited.tags),
+            lang_prefix: field(|a| &a.gist_tag_lang_prefix, inherited.lang_prefix),
+            author_prefix: field(|a| &a.gist_tag_author_prefix, inherited.author_prefix),
+            post_date: crate::settings::resolve_setting(
+                None,
+                account.and_then(|a| a.gist_post_date),
+                defaults.gist_post_date,
+                GistPostDate::default(),
+            )
+            .value,
+        };
         GitHubConfig {
-            tags: account.tags.clone().unwrap_or(d.tags),
-            lang_prefix: account.tag_lang_prefix.clone().unwrap_or(d.lang_prefix),
-            author_prefix: account.tag_author_prefix.clone().unwrap_or(d.author_prefix),
+            tags,
+            lang_prefix,
+            author_prefix,
+            gists,
         }
     }
 }
@@ -699,6 +790,11 @@ impl fmt::Debug for GitHubAccount {
             tag_lang_prefix,
             tag_author_prefix,
             tags,
+            gists,
+            gist_tags,
+            gist_tag_lang_prefix,
+            gist_tag_author_prefix,
+            gist_post_date,
         } = self;
         f.debug_struct("GitHubAccount")
             .field("name", name)
@@ -714,6 +810,11 @@ impl fmt::Debug for GitHubAccount {
             .field("tag_lang_prefix", tag_lang_prefix)
             .field("tag_author_prefix", tag_author_prefix)
             .field("tags", tags)
+            .field("gists", gists)
+            .field("gist_tags", gist_tags)
+            .field("gist_tag_lang_prefix", gist_tag_lang_prefix)
+            .field("gist_tag_author_prefix", gist_tag_author_prefix)
+            .field("gist_post_date", gist_post_date)
             .finish()
     }
 }

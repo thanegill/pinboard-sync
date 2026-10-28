@@ -1,7 +1,9 @@
 //! The GitHub source: reads the authenticated user's starred repositories
-//! (`/user/starred`, token-authenticated) and shapes each into a Pinboard draft.
+//! (`/user/starred`, token-authenticated) and, unless turned off, starred gists
+//! (`/gists/starred`), and shapes each into a Pinboard draft.
 
 pub mod cleanup;
+pub mod gists;
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -20,6 +22,7 @@ use crate::source::{
     deserialize_lenient, page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey,
 };
 use crate::tags::{push_prefixed, push_tags};
+use gists::{GistConfig, GitHubGist};
 use url::Url;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
@@ -62,6 +65,16 @@ const STARS: PagedStream = PagedStream {
     ],
 };
 
+/// `/gists/starred`. GitHub documents no sort order or sort parameter for it; the
+/// incremental read assumes newest-starred-first, as every other stream lists.
+const STARRED_GISTS: PagedStream = PagedStream {
+    label: "github starred gists",
+    raw_stream: "gists",
+    path: "/gists/starred",
+    accept: "application/vnd.github+json",
+    query: &[("per_page", PER_PAGE)],
+};
+
 /// Tag vocabulary for GitHub stars. `tags` are applied to every bookmark
 /// (defaulting to `["github-star"]`); the prefixes default to their built-in values, and
 /// an empty string disables that tag.
@@ -71,14 +84,20 @@ pub struct GitHubConfig {
     pub lang_prefix: String,
     /// Prefix for the tag naming the repo's owner.
     pub author_prefix: String,
+    /// The starred gists' settings.
+    pub gists: GistConfig,
 }
 
 impl Default for GitHubConfig {
     fn default() -> Self {
+        let tags = vec!["github-star".to_string()];
+        let lang_prefix = "lang:";
+        let author_prefix = "author:github:";
         Self {
-            tags: vec!["github-star".into()],
-            lang_prefix: "lang:".into(),
-            author_prefix: "author:github:".into(),
+            gists: GistConfig::inheriting(&tags, lang_prefix, author_prefix),
+            tags,
+            lang_prefix: lang_prefix.into(),
+            author_prefix: author_prefix.into(),
         }
     }
 }
@@ -412,8 +431,8 @@ impl Source for GitHubClient {
         self.fetch_capturing(None, &mut RawSink::disabled()).await
     }
 
-    /// Stars list newest first, so paging stops at the first page that would give `sync`
-    /// nothing to write.
+    /// Stars and gists list newest first, so each stream stops paging at its first page
+    /// that would give `sync` nothing to write.
     async fn fetch_incremental(
         &self,
         existing: &[Bookmark],
@@ -426,14 +445,35 @@ impl Source for GitHubClient {
 impl GitHubClient {
     /// [`Source::fetch`], pushing each page body to `sink` as it arrives so `backup` gets
     /// the verbatim responses -- including the ~75 repo fields [`GitHubStarredRepo`]
-    /// doesn't keep -- out of the same traversal. With `synced_keys`, it stops at the
-    /// first page with nothing new ([`page_is_caught_up`]).
+    /// doesn't keep -- out of the same traversal. With `synced_keys`, each stream stops at
+    /// its own first page with nothing new ([`page_is_caught_up`]). The stars come before
+    /// the gists, so a numeric `limit` writes the stars first.
     async fn fetch_capturing(
         &self,
         synced_keys: Option<&HashSet<String>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
-        self.fetch_stars(synced_keys, sink).await
+        let mut drafts = self.fetch_stars(synced_keys, sink).await?;
+        if self.config.gists.enabled {
+            drafts.extend(self.fetch_gists(synced_keys, sink).await?);
+        } else {
+            // Without it a backup would keep last run's gists file beside a gist-less
+            // normalized half.
+            sink.push(STARRED_GISTS.raw_stream, RawKind::Json, "[]");
+        }
+        Ok(drafts)
+    }
+
+    /// The starred gists, a second stream: it stops at its own caught-up page.
+    async fn fetch_gists(
+        &self,
+        synced_keys: Option<&HashSet<String>>,
+        sink: &mut RawSink,
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        self.walk(&STARRED_GISTS, synced_keys, sink, |gist: GitHubGist| {
+            gist.into_draft(&self.config.gists)
+        })
+        .await
     }
 
     /// The starred repos, each dated by its star time.
@@ -567,6 +607,16 @@ fn parse_link_next(link: &str) -> Option<u32> {
 
 #[cfg(test)]
 const TEST_TOKEN_SOURCE: &str = "$GITHUB_TOKEN_FILE";
+
+#[cfg(test)]
+impl GitHubConfig {
+    /// The defaults with the gists off, for a test that mocks only the stars.
+    pub(crate) fn stars_only() -> Self {
+        let mut config = Self::default();
+        config.gists.enabled = false;
+        config
+    }
+}
 
 #[cfg(test)]
 impl GitHubClient {

@@ -419,6 +419,7 @@ async fn cleanup_refreshes_the_stars_of_every_configured_account_by_their_own_ta
         tags: vec!["work-star".into()],
         lang_prefix: "language:".into(),
         author_prefix: "owner:".into(),
+        ..GitHubConfig::default()
     };
     let client = github_client(&server);
 

@@ -365,7 +365,7 @@ async fn run_cleanup_github(
         "github",
         &overrides,
         account,
-        &config.defaults.github,
+        &config.defaults.github.common,
         config,
     )?;
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
@@ -385,7 +385,10 @@ async fn cleanup_github_account<S: BookmarkStore + AccountState>(
 ) -> Result<()> {
     let token = resolve_github_token(token_flag, account)
         .with_context(|| SecretSpec::GITHUB_TOKEN.missing())?;
-    let client = GitHubClient::new(token, account.map(GitHubConfig::from).unwrap_or_default())?;
+    let client = GitHubClient::new(
+        token,
+        GitHubConfig::resolve(account, &config.defaults.github),
+    )?;
     cleanup_github_with_client(store, &client, account, dates, config).await
 }
 
@@ -398,7 +401,11 @@ async fn cleanup_github_with_client<S: BookmarkStore + AccountState>(
     config: &Config,
 ) -> Result<()> {
     let hook = cleanup_hook(account, config);
-    let configured: Vec<GitHubConfig> = config.github.iter().map(GitHubConfig::from).collect();
+    let configured: Vec<GitHubConfig> = config
+        .github
+        .iter()
+        .map(|account| GitHubConfig::resolve(Some(account), &config.defaults.github))
+        .collect();
     github::cleanup::run(store, client, dates, &configured)
         .await
         .map_err(|e| handle_source_err(e, hook.as_deref()))

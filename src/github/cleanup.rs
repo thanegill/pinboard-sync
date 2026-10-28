@@ -490,6 +490,7 @@ mod tests {
             tags: vec![base.into()],
             lang_prefix: lang_prefix.into(),
             author_prefix: author_prefix.into(),
+            ..GitHubConfig::default()
         };
         let (home, work) = (
             cfg("github-star", "lang:", "author:github:"),

@@ -617,6 +617,21 @@ fn example_config_documents_every_field() {
         tag_lang_prefix,
         tag_author_prefix,
         tags,
+        gists,
+        gist_tags,
+        gist_tag_lang_prefix,
+        gist_tag_author_prefix,
+        gist_post_date,
+    });
+    let github_defaults = documented_fields!(GitHubDefaultsTable {
+        toread,
+        public,
+        limit,
+        on_auth_failure,
+        use_post_date,
+        post_date_max_age_days,
+        cleanup_stale_to_now,
+        gist_post_date,
     });
     let hackernews = documented_fields!(HackerNewsAccount {
         name,
@@ -639,6 +654,7 @@ fn example_config_documents_every_field() {
         .chain(&pinboard)
         .chain(&backup)
         .chain(&source_defaults)
+        .chain(&github_defaults)
         .chain(&reddit)
         .chain(&github)
         .chain(&hackernews)
@@ -716,5 +732,124 @@ fn a_config_tag_refusal_says_it_came_from_the_config() {
     assert_eq!(
         error.to_string(),
         "config: `github[0].tag_lang_prefix` must not contain whitespace"
+    );
+}
+
+fn github_config(text: &str) -> GitHubConfig {
+    let config = Config::parse(text).unwrap();
+    GitHubConfig::resolve(config.github.first(), &config.defaults.github)
+}
+
+#[test]
+fn gists_are_on_by_default_and_inherit_the_stars_tags() {
+    let gists = github_config("[[github]]\n").gists;
+    assert_eq!(gists, GitHubConfig::default().gists);
+    assert!(gists.enabled);
+    assert_eq!(gists.tags, ["github-star", "github-gist"]);
+    assert_eq!(gists.lang_prefix, "lang:");
+    assert_eq!(gists.author_prefix, "author:github:");
+    assert_eq!(gists.post_date, GistPostDate::Now);
+
+    let gists = github_config(
+        "[[github]]\ntags = [\"star\", \"x\"]\ntag_lang_prefix = \"l:\"\n\
+         tag_author_prefix = \"\"\n",
+    )
+    .gists;
+    assert_eq!(gists.tags, ["star", "x", "github-gist"]);
+    assert_eq!(gists.lang_prefix, "l:");
+    assert_eq!(
+        gists.author_prefix, "",
+        "an owner tag turned off for stars is off here too"
+    );
+}
+
+#[test]
+fn every_gist_key_overrides_its_inherited_value() {
+    let gists = github_config(
+        "[[github]]\ngists = false\ngist_tags = [\"gist\"]\n\
+         gist_tag_lang_prefix = \"gl:\"\ngist_tag_author_prefix = \"by:\"\n\
+         gist_post_date = \"updated\"\n",
+    )
+    .gists;
+    assert_eq!(
+        gists,
+        GistConfig {
+            enabled: false,
+            tags: vec!["gist".into()],
+            lang_prefix: "gl:".into(),
+            author_prefix: "by:".into(),
+            post_date: GistPostDate::Updated,
+        }
+    );
+}
+
+#[test]
+fn gist_post_date_resolves_account_then_defaults_then_now() {
+    let post_date = |text: &str| github_config(text).gists.post_date;
+    assert_eq!(
+        post_date("[defaults.github]\ngist_post_date = \"created\"\n[[github]]\n"),
+        GistPostDate::Created
+    );
+    assert_eq!(
+        post_date(
+            "[defaults.github]\ngist_post_date = \"created\"\n\
+             [[github]]\ngist_post_date = \"updated\"\n"
+        ),
+        GistPostDate::Updated
+    );
+    assert_eq!(
+        post_date("[defaults.github]\ngist_post_date = \"created\"\n"),
+        GistPostDate::Created,
+        "the implicit CLI/env account reads [defaults.github] too"
+    );
+    assert_eq!(post_date(""), GistPostDate::Now);
+}
+
+#[test]
+fn defaults_github_keeps_the_shared_keys_and_rejects_unknown_ones() {
+    let config = Config::parse("[defaults.github]\nuse_post_date = true\nlimit = 5\n").unwrap();
+    assert_eq!(config.defaults.github.common.use_post_date, Some(true));
+    assert!(config.defaults.github.common.limit.is_some());
+
+    let unknown = Config::parse("[defaults.github]\nnot_a_key = 1\n").unwrap_err();
+    assert!(format!("{unknown:#}").contains("not_a_key"), "{unknown:#}");
+    let elsewhere = Config::parse("[defaults.reddit]\ngist_post_date = \"now\"\n").unwrap_err();
+    assert!(
+        format!("{elsewhere:#}").contains("gist_post_date"),
+        "{elsewhere:#}"
+    );
+}
+
+#[test]
+fn a_bad_gist_setting_names_the_field_not_the_value() {
+    assert_error_hides(
+        "[[github]]\ngist_post_date = \"ghp_SECRET7\"\n",
+        "SECRET7",
+        "`gist_post_date` must be `now`, `created` or `updated`",
+    );
+    assert_error_hides(
+        "[[github]]\ngist_post_date = 5\n",
+        "`5`",
+        "expected `gist_post_date` as `now`, `created` or `updated`",
+    );
+    assert_error_hides(
+        "[defaults.github]\ngist_post_date = \"ghp_SECRET8\"\n",
+        "SECRET8",
+        "`gist_post_date` must be `now`, `created` or `updated`",
+    );
+    assert_error_hides(
+        "[[github]]\ngist_tags = [\"ok\", \"ghp SECRET9\"]\n",
+        "SECRET9",
+        "`github[0].gist_tags[1]` must not contain whitespace",
+    );
+    assert_error_hides(
+        "[[github]]\ngist_tag_lang_prefix = \"a,SECRET10\"\n",
+        "SECRET10",
+        "`github[0].gist_tag_lang_prefix` must not contain a comma",
+    );
+    assert_error_hides(
+        "[[github]]\ngist_tag_author_prefix = \"a SECRET11\"\n",
+        "SECRET11",
+        "`github[0].gist_tag_author_prefix` must not contain whitespace",
     );
 }

@@ -176,7 +176,7 @@ async fn only_an_auto_sync_job_stops_github_at_a_synced_page() {
         |server| {
             SourceClient::GitHub(GitHubClient::with_base_url(
                 "tok".into(),
-                GitHubConfig::default(),
+                GitHubConfig::stars_only(),
                 server.uri(),
             ))
         },

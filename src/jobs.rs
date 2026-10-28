@@ -311,7 +311,7 @@ impl SourceAccount for GitHubAccount {
     }
 
     fn defaults(config: &Config) -> &config::SourceDefaults {
-        &config.defaults.github
+        &config.defaults.github.common
     }
 
     fn on_auth_failure(&self) -> Option<&str> {
@@ -325,11 +325,11 @@ impl SourceAccount for GitHubAccount {
     fn client(
         account: Option<&Self>,
         overrides: &SyncOverrides,
-        _: &Config,
+        config: &Config,
     ) -> Result<SourceClient> {
         let token = resolve_github_token(overrides.github_token.clone(), account)
             .with_context(|| SecretSpec::GITHUB_TOKEN.missing())?;
-        let github_config = account.map(GitHubConfig::from).unwrap_or_default();
+        let github_config = GitHubConfig::resolve(account, &config.defaults.github);
         Ok(SourceClient::GitHub(GitHubClient::new(
             token,
             github_config,

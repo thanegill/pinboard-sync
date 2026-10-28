@@ -461,10 +461,15 @@ async fn dump_captures_every_page_in_order() {
 
     let client = github_client(&server);
     let dump = client.dump().await.unwrap();
-    assert_eq!(dump.raw.len(), 2, "one captured body per page");
+    let star_pages: Vec<&crate::backup::RawPage> = dump
+        .raw
+        .iter()
+        .filter(|page| page.stream.is_empty())
+        .collect();
+    assert_eq!(star_pages.len(), 2, "one captured body per page");
 
     // GitHub's pages are arrays, so they flatten into one array of repos.
-    let bodies: Vec<&str> = dump.raw.iter().map(|p| p.body.as_str()).collect();
+    let bodies: Vec<&str> = star_pages.iter().map(|p| p.body.as_str()).collect();
     let (merged, _) = crate::backup::merge_json_pages(&bodies).unwrap();
     let items = merged.as_array().unwrap();
     assert_eq!(items.len(), 2);
@@ -504,7 +509,7 @@ async fn three_star_pages(server: &MockServer, hits: [u64; 3]) {
 }
 
 fn github_client(server: &MockServer) -> GitHubClient {
-    GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri())
+    GitHubClient::with_base_url("tok".into(), GitHubConfig::stars_only(), server.uri())
 }
 
 #[tokio::test]
@@ -535,7 +540,28 @@ async fn dump_reads_every_star_page() {
     three_star_pages(&server, [1, 1, 1]).await;
 
     let dump = github_client(&server).dump().await.unwrap();
-    assert_eq!(dump.raw.len(), 3);
+    let star_pages = dump.raw.iter().filter(|page| page.stream.is_empty());
+    assert_eq!(star_pages.count(), 3);
+}
+
+/// With the gists off, a backup still replaces last run's gists file, with `[]`, so it
+/// can't outlive the gists in the normalized half.
+#[tokio::test]
+async fn a_backup_with_gists_off_empties_their_file() {
+    let server = MockServer::start().await;
+    three_star_pages(&server, [1, 1, 1]).await;
+    two_gist_pages(&server, [0, 0]).await;
+
+    let dump = github_client(&server).dump().await.unwrap();
+    let files = crate::backup::layout("github-me", &dump).unwrap();
+    let gists = files
+        .iter()
+        .find(|file| file.path == "raw/github-me-gists.json")
+        .expect("a gists file");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&gists.body).unwrap(),
+        json!([])
+    );
 }
 
 /// `cleanup github` dates bookmarks from the whole star list, so it must not stop at
@@ -571,4 +597,209 @@ async fn cleanup_with_post_dates_reads_every_star_page() {
     )
     .await
     .unwrap();
+}
+
+/// The id of the gist [`gist_json`] numbers `n`.
+fn gist_id(n: usize) -> String {
+    format!("{n:020x}")
+}
+
+/// A `/gists/starred` element, a one-file Rust gist by `someone`.
+fn gist_json(n: usize) -> serde_json::Value {
+    let id = gist_id(n);
+    json!({
+        "id": id,
+        "html_url": format!("https://gist.github.com/{id}"),
+        "description": format!("gist {n}"),
+        "files": { "main.rs": { "filename": "main.rs", "language": "Rust",
+                                "raw_url": "https://gist.githubusercontent.com/x" } },
+        "owner": { "login": "someone" },
+        "public": true,
+        "comments": 3,
+    })
+}
+
+/// Mounts two `/gists/starred` pages of one gist each (gists 1 and 2), expecting each
+/// page `hits` times. Only a request asking for 100 a page matches.
+async fn two_gist_pages(server: &MockServer, hits: [u64; 2]) {
+    for (index, hits) in hits.into_iter().enumerate() {
+        let page = index + 1;
+        let mut response = ResponseTemplate::new(200).set_body_json(json!([gist_json(page)]));
+        if page == 1 {
+            let next = format!("<{}/gists/starred?page=2>; rel=\"next\"", server.uri());
+            response = response.insert_header("link", next.as_str());
+        }
+        Mock::given(method("GET"))
+            .and(path("/gists/starred"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", page.to_string().as_str()))
+            .and(header("accept", "application/vnd.github+json"))
+            .respond_with(response)
+            .expect(hits)
+            .mount(server)
+            .await;
+    }
+}
+
+fn client_with_gists(server: &MockServer) -> GitHubClient {
+    GitHubClient::with_base_url("tok".into(), GitHubConfig::default(), server.uri())
+}
+
+#[tokio::test]
+async fn fetch_reads_the_starred_gists_after_the_stars() {
+    let server = MockServer::start().await;
+    three_star_pages(&server, [1, 1, 1]).await;
+    two_gist_pages(&server, [1, 1]).await;
+
+    let drafts = client_with_gists(&server).fetch().await.unwrap();
+    assert_eq!(titles(&drafts), ["s/n", "s/o", "s/p", "gist 1", "gist 2"]);
+    let gist = &drafts[3].bookmark;
+    assert_eq!(
+        gist.url.as_str(),
+        format!("https://gist.github.com/someone/{}", gist_id(1))
+    );
+    assert_eq!(
+        gist.tags,
+        [
+            "github-star",
+            "github-gist",
+            "lang:rust",
+            "author:github:someone"
+        ]
+    );
+    assert_eq!(
+        drafts[3].dedup_key,
+        format!("gist.github.com/{}", gist_id(1))
+    );
+}
+
+#[tokio::test]
+async fn turning_gists_off_never_asks_for_them() {
+    let server = MockServer::start().await;
+    three_star_pages(&server, [1, 1, 1]).await;
+    two_gist_pages(&server, [0, 0]).await;
+
+    let drafts = github_client(&server).fetch().await.unwrap();
+    assert_eq!(titles(&drafts), ["s/n", "s/o", "s/p"]);
+}
+
+/// Each stream stops at its own caught-up page: the stars, whose second page is already
+/// on Pinboard, stop there, while the gists, whose first page is new, read on.
+#[tokio::test]
+async fn incremental_fetch_stops_each_stream_at_its_own_caught_up_page() {
+    let server = MockServer::start().await;
+    three_star_pages(&server, [1, 1, 0]).await;
+    two_gist_pages(&server, [1, 1]).await;
+
+    let existing = [
+        crate::test_support::stored_at("https://github.com/s/o"),
+        // Stored in the owner-less form a hand-saved gist often has: still the same gist.
+        crate::test_support::stored_at(&format!("https://gist.github.com/{}", gist_id(2))),
+    ];
+    let client = client_with_gists(&server);
+    let drafts = client.fetch_incremental(&existing).await.unwrap();
+    assert_eq!(titles(&drafts), ["s/n", "s/o", "gist 1", "gist 2"]);
+
+    let new = crate::sync::filter_new(&client, drafts, &existing);
+    assert_eq!(
+        titles(&new),
+        ["s/n", "gist 1"],
+        "the stored gist dedups by id"
+    );
+}
+
+#[tokio::test]
+async fn the_gist_stream_stops_once_caught_up_even_when_the_stars_are_not() {
+    let server = MockServer::start().await;
+    three_star_pages(&server, [1, 1, 1]).await;
+    two_gist_pages(&server, [1, 0]).await;
+
+    let existing = [crate::test_support::stored_at(&format!(
+        "https://gist.github.com/someone/{}",
+        gist_id(1)
+    ))];
+    let drafts = client_with_gists(&server)
+        .fetch_incremental(&existing)
+        .await
+        .unwrap();
+    assert_eq!(titles(&drafts), ["s/n", "s/o", "s/p", "gist 1"]);
+}
+
+/// A refused gist stream fails the account's fetch the way a refused star list does: a
+/// 401 asks for a new token, a rate limit stays a rate limit, anything else is an error.
+#[tokio::test]
+async fn the_gist_stream_is_refused_like_the_stars() {
+    let variant = |err: &SourceError| match err {
+        SourceError::ReauthRequired(_) => "reauth",
+        SourceError::RateLimited(_) => "rate limited",
+        SourceError::Blocked(_) => "blocked",
+        SourceError::Other(_) => "other",
+    };
+    let refusals = [
+        (ResponseTemplate::new(401), "reauth"),
+        (
+            ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
+            "rate limited",
+        ),
+        (ResponseTemplate::new(403), "other"),
+    ];
+    for (response, expected) in refusals {
+        let server = MockServer::start().await;
+        three_star_pages(&server, [1, 1, 1]).await;
+        Mock::given(method("GET"))
+            .and(path("/gists/starred"))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+
+        let err = client_with_gists(&server).fetch().await.unwrap_err();
+        assert_eq!(variant(&err), expected, "{err:?}");
+    }
+}
+
+#[tokio::test]
+async fn dump_captures_the_gists_as_their_own_stream() {
+    let server = MockServer::start().await;
+    three_star_pages(&server, [1, 1, 1]).await;
+    two_gist_pages(&server, [1, 1]).await;
+
+    let dump = client_with_gists(&server).dump().await.unwrap();
+    let streams: Vec<&str> = dump.raw.iter().map(|page| page.stream).collect();
+    assert_eq!(streams, ["", "", "", "gists", "gists"]);
+    let raw: serde_json::Value = serde_json::from_str(&dump.raw[3].body).unwrap();
+    assert_eq!(
+        raw[0]["comments"], 3,
+        "fields the typed gist drops are kept"
+    );
+
+    let files = crate::backup::layout("github-me", &dump).unwrap();
+    let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+    assert!(paths.contains(&"raw/github-me-gists.json"), "{paths:?}");
+    let records = dump.records.expect("normalization succeeded");
+    assert_eq!(records.len(), 5, "stars and gists alike");
+}
+
+/// A numeric `limit` caps the account's writes across both streams, not each stream.
+#[tokio::test]
+async fn a_capped_sync_counts_stars_and_gists_together() {
+    let server = MockServer::start().await;
+    three_star_pages(&server, [1, 1, 1]).await;
+    two_gist_pages(&server, [1, 1]).await;
+    let client = client_with_gists(&server);
+    let drafts = client.fetch().await.unwrap();
+
+    let settings = crate::sync::JobSettings {
+        limit: crate::config::SyncLimit::Max(std::num::NonZeroUsize::new(4).unwrap()),
+        read_later: false,
+        public: false,
+        dates: crate::test_support::NO_DATING,
+    };
+    let new = crate::sync::prepare_new_drafts(
+        &client,
+        drafts,
+        &[],
+        &settings,
+        time::OffsetDateTime::UNIX_EPOCH,
+    );
+    assert_eq!(titles(&new), ["gist 1", "s/p", "s/o", "s/n"]);
 }

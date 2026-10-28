@@ -6,6 +6,7 @@
 
 use url::Url;
 
+use crate::github::gists::{gist_root, GIST_HOST};
 use crate::hackernews::HackerNewsItemId;
 use crate::reddit::model::over18_dest;
 use crate::source::UrlKey;
@@ -31,12 +32,17 @@ pub fn url_key(url: &Url) -> Option<String> {
 /// GitHub's key: [`url_key`], gated to github.com hosts, with the `www.` alias folded onto
 /// the bare host and a repo root's `.git` suffix dropped. Those are the forms
 /// `cleanup github` canonicalizes to `github.com/owner/repo`, so a bookmark keys the same
-/// before and after it does. Other subdomains (`gist.`) keep their own host.
+/// before and after it does. A gist root keys by its id alone (`gist.github.com/<id>`), so
+/// its owner-less form matches the `gist.github.com/<owner>/<id>` form cleanup moves it
+/// to. Other subdomains, and a gist's deep links, keep their own host and path.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GitHubKeys;
 
 impl UrlKey for GitHubKeys {
     fn dedup_key(&self, url: &Url) -> Option<String> {
+        if let Some((_, id)) = gist_root(url) {
+            return Some(format!("{GIST_HOST}/{id}"));
+        }
         let key = url_key(url).filter(|_| url.host_is("github.com"))?;
         let key = match key.strip_prefix("www.") {
             Some(bare) => bare.to_string(),
@@ -184,11 +190,55 @@ mod tests {
             Some("github.com/o/r.git/tree/main"),
             "only a repo root drops `.git`"
         );
-        assert_eq!(
-            key("https://gist.github.com/user/abcd.git").as_deref(),
-            Some("gist.github.com/user/abcd.git")
-        );
         assert_eq!(key("https://example.com/o/r"), None);
+    }
+
+    #[test]
+    fn github_keys_key_a_gist_root_by_its_id() {
+        let key = |s: &str| GitHubKeys.dedup_key(&url(s));
+        let id = "aa5a315d61ae9438b18d";
+        for alias in [
+            format!("https://gist.github.com/{id}"),
+            format!("https://gist.github.com/Someone/{id}"),
+            format!("http://gist.github.com/someone/{id}/"),
+            format!("https://gist.github.com/someone/{}.git", id.to_uppercase()),
+            format!("https://gist.github.com/someone/{id}?file=x#y"),
+        ] {
+            assert_eq!(
+                key(&alias),
+                Some(format!("gist.github.com/{id}")),
+                "{alias}"
+            );
+        }
+        assert_eq!(
+            key("https://gist.github.com/1234567").as_deref(),
+            Some("gist.github.com/1234567"),
+            "an old numeric id"
+        );
+        // Not gist roots: an owner's gist list (even an all-hex name), a revision.
+        assert_eq!(
+            key("https://gist.github.com/cafe").as_deref(),
+            Some("gist.github.com/cafe")
+        );
+        assert_eq!(
+            key(&format!("https://gist.github.com/someone/{id}/0123abc")),
+            Some(format!("gist.github.com/someone/{id}/0123abc"))
+        );
+    }
+
+    #[test]
+    fn hackernews_keys_a_gist_article_as_github_does() {
+        let id = "aa5a315d61ae9438b18d";
+        let hn = |s: &str| HackerNewsKeys::default().dedup_key(&url(s));
+        assert_eq!(
+            hn(&format!("https://gist.github.com/{id}")),
+            hn(&format!("https://gist.github.com/someone/{id}")),
+            "a story's owner-less gist link still matches once cleanup adds the owner"
+        );
+        assert_eq!(
+            hn(&format!("https://gist.github.com/{id}")),
+            GitHubKeys.dedup_key(&url(&format!("https://gist.github.com/someone/{id}")))
+        );
     }
 
     fn key(raw: &str) -> Option<String> {

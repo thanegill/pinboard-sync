@@ -76,6 +76,23 @@ fn build_job_wires_github_overrides_to_job_fields() {
     assert_wired(&job);
 }
 
+/// With no flag or env hook, a GitHub job takes the account's own `on_auth_failure`.
+#[test]
+fn a_github_job_takes_its_accounts_hook() {
+    let account = GitHubAccount {
+        token: Some("ghp_test".into()),
+        on_auth_failure: Some("refresh-token".into()),
+        ..GitHubAccount::default()
+    };
+    let job = build_job(
+        Some(&account),
+        &SyncOverrides::default(),
+        &Config::default(),
+    )
+    .expect("builds");
+    assert_eq!(job.hook.as_deref(), Some("refresh-token"));
+}
+
 #[test]
 fn build_job_wires_hackernews_overrides_to_job_fields() {
     let overrides = SyncOverrides {
@@ -162,7 +179,10 @@ fn build_all_jobs_isolates_a_failing_account() {
         github: vec![GitHubAccount::default()],
         ..Default::default()
     };
-    let (jobs, skipped) = build_all_jobs(&config, &SyncOverrides::default());
+    let Built {
+        targets: jobs,
+        skipped,
+    } = build_all_jobs(&config, &SyncOverrides::default());
     assert_eq!(jobs.len(), 1, "healthy reddit account still builds");
     assert_eq!(jobs[0].label, "reddit[alice]");
     let skipped: Vec<&str> = skipped.iter().map(|target| target.label.as_str()).collect();
@@ -189,9 +209,11 @@ fn build_jobs_for_every_account_of_a_source_isolates_a_failing_account() {
         ],
         ..Default::default()
     };
-    let (jobs, skipped) =
-        build_jobs::<GitHubAccount>(Selection::All, &SyncOverrides::default(), &config)
-            .expect("a failing account does not abort the source");
+    let Built {
+        targets: jobs,
+        skipped,
+    } = build_jobs::<GitHubAccount>(Selection::All, &SyncOverrides::default(), &config)
+        .expect("a failing account does not abort the source");
     let labels: Vec<&str> = jobs.iter().map(|job| job.label.as_str()).collect();
     assert_eq!(labels, ["github[main]"]);
     let skipped: Vec<&str> = skipped.iter().map(|target| target.label.as_str()).collect();
@@ -237,7 +259,7 @@ async fn an_env_secret_shared_by_several_accounts_is_warned_about_once() {
         ..Default::default()
     };
 
-    let ((jobs, _), logs) = crate::test_support::capturing_logs(async {
+    let (Built { targets: jobs, .. }, logs) = crate::test_support::capturing_logs(async {
         build_all_jobs(&config, &SyncOverrides::default())
     })
     .await;

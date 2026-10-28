@@ -124,6 +124,17 @@ pub struct RedditCleanupOverrides {
     pub fix_titles: bool,
 }
 
+/// Every fix on and no cookie flag: what `cleanup --all` runs.
+impl Default for RedditCleanupOverrides {
+    fn default() -> Self {
+        Self {
+            cookie: None,
+            mark_nsfw: true,
+            fix_titles: true,
+        }
+    }
+}
+
 /// Authoritative per-post data from `/api/info`.
 struct RedditPostMeta {
     over_18: bool,

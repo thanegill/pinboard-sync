@@ -23,14 +23,12 @@ async fn a_hackernews_cleanup_refuses_a_bad_link_tag_before_its_pass() {
         link_tag: Some("find hn".into()),
         ..Default::default()
     };
-    let error = cleanup_hackernews_account(
-        None,
-        overrides,
-        crate::test_support::NO_DATING,
-        &pinboard.cleanup_store(),
-    )
-    .await
-    .unwrap_err();
+    let pass = async {
+        HackerNewsCleanup::build(None, overrides, crate::test_support::NO_DATING)?
+            .run(&pinboard.cleanup_store())
+            .await
+    };
+    let error = pass.await.unwrap_err();
     assert_eq!(
         error.to_string(),
         "`--tag-link` must not contain whitespace"
@@ -139,22 +137,25 @@ async fn run_sync_jobs_fails_the_run_for_accounts_it_could_not_build() {
     assert_eq!(error.to_string(), "1 account(s) failed");
 }
 
+/// A config with one Reddit account that builds, for the `sync --all` plans.
+fn one_reddit_account() -> Config {
+    Config {
+        reddit: vec![RedditAccount {
+            username: Some("alice".into()),
+            cookie: Some("reddit_session=x".into()),
+            ..RedditAccount::default()
+        }],
+        ..Config::default()
+    }
+}
+
 #[test]
 fn top_level_all_threads_on_auth_failure_into_the_hook() {
     // The `sync --all` path builds `SyncOverrides` itself (not from the source args),
     // so the hook must be carried explicitly from the top-level flag.
     let cmd = parse_sync(&["--all", "--on-auth-failure", "refresh-cookie"]);
-    assert_eq!(cmd.on_auth_failure.as_deref(), Some("refresh-cookie"));
-
-    let overrides = SyncOverrides {
-        dry_run: cmd.dry_run,
-        on_auth_failure: cmd.on_auth_failure,
-        reddit_username: Some("alice".into()),
-        reddit_cookie: Some("reddit_session=x".into()),
-        ..SyncOverrides::default()
-    };
-    let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
-    assert_eq!(job.hook.as_deref(), Some("refresh-cookie"));
+    let plan = build_sync_plan(cmd, &one_reddit_account()).expect("plans");
+    assert_eq!(plan.jobs[0].hook.as_deref(), Some("refresh-cookie"));
 }
 
 #[test]
@@ -163,18 +164,8 @@ fn sync_all_falls_back_to_on_auth_failure_env_when_flag_absent() {
     // `PINBOARD_SYNC_ON_AUTH_FAILURE`. The top-level flag doesn't bind that env,
     // so the `--all` arm must read it directly or the hook silently never fires.
     let _env = crate::secrets::FakeSecretEnv::set(&[("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook")]);
-    let cmd = parse_sync(&["--all"]);
-
-    let overrides = SyncOverrides {
-        dry_run: cmd.dry_run,
-        on_auth_failure: cmd.on_auth_failure.or_else(on_auth_failure_from_env),
-        reddit_username: Some("alice".into()),
-        reddit_cookie: Some("reddit_session=x".into()),
-        ..SyncOverrides::default()
-    };
-
-    let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
-    assert_eq!(job.hook.as_deref(), Some("env-hook"));
+    let plan = build_sync_plan(parse_sync(&["--all"]), &one_reddit_account()).expect("plans");
+    assert_eq!(plan.jobs[0].hook.as_deref(), Some("env-hook"));
 }
 
 #[test]
@@ -670,6 +661,56 @@ async fn cleanup_refuses_a_bad_source_input_before_reading_pinboard() {
     );
 }
 
+/// `cleanup --all`'s Reddit overrides turn on every fix, the ones `--no-nsfw` and
+/// `--no-titles` turn off.
+#[test]
+fn reddit_cleanup_overrides_default_runs_every_fix() {
+    let account = RedditAccount {
+        cookie: Some("reddit_session=x".into()),
+        ..RedditAccount::default()
+    };
+    let reddit = RedditCleanup::build(
+        Some(&account),
+        RedditCleanupOverrides::default(),
+        crate::test_support::NO_DATING,
+        &Config::default(),
+    )
+    .expect("builds");
+    assert!(reddit.opts.mark_nsfw && reddit.opts.fix_titles);
+    assert!(reddit.client.is_some(), "the fixes read /api/info");
+}
+
+/// A Reddit pass with no `/api/info` step still runs: it moves a reddit.com bookmark onto
+/// the account's domain.
+#[tokio::test]
+async fn a_reddit_cleanup_without_post_info_still_normalizes_urls() {
+    let overrides = RedditCleanupOverrides {
+        cookie: None,
+        mark_nsfw: false,
+        fix_titles: false,
+    };
+    let reddit = RedditCleanup::build(
+        None,
+        overrides,
+        crate::test_support::NO_DATING,
+        &Config::default(),
+    )
+    .expect("needs no cookie");
+    let pinboard = crate::test_support::FakePinboard {
+        all: vec![crate::test_support::stored_at(
+            "https://www.reddit.com/r/rust/comments/abc123/a_post/",
+        )],
+        ..Default::default()
+    };
+
+    reddit.run(&pinboard.cleanup_store()).await.expect("runs");
+
+    assert_eq!(
+        pinboard.updated_urls(),
+        ["https://old.reddit.com/r/rust/comments/abc123/a_post/"]
+    );
+}
+
 mod net_tests {
     use super::*;
     use crate::test_support::{stored_at, tag_list, FakePinboard, NO_DATING};
@@ -710,15 +751,10 @@ mod net_tests {
             server.uri(),
         );
 
-        cleanup_github_with_client(
-            &pinboard.cleanup_store(),
-            &client,
-            Some(home),
-            NO_DATING,
-            &config,
-        )
-        .await
-        .unwrap();
+        GitHubCleanup::with_client(client, Some(home), NO_DATING, &config)
+            .run(&pinboard.cleanup_store())
+            .await
+            .unwrap();
 
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1, "{updated:?}");

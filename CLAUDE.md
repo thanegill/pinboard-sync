@@ -268,27 +268,29 @@ a secret can come from is built with `SecretSpec::settings`, never by hand. The 
 sit above every account's own value, so `jobs::warn_shared_env_secrets` warns once per
 source when one would apply to several accounts, using the resolver's own acceptance check.
 
-**`sync <source> [account]` / `cleanup <source> [account]` select one account** (by name,
-else the first, else an implicit CLI/env account). `--all` runs every configured account,
-exiting non-zero if any fail (`AllRun`); the two are a `jobs::Selection`, and clap refuses
-an account name next to a source's `--all`. `cleanup --all` runs once per source, since it
-normalizes the shared bookmark set. `cleanup github` (see its module doc) refreshes only
-what the tool wrote: notes in `github_note`'s shape, the base/language/owner tags of
-bookmarks carrying any configured account's base tag (with that account's tag config), their
-title only while it is still `owner/repo`, and their star date only while the notes are the
-tool's too. A repo root is often another source's bookmark (an HN story linking it, or one a
-rename merged a star into), so never widen that. Gists follow the same rules in their own
-pass ([`src/github/cleanup/gists.rs`](src/github/cleanup/gists.rs)), skipped when the
-running account has gists off, keyed on carrying up to two marker tags of an account
-(`markers`; the first `gist_tags` entry alone when every entry is also in `tags`): the
-default `gist_tags` inherit `github-star`, so no single tag tells a synced gist from a
-hand-saved one or one account's gist from another's. The pass plans from one read of
-`/gists/starred` and looks up only the gists missing from it; a failed read fails the pass
-before anything is planned, so it can't count every gist as reached.
+**`sync`, `backup` and `cleanup <source> [account]` select one account** (by name, else the
+first, else an implicit CLI/env account). `sync` and `backup` also take a per-source `--all`
+for every configured account of that source, and a top-level `--all` for every account of
+every source, each exiting non-zero if any fail (`AllRun`): the per-source pair is a
+`jobs::Selection`, built through `jobs::build_selected`, and clap refuses an account name
+next to a source's `--all`. `cleanup --all` runs once per source, github then reddit then
+hackernews, since it normalizes the shared bookmark set. `cleanup github` (see its module
+doc) refreshes only what the tool wrote: notes in `github_note`'s shape, the
+base/language/owner tags of bookmarks carrying any configured account's base tag (with that
+account's tag config), their title only while it is still `owner/repo`, and their star date
+only while the notes are the tool's too. A repo root is often another source's bookmark (an
+HN story linking it, or one a rename merged a star into), so never widen that. Gists
+([`src/github/cleanup/gists.rs`](src/github/cleanup/gists.rs)) follow the same rules in
+their own pass, skipped when the running account has gists off, keyed on carrying up to two
+marker tags of an account (`markers`; the first `gist_tags` entry alone when every entry is
+also in `tags`): the default `gist_tags` inherit `github-star`, so no single tag tells a
+synced gist from a hand-saved one or one account's gist from another's. The pass plans from
+one read of `/gists/starred` and looks up only the gists missing from it; a failed read
+fails the pass before anything is planned, so it can't count every gist as reached.
 
 **`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
-`SyncJob { client: SourceClient, hook, settings }` (`SourceClient` an enum over the three
-clients), so `build_jobs` + `run_sync_jobs` handle one account and `--all` uniformly.
+`SyncJob { client: SourceClient, label, hook, settings }` (`SourceClient` an enum over the
+three clients), so `build_jobs` + `run_sync_jobs` handle one account and `--all` uniformly.
 Per-account settings resolve CLI flag → account → `[defaults.<source>]` → `[pinboard]`
 through `resolve_setting` and `resolve_dates`, each as a `settings::Resolved` carrying its
 `Tier`, so a refusal (`ResolvedDates::check_redating`) names where a setting came from,

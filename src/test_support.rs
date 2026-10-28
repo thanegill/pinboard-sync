@@ -27,6 +27,24 @@ use crate::timefmt::DateOpts;
 
 tokio::task_local! {
     static CAPTURED_LOGS: RefCell<Vec<String>>;
+    static CAPTURED_STDOUT: RefCell<String>;
+}
+
+/// Runs `fut`, returning its output and everything it wrote through [`crate::stdout`].
+pub async fn capturing_stdout<T>(fut: impl Future<Output = T>) -> (T, String) {
+    CAPTURED_STDOUT
+        .scope(RefCell::default(), async {
+            let output = fut.await;
+            (output, CAPTURED_STDOUT.with(RefCell::take))
+        })
+        .await
+}
+
+/// Append `text` to what the enclosing [`capturing_stdout`] collects; `false` outside one.
+pub fn capture_stdout(text: &str) -> bool {
+    CAPTURED_STDOUT
+        .try_with(|out| out.borrow_mut().push_str(text))
+        .is_ok()
 }
 
 /// Records each of this crate's log lines as `"LEVEL message"`, as `-v` would show them,

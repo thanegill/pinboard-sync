@@ -395,6 +395,35 @@ impl BackupSource for FakeSource {
     }
 }
 
+/// Each file a dry run would write: its path, then its item count and size.
+#[tokio::test]
+async fn a_dry_run_previews_each_file() {
+    let scratch = scratch_dir("backup-dry-run-preview");
+    let dir = scratch.path();
+
+    let (job, out) = crate::test_support::capturing_stdout(run_job(
+        &FakeSource("[1,2]"),
+        "pinboard",
+        dir,
+        WriteMode::DryRun,
+    ))
+    .await;
+    job.unwrap();
+
+    let dir = dir.display();
+    assert_eq!(
+        out,
+        format!(
+            "[dry-run] {dir}/raw/pinboard.json\n\
+             \x20         items -> 2\n\
+             \x20         bytes -> 12\n\
+             [dry-run] {dir}/normalized/pinboard.json\n\
+             \x20         items -> 0\n\
+             \x20         bytes -> 2\n"
+        )
+    );
+}
+
 #[tokio::test]
 async fn dry_run_writes_nothing_and_refuses_what_the_real_run_would() {
     let scratch = scratch_dir("backup-dry-run");

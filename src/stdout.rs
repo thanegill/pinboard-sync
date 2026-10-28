@@ -9,13 +9,20 @@ use std::io::{self, Write};
 
 /// Write `text` to stdout, unchanged. A closed pipe is `Ok`; any other failure is the
 /// caller's to report.
+#[cfg(not(test))]
 pub fn write(text: impl AsRef<[u8]>) -> io::Result<()> {
-    // libtest captures a test's output only through `print!`, not `io::stdout()`.
-    if cfg!(test) {
-        print!("{}", String::from_utf8_lossy(text.as_ref()));
-        return Ok(());
-    }
     write_to(&mut io::stdout().lock(), text.as_ref())
+}
+
+/// Tests write into [`crate::test_support::capturing_stdout`] when inside one, else through
+/// `print!`, the only output libtest captures.
+#[cfg(test)]
+pub fn write(text: impl AsRef<[u8]>) -> io::Result<()> {
+    let text = String::from_utf8_lossy(text.as_ref());
+    if !crate::test_support::capture_stdout(&text) {
+        print!("{text}");
+    }
+    Ok(())
 }
 
 /// `println!` for line-by-line output that carries on after a closed pipe, the dry-run

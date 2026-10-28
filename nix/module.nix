@@ -50,15 +50,15 @@ let
   escapeSpecifiers = lib.replaceStrings [ "%" ] [ "%%" ];
 
   # Honor a per-account `enable` (default true) in each source's account array: drop
-  # the disabled accounts and strip the `enable` key — the binary's config rejects
-  # unknown fields — so the plain `sync --all` / `cleanup --all` run covers exactly the
+  # the disabled accounts and strip the `enable` key (the binary's config rejects
+  # unknown fields), so the plain `sync --all` / `cleanup --all` run covers exactly the
   # enabled accounts.
   pruneAccounts =
     accounts: map (a: removeAttrs a [ "enable" ]) (lib.filter (a: a.enable or true) accounts);
 
   tomlFormat = pkgs.formats.toml { };
   # Non-secret settings rendered to the store and passed via --config. Secrets are
-  # NOT placed here (it lands in the world-readable nix store) — they come from the
+  # NOT placed here (it lands in the world-readable nix store): they come from the
   # `environmentFile` (a sops-nix rendered template) or the per-credential `*File`
   # options (systemd `LoadCredential`).
   configSettings =
@@ -368,7 +368,7 @@ in
     assertions = [
       {
         # sync/cleanup always write to the Pinboard destination, so a resolvable Pinboard
-        # token is required regardless of which source credentials are set — otherwise the
+        # token is required regardless of which source credentials are set; otherwise the
         # service enables and then fails on every timer fire with a missing-token error.
         assertion =
           pinboardTokenConfigured
@@ -426,7 +426,7 @@ in
       };
 
       # Fire a missed run on next boot (the machine may be asleep/off at the scheduled
-      # instant — especially for the weekly cleanup).
+      # instant, especially for the weekly cleanup).
       timers = {
         pinboard-sync = lib.mkIf cfg.sync.enable {
           timerConfig.Persistent = true;

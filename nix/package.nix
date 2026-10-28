@@ -4,6 +4,7 @@
   pkg-config,
   installShellFiles,
   openssl,
+  versionCheckHook,
 }:
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "pinboard-sync";
@@ -44,6 +45,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
     mkdir -p $out/share/pinboard-sync
     $out/bin/pinboard-sync config example > $out/share/pinboard-sync/config.example.toml
   '';
+  nativeInstallCheckInputs = [ versionCheckHook ];
+  doInstallCheck = true;
   meta = {
     description = "Sync saved/favorited items from multiple services to a Pinboard account";
     homepage = "https://github.com/thanegill/pinboard-sync";

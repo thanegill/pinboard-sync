@@ -1,0 +1,17 @@
+[files]
+ignore-hidden = false
+# `.git` is a file in a worktree, `.direnv` is nix-direnv's cache and is not gitignored,
+# and `target` is read whenever the tree is not a git checkout.
+extend-exclude = [".git", ".direnv", "target"]
+
+[default]
+extend-ignore-re = [
+    # Sed's `ba` (branch to label `a`) in release.yml.
+    "N;ba\\}",
+    # The needle a config test searches for, so it matches both `Secret` and `secret`.
+    "\"ecret\"",
+]
+
+[default.extend-words]
+# A standard spelling of "unparsable", and part of identifiers like `UnparseableHref`.
+unparseable = "unparseable"

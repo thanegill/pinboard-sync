@@ -21,6 +21,7 @@ nix develop --command cargo mutants --in-diff <diff>  # mutation-tests the lines
 nix flake check                              # builds the package (runs tests) + evaluates the NixOS module and config-checks its TOML + lints the Nix files
 nix fmt                                      # formats the Nix files (nixfmt, via nixfmt-tree)
 RUSTDOCFLAGS='-D warnings' nix develop --command cargo doc --document-private-items --no-deps
+nix develop --command typos                  # spell-checks the tree; false positives go in _typos.toml
 ```
 
 `nix flake check` runs the flake's `checks` for the host system only: `checks.package`
@@ -41,8 +42,9 @@ runs `nix flake check` on x86_64-linux, in its `flake` job.
 Commit often: each working feature or structural piece, with its tests, keeping the
 gate green.
 
-CI's `lint` job builds the docs with rustdoc warnings as errors, so a broken intra-doc
-link fails it.
+CI's `lint` job runs typos and builds the docs with rustdoc warnings as errors, so a
+broken intra-doc link fails it. A word typos gets wrong (an identifier, an API's
+spelling) goes in `_typos.toml`, matched as narrowly as it can be.
 
 ## Architecture
 

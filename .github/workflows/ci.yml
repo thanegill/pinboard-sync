@@ -4,8 +4,9 @@ name: CI
 # three parallel jobs: `gate` runs fmt + clippy + the full test suite (incl. net_tests),
 # `flake` runs `nix flake check` (the sandboxed package build and its tests, the Nix
 # lint, and the NixOS module evaluated with `config check` run on its rendered TOML),
-# and `lint` builds the docs, private items included, with rustdoc warnings as errors. A
-# push to a PR's branch runs once, as the PR; a branch with no PR doesn't run.
+# and `lint` spell-checks the tree with typos and builds the docs, private items
+# included, with rustdoc warnings as errors. A push to a PR's branch runs once, as the
+# PR; a branch with no PR doesn't run.
 
 on:
   push:
@@ -62,7 +63,11 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
+      - name: typos
+        run: nix develop --command typos
+
       - name: cargo doc -D warnings
+        if: ${{ !cancelled() }}
         env:
           RUSTDOCFLAGS: -D warnings
         run: nix develop --command cargo doc --document-private-items --no-deps

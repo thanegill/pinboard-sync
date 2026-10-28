@@ -480,9 +480,7 @@ impl RedditCleanup {
             configured: config.reddit.iter().map(RedditConfig::from).collect(),
         };
 
-        // Reddit (for /api/info) is needed when marking NSFW, fixing titles, or dating by
-        // the source post (the post's created_utc comes from /api/info too).
-        let client = if opts.mark_nsfw || opts.fix_titles || opts.dates.use_post_date {
+        let client = if opts.needs_post_info() {
             let cookie = resolve_reddit_cookie(overrides.cookie, account)
                 .with_context(missing_reddit_cookie)?;
             Some(RedditClient::for_info(Some(cookie))?)

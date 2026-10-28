@@ -241,20 +241,11 @@ impl UrlKey for SourceClient {
     }
 }
 
-/// What `sync`, `backup` and `doctor` need from one source's account type, so each
-/// handles the three sources through one generic path: where its accounts and per-source
-/// defaults live in the config, how its client is built from an account plus the CLI
-/// overrides, and which auth-failure hook its jobs carry.
-pub trait SourceAccount: config::Account + Sized {
-    /// The source's name in job labels, backup file stems and `doctor` lines.
-    const SOURCE: &'static str;
-
-    /// The source's configured accounts (`[[reddit]]` and so on).
-    fn configured(config: &Config) -> &[Self];
-
-    /// The source's `[defaults.<source>]` tier.
-    fn defaults(config: &Config) -> &config::SourceDefaults;
-
+/// What `sync`, `backup` and `doctor` need from one source's account type beyond
+/// [`config::Account`], so each handles the three sources through one generic path: how
+/// its client is built from an account plus the CLI overrides, and which auth-failure hook
+/// its jobs carry.
+pub trait SourceAccount: config::Account {
     /// The account's own `on_auth_failure` override.
     fn on_auth_failure(&self) -> Option<&str>;
 
@@ -286,16 +277,6 @@ pub trait SourceAccount: config::Account + Sized {
 }
 
 impl SourceAccount for RedditAccount {
-    const SOURCE: &'static str = "reddit";
-
-    fn configured(config: &Config) -> &[Self] {
-        &config.reddit
-    }
-
-    fn defaults(config: &Config) -> &config::SourceDefaults {
-        &config.defaults.reddit
-    }
-
     fn on_auth_failure(&self) -> Option<&str> {
         self.on_auth_failure.as_deref()
     }
@@ -336,16 +317,6 @@ impl SourceAccount for RedditAccount {
 }
 
 impl SourceAccount for GitHubAccount {
-    const SOURCE: &'static str = "github";
-
-    fn configured(config: &Config) -> &[Self] {
-        &config.github
-    }
-
-    fn defaults(config: &Config) -> &config::SourceDefaults {
-        &config.defaults.github.common
-    }
-
     fn on_auth_failure(&self) -> Option<&str> {
         self.on_auth_failure.as_deref()
     }
@@ -370,16 +341,6 @@ impl SourceAccount for GitHubAccount {
 }
 
 impl SourceAccount for HackerNewsAccount {
-    const SOURCE: &'static str = "hackernews";
-
-    fn configured(config: &Config) -> &[Self] {
-        &config.hackernews
-    }
-
-    fn defaults(config: &Config) -> &config::SourceDefaults {
-        &config.defaults.hackernews
-    }
-
     fn on_auth_failure(&self) -> Option<&str> {
         None
     }

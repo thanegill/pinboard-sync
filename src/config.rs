@@ -865,13 +865,23 @@ impl Named for HackerNewsAccount {
     }
 }
 
-/// The per-account settings shared across every source. Each returns the account-level
-/// override, or `None` to fall through to the per-source default and then the
-/// `[pinboard]` global -- letting the job/cleanup builders resolve them generically (see
-/// [`resolve_setting`](crate::settings::resolve_setting) and
+/// One source's account type: where its accounts and `[defaults.<source>]` live in the
+/// config, and the per-account settings shared across every source. Each setting returns
+/// the account-level override, or `None` to fall through to the per-source default and
+/// then the `[pinboard]` global -- letting the job/cleanup builders resolve them
+/// generically (see [`resolve_setting`](crate::settings::resolve_setting) and
 /// [`resolve_dates`](crate::settings::resolve_dates)). The method names normalize the two
 /// longer field names (`post_date_max_age_days`, `cleanup_stale_to_now`).
-pub trait Account: Named {
+pub trait Account: Named + Sized {
+    /// The source's name in messages, job labels, backup file stems and `doctor` lines.
+    const SOURCE: &'static str;
+
+    /// The source's configured accounts (`[[reddit]]` and so on).
+    fn configured(config: &Config) -> &[Self];
+
+    /// The source's `[defaults.<source>]` tier.
+    fn defaults(config: &Config) -> &SourceDefaults;
+
     fn limit(&self) -> Option<SyncLimit>;
     fn toread(&self) -> Option<bool>;
     fn public(&self) -> Option<bool>;
@@ -881,6 +891,16 @@ pub trait Account: Named {
 }
 
 impl Account for RedditAccount {
+    const SOURCE: &'static str = "reddit";
+
+    fn configured(config: &Config) -> &[Self] {
+        &config.reddit
+    }
+
+    fn defaults(config: &Config) -> &SourceDefaults {
+        &config.defaults.reddit
+    }
+
     fn limit(&self) -> Option<SyncLimit> {
         self.limit
     }
@@ -907,6 +927,16 @@ impl Account for RedditAccount {
 }
 
 impl Account for GitHubAccount {
+    const SOURCE: &'static str = "github";
+
+    fn configured(config: &Config) -> &[Self] {
+        &config.github
+    }
+
+    fn defaults(config: &Config) -> &SourceDefaults {
+        &config.defaults.github.common
+    }
+
     fn limit(&self) -> Option<SyncLimit> {
         self.limit
     }
@@ -933,6 +963,16 @@ impl Account for GitHubAccount {
 }
 
 impl Account for HackerNewsAccount {
+    const SOURCE: &'static str = "hackernews";
+
+    fn configured(config: &Config) -> &[Self] {
+        &config.hackernews
+    }
+
+    fn defaults(config: &Config) -> &SourceDefaults {
+        &config.defaults.hackernews
+    }
+
     fn limit(&self) -> Option<SyncLimit> {
         self.limit
     }

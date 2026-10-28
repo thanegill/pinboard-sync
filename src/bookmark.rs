@@ -138,9 +138,16 @@ pub trait BookmarkStore {
         {
             return WriteOutcome::failed(e);
         }
+        self.apply_absorb(&update.url, old_urls).await
+    }
+
+    /// The deleting half of [`Self::apply_merge`]: `delete` every `old_urls` entry that
+    /// isn't `target`, whose record already is the merged one. On its own it is a merge
+    /// whose write would store nothing new, so the outcome counts the record as written.
+    async fn apply_absorb(&self, target: &Url, old_urls: &[&Url]) -> WriteOutcome {
         let mut outcome = WriteOutcome::wrote();
         for old in old_urls {
-            if **old == update.url {
+            if *old == target {
                 continue;
             }
             outcome.record_delete(
@@ -304,9 +311,9 @@ pub trait AccountState {
 /// A [`BookmarkStore`] that keeps an [`AccountView`] in step with what it writes.
 ///
 /// Every write goes through here, so there is no separate bookkeeping call for a caller
-/// to forget -- and because [`BookmarkStore::apply_update`] and
-/// [`BookmarkStore::apply_merge`] are default methods built from `update` and `delete`,
-/// intercepting just those two covers both.
+/// to forget -- and because [`BookmarkStore::apply_update`], [`BookmarkStore::apply_merge`]
+/// and [`BookmarkStore::apply_absorb`] are default methods built from `update` and
+/// `delete`, intercepting just those two covers all three.
 ///
 /// Under `dry_run` the view is still updated but nothing reaches the network: a preview
 /// has to show the same set of changes a real run would make, including the ones a later

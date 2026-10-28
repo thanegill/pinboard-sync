@@ -665,9 +665,10 @@ async fn write_single<S: BookmarkStore>(
 
 /// Field-merge a group -- with the record staying at its target, if any -- into one record,
 /// write it, and delete the absorbed URLs, so a later run sees a single bookmark at the
-/// target and converges. Skipped when the merge reproduces what is stored there and there
-/// is nothing to absorb. Returns the stored URLs a failed write left occupied, for the
-/// caller to protect: empty unless the write failed.
+/// target and converges. When the merge would store nothing new over the record stored
+/// there ([`stores_nothing_new`]), only the absorbed URLs are deleted, and with none the
+/// group is skipped. Returns the stored URLs a failed write left occupied, for the caller
+/// to protect: empty unless the write failed.
 async fn write_merge<S: BookmarkStore>(
     store: &S,
     key: &Url,
@@ -742,47 +743,61 @@ async fn write_merge<S: BookmarkStore>(
     if converged && old_urls.is_empty() {
         return Vec::new();
     }
+    // A converged merge with URLs to absorb only deletes them: rewriting the target would
+    // store nothing new, and would cut a whole note there longer than a write allows.
+    let rewrite = !converged;
     warn_if_cut(&merged, &fitted);
     let merged = &fitted;
 
     if dry_run {
-        let note_value = if merged.note.is_empty() {
-            "(removed)".to_string()
-        } else {
-            merged.note.clone()
-        };
-        let mut detail = vec![
-            ("title", merged.title.clone()),
-            ("notes", note_value),
-            ("tags", format!("[{}]", merged.tags.joined())),
-        ];
-        if let Some(date) = merged.timestamp.and_then(crate::timefmt::to_pinboard_dt) {
-            detail.push(("date", date));
+        let mut detail = Vec::new();
+        if rewrite {
+            let note_value = if merged.note.is_empty() {
+                "(removed)".to_string()
+            } else {
+                merged.note.clone()
+            };
+            detail.extend([
+                ("title", merged.title.clone()),
+                ("notes", note_value),
+                ("tags", format!("[{}]", merged.tags.joined())),
+            ]);
+            if let Some(date) = merged.timestamp.and_then(crate::timefmt::to_pinboard_dt) {
+                detail.push(("date", date));
+            }
+            detail.push(("public", merged.public.to_string()));
+            detail.push(("toread", merged.read_later.to_string()));
         }
-        detail.push(("public", merged.public.to_string()));
-        detail.push(("toread", merged.read_later.to_string()));
         detail.extend(old_urls.iter().map(|old| ("", format!("absorb {old}"))));
         emit_preview(&mut outcome.preview, target, &detail);
     }
 
     // Always through the store -- see `write_single`.
-    let write = store.apply_merge(merged, &old_urls).await;
+    let write = if rewrite {
+        store.apply_merge(merged, &old_urls).await
+    } else {
+        store.apply_absorb(target, &old_urls).await
+    };
     match write.error {
         None => {
             outcome.changed += 1;
             let absorbed: Vec<String> = write.deleted.iter().map(|u| u.to_string()).collect();
-            debug!("merged {target} <- [{}]", absorbed.join(" "));
+            let done = if rewrite { "merged" } else { "absorbed into" };
+            debug!("{done} {target} <- [{}]", absorbed.join(" "));
             Vec::new()
         }
-        // Half-applied: the merged record landed and an absorbed URL survived. Count the
-        // change, exactly as the rewrite path does -- the account did change -- and name
-        // what is actually wrong, since "merging into {target} failed" would send the
-        // operator after a record that is fine.
+        // Half-applied: the merged record is at the target, written or already there, and
+        // an absorbed URL survived. Count the change when the account did change, as the
+        // rewrite path does, and name what is actually wrong, since "merging into
+        // {target} failed" would send the operator after a record that is fine.
         Some(e) if write.wrote => {
-            outcome.changed += 1;
+            if rewrite || !write.deleted.is_empty() {
+                outcome.changed += 1;
+            }
             outcome.write_failed += 1;
             let stranded = old_urls.len() - write.deleted.len();
-            error!("merged {target} but {stranded} absorbed URL(s) remain: {e:#}");
+            let done = if rewrite { "merged" } else { "absorbed into" };
+            error!("{done} {target} but {stranded} absorbed URL(s) remain: {e:#}");
             Vec::new()
         }
         // Nothing was written and nothing absorbed, so every member is still at its own

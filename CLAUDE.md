@@ -148,12 +148,13 @@ long for its GET URL, so `write_single` and `write_merge` pass each end-state th
 `BookmarkStore::fit` and skip it when it would store nothing that writing the stored record
 back wouldn't (`stores_nothing_new`: both fitted, `diff` empty). That one test keeps a note
 stored cut from being rewritten every run, and a whole note longer than a write allows from
-being cut when the plan changes only text past the cut. A merge that absorbs a URL still
-writes, and so still cuts such a note. `PinboardClient` implements `fit` with `fitted_note`,
-which `post_add` uses too, so the two can't drift. It measures as if a `dt` were sent, so a
-note `sync` wrote undated cuts the same once `cleanup` writes it back dated. A test models
-the cut with `FakePinboard`'s `trims_notes`, which applies the real `fitted_note` to the
-fit and to each write it records.
+being cut when the plan changes only text past the cut. A merge that passes that test but
+has URLs to absorb only deletes them (`BookmarkStore::apply_absorb`), and a failed delete
+there is half-applied like any merge's. `PinboardClient` implements `fit` with
+`fitted_note`, which `post_add` uses too, so the two can't drift. It measures as if a `dt`
+were sent, so a note `sync` wrote undated cuts the same once `cleanup` writes it back
+dated. A test models the cut with `FakePinboard`'s `trims_notes`, which applies the real
+`fitted_note` to the fit and to each write it records.
 
 **Every source is a `Source`, and one sync loop drives them all.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `BookmarkDraft`s (a `Bookmark`

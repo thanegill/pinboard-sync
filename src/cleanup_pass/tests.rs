@@ -1532,6 +1532,9 @@ async fn merging_a_resident_keeps_its_read_later_and_date() {
         Ok(Plan::Bookmark(Bookmark {
             url: u("https://other/resident"),
             title: "New".into(),
+            // Something the merge adds, so the resident is written rather than only
+            // absorbing the mover.
+            tags: tag_list(&["a", "b", "moved"]),
             ..unchanged_plan(bookmark)
         }))
     });
@@ -2760,4 +2763,129 @@ async fn stale_to_now_dates_at_whole_seconds() {
         panic!("expected one write, got {ops:?}");
     };
     assert_eq!(written.timestamp.map(|ts| ts.nanosecond()), Some(0));
+}
+
+/// A resident at `https://target/` with a whole note too long for a write, and a mover
+/// heading there whose own note is short, so all it adds is cut off by the fit.
+fn long_resident_and_short_mover() -> (Bookmark, Bookmark) {
+    let mut resident = bookmark("https://target/");
+    resident.note = note_pinboard_trims();
+    let mut mover = bookmark("https://mover/");
+    mover.note = "mover".into();
+    (resident, mover)
+}
+
+/// Plans every bookmark onto `https://target/`, as it is.
+fn onto_target() -> FakePass<impl Fn(&Bookmark) -> Result<Plan, SourceError>> {
+    FakePass(|bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            url: u("https://target/"),
+            ..unchanged_plan(bookmark)
+        }))
+    })
+}
+
+#[tokio::test]
+async fn a_merge_that_stores_nothing_new_only_absorbs() {
+    // Writing the merge would cut the resident's whole note and keep nothing of the
+    // mover's, so the mover is absorbed by deleting it and the resident is not written.
+    let pinboard = FakePinboard {
+        trims_notes: true,
+        ..Default::default()
+    };
+    let (resident, mover) = long_resident_and_short_mover();
+    let all = vec![mover.clone(), resident.clone()];
+
+    let outcome = run_pass(
+        &store(&pinboard, &all, WriteMode::Live),
+        &[mover],
+        "test",
+        NO_DATING,
+        &onto_target(),
+    )
+    .await;
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert_eq!(*pinboard.deleted.borrow(), strings(&["https://mover/"]));
+    assert_eq!(outcome.changed, 1);
+    assert_eq!(outcome.write_failed, 0);
+    let account = crate::test_support::replay(&all, &pinboard.ops.borrow());
+    assert_eq!(account, [resident]);
+}
+
+#[tokio::test]
+async fn an_absorb_whose_delete_fails_is_half_applied() {
+    let pinboard = FakePinboard {
+        trims_notes: true,
+        fail_delete_urls: ["https://mover/".to_string()].into(),
+        ..Default::default()
+    };
+    let (resident, mover) = long_resident_and_short_mover();
+    let all = vec![mover.clone(), resident];
+
+    let outcome = run_pass(
+        &store(&pinboard, &all, WriteMode::Live),
+        &[mover],
+        "test",
+        NO_DATING,
+        &onto_target(),
+    )
+    .await;
+    assert!(pinboard.updated.borrow().is_empty());
+    assert_eq!(outcome.changed, 0, "nothing in the account changed");
+    assert_eq!(outcome.write_failed, 1);
+}
+
+#[tokio::test]
+async fn an_absorb_warns_that_the_movers_note_does_not_fit() {
+    let pinboard = FakePinboard {
+        trims_notes: true,
+        ..Default::default()
+    };
+    let (resident, mover) = long_resident_and_short_mover();
+    let all = vec![mover.clone(), resident];
+
+    let (_, logs) = crate::test_support::capturing_logs(run_pass(
+        &store(&pinboard, &all, WriteMode::Live),
+        &[mover],
+        "test",
+        NO_DATING,
+        &onto_target(),
+    ))
+    .await;
+    assert!(
+        crate::test_support::warnings(&logs)
+            .iter()
+            .any(|line| line.contains("note trimmed to fit the request URL for https://target/")),
+        "{logs:#?}"
+    );
+}
+
+#[tokio::test]
+async fn a_dry_run_previews_an_absorb_without_fields() {
+    let pinboard = FakePinboard {
+        trims_notes: true,
+        ..Default::default()
+    };
+    let (resident, mover) = long_resident_and_short_mover();
+    let all = vec![mover.clone(), resident];
+
+    let outcome = run_pass(
+        &store(&pinboard, &all, WriteMode::DryRun),
+        &[mover],
+        "test",
+        NO_DATING,
+        &onto_target(),
+    )
+    .await;
+    assert_eq!(
+        outcome.preview,
+        [
+            "[dry-run] https://target/",
+            "          absorb https://mover/"
+        ]
+    );
 }

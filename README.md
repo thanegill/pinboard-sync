@@ -241,9 +241,10 @@ stays until you resolve it yourself.
 A note too long for a Pinboard API request URL is cut short when written, with a marker
 appended (logged when it happens). `cleanup` compares what a write would store with what
 writing the bookmark back unchanged would. So it doesn't rewrite a cut note every run,
-or cut a long note when the only change would be cut off anyway, though a merge that
-absorbs another bookmark still does. The one other exception is a note Pinboard rejects
-even once cut: the client cuts it further on retry, and `cleanup` rewrites it each run.
+or cut a long note when the only change would be cut off anyway; a merge that adds
+nothing to the bookmark it lands on just deletes the one it absorbs. The one exception
+is a note Pinboard rejects even once cut: the client cuts it further on retry, and
+`cleanup` then rewrites it on every run.
 
 - **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your
   configured `reddit_domain` (default `old.reddit.com`), unwrapping `over18`

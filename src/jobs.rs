@@ -22,9 +22,7 @@ use crate::hackernews::{HackerNewsClient, HackerNewsConfig};
 use crate::pinboard::{PinboardClient, RATE_LIMIT};
 use crate::reddit::model::RedditConfig;
 use crate::reddit::RedditClient;
-use crate::secrets::{
-    self, resolve_github_token, resolve_pinboard_token, resolve_reddit_cookie, SecretSpec,
-};
+use crate::secrets::{self, require_github_token, resolve_reddit_cookie, SecretSpec};
 use crate::settings::{resolve_hook, resolve_job_settings};
 use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
 use crate::sync::JobSettings;
@@ -300,13 +298,12 @@ impl SourceAccount for RedditAccount {
         config: &Config,
     ) -> Result<SourceClient> {
         let username = SecretSpec::REDDIT_USERNAME
-            .resolve(
+            .require(
                 overrides.reddit_username.clone(),
                 account.and_then(|a| a.username.clone()),
                 None,
-            )
-            .map(|username| username.value)
-            .with_context(|| SecretSpec::REDDIT_USERNAME.missing())?;
+            )?
+            .value;
         let cookie = resolve_reddit_cookie(overrides.reddit_cookie.clone(), account);
         let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
         Ok(SourceClient::Reddit(
@@ -330,8 +327,7 @@ impl SourceAccount for GitHubAccount {
         overrides: &SyncOverrides,
         config: &Config,
     ) -> Result<SourceClient> {
-        let token = resolve_github_token(overrides.github_token.clone(), account)
-            .with_context(|| SecretSpec::GITHUB_TOKEN.missing())?;
+        let token = require_github_token(overrides.github_token.clone(), account)?;
         let github_config = GitHubConfig::resolve(account, &config.defaults.github);
         Ok(SourceClient::GitHub(GitHubClient::new(
             token,
@@ -358,13 +354,12 @@ impl SourceAccount for HackerNewsAccount {
         config: &Config,
     ) -> Result<SourceClient> {
         let username = SecretSpec::HN_USERNAME
-            .resolve(
+            .require(
                 overrides.hackernews_username.clone(),
                 account.and_then(|a| a.username.clone()),
                 None,
-            )
-            .map(|username| username.value)
-            .with_context(|| SecretSpec::HN_USERNAME.missing())?;
+            )?
+            .value;
         let hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
         Ok(SourceClient::HackerNews(
             HackerNewsClient::new(username, hn_config)?
@@ -395,9 +390,12 @@ pub fn build_job<A: SourceAccount>(
 
 /// Resolve the Pinboard token and build the client (no fetch).
 fn build_pinboard_client(token_flag: Option<String>, config: &Config) -> Result<PinboardClient> {
-    let token = resolve_pinboard_token(token_flag, &config.pinboard)
-        .with_context(|| SecretSpec::PINBOARD_TOKEN.missing())?;
-    pinboard_client_for_token(token, config)
+    let token = SecretSpec::PINBOARD_TOKEN.require(
+        token_flag,
+        config.pinboard.token.clone(),
+        config.pinboard.token_file.as_deref(),
+    )?;
+    pinboard_client_for_token(token.value, config)
 }
 
 /// The client for an already-resolved token, at the configured write pacing.

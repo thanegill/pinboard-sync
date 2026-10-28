@@ -167,10 +167,11 @@ cleanup moved: each source keys through a `UrlKey` type in [`src/keys.rs`](src/k
 `HackerNewsKeys` keys a Reddit or GitHub article through `RedditKeys` / `GitHubKeys`, so a
 change to either, or to what `cleanup reddit` / `cleanup github` rewrite a URL to, has to
 keep HN converging. To add a source, implement `Source`, add its account array to
-`config.rs`, and implement [`src/jobs.rs`](src/jobs.rs)'s `SourceAccount`, the one trait
-`sync`, `backup` and `doctor` reach every source through. Loops are unit-tested against
-in-memory fakes ([`src/test_support.rs`](src/test_support.rs)), real clients by `net_tests`
-against a wiremock server via test-only `with_base_url(s)` constructors.
+`config.rs` with its `config::Account` impl (its name, accounts and defaults tier), and
+implement [`src/jobs.rs`](src/jobs.rs)'s `SourceAccount`, the one trait `sync`, `backup` and
+`doctor` reach every source through. Loops are unit-tested against in-memory fakes
+([`src/test_support.rs`](src/test_support.rs)), real clients by `net_tests` against a
+wiremock server via test-only `with_base_url(s)` constructors.
 
 **`sync` reads incrementally by default.** `SyncJob::fetch` picks the traversal from the
 job's `config::SyncLimit`: `auto` calls `Source::fetch_incremental(existing)`, which every

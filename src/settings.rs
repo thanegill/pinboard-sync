@@ -105,12 +105,12 @@ impl ResolvedDates {
 /// (flag -> account -> per-source default -> `[pinboard]` global, with `max_age_days`
 /// defaulting to [`config::DEFAULT_MAX_AGE_DAYS`]). Shared by every `sync`/`cleanup`
 /// builder.
-pub fn resolve_dates(
+pub fn resolve_dates<A: config::Account>(
     overrides: &DateFlags,
-    account: Option<&impl config::Account>,
-    src: &config::SourceDefaults,
+    account: Option<&A>,
     config: &Config,
 ) -> ResolvedDates {
+    let src = A::defaults(config);
     ResolvedDates {
         use_post_date: resolve_setting(
             overrides.use_post_date,
@@ -136,20 +136,18 @@ pub fn resolve_dates(
     }
 }
 
-/// [`resolve_dates`] for a cleanup pass of `source`'s account, refused by
+/// [`resolve_dates`] for a cleanup pass of an `A` account, refused by
 /// [`ResolvedDates::check_redating`]. Config validation rules the pairing out for the
 /// config tiers alone; this catches it when a flag supplies either half. `pass` names the
 /// pass in the error, e.g. "`cleanup github`".
-pub fn resolve_cleanup_dates(
+pub fn resolve_cleanup_dates<A: config::Account>(
     pass: &str,
-    source: &str,
     overrides: &DateFlags,
-    account: Option<&impl config::Account>,
-    src: &config::SourceDefaults,
+    account: Option<&A>,
     config: &Config,
 ) -> anyhow::Result<DateOpts> {
-    let dates = resolve_dates(overrides, account, src, config);
-    dates.check_redating(pass, source)?;
+    let dates = resolve_dates(overrides, account, config);
+    dates.check_redating(pass, A::SOURCE)?;
     Ok(dates.opts())
 }
 
@@ -158,12 +156,12 @@ pub fn resolve_cleanup_dates(
 /// [`resolve_dates`], each on the flag -> account -> per-source default -> `[pinboard]`
 /// global ladder. The client, its secrets and the hook come from
 /// [`SourceAccount`](crate::jobs::SourceAccount) instead.
-pub fn resolve_job_settings(
-    account: Option<&impl config::Account>,
+pub fn resolve_job_settings<A: config::Account>(
+    account: Option<&A>,
     overrides: &SyncOverrides,
-    src: &config::SourceDefaults,
     config: &Config,
 ) -> JobSettings {
+    let src = A::defaults(config);
     JobSettings {
         limit: resolve_setting(
             overrides.flags.limit,
@@ -186,7 +184,7 @@ pub fn resolve_job_settings(
             config.pinboard.public,
         )
         .value,
-        dates: resolve_dates(&DateFlags::from(&overrides.flags), account, src, config).opts(),
+        dates: resolve_dates(&DateFlags::from(&overrides.flags), account, config).opts(),
     }
 }
 
@@ -239,25 +237,23 @@ mod tests {
     #[test]
     fn date_settings_stale_to_now_flag_tops_the_tier() {
         let config = Config::default(); // global cleanup_stale_to_now = false
-        let src = &config.defaults.reddit;
 
         // flag forces it on against a false global
         let overrides = DateFlags {
             stale_to_now: Some(true),
             ..Default::default()
         };
-        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config).opts();
+        let d = resolve_dates(&overrides, None::<&RedditAccount>, &config).opts();
         assert!(d.stale_to_now);
 
         // flag forces it off against a true global
         let mut config = Config::default();
         config.pinboard.cleanup_stale_to_now = true;
-        let src = &config.defaults.reddit;
         let overrides = DateFlags {
             stale_to_now: Some(false),
             ..Default::default()
         };
-        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config).opts();
+        let d = resolve_dates(&overrides, None::<&RedditAccount>, &config).opts();
         assert!(!d.stale_to_now);
     }
 
@@ -265,24 +261,22 @@ mod tests {
     fn date_settings_max_age_days_flag_tops_the_tier() {
         let mut config = Config::default();
         config.pinboard.post_date_max_age_days = Some(10); // global
-        let src = &config.defaults.reddit; // per-source default None
 
         // flag wins
         let overrides = DateFlags {
             max_age_days: Some(99),
             ..Default::default()
         };
-        let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config).opts();
+        let d = resolve_dates(&overrides, None::<&RedditAccount>, &config).opts();
         assert_eq!(d.max_age_days, 99);
 
         // no flag -> global
-        let d = resolve_dates(&DateFlags::default(), None::<&RedditAccount>, src, &config).opts();
+        let d = resolve_dates(&DateFlags::default(), None::<&RedditAccount>, &config).opts();
         assert_eq!(d.max_age_days, 10);
 
         // global unset -> built-in default
         let config = Config::default();
-        let src = &config.defaults.reddit;
-        let d = resolve_dates(&DateFlags::default(), None::<&RedditAccount>, src, &config).opts();
+        let d = resolve_dates(&DateFlags::default(), None::<&RedditAccount>, &config).opts();
         assert_eq!(d.max_age_days, config::DEFAULT_MAX_AGE_DAYS);
     }
 }

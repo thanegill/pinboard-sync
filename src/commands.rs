@@ -28,7 +28,7 @@ use crate::reddit::cleanup::RedditCleanupOverrides;
 use crate::reddit::model::RedditConfig;
 use crate::reddit::RedditInfoClient;
 use crate::secrets::{
-    first_nonempty, missing_reddit_cookie, resolve_github_token, resolve_reddit_cookie, SecretSpec,
+    first_nonempty, missing_reddit_cookie, require_github_token, resolve_reddit_cookie,
 };
 use crate::settings::resolve_cleanup_dates;
 use crate::source::{BookmarkDraft, SourceError};
@@ -318,14 +318,7 @@ fn cleanup_target<'a, A: SourceAccount>(
     overrides: &DateFlags,
     config: &'a Config,
 ) -> Result<CleanupTarget<'a, A>> {
-    let dates = resolve_cleanup_dates(
-        pass,
-        A::SOURCE,
-        overrides,
-        account,
-        A::defaults(config),
-        config,
-    )?;
+    let dates = resolve_cleanup_dates(pass, overrides, account, config)?;
     Ok(CleanupTarget { account, dates })
 }
 
@@ -382,8 +375,7 @@ fn github_cleanup_client(
     token_flag: Option<String>,
     config: &Config,
 ) -> Result<GitHubClient> {
-    let token = resolve_github_token(token_flag, account)
-        .with_context(|| SecretSpec::GITHUB_TOKEN.missing())?;
+    let token = require_github_token(token_flag, account)?;
     GitHubClient::new(
         token,
         GitHubConfig::resolve(account, &config.defaults.github),

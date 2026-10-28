@@ -22,9 +22,7 @@ use crate::hackernews::{HackerNewsClient, HackerNewsConfig};
 use crate::pinboard::{PinboardClient, RATE_LIMIT};
 use crate::reddit::model::RedditConfig;
 use crate::reddit::RedditClient;
-use crate::secrets::{
-    self, resolve_github_token, resolve_pinboard_token, resolve_reddit_cookie, SecretSpec,
-};
+use crate::secrets::{self, require_github_token, resolve_reddit_cookie, SecretSpec};
 use crate::settings::{resolve_hook, resolve_job_settings};
 use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
 use crate::sync::JobSettings;
@@ -241,20 +239,11 @@ impl UrlKey for SourceClient {
     }
 }
 
-/// What `sync`, `backup` and `doctor` need from one source's account type, so each
-/// handles the three sources through one generic path: where its accounts and per-source
-/// defaults live in the config, how its client is built from an account plus the CLI
-/// overrides, and which auth-failure hook its jobs carry.
-pub trait SourceAccount: config::Account + Sized {
-    /// The source's name in job labels, backup file stems and `doctor` lines.
-    const SOURCE: &'static str;
-
-    /// The source's configured accounts (`[[reddit]]` and so on).
-    fn configured(config: &Config) -> &[Self];
-
-    /// The source's `[defaults.<source>]` tier.
-    fn defaults(config: &Config) -> &config::SourceDefaults;
-
+/// What `sync`, `backup` and `doctor` need from one source's account type beyond
+/// [`config::Account`], so each handles the three sources through one generic path: how
+/// its client is built from an account plus the CLI overrides, and which auth-failure hook
+/// its jobs carry.
+pub trait SourceAccount: config::Account {
     /// The account's own `on_auth_failure` override.
     fn on_auth_failure(&self) -> Option<&str>;
 
@@ -286,16 +275,6 @@ pub trait SourceAccount: config::Account + Sized {
 }
 
 impl SourceAccount for RedditAccount {
-    const SOURCE: &'static str = "reddit";
-
-    fn configured(config: &Config) -> &[Self] {
-        &config.reddit
-    }
-
-    fn defaults(config: &Config) -> &config::SourceDefaults {
-        &config.defaults.reddit
-    }
-
     fn on_auth_failure(&self) -> Option<&str> {
         self.on_auth_failure.as_deref()
     }
@@ -319,13 +298,12 @@ impl SourceAccount for RedditAccount {
         config: &Config,
     ) -> Result<SourceClient> {
         let username = SecretSpec::REDDIT_USERNAME
-            .resolve(
+            .require(
                 overrides.reddit_username.clone(),
                 account.and_then(|a| a.username.clone()),
                 None,
-            )
-            .map(|username| username.value)
-            .with_context(|| SecretSpec::REDDIT_USERNAME.missing())?;
+            )?
+            .value;
         let cookie = resolve_reddit_cookie(overrides.reddit_cookie.clone(), account);
         let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
         Ok(SourceClient::Reddit(
@@ -336,16 +314,6 @@ impl SourceAccount for RedditAccount {
 }
 
 impl SourceAccount for GitHubAccount {
-    const SOURCE: &'static str = "github";
-
-    fn configured(config: &Config) -> &[Self] {
-        &config.github
-    }
-
-    fn defaults(config: &Config) -> &config::SourceDefaults {
-        &config.defaults.github.common
-    }
-
     fn on_auth_failure(&self) -> Option<&str> {
         self.on_auth_failure.as_deref()
     }
@@ -359,8 +327,7 @@ impl SourceAccount for GitHubAccount {
         overrides: &SyncOverrides,
         config: &Config,
     ) -> Result<SourceClient> {
-        let token = resolve_github_token(overrides.github_token.clone(), account)
-            .with_context(|| SecretSpec::GITHUB_TOKEN.missing())?;
+        let token = require_github_token(overrides.github_token.clone(), account)?;
         let github_config = GitHubConfig::resolve(account, &config.defaults.github);
         Ok(SourceClient::GitHub(GitHubClient::new(
             token,
@@ -370,16 +337,6 @@ impl SourceAccount for GitHubAccount {
 }
 
 impl SourceAccount for HackerNewsAccount {
-    const SOURCE: &'static str = "hackernews";
-
-    fn configured(config: &Config) -> &[Self] {
-        &config.hackernews
-    }
-
-    fn defaults(config: &Config) -> &config::SourceDefaults {
-        &config.defaults.hackernews
-    }
-
     fn on_auth_failure(&self) -> Option<&str> {
         None
     }
@@ -397,13 +354,12 @@ impl SourceAccount for HackerNewsAccount {
         config: &Config,
     ) -> Result<SourceClient> {
         let username = SecretSpec::HN_USERNAME
-            .resolve(
+            .require(
                 overrides.hackernews_username.clone(),
                 account.and_then(|a| a.username.clone()),
                 None,
-            )
-            .map(|username| username.value)
-            .with_context(|| SecretSpec::HN_USERNAME.missing())?;
+            )?
+            .value;
         let hn_config = account.map(HackerNewsConfig::from).unwrap_or_default();
         Ok(SourceClient::HackerNews(
             HackerNewsClient::new(username, hn_config)?
@@ -428,15 +384,18 @@ pub fn build_job<A: SourceAccount>(
         client: A::client(account, overrides, config)?,
         label: job_label(account),
         hook: A::hook(account, overrides.on_auth_failure.clone(), config),
-        settings: resolve_job_settings(account, overrides, A::defaults(config), config),
+        settings: resolve_job_settings(account, overrides, config),
     })
 }
 
 /// Resolve the Pinboard token and build the client (no fetch).
 fn build_pinboard_client(token_flag: Option<String>, config: &Config) -> Result<PinboardClient> {
-    let token = resolve_pinboard_token(token_flag, &config.pinboard)
-        .with_context(|| SecretSpec::PINBOARD_TOKEN.missing())?;
-    pinboard_client_for_token(token, config)
+    let token = SecretSpec::PINBOARD_TOKEN.require(
+        token_flag,
+        config.pinboard.token.clone(),
+        config.pinboard.token_file.as_deref(),
+    )?;
+    pinboard_client_for_token(token.value, config)
 }
 
 /// The client for an already-resolved token, at the configured write pacing.

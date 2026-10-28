@@ -420,6 +420,11 @@ fn a_missing_secret_names_every_setting_it_can_come_from() {
          or the config's `username`)"
     );
     assert_eq!(
+        error(build_job::<GitHubAccount>(None, &overrides, &config)),
+        "missing GitHub token (set --github-token, $GITHUB_TOKEN, $GITHUB_TOKEN_FILE, or \
+         the config's `token` or `token_file`)"
+    );
+    assert_eq!(
         format!(
             "{:#}",
             build_pinboard_client(None, &config)

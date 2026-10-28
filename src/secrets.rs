@@ -156,6 +156,18 @@ impl SecretSpec {
         self.first_accepted(secret_ladder(flag, self.var, cfg_inline, cfg_file))
     }
 
+    /// [`Self::resolve`] for a secret the run cannot do without: none is the
+    /// [`Self::missing`] error.
+    pub fn require(
+        self,
+        flag: Option<String>,
+        cfg_inline: Option<String>,
+        cfg_file: Option<&str>,
+    ) -> anyhow::Result<ConfiguredSecret> {
+        self.resolve(flag, cfg_inline, cfg_file)
+            .ok_or_else(|| anyhow::anyhow!(self.missing()))
+    }
+
     /// The first of `candidates` the ladder takes, with the setting it came from.
     fn first_accepted(
         self,
@@ -174,17 +186,14 @@ impl SecretSpec {
     /// An unreadable `$VAR_FILE` is left for each account's own resolution to warn about.
     fn env_setting(self) -> Option<&'static str> {
         let read_quietly = |path: &str| try_read_file_secret(path).ok().flatten();
-        let (rung, _) = secret_ladder_reading(read_quietly, None, self.var, None, None)
-            .into_iter()
-            .find(|(_, value)| {
-                value
-                    .as_deref()
-                    .is_some_and(|value| self.accepts(value.trim()))
-            })?;
-        match rung {
-            SecretRung::Env | SecretRung::EnvFile => Some(self.source(rung)),
-            SecretRung::Flag | SecretRung::ConfigInline | SecretRung::ConfigFile => None,
-        }
+        self.first_accepted(secret_ladder_reading(
+            read_quietly,
+            None,
+            self.var,
+            None,
+            None,
+        ))
+        .map(|secret| secret.source)
     }
 }
 
@@ -209,12 +218,13 @@ pub fn resolve_reddit_cookie(
     )
 }
 
-/// The GitHub token through its ladder, with the setting it came from.
-pub fn resolve_github_token(
+/// The GitHub token through its ladder, with the setting it came from; none is the
+/// missing-token error.
+pub fn require_github_token(
     flag: Option<String>,
     account: Option<&GitHubAccount>,
-) -> Option<ConfiguredSecret> {
-    SecretSpec::GITHUB_TOKEN.resolve(
+) -> anyhow::Result<ConfiguredSecret> {
+    SecretSpec::GITHUB_TOKEN.require(
         flag,
         account.and_then(|a| a.token.clone()),
         account.and_then(|a| a.token_file.as_deref()),
@@ -496,7 +506,7 @@ mod tests {
         let token_file = dir.path().join("token");
         std::fs::write(&token_file, "from-env-file\n").unwrap();
         let _env = FakeSecretEnv::set(&[("GITHUB_TOKEN_FILE", token_file.to_str().unwrap())]);
-        let token = resolve_github_token(None, None).unwrap();
+        let token = require_github_token(None, None).expect("resolves");
         assert_eq!(
             (token.value.as_str(), token.source),
             ("from-env-file", "$GITHUB_TOKEN_FILE")
@@ -518,7 +528,7 @@ mod tests {
         let (_, logs) = crate::test_support::capturing_logs(async {
             warn_if_env_shared("github", &[SecretSpec::GITHUB_TOKEN], 2);
             for _ in 0..2 {
-                assert!(resolve_github_token(None, Some(&account)).is_some());
+                assert!(require_github_token(None, Some(&account)).is_ok());
             }
         })
         .await;
@@ -532,18 +542,61 @@ mod tests {
         );
     }
 
+    /// The environment rung a secret would come from: `$VAR` before `$VAR_FILE`, and only
+    /// a value the ladder would take, so a blank one or a cookie naming no session is none.
+    #[test]
+    fn env_setting_names_the_env_rung_the_ladder_would_take() {
+        let dir = scratch_dir("env-setting");
+        let file = dir.path().join("token");
+        std::fs::write(&file, "from-file\n").unwrap();
+        let file = file.to_str().unwrap();
+        let env_setting = |vars: &[(&str, &str)], spec: SecretSpec| {
+            let _env = FakeSecretEnv::set(vars);
+            spec.env_setting()
+        };
+
+        assert_eq!(env_setting(&[], SecretSpec::GITHUB_TOKEN), None);
+        assert_eq!(
+            env_setting(&[("GITHUB_TOKEN_FILE", file)], SecretSpec::GITHUB_TOKEN),
+            Some("$GITHUB_TOKEN_FILE")
+        );
+        assert_eq!(
+            env_setting(
+                &[("GITHUB_TOKEN", "tok"), ("GITHUB_TOKEN_FILE", file)],
+                SecretSpec::GITHUB_TOKEN
+            ),
+            Some("$GITHUB_TOKEN")
+        );
+        assert_eq!(
+            env_setting(
+                &[("GITHUB_TOKEN", " \n"), ("GITHUB_TOKEN_FILE", file)],
+                SecretSpec::GITHUB_TOKEN
+            ),
+            Some("$GITHUB_TOKEN_FILE"),
+            "a blank $GITHUB_TOKEN is skipped"
+        );
+        assert_eq!(
+            env_setting(
+                &[("REDDIT_COOKIE", "reddit_session=")],
+                SecretSpec::REDDIT_COOKIE
+            ),
+            None,
+            "a cookie that sets no session is no cookie"
+        );
+    }
+
     /// A pasted value often carries a newline or a stray space; every rung drops it, as the
     /// `*_FILE` rungs always did, so the value sent is the one configured.
     #[test]
     fn every_rung_takes_its_value_trimmed() {
         let env = FakeSecretEnv::set(&[("GITHUB_TOKEN", " from-env\n")]);
-        let value = |token: Option<ConfiguredSecret>| token.map(|token| token.value);
+        let value = |token: anyhow::Result<ConfiguredSecret>| token.ok().map(|token| token.value);
         assert_eq!(
-            value(resolve_github_token(Some("\tfrom-flag \n".into()), None)).as_deref(),
+            value(require_github_token(Some("\tfrom-flag \n".into()), None)).as_deref(),
             Some("from-flag")
         );
         assert_eq!(
-            value(resolve_github_token(None, None)).as_deref(),
+            value(require_github_token(None, None)).as_deref(),
             Some("from-env")
         );
         drop(env);
@@ -552,7 +605,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            value(resolve_github_token(None, Some(&account))).as_deref(),
+            value(require_github_token(None, Some(&account))).as_deref(),
             Some("inline")
         );
         assert_eq!(

@@ -55,7 +55,7 @@ impl Tags {
     /// never contain `""`, so emitting one would make a cleanup plan diff against
     /// storage on every run and never converge.
     pub fn push_unique(&mut self, tag: &str) {
-        if !tag.is_empty() && !self.0.iter().any(|held| held == tag) {
+        if !tag.is_empty() && !self.has(tag) {
             self.0.push(tag.to_string());
         }
     }
@@ -75,6 +75,11 @@ impl Tags {
     /// Sort the tags, for a plan whose order is canonical.
     pub fn sort(&mut self) {
         self.0.sort();
+    }
+
+    /// Whether `tag` is one of the tags.
+    pub fn has(&self, tag: &str) -> bool {
+        self.0.iter().any(|held| held == tag)
     }
 
     /// Whether the two lists differ as sets (order- and duplicate-insensitive).
@@ -182,6 +187,15 @@ mod tests {
         // tags can never contain one, so it would diff against storage forever.
         acc.extend_unique(&strings(&["", "reddit", "rust"]));
         assert_eq!(acc, ["reddit", "rust"]);
+    }
+
+    #[test]
+    fn has_matches_a_whole_tag_case_sensitively() {
+        let held = tags(&["reddit", "subreddit:rust"]);
+        assert!(held.has("reddit"), "{held:?}");
+        assert!(!held.has("Reddit"), "{held:?}");
+        assert!(!held.has("subreddit"), "{held:?}");
+        assert!(!held.has(""), "{held:?}");
     }
 
     #[test]

@@ -233,7 +233,7 @@ fn repo_root(url: &Url) -> Option<RepoName> {
 /// too while they still look the tool's (see [`run`]). With every base tag disabled
 /// nothing marks a star, so no bookmark qualifies.
 fn is_synced_star(bookmark: &Bookmark, cfg: &GitHubConfig) -> bool {
-    base_tag(cfg).is_some_and(|base| bookmark.tags.iter().any(|tag| tag == base))
+    base_tag(cfg).is_some_and(|base| bookmark.tags.has(base))
 }
 
 /// The tag marking a star `sync github` wrote under `cfg`: the first non-empty entry of

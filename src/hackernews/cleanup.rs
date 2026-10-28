@@ -101,7 +101,7 @@ async fn link_discussions<S: BookmarkStore + AccountState>(
     // record, so this pass picks it up in the same run and the account settles in one.
     let candidates = store.snapshot(|bookmark| {
         HackerNewsItemId::try_from(&bookmark.url).is_err()
-            && bookmark.tags.contains(&opts.config.link_tag)
+            && bookmark.tags.has(&opts.config.link_tag)
     });
     let pass = HackerNewsLinkPass {
         client,
@@ -318,16 +318,8 @@ mod tests {
         // The re-derived url/title still apply and the base tags still merge in.
         assert_eq!(planned.url.as_str(), "https://example.com/x");
         assert_eq!(planned.title, "Cool thing");
-        assert!(
-            planned.tags.contains(&"mine".to_string()),
-            "{:?}",
-            planned.tags
-        );
-        assert!(
-            planned.tags.contains(&"hackernews".to_string()),
-            "{:?}",
-            planned.tags
-        );
+        assert!(planned.tags.has("mine"), "{:?}", planned.tags);
+        assert!(planned.tags.has("hackernews"), "{:?}", planned.tags);
     }
 
     #[tokio::test]

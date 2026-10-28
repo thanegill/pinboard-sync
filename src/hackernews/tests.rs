@@ -115,7 +115,7 @@ fn text_post_without_url_bookmarks_the_hn_permalink() {
     assert_eq!(d.bookmark.note, "<blockquote>details</blockquote>");
     // Ask HN: -> special-type tag.
     assert!(
-        d.bookmark.tags.contains(&"hackernews:ask-hn".to_string()),
+        d.bookmark.tags.has("hackernews:ask-hn"),
         "{:?}",
         d.bookmark.tags
     );

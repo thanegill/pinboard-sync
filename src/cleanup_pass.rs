@@ -293,9 +293,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // was held back. There is nothing left to refuse *or* write, so this comes before
         // the untouchable check: those plans were already counted as they were held back,
         // and reporting the group again would inflate `refused` past the number of writes
-        // actually abandoned. It also keeps `merge_bookmarks` from being handed an empty
-        // slice to index: the survivor always supplies a first element, but only because
-        // two distant pieces of code agree.
+        // actually abandoned. It is also what guarantees `write_merge` a member to lead.
         if group.is_empty() {
             continue;
         }
@@ -737,17 +735,16 @@ async fn write_merge<S: BookmarkStore>(
             None => (None, None),
         },
     };
-    let plans: Vec<&Bookmark> = survivor
-        .into_iter()
-        .chain(
-            group
-                .iter()
-                .enumerate()
-                .filter(|(at, _)| Some(*at) != lifted)
-                .map(|(_, member)| member.planned),
-        )
-        .collect();
-    let mut merged = merge_bookmarks(&plans);
+    let mut movers = group
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| Some(*at) != lifted)
+        .map(|(_, member)| member.planned);
+    let lead = survivor
+        .or_else(|| movers.next())
+        .expect("run_pass skips an empty group");
+    let rest: Vec<&Bookmark> = movers.collect();
+    let mut merged = merge_bookmarks(lead, &rest);
     if let Some(survivor) = survivor {
         // The survivor's own record-level state survives the merge's field rules: it is the
         // bookmark that stays here, and cleanup never re-shapes those (see `write_single`).

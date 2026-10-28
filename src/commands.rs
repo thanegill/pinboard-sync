@@ -66,7 +66,6 @@ fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<SyncPlan> {
                 bail!("--all requires a --config with at least one configured account");
             }
             let overrides = SyncOverrides {
-                dry_run: cmd.dry_run,
                 on_auth_failure: cmd.on_auth_failure.or_else(on_auth_failure_from_env),
                 ..SyncOverrides::default()
             };

@@ -14,7 +14,7 @@ use crate::cli::{
 use crate::config::{Config, GitHubAccount, HackerNewsAccount, RedditAccount};
 use crate::github::{GitHubClient, GitHubConfig};
 use crate::hackernews::cleanup::{HackerNewsCleanupOpts, HackerNewsCleanupOverrides};
-use crate::hackernews::{HackerNewsClient, HackerNewsConfig};
+use crate::hackernews::{AlgoliaClient, HackerNewsConfig};
 use crate::hook::{cleanup_hook, handle_source_err, on_auth_failure_from_env};
 use crate::jobs::backup_jobs::{build_backup_plan, BackupJob};
 use crate::jobs::{
@@ -554,11 +554,11 @@ async fn cleanup_hackernews_account<S: BookmarkStore + AccountState>(
         .await
 }
 
-/// A HackerNews cleanup pass's options and its client, built on the tag config
-/// [`resolve_hackernews_cleanup_config`] gives.
+/// A HackerNews cleanup pass's options, on the tag config
+/// [`resolve_hackernews_cleanup_config`] gives, and its Algolia client.
 struct HackerNewsCleanup {
     opts: HackerNewsCleanupOpts,
-    client: HackerNewsClient,
+    client: AlgoliaClient,
 }
 
 impl HackerNewsCleanup {
@@ -567,13 +567,13 @@ impl HackerNewsCleanup {
         overrides: HackerNewsCleanupOverrides,
         dates: DateOpts,
     ) -> Result<Self> {
-        let config = resolve_hackernews_cleanup_config(account, overrides.link_tag)?;
         Ok(Self {
             opts: HackerNewsCleanupOpts {
                 link_discussions: overrides.link_discussions,
                 dates,
+                config: resolve_hackernews_cleanup_config(account, overrides.link_tag)?,
             },
-            client: HackerNewsClient::for_cleanup(config)?,
+            client: AlgoliaClient::new()?,
         })
     }
 

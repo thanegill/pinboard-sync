@@ -444,7 +444,8 @@ async fn fetch_items_pauses_only_between_algolia_chunks() {
         .collect();
 
     let (items, waits) =
-        crate::http::recording_waits(client.fetch_items(&ids, &mut RawSink::disabled())).await;
+        crate::http::recording_waits(client.algolia.fetch_items(&ids, &mut RawSink::disabled()))
+            .await;
 
     assert!(items.unwrap().is_empty());
     assert_eq!(waits, [ALGOLIA_CHUNK_PAUSE]);
@@ -549,7 +550,7 @@ async fn dump_captures_both_scraped_pages_and_the_algolia_response() {
     assert!(html.contains(r#"id="42""#));
 }
 
-async fn algolia_answering_with_a_long_error_page() -> (MockServer, HackerNewsClient) {
+async fn algolia_answering_with_a_long_error_page() -> (MockServer, AlgoliaClient) {
     let algolia = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/search"))
@@ -558,7 +559,7 @@ async fn algolia_answering_with_a_long_error_page() -> (MockServer, HackerNewsCl
         )
         .mount(&algolia)
         .await;
-    let client = hackernews_client(UNUSED.into(), algolia.uri());
+    let client = AlgoliaClient::build(algolia.uri()).unwrap();
     (algolia, client)
 }
 
@@ -758,9 +759,13 @@ async fn cleanup_leaves_what_sync_wrote_as_it_is() {
             let opts = HackerNewsCleanupOpts {
                 link_discussions: false,
                 dates,
+                config: config.clone(),
             };
-            assert_cleanup_changes_nothing(account, async |store| run(store, &client, &opts).await)
-                .await;
+            let cleanup_client = AlgoliaClient::with_base_url(algolia.uri());
+            assert_cleanup_changes_nothing(account, async |store| {
+                run(store, &cleanup_client, &opts).await
+            })
+            .await;
         }
     }
 }

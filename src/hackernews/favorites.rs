@@ -152,7 +152,8 @@ impl HackerNewsClient {
             let ids: Vec<HackerNewsItemId> = ids.into_iter().map(HackerNewsItemId::from).collect();
             let caught_up = match synced_keys {
                 Some(synced_keys) => {
-                    let page_drafts = self.drafts_by_id(self.fetch_items(&ids, sink).await?);
+                    let page_drafts =
+                        self.drafts_by_id(self.algolia.fetch_items(&ids, sink).await?);
                     let caught_up = is_caught_up(&ids, &page_drafts, synced_keys);
                     drafts.extend(page_drafts);
                     caught_up

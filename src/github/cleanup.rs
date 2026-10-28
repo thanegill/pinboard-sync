@@ -10,12 +10,13 @@ use time::OffsetDateTime;
 use url::Url;
 
 use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo};
+use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::config::own_then_configured;
 use crate::htmltext::{collapse_whitespace, html_to_plain};
 use crate::keys::url_key;
-use crate::source::{Source, SourceError};
+use crate::source::SourceError;
 use crate::tags::{extend_unique, prefixed, push_unique};
 use crate::timefmt::DateOpts;
 use crate::urls::UrlExt;
@@ -54,7 +55,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
     // (it keeps its existing time).
     let star_dates: HashMap<String, OffsetDateTime> = if dates.use_post_date {
         client
-            .fetch()
+            .fetch_stars(None, &mut RawSink::disabled())
             .await?
             .into_iter()
             .filter_map(|d| Some((url_key(&d.bookmark.url)?, d.bookmark.timestamp?)))

@@ -25,13 +25,42 @@ use url::Url;
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
-/// The most stars `/user/starred` returns per page; GitHub's default is 30.
-const STARRED_PER_PAGE: &str = "100";
+/// The most items a GitHub listing returns per page; GitHub's default is 30.
+const PER_PAGE: &str = "100";
 /// Backstop against a malformed `Link: rel="next"` chain that never terminates.
-/// At [`STARRED_PER_PAGE`] results per page this covers a million stars,
-/// far beyond any real account -- it is only a backstop against a `Link` header that
-/// increments forever; the per-page repeat case is caught by the `visited` guard.
-const MAX_STARRED_PAGES: u32 = 10_000;
+/// At [`PER_PAGE`] results per page this covers a million stars, far beyond any real
+/// account -- it is only a backstop against a `Link` header that increments forever; the
+/// per-page repeat case is caught by the `visited` guard.
+const MAX_PAGES: u32 = 10_000;
+
+/// One `Link`-paged GitHub listing, walked by [`GitHubClient::walk`].
+#[derive(Clone, Copy)]
+struct PagedStream {
+    /// Names the stream in messages and the request label.
+    label: &'static str,
+    /// The `backup` stream its pages are captured under (`""` is the primary).
+    raw_stream: &'static str,
+    path: &'static str,
+    accept: &'static str,
+    /// Sent with every page, besides `page` itself.
+    query: &'static [(&'static str, &'static str)],
+}
+
+/// `/user/starred`. The star+json media type makes each element `{ starred_at, repo }`,
+/// so each bookmark can be dated by when it was starred, and the sort is pinned rather
+/// than left to GitHub's default because the incremental read depends on
+/// newest-starred-first.
+const STARS: PagedStream = PagedStream {
+    label: "github starred",
+    raw_stream: "",
+    path: "/user/starred",
+    accept: "application/vnd.github.star+json",
+    query: &[
+        ("sort", "created"),
+        ("direction", "desc"),
+        ("per_page", PER_PAGE),
+    ],
+};
 
 /// Tag vocabulary for GitHub stars. `tags` are applied to every bookmark
 /// (defaulting to `["github-star"]`); the prefixes default to their built-in values, and
@@ -395,48 +424,71 @@ impl Source for GitHubClient {
 }
 
 impl GitHubClient {
-    /// [`Source::fetch`], pushing each `/user/starred` page body to `sink` as it arrives
-    /// so `backup` gets the verbatim response — including the ~75 repo fields
-    /// [`GitHubStarredRepo`] doesn't keep — out of the same traversal. With
-    /// `synced_keys`, it stops at the first page with nothing new ([`page_is_caught_up`]).
+    /// [`Source::fetch`], pushing each page body to `sink` as it arrives so `backup` gets
+    /// the verbatim responses -- including the ~75 repo fields [`GitHubStarredRepo`]
+    /// doesn't keep -- out of the same traversal. With `synced_keys`, it stops at the
+    /// first page with nothing new ([`page_is_caught_up`]).
     async fn fetch_capturing(
         &self,
         synced_keys: Option<&HashSet<String>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
-        let endpoint = format!("{}/user/starred", self.base);
+        self.fetch_stars(synced_keys, sink).await
+    }
+
+    /// The starred repos, each dated by its star time.
+    async fn fetch_stars(
+        &self,
+        synced_keys: Option<&HashSet<String>>,
+        sink: &mut RawSink,
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        self.walk(&STARS, synced_keys, sink, |starred: GitHubStarredRepo| {
+            starred.into_draft(&self.config)
+        })
+        .await
+    }
+
+    /// Walk `stream`'s `Link: rel="next"` pages, shaping each element with `shape`. An
+    /// element that fails to deserialize is skipped with a warning rather than discarding
+    /// its page (and every earlier one); a body that isn't a JSON array still fails the
+    /// walk, and so does a non-empty page where every element fails, a schema break (see
+    /// [`deserialize_lenient`]).
+    async fn walk<T: serde::de::DeserializeOwned>(
+        &self,
+        stream: &PagedStream,
+        synced_keys: Option<&HashSet<String>>,
+        sink: &mut RawSink,
+        shape: impl Fn(T) -> Option<BookmarkDraft>,
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        let PagedStream {
+            label,
+            raw_stream,
+            path,
+            accept,
+            query,
+        } = *stream;
+        let endpoint = format!("{}{path}", self.base);
         let mut out = Vec::new();
         let mut page: u32 = 1;
         let mut visited = HashSet::new();
 
         loop {
-            if page > MAX_STARRED_PAGES {
-                warn!(
-                    "github starred: hit the {MAX_STARRED_PAGES}-page cap; \
-                     stopping (some stars may be missing)"
-                );
-                sink.mark_truncated(format!(
-                    "github starred stopped at the {MAX_STARRED_PAGES}-page cap"
-                ));
+            if page > MAX_PAGES {
+                warn!("{label}: hit the {MAX_PAGES}-page cap; stopping (some may be missing)");
+                sink.mark_truncated(format!("{label} stopped at the {MAX_PAGES}-page cap"));
                 break;
             }
             if !visited.insert(page) {
-                warn!("github starred: 'next' link looped back to page {page}; stopping");
+                warn!("{label}: 'next' link looped back to page {page}; stopping");
                 break;
             }
             let resp = self
                 .http
-                .send("github starred", || {
-                    // The star+json media type makes each element `{ starred_at, repo }`, so
-                    // we can date each bookmark by when it was starred.
+                .send(label, || {
                     self.http
                         .get(&endpoint)
-                        .header(reqwest::header::ACCEPT, "application/vnd.github.star+json")
-                        .query(&[
-                            ("sort", "created"),
-                            ("direction", "desc"),
-                            ("per_page", STARRED_PER_PAGE),
-                        ])
+                        .header(reqwest::header::ACCEPT, accept)
+                        .query(query)
                         .query(&[("page", page)])
                 })
                 .await?;
@@ -451,37 +503,30 @@ impl GitHubClient {
                 .and_then(|v| v.to_str().ok())
                 .and_then(parse_link_next);
             if !status.is_success() {
-                return Err(self.refusal("github starred", resp).await);
+                return Err(self.refusal(label, resp).await);
             }
 
-            // Deserialize element-by-element so one malformed repo is skipped with a
-            // warning rather than discarding this page (and every earlier one). A body
-            // that isn't a JSON array at all still fails the whole page; a non-empty page
-            // where every element fails is a schema break (see `deserialize_lenient`).
             let body = resp
                 .text()
                 .await
-                .context("reading github starred response")?;
-            sink.push("", RawKind::Json, &body);
+                .with_context(|| format!("reading {label} response"))?;
+            sink.push(raw_stream, RawKind::Json, &body);
             let elements: Vec<serde_json::Value> =
-                serde_json::from_str(&body).context("parsing github starred response")?;
-            let repos: Vec<GitHubStarredRepo> =
-                deserialize_lenient(elements, "github starred element", |count| {
+                serde_json::from_str(&body).with_context(|| format!("parsing {label} response"))?;
+            let items: Vec<T> =
+                deserialize_lenient(elements, &format!("{label} element"), |count| {
                     SourceError::Other(anyhow::anyhow!(
-                        "github starred page {page}: all {count} element(s) failed to \
+                        "{label} page {page}: all {count} element(s) failed to \
                          deserialize — the API response shape may have changed"
                     ))
                 })?;
-            let page_len = repos.len();
-            let page_drafts: Vec<BookmarkDraft> = repos
-                .into_iter()
-                .filter_map(|starred| starred.into_draft(&self.config))
-                .collect();
+            let page_len = items.len();
+            let page_drafts: Vec<BookmarkDraft> = items.into_iter().filter_map(&shape).collect();
             let caught_up =
                 synced_keys.is_some_and(|keys| page_is_caught_up(page_len, &page_drafts, keys));
             out.extend(page_drafts);
             if caught_up {
-                debug!("github starred: page {page} has nothing new; stopping");
+                debug!("{label}: page {page} has nothing new; stopping");
                 break;
             }
 

@@ -30,9 +30,11 @@ or an undefined option without building anything for Linux. It also runs the hos
 `pinboard-sync config check` on the module's rendered settings, re-rendered from the
 internal `services.pinboard-sync.renderedSettings` option with the host's
 `pkgs.formats.toml`, because the module's own config file is an x86_64-linux derivation.
-So a key the binary would reject fails the check too. `checks.nix-lint` runs
-`nixfmt --check`, statix and deadnix over every `.nix` file. CI runs `nix flake check`
-on x86_64-linux, in its `flake` job.
+So a key the binary would reject fails the check too, as does an `on_auth_failure` in the
+rendered TOML. It greps the rendered units for the hook's `Environment=` on sync and
+cleanup, the cleanup unit's `cleanup --all`, and every user value's `%` escaped.
+`checks.nix-lint` runs `nixfmt --check`, statix and deadnix over every `.nix` file. CI
+runs `nix flake check` on x86_64-linux, in its `flake` job.
 
 `cargo clippy -D warnings` and `cargo fmt --check` are the gate — keep both clean.
 Commit often: each working feature or structural piece, with its tests, keeping the

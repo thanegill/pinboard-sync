@@ -139,7 +139,7 @@ impl From<&Bookmark> for ExportBookmark {
             url: b.url.to_string(),
             title: b.title.clone(),
             note: b.note.clone(),
-            tags: b.tags.clone(),
+            tags: b.tags.to_vec(),
             timestamp: b.timestamp.and_then(crate::timefmt::to_rfc3339),
             public: b.public,
             read_later: b.read_later,

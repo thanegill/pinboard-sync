@@ -2,7 +2,9 @@ use std::num::NonZeroUsize;
 
 use super::*;
 use crate::source::{page_is_caught_up, DedupKey, Source, SourceError, UrlKey};
-use crate::test_support::{listing_entry, replay, stored_at as bookmark, FakePinboard, FakeReddit};
+use crate::test_support::{
+    listing_entry, replay, stored_at as bookmark, tag_list, FakePinboard, FakeReddit,
+};
 use crate::timefmt::from_unix;
 use serde_json::json;
 use url::Url;
@@ -57,7 +59,7 @@ impl Source for PagedSource {
 fn tagged_draft(url: &str, tag: &str) -> BookmarkDraft {
     BookmarkDraft {
         bookmark: Bookmark {
-            tags: vec![tag.into()],
+            tags: tag_list(&[tag]),
             ..bookmark(url)
         },
         dedup_key: url.into(),

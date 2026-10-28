@@ -23,7 +23,7 @@ use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::{client_builder, RetryingClient};
 use crate::keys::{HackerNewsKeys, RedditKeys};
 use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
-use crate::tags::{push_prefixed, push_tag, push_tags};
+use crate::tags::Tags;
 use favorites::{FavoritesStream, FAVORITES_PAGE_PAUSE};
 use url::Url;
 
@@ -118,14 +118,14 @@ impl HackerNewsItem {
         let hn_url = Url::from(&item_id);
         let is_comment = self.kind == HackerNewsItemKind::Comment;
 
-        let mut tags = Vec::new();
-        push_tags(&mut tags, &cfg.tags);
+        let mut tags = Tags::default();
+        tags.push_all(&cfg.tags);
         if is_comment {
-            push_tag(&mut tags, &cfg.comment);
+            tags.push(&cfg.comment);
         }
-        push_prefixed(&mut tags, &cfg.author_prefix, &self.by);
+        tags.push_prefixed(&cfg.author_prefix, &self.by);
         if let Some(special) = self.title.as_deref().and_then(special_type) {
-            push_prefixed(&mut tags, &cfg.special_prefix, &special);
+            tags.push_prefixed(&cfg.special_prefix, &special);
         }
 
         if is_comment {

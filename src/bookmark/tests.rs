@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{strings, url, FakePinboard};
+use crate::test_support::{strings, tag_list, url, FakePinboard};
 
 /// A stored bookmark at `url`, titled "T", with `note`: the fixture every test here
 /// builds its account from.
@@ -283,7 +283,7 @@ fn bookmark() -> Bookmark {
     Bookmark {
         title: "Title".into(),
         note: "note".into(),
-        tags: vec!["a".into(), "b".into()],
+        tags: tag_list(&["a", "b"]),
         ..crate::test_support::stored_at("https://example.com/")
     }
 }

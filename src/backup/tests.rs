@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{scratch_dir, stored_at, strings};
+use crate::test_support::{scratch_dir, stored_at, strings, tag_list};
 use time::OffsetDateTime;
 
 fn page(stream: &'static str, kind: RawKind, body: &str) -> RawPage {
@@ -14,7 +14,7 @@ fn bookmark() -> Bookmark {
     Bookmark {
         title: "Title".into(),
         note: "Note".into(),
-        tags: vec!["reddit".into()],
+        tags: tag_list(&["reddit"]),
         timestamp: OffsetDateTime::from_unix_timestamp(1_600_000_000).ok(),
         read_later: true,
         ..stored_at("https://example.com/a")

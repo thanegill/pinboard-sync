@@ -15,6 +15,7 @@ use crate::http::{
     answered_a_retry, client_builder, error_with_body, redact, RetryingClient, REDACTED, USER_AGENT,
 };
 use crate::source::SourceError;
+use crate::tags::Tags;
 
 const PINBOARD_BASE: &str = "https://api.pinboard.in/v1";
 
@@ -118,7 +119,7 @@ impl TryFrom<PinboardBookmark> for Bookmark {
             url,
             title: b.description,
             note: b.extended,
-            tags: b.tags.split_whitespace().map(String::from).collect(),
+            tags: Tags::parse(&b.tags),
             timestamp,
             public: b.shared == "yes",
             read_later: b.toread == "yes",
@@ -326,7 +327,7 @@ impl PinboardClient {
         // Space successive writes (Pinboard's rate limit) -- internal to the client, so
         // the generic write loops don't manage pacing.
         self.pace().await;
-        let tags = b.tags.join(" ");
+        let tags = b.tags.joined();
         let dt = b
             .timestamp
             .and_then(crate::timefmt::to_pinboard_dt)
@@ -409,7 +410,7 @@ impl PinboardClient {
     /// that, a note `sync` trimmed undated would trim differently once `cleanup` writes it
     /// back with the date Pinboard gave it, and be rewritten for that alone.
     fn fitted_note(&self, b: &Bookmark, budget: usize) -> String {
-        let tags = b.tags.join(" ");
+        let tags = b.tags.joined();
         let dt = b
             .timestamp
             .and_then(crate::timefmt::to_pinboard_dt)

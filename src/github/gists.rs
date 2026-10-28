@@ -14,7 +14,7 @@ use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, collapse_whitespace};
 use crate::keys::GitHubKeys;
 use crate::source::{BookmarkDraft, UrlKey};
-use crate::tags::{extend_unique, prefixed, push_prefixed, push_tags, push_unique};
+use crate::tags::{prefixed, Tags};
 
 /// The host gists live on.
 pub(crate) const GIST_HOST: &str = "gist.github.com";
@@ -96,7 +96,9 @@ impl GistConfig {
     /// `author_prefix`: the same, with `github-gist` added to the base tags.
     pub fn inheriting(tags: &[String], lang_prefix: &str, author_prefix: &str) -> Self {
         let mut gist_tags = tags.to_vec();
-        extend_unique(&mut gist_tags, &[GIST_TAG.to_string()]);
+        if !gist_tags.iter().any(|tag| tag == GIST_TAG) {
+            gist_tags.push(GIST_TAG.to_string());
+        }
         Self {
             enabled: true,
             tags: gist_tags,
@@ -178,8 +180,8 @@ impl GitHubGist {
 
     /// The derived tags under `cfg`: a `lang:` tag for each distinct file language, in
     /// file order, then the owner tag.
-    pub(crate) fn derived_tags(&self, cfg: &GistConfig) -> Vec<String> {
-        let mut tags = Vec::new();
+    pub(crate) fn derived_tags(&self, cfg: &GistConfig) -> Tags {
+        let mut tags = Tags::default();
         let languages = self
             .files
             .values()
@@ -188,11 +190,11 @@ impl GitHubGist {
             .filter(|language| !language.is_empty());
         for language in languages {
             if let Some(tag) = prefixed(&cfg.lang_prefix, &language.to_lowercase()) {
-                push_unique(&mut tags, &tag);
+                tags.push_unique(&tag);
             }
         }
         if let Some(owner) = self.owner() {
-            push_prefixed(&mut tags, &cfg.author_prefix, owner);
+            tags.push_prefixed(&cfg.author_prefix, owner);
         }
         tags
     }
@@ -215,9 +217,9 @@ impl GitHubGist {
         let dedup_key = GitHubKeys
             .dedup_key(&url)
             .unwrap_or_else(|| url.as_str().into());
-        let mut tags = Vec::new();
-        push_tags(&mut tags, &cfg.tags);
-        extend_unique(&mut tags, &self.derived_tags(cfg));
+        let mut tags = Tags::default();
+        tags.push_all(&cfg.tags);
+        tags.extend_unique(&self.derived_tags(cfg));
         Some(BookmarkDraft {
             bookmark: Bookmark {
                 url,

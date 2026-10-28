@@ -9,7 +9,7 @@ use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, collapse_whitespace};
 use crate::keys::RedditKeys;
 use crate::source::{BookmarkDraft, UrlKey};
-use crate::tags::{prefixed, push_prefixed, push_tag, push_tags};
+use crate::tags::{prefixed, Tags};
 use crate::urls::host_matches;
 
 /// A Reddit "Listing" envelope (`{ "kind": "Listing", "data": { ... } }`).
@@ -313,21 +313,19 @@ impl RedditSavedItem {
     }
 
     /// Build the Pinboard tag list for this item from the reddit config.
-    pub fn tags(&self, cfg: &RedditConfig) -> Vec<String> {
-        let mut tags = Vec::new();
-        push_tags(&mut tags, &cfg.tags);
-        push_prefixed(
-            &mut tags,
-            &cfg.subreddit_prefix,
-            &cased_subreddit(&self.subreddit),
-        );
+    pub fn tags(&self, cfg: &RedditConfig) -> Tags {
+        let mut tags = Tags::default();
+        tags.push_all(&cfg.tags);
+        tags.push_prefixed(&cfg.subreddit_prefix, &cased_subreddit(&self.subreddit));
         if self.is_comment {
-            push_tag(&mut tags, &cfg.comment);
+            tags.push(&cfg.comment);
         }
         if self.over_18 {
-            push_tag(&mut tags, &cfg.nsfw);
+            tags.push(&cfg.nsfw);
         }
-        tags.extend(self.detail_tags(cfg).into_iter().map(|(_, tag)| tag));
+        for (_, tag) in self.detail_tags(cfg) {
+            tags.push(&tag);
+        }
         tags
     }
 

@@ -5,7 +5,7 @@ use url::Url;
 
 use super::Member;
 use crate::bookmark::Bookmark;
-use crate::tags::extend_unique;
+use crate::tags::Tags;
 
 /// The index within `members` of the group's *incumbent*: the member whose stored URL is
 /// already the group's target. It is the record that stays at that URL, so it plays the
@@ -21,19 +21,19 @@ pub(super) fn incumbent_of(members: &[Member<'_>], target: &Url) -> Option<usize
 
 /// Field-merge the PLANNED bookmarks of a collision group, `lead` then `rest` (all sharing
 /// `lead`'s URL, in stable order), into one bookmark. Tags are an order-preserving union
-/// (first occurrence wins, case-sensitive, empty tags dropped as by `extend_unique`); the
-/// note is `lead`'s verbatim, extended with whichever blank-line-separated blocks of the
-/// rest it doesn't already hold; title is the first non-empty; timestamp the earliest
+/// (first occurrence wins, case-sensitive, empty tags dropped as by `Tags::extend_unique`);
+/// the note is `lead`'s verbatim, extended with whichever blank-line-separated blocks of
+/// the rest it doesn't already hold; title is the first non-empty; timestamp the earliest
 /// present. Privacy never widens: the merge is `public` only if every merged member is
-/// public (a single private member keeps it private), and `read_later` if any member is,
-/// so a merge can never republish a private bookmark as public.
+/// public (a single private member keeps it private), and `read_later` if any member is, so
+/// a merge can never republish a private bookmark as public.
 pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
     let group = || std::iter::once(lead).chain(rest.iter().copied());
     let url = lead.url.clone();
 
-    let mut tags: Vec<String> = Vec::new();
+    let mut tags = Tags::default();
     for b in group() {
-        extend_unique(&mut tags, &b.tags);
+        tags.extend_unique(&b.tags);
     }
 
     // The first member's note is the base, carried byte for byte: it is the record that
@@ -84,13 +84,13 @@ pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{stored_at, strings, url as u};
+    use crate::test_support::{stored_at, strings, tag_list, url as u};
 
     fn bookmark(url: &str) -> Bookmark {
         Bookmark {
             title: "Title".into(),
             note: "notes".into(),
-            tags: vec!["a".into(), "b".into()],
+            tags: tag_list(&["a", "b"]),
             timestamp: crate::timefmt::from_unix(1_577_836_800), // 2020-01-01T00:00:00Z
             ..stored_at(url)
         }
@@ -172,9 +172,9 @@ mod tests {
         // Pinboard treats tags case-sensitively, so `Rust` and `rust` are two tags and the
         // union must keep both. Folding them would silently drop one of the user's.
         let mut first = bookmark("https://t/");
-        first.tags = vec!["Rust".into()];
+        first.tags = tag_list(&["Rust"]);
         let mut second = bookmark("https://t/");
-        second.tags = vec!["rust".into(), "Rust".into()];
+        second.tags = tag_list(&["rust", "Rust"]);
 
         assert_eq!(
             merge_bookmarks(&first, &[&second]).tags,
@@ -185,9 +185,9 @@ mod tests {
     #[test]
     fn merge_bookmarks_drops_an_empty_planned_tag() {
         let mut first = bookmark("https://t/");
-        first.tags = vec![String::new(), "a".into()];
+        first.tags = tag_list(&["", "a"]);
         let mut second = bookmark("https://t/");
-        second.tags = vec!["b".into(), String::new()];
+        second.tags = tag_list(&["b", ""]);
 
         assert_eq!(
             merge_bookmarks(&first, &[&second]).tags,
@@ -215,7 +215,7 @@ mod tests {
             url: u("https://collide/"),
             title: String::new(),
             note: "from A".into(),
-            tags: vec!["x".into(), "shared".into()],
+            tags: tag_list(&["x", "shared"]),
             timestamp: ts_late,
             public: false,
             read_later: true,
@@ -224,7 +224,7 @@ mod tests {
             url: u("https://collide/"),
             title: "Title B".into(),
             note: "from B".into(),
-            tags: vec!["shared".into(), "y".into()],
+            tags: tag_list(&["shared", "y"]),
             timestamp: ts_early,
             public: true,
             read_later: false,
@@ -234,7 +234,7 @@ mod tests {
             title: "Title C".into(),
             // A duplicate of B's note must not be repeated in the join.
             note: "from B".into(),
-            tags: vec!["z".into()],
+            tags: tag_list(&["z"]),
             timestamp: None,
             public: false,
             read_later: false,

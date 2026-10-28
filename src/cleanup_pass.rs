@@ -641,7 +641,7 @@ async fn write_single<S: BookmarkStore>(
                 "updated {} -> {} [{}]",
                 original.url,
                 planned.url,
-                planned.tags.join(" ")
+                planned.tags.joined()
             );
             Vec::new()
         }
@@ -754,7 +754,7 @@ async fn write_merge<S: BookmarkStore>(
         let mut detail = vec![
             ("title", merged.title.clone()),
             ("notes", note_value),
-            ("tags", format!("[{}]", merged.tags.join(" "))),
+            ("tags", format!("[{}]", merged.tags.joined())),
         ];
         if let Some(date) = merged.timestamp.and_then(crate::timefmt::to_pinboard_dt) {
             detail.push(("date", date));

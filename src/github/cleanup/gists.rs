@@ -12,7 +12,7 @@ use crate::github::gists::{gist_root, GistConfig, GitHubGist, GIST_HOST};
 use crate::github::{GitHubClient, GitHubConfig};
 use crate::htmltext::{blockquote, collapse_whitespace};
 use crate::source::SourceError;
-use crate::tags::extend_unique;
+use crate::tags::Tags;
 use crate::timefmt::DateOpts;
 
 /// Plan every gist bookmark in the run's live view (so the repo pass's writes are already
@@ -222,15 +222,16 @@ fn title_is_tool_generated(title: &str, note: &str, gist: &GitHubGist) -> bool {
 
 /// Refresh a synced gist's language and owner tags under each of `configs`, keeping its
 /// other tags and ensuring each config's `gist_tags`, as the repo pass does for a star.
-fn refresh_tags(existing: Vec<String>, gist: &GitHubGist, configs: &[&GistConfig]) -> Vec<String> {
+fn refresh_tags(existing: Tags, gist: &GitHubGist, configs: &[&GistConfig]) -> Tags {
     let prefixes: Vec<&str> = configs
         .iter()
         .flat_map(|cfg| [cfg.lang_prefix.as_str(), cfg.author_prefix.as_str()])
         .collect();
     let additions = configs.iter().flat_map(|cfg| {
-        let mut tags = cfg.tags.clone();
-        extend_unique(&mut tags, &gist.derived_tags(cfg));
-        tags
+        let mut tags = Tags::default();
+        tags.push_all(&cfg.tags);
+        tags.extend_unique(&gist.derived_tags(cfg));
+        tags.to_vec()
     });
     retag(existing, &prefixes, additions)
 }

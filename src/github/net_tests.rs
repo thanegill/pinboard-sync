@@ -803,3 +803,105 @@ async fn a_capped_sync_counts_stars_and_gists_together() {
     );
     assert_eq!(titles(&new), ["gist 1", "s/p", "s/o", "s/n"]);
 }
+
+fn truncated_client(status: &'static str, body: &'static str) -> GitHubClient {
+    GitHubClient::with_base_url(
+        "tok".into(),
+        GitHubConfig::default(),
+        crate::test_support::truncated_body_server(status, "application/json", body),
+    )
+}
+
+/// A 403's or 429's body decides whether it is a block, a secondary rate limit or an
+/// ordinary refusal, so one cut off mid-read is a read error rather than an empty body
+/// that reads as the last of those.
+#[tokio::test]
+async fn a_403_or_429_cut_off_mid_body_is_a_read_error() {
+    for (status, body) in [
+        (
+            "403 Forbidden",
+            r#"{"message": "Repository access blocked", "bl"#,
+        ),
+        (
+            "429 Too Many Requests",
+            r#"{"message": "You have exceeded a se"#,
+        ),
+    ] {
+        let client = truncated_client(status, body);
+        let results = crate::http::recording_waits(async {
+            [
+                client.repo("o", "r").await.map(|_| ()),
+                client.gist("abc").await.map(|_| ()),
+                client.fetch().await.map(|_| ()),
+            ]
+        })
+        .await
+        .0;
+        for (result, what) in
+            results
+                .into_iter()
+                .zip(["github repo", "github gist", "github starred"])
+        {
+            let Err(SourceError::Other(error)) = &result else {
+                panic!("{what} {status}: a cut-off body is a transient failure: {result:?}");
+            };
+            let message = format!("{error:#}");
+            assert!(
+                message.starts_with(&format!("reading {what} response ({status}): ")),
+                "{message}"
+            );
+        }
+    }
+}
+
+/// Rate-limit headers decide without the body, so a cut-off one still halts as a limit.
+#[tokio::test]
+async fn a_rate_limit_known_by_its_headers_survives_a_cut_off_body() {
+    for status in ["403 Forbidden", "429 Too Many Requests"] {
+        let client = GitHubClient::with_base_url(
+            "tok".into(),
+            GitHubConfig::default(),
+            crate::test_support::truncated_body_server_with(
+                status,
+                vec![
+                    ("Content-Type", "application/json"),
+                    ("x-ratelimit-remaining", "0"),
+                    ("x-ratelimit-reset", "1700000000"),
+                ],
+                r#"{"message": "API rate limit exc"#,
+            ),
+        );
+        let results = crate::http::recording_waits(async {
+            [
+                client.repo("o", "r").await.map(|_| ()),
+                client.fetch().await.map(|_| ()),
+            ]
+        })
+        .await
+        .0;
+        for result in results {
+            let Err(SourceError::RateLimited(message)) = &result else {
+                panic!("{status}: the headers mark a rate limit: {result:?}");
+            };
+            assert!(
+                message.starts_with("GitHub rate limit exhausted"),
+                "{message}"
+            );
+        }
+    }
+}
+
+/// A 5xx body only feeds the error's excerpt, so a cut-off one still reports the status.
+#[tokio::test]
+async fn a_5xx_cut_off_mid_body_still_reports_its_status() {
+    let client = truncated_client("502 Bad Gateway", "<html>");
+    let result = crate::http::recording_waits(client.repo("o", "r")).await.0;
+    let Err(SourceError::Other(error)) = &result else {
+        panic!("a 502 is a transient failure: {result:?}");
+    };
+    let message = format!("{error:#}");
+    assert!(
+        message.starts_with("github repo returned 502 Bad Gateway"),
+        "{message}"
+    );
+}

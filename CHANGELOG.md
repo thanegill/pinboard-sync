@@ -120,6 +120,8 @@ All notable changes to this project are documented here. The format is based on
   reading `posts/all`, so a bad one no longer spends that rate-limited call.
 - A Reddit or HackerNews favorites response cut off mid-body is reported as a read error,
   no longer as a parse error, changed markup or, for a Reddit 403, an expired cookie.
+- A GitHub 403 or 429 cut off mid-body is a read error too, no longer an ordinary refusal
+  that hides a blocked repo or a secondary rate limit.
 - `sync <source> <account> --all` and `backup <source> <account> --all` are refused. They
   used to ignore the account, even one that doesn't exist.
 - `cleanup` moves a bookmark off a URL before writing another over it, so a failed move no

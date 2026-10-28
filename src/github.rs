@@ -304,6 +304,25 @@ fn permanent_refusal(
     blocked.then_some("is blocked (403)")
 }
 
+/// The body of a refused response to the `what` request. On a 403 or 429 whose headers
+/// don't already mark a rate limit, the body decides the refusal: a 403 may be a block,
+/// and either may be a secondary rate limit known only by its message. A body cut off
+/// there is an error rather than an empty one, which would read as an ordinary refusal.
+/// Anywhere else the body only feeds the excerpt, and a failed read leaves it empty.
+async fn refusal_body(what: &str, resp: reqwest::Response) -> Result<String, SourceError> {
+    let status = resp.status();
+    let decides = (status == reqwest::StatusCode::FORBIDDEN
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS)
+        && rate_limit_message(status, resp.headers(), "").is_none();
+    match resp.text().await {
+        Ok(body) => Ok(body),
+        Err(read_error) if decides => Err(anyhow::Error::new(read_error.without_url())
+            .context(format!("reading {what} response ({status})"))
+            .into()),
+        Err(_) => Ok(String::new()),
+    }
+}
+
 /// Reads a user's starred repos via a personal access token.
 pub struct GitHubClient {
     http: RetryingClient,
@@ -368,13 +387,16 @@ impl GitHubClient {
     }
 
     /// The error for an unsuccessful (non-401) response to the `what` request:
-    /// [`SourceError::RateLimited`] when [`rate_limit_message`] recognises one, else the
-    /// status with an excerpt of the body, the token redacted.
+    /// [`SourceError::RateLimited`] when [`rate_limit_message`] recognises one, the read
+    /// error [`refusal_body`] returns for a body it needed whole, else the status with an
+    /// excerpt of the body, the token redacted.
     async fn refusal(&self, what: &str, resp: reqwest::Response) -> SourceError {
         let status = resp.status();
         let headers = resp.headers().clone();
-        let body = resp.text().await.unwrap_or_default();
-        self.refusal_of(what, status, &headers, &body)
+        match refusal_body(what, resp).await {
+            Ok(body) => self.refusal_of(what, status, &headers, &body),
+            Err(error) => error,
+        }
     }
 
     /// [`Self::refusal`] for a response already read.
@@ -440,7 +462,7 @@ impl GitHubClient {
         }
         if !status.is_success() {
             let headers = resp.headers().clone();
-            let body = resp.text().await.unwrap_or_default();
+            let body = refusal_body(label, resp).await?;
             if let Some(why) = permanent_refusal(status, &headers, &body) {
                 warn!("{label} {subject} {why}; keeping {kept}");
                 return Ok(None);

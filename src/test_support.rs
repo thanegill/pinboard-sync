@@ -72,9 +72,19 @@ pub async fn capturing_logs<T>(fut: impl Future<Output = T>) -> (T, Vec<String>)
 
 /// The warnings among lines [`capturing_logs`] returned.
 pub fn warnings(logs: &[String]) -> Vec<&str> {
+    at_levels(logs, &["WARN"])
+}
+
+/// The warnings and errors among lines [`capturing_logs`] returned.
+pub fn complaints(logs: &[String]) -> Vec<&str> {
+    at_levels(logs, &["WARN", "ERROR"])
+}
+
+/// The lines among `logs` logged at one of `levels`.
+fn at_levels<'l>(logs: &'l [String], levels: &[&str]) -> Vec<&'l str> {
     logs.iter()
         .map(String::as_str)
-        .filter(|line| line.starts_with("WARN"))
+        .filter(|line| levels.iter().any(|level| line.starts_with(level)))
         .collect()
 }
 
@@ -488,11 +498,8 @@ pub async fn assert_cleanup_changes_nothing(
     };
     let (result, logs) = capturing_logs(cleanup(&pinboard.cleanup_store())).await;
     result.unwrap();
-    let complaints: Vec<&String> = logs
-        .iter()
-        .filter(|line| line.starts_with("WARN") || line.starts_with("ERROR"))
-        .collect();
-    assert!(complaints.is_empty(), "{complaints:#?}");
+    let complained = complaints(&logs);
+    assert!(complained.is_empty(), "{complained:#?}");
     let updated = pinboard.updated.borrow();
     assert!(
         updated.is_empty(),

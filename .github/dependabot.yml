@@ -1,0 +1,13 @@
+# Weekly version updates. The workflow actions are pinned to commit SHAs, and Dependabot
+# keeps them pinned, moving the SHA and its version comment together. The nix ecosystem
+# updates each flake.lock input in its own PR.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: nix
+    directory: /
+    schedule:
+      interval: weekly

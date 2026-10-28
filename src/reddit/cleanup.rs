@@ -217,9 +217,9 @@ impl CleanupPass for RedditCleanupPass<'_> {
             post_fullname(&new_url)
         };
         if let Some(item) = own_fullname.and_then(|f| self.info.items.get(&f)) {
-            for (prefix, tag) in item.detail_tags(owner) {
-                if !tags.iter().any(|t| t.starts_with(prefix)) {
-                    tags.push(&tag);
+            for detail in item.detail_tags(owner) {
+                if !tags.iter().any(|t| t.starts_with(detail.family)) {
+                    tags.push(&detail.tag);
                 }
             }
         }

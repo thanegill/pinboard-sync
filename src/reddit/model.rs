@@ -270,6 +270,13 @@ fn post_media_type(is_video: bool, post_hint: Option<&str>) -> Option<&'static s
     }
 }
 
+/// One of [`RedditSavedItem::detail_tags`]: `tag`, and the config prefix that starts every
+/// tag of its family.
+pub(crate) struct DetailTag<'c> {
+    pub family: &'c str,
+    pub tag: String,
+}
+
 /// Per-account reddit config: the host used in bookmark/thread URLs plus the tag
 /// vocabulary. `tags` are applied to every bookmark (defaulting to `["reddit"]`);
 /// the `*_prefix`/conditional fields each default to a built-in value, and an empty
@@ -321,19 +328,19 @@ impl RedditSavedItem {
         if self.over_18 {
             tags.push(&cfg.nsfw);
         }
-        for (_, tag) in self.detail_tags(cfg) {
-            tags.push(&tag);
+        for detail in self.detail_tags(cfg) {
+            tags.push(&detail.tag);
         }
         tags
     }
 
-    /// The author, flair and media-type tags, each paired with the config prefix that
-    /// marks its family. Shared with `cleanup`, which backfills a family only when the
-    /// stored bookmark has no tag with that prefix.
-    pub(crate) fn detail_tags<'c>(&self, cfg: &'c RedditConfig) -> Vec<(&'c str, String)> {
-        let mut families: Vec<(&'c str, String)> = Vec::new();
-        let mut push = |prefix: &'c str, value: &str| {
-            families.extend(prefixed(prefix, value).map(|tag| (prefix, tag)));
+    /// The author, flair and media-type tags, each with the config prefix that marks its
+    /// family. Shared with `cleanup`, which backfills a family only when the stored
+    /// bookmark has no tag with that prefix.
+    pub(crate) fn detail_tags<'c>(&self, cfg: &'c RedditConfig) -> Vec<DetailTag<'c>> {
+        let mut families: Vec<DetailTag<'c>> = Vec::new();
+        let mut push = |family: &'c str, value: &str| {
+            families.extend(prefixed(family, value).map(|tag| DetailTag { family, tag }));
         };
         if let Some(author) = &self.author {
             push(&cfg.author_prefix, author);

@@ -176,6 +176,48 @@ async fn dry_run_writes_nothing() {
     );
 }
 
+/// What an operator reads before a real run: each draft's URL, then its title, a one-line
+/// excerpt of its notes, its tags and its date, the last two only when it has them.
+#[tokio::test]
+async fn a_dry_run_previews_each_draft() {
+    let draft = |bookmark: Bookmark| BookmarkDraft {
+        dedup_key: bookmark.url.as_str().into(),
+        bookmark,
+    };
+    let drafts = [
+        draft(Bookmark {
+            title: "Dated".into(),
+            note: "first line\n\n  second line".into(),
+            tags: tag_list(&["a", "b"]),
+            timestamp: from_unix(1_577_836_800),
+            ..bookmark("https://a.test/")
+        }),
+        draft(Bookmark {
+            title: "Bare".into(),
+            ..bookmark("https://b.test/")
+        }),
+    ];
+
+    let (_, out) = crate::test_support::capturing_stdout(write_drafts(
+        &FakePinboard::default(),
+        &drafts,
+        WriteMode::DryRun,
+    ))
+    .await;
+
+    assert_eq!(
+        out,
+        "[dry-run] https://a.test/\n\
+         \x20         title: Dated\n\
+         \x20         notes: first line second line\n\
+         \x20         tags:  [a b]\n\
+         \x20         date:  2020-01-01T00:00:00Z\n\
+         [dry-run] https://b.test/\n\
+         \x20         title: Bare\n\
+         \x20         tags:  []\n"
+    );
+}
+
 #[tokio::test]
 async fn write_drafts_passes_each_drafts_toread_and_shared() {
     let draft = |url: &str, toread: bool, shared: bool| BookmarkDraft {

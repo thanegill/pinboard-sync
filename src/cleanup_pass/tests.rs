@@ -2165,6 +2165,33 @@ async fn dry_run_renders_every_field_and_writes_nothing() {
     );
 }
 
+/// stdout carries the preview lines as kept, then the tally.
+#[tokio::test]
+async fn a_dry_run_prints_its_preview_then_the_tally() {
+    let books = vec![bookmark("https://a/")];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            title: "New".into(),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let pinboard = FakePinboard::default();
+
+    let (outcome, out) =
+        crate::test_support::capturing_stdout(run_dry(&pinboard, &books, &pass)).await;
+
+    assert_eq!(
+        out,
+        "[dry-run] https://a/\n\
+         \x20         title -> New\n\
+         [dry-run] 1 bookmark(s) would change.\n"
+    );
+    assert_eq!(
+        outcome.preview,
+        ["[dry-run] https://a/", "          title -> New"]
+    );
+}
+
 #[tokio::test]
 async fn a_dry_run_previews_a_merge_and_its_absorbed_urls() {
     // The merge preview renders every written field plus one `absorb` line per URL the

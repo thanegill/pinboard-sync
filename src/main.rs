@@ -16,6 +16,7 @@ mod http;
 mod jobs;
 mod keys;
 mod pinboard;
+mod preview;
 mod reddit;
 mod secrets;
 mod settings;
@@ -78,7 +79,11 @@ async fn main() -> ExitCode {
         }
     }
     .await;
+    exit_code(result)
+}
 
+/// The process exit status for a command's `result`, logging the error that fails it.
+fn exit_code(result: Result<()>) -> ExitCode {
     if let Err(e) = result {
         error!("{e:#}");
         return ExitCode::FAILURE;
@@ -92,15 +97,21 @@ async fn main() -> ExitCode {
 /// for every crate, including dependencies (`-vvv`). `RUST_LOG` overrides the filter.
 fn init_logging(verbose: u8) {
     use std::io::Write;
-    let default = match verbose {
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(default_filter(verbose)),
+    )
+    .format(|buf, record| writeln!(buf, "{:5} {}", record.level(), record.args()))
+    .init();
+}
+
+/// The log filter for `verbose` repeats of `-v`, when `RUST_LOG` doesn't set one.
+fn default_filter(verbose: u8) -> &'static str {
+    match verbose {
         0 => concat!(env!("CARGO_CRATE_NAME"), "=info"),
         1 => concat!(env!("CARGO_CRATE_NAME"), "=debug"),
         2 => concat!(env!("CARGO_CRATE_NAME"), "=trace"),
         _ => "trace",
-    };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default))
-        .format(|buf, record| writeln!(buf, "{:5} {}", record.level(), record.args()))
-        .init();
+    }
 }
 
 /// Log the startup banner (version + subcommand) for an operational run.
@@ -178,6 +189,60 @@ fn check_config(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{capturing_logs, capturing_stdout};
+
+    #[test]
+    fn each_v_raises_the_default_log_level() {
+        let filters: Vec<&str> = (0..=4).map(default_filter).collect();
+        assert_eq!(
+            filters,
+            [
+                "pinboard_sync=info",
+                "pinboard_sync=debug",
+                "pinboard_sync=trace",
+                "trace",
+                "trace"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_failed_command_exits_non_zero_and_it_logs_why() {
+        let (code, logs) = capturing_logs(async {
+            exit_code(Err(anyhow::anyhow!("no token").context("listing bookmarks")))
+        })
+        .await;
+        assert_eq!(code, ExitCode::FAILURE);
+        assert_eq!(logs, ["ERROR listing bookmarks: no token"]);
+
+        let (code, logs) = capturing_logs(async { exit_code(Ok(())) }).await;
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(logs.is_empty(), "{logs:?}");
+    }
+
+    #[tokio::test]
+    async fn the_startup_banner_names_the_version_and_the_command() {
+        let ((), logs) = capturing_logs(async { log_start("sync") }).await;
+        assert_eq!(
+            logs,
+            [format!(
+                "INFO pinboard-sync {} starting (sync)",
+                env!("CARGO_PKG_VERSION")
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn completions_and_the_man_page_go_to_stdout() {
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+            let (result, out) = capturing_stdout(async { print_completions(shell) }).await;
+            result.expect("writes");
+            assert!(out.contains("pinboard-sync"), "{shell}: {out}");
+        }
+        let (result, out) = capturing_stdout(async { print_man() }).await;
+        result.expect("writes");
+        assert!(out.contains(".TH pinboard-sync"), "{out}");
+    }
 
     #[test]
     fn the_config_path_is_the_flag_then_the_env_var() {

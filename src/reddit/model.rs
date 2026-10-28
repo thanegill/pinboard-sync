@@ -9,7 +9,7 @@ use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, collapse_whitespace};
 use crate::keys::RedditKeys;
 use crate::source::{BookmarkDraft, UrlKey};
-use crate::tags::{prefixed, push_prefixed, push_tag, push_tags};
+use crate::tags::{prefixed, Tags};
 use crate::urls::host_matches;
 
 /// A Reddit "Listing" envelope (`{ "kind": "Listing", "data": { ... } }`).
@@ -153,7 +153,7 @@ impl RedditListingEntry {
     ///
     /// A post/comment missing `subreddit`/`permalink` is dropped *with a warning*: every
     /// `RedditEntryFields` field is an optional default, so a renamed required subfield
-    /// still deserializes (as `None`) and slips past the listing's all-fail guard — the
+    /// still deserializes (as `None`) and slips past the listing's all-fail guard -- the
     /// warning keeps that silent loss visible.
     pub fn into_saved_item(self, domain: &str) -> Option<RedditSavedItem> {
         let (is_comment, wire_kind) = match self.kind {
@@ -259,7 +259,7 @@ fn parent_thread_url(link_permalink: Option<&str>, domain: &str) -> Option<Strin
     }
 }
 
-/// The media type of a post — `image` or `video` — or `None` for text/link
+/// The media type of a post -- `image` or `video` -- or `None` for text/link
 /// posts, which don't get a `type:` tag.
 fn post_media_type(is_video: bool, post_hint: Option<&str>) -> Option<&'static str> {
     if is_video {
@@ -313,21 +313,19 @@ impl RedditSavedItem {
     }
 
     /// Build the Pinboard tag list for this item from the reddit config.
-    pub fn tags(&self, cfg: &RedditConfig) -> Vec<String> {
-        let mut tags = Vec::new();
-        push_tags(&mut tags, &cfg.tags);
-        push_prefixed(
-            &mut tags,
-            &cfg.subreddit_prefix,
-            &cased_subreddit(&self.subreddit),
-        );
+    pub fn tags(&self, cfg: &RedditConfig) -> Tags {
+        let mut tags = Tags::default();
+        tags.push_all(&cfg.tags);
+        tags.push_prefixed(&cfg.subreddit_prefix, &cased_subreddit(&self.subreddit));
         if self.is_comment {
-            push_tag(&mut tags, &cfg.comment);
+            tags.push(&cfg.comment);
         }
         if self.over_18 {
-            push_tag(&mut tags, &cfg.nsfw);
+            tags.push(&cfg.nsfw);
         }
-        tags.extend(self.detail_tags(cfg).into_iter().map(|(_, tag)| tag));
+        for (_, tag) in self.detail_tags(cfg) {
+            tags.push(&tag);
+        }
         tags
     }
 
@@ -366,7 +364,7 @@ impl RedditSavedItem {
         // The host-agnostic dedup key, derived from the same URL.
         let dedup_key = RedditKeys::new([cfg.domain.as_str()])
             .dedup_key(&url)
-            .unwrap_or_else(|| url.to_string());
+            .unwrap_or_else(|| url.as_str().into());
         let timestamp = created_at(self.created_utc);
         let tags = self.tags(cfg);
         Some(BookmarkDraft {
@@ -391,9 +389,9 @@ pub(crate) fn created_at(created_utc: Option<f64>) -> Option<OffsetDateTime> {
 }
 
 /// Normalize a subreddit name for tagging: lowercase it, keeping the original
-/// case only when it is multi-word camel/Pascal case — i.e. it has an internal
-/// lowercase→uppercase boundary (`AskReddit`, `ExplainLikeImFive`). Single words
-/// and all-caps lowercase: `rust`/`Rust`/`NEWS` → `rust`/`rust`/`news`.
+/// case only when it is multi-word camel/Pascal case -- i.e. it has an internal
+/// lowercase->uppercase boundary (`AskReddit`, `ExplainLikeImFive`). Single words
+/// and all-caps lowercase: `rust`/`Rust`/`NEWS` -> `rust`/`rust`/`news`.
 pub fn cased_subreddit(subreddit: &str) -> String {
     let multiword_camel = subreddit
         .chars()

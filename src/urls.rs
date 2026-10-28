@@ -13,7 +13,7 @@ pub fn host_matches(host: &str, domain: &str) -> bool {
 
 /// Extension methods on [`Url`] shared across the sources.
 pub trait UrlExt {
-    /// Whether the URL's host is `domain` or a `*.domain` subdomain — the "is this URL
+    /// Whether the URL's host is `domain` or a `*.domain` subdomain -- the "is this URL
     /// one I manage?" test used by the per-source bookmark filters.
     fn host_is(&self, domain: &str) -> bool;
 }

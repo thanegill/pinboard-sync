@@ -120,7 +120,7 @@ fn empty_subreddit_prefix_disables_the_subreddit_tag() {
 
 #[test]
 fn into_draft_skips_item_with_unparseable_url() {
-    // A `domain` that can't form a valid URL (a space in the host) — the item is
+    // A `domain` that can't form a valid URL (a space in the host) -- the item is
     // dropped rather than producing a draft with no URL.
     let cfg = RedditConfig {
         domain: "bad host".into(),
@@ -133,7 +133,7 @@ fn into_draft_skips_item_with_unparseable_url() {
             "permalink": "/r/rust/comments/abc/x/", "title": "T"
         }),
     );
-    assert!(it.into_draft(&cfg).is_none());
+    assert_eq!(it.into_draft(&cfg), None);
 }
 
 #[test]
@@ -147,9 +147,23 @@ fn post_tags_include_author_flair_and_type() {
         }),
     );
     let tags = it.tags(&RedditConfig::default());
-    assert!(tags.contains(&"author:reddit:alice".to_string()));
-    assert!(tags.contains(&"reddit-flair:help-wanted".to_string()));
-    assert!(tags.contains(&"type:image".to_string()));
+    assert!(
+        tags.contains(&"author:reddit:alice".to_string()),
+        "{tags:?}"
+    );
+    assert!(
+        tags.contains(&"reddit-flair:help-wanted".to_string()),
+        "{tags:?}"
+    );
+    assert!(tags.contains(&"type:image".to_string()), "{tags:?}");
+}
+
+#[test]
+fn created_at_is_the_second_the_float_falls_in() {
+    let second = crate::timefmt::from_unix(1_700_000_000);
+    assert_eq!(created_at(Some(1_700_000_000.0)), second);
+    assert_eq!(created_at(Some(1_700_000_000.7)), second);
+    assert_eq!(created_at(None), None);
 }
 
 #[test]
@@ -221,17 +235,18 @@ fn media_type_tag_is_gated_by_the_media_types_allowlist() {
         media_types: vec!["video".into()],
         ..RedditConfig::default()
     };
-    assert!(!img.tags(&only_video).iter().any(|t| t.starts_with("type:")));
-    assert!(img
-        .tags(&RedditConfig::default())
-        .contains(&"type:image".to_string()));
+    let tags = img.tags(&only_video);
+    assert!(!tags.iter().any(|t| t.starts_with("type:")), "{tags:?}");
+    let tags = img.tags(&RedditConfig::default());
+    assert!(tags.contains(&"type:image".to_string()), "{tags:?}");
 
     // An empty media_prefix disables the tag even when the type is allowed.
     let no_prefix = RedditConfig {
         media_prefix: String::new(),
         ..RedditConfig::default()
     };
-    assert!(!img.tags(&no_prefix).iter().any(|t| t.starts_with("type:")));
+    let tags = img.tags(&no_prefix);
+    assert!(!tags.iter().any(|t| t.starts_with("type:")), "{tags:?}");
 }
 
 #[test]
@@ -244,10 +259,8 @@ fn text_and_link_posts_get_no_type_tag_and_comment_links_its_parent_thread() {
             "title": "T", "is_self": true, "selftext": "hi"
         }),
     );
-    assert!(!post
-        .tags(&RedditConfig::default())
-        .iter()
-        .any(|t| t.starts_with("type:")));
+    let tags = post.tags(&RedditConfig::default());
+    assert!(!tags.iter().any(|t| t.starts_with("type:")), "{tags:?}");
 
     let comment = item(
         "t1",
@@ -261,10 +274,8 @@ fn text_and_link_posts_get_no_type_tag_and_comment_links_its_parent_thread() {
         "Thread: https://old.reddit.com/r/rust/comments/a/x/\n\n<blockquote>my reply</blockquote>"
     );
     // Comments get no `type:` tag.
-    assert!(!comment
-        .tags(&RedditConfig::default())
-        .iter()
-        .any(|t| t.starts_with("type:")));
+    let tags = comment.tags(&RedditConfig::default());
+    assert!(!tags.iter().any(|t| t.starts_with("type:")), "{tags:?}");
 }
 
 #[test]
@@ -284,7 +295,7 @@ fn empty_self_post_has_no_duplicated_permalink_in_notes() {
 
 #[test]
 fn empty_link_post_keeps_the_external_url_in_notes() {
-    // A link post with no selftext keeps its external URL in the notes — that's
+    // A link post with no selftext keeps its external URL in the notes -- that's
     // not the bookmark URL (which is the reddit permalink), so it's not a dup.
     let post = item(
         "t3",
@@ -363,9 +374,8 @@ fn over_18_adds_nsfw_tag() {
             "over_18": true,
         }),
     );
-    assert!(it
-        .tags(&RedditConfig::default())
-        .contains(&"nsfw".to_string()));
+    let tags = it.tags(&RedditConfig::default());
+    assert!(tags.contains(&"nsfw".to_string()), "{tags:?}");
 }
 
 #[test]
@@ -431,7 +441,7 @@ fn all_children_failing_is_an_error_not_a_silent_empty_page() {
                 }
             }"#,
     );
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[test]
@@ -440,7 +450,11 @@ fn genuinely_empty_children_is_ok() {
     let listing: RedditListing =
         serde_json::from_str(r#"{ "kind": "Listing", "data": { "after": null, "children": [] } }"#)
             .unwrap();
-    assert!(listing.data.children.is_empty());
+    assert!(
+        listing.data.children.is_empty(),
+        "{:?}",
+        listing.data.children
+    );
 }
 
 #[test]
@@ -449,7 +463,7 @@ fn non_array_children_still_fail() {
     // still a genuine error, not silently an empty page.
     let result: Result<RedditListing, _> =
         serde_json::from_str(r#"{ "kind": "Listing", "data": { "children": "nope" } }"#);
-    assert!(result.is_err());
+    result.unwrap_err();
 }
 
 #[test]
@@ -459,7 +473,7 @@ fn non_post_non_comment_kinds_are_skipped() {
         "data": { "subreddit": "rust", "permalink": "/r/rust/" }
     }))
     .unwrap();
-    assert!(entry.into_saved_item("old.reddit.com").is_none());
+    assert_eq!(entry.into_saved_item("old.reddit.com"), None);
 }
 
 #[test]

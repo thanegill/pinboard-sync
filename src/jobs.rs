@@ -1,5 +1,5 @@
 //! `sync` jobs: one per account, each a configured source client plus its auth-failure
-//! hook and settings resolved through the flag → account → `[defaults.<source>]` →
+//! hook and settings resolved through the flag -> account -> `[defaults.<source>]` ->
 //! `[pinboard]` ladder. [`SourceAccount`] is what lets `sync`, `backup` and `doctor` treat
 //! the three sources through one generic path. The Pinboard client is built here too
 //! ([`open_pinboard`]), as is [`AllRun`], which tallies an `--all` run's failures, and
@@ -26,7 +26,7 @@ use crate::secrets::{
     self, resolve_github_token, resolve_pinboard_token, resolve_reddit_cookie, SecretSpec,
 };
 use crate::settings::{resolve_hook, resolve_job_settings};
-use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
+use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
 use crate::sync::JobSettings;
 
 /// A target an `--all` run could not build, and why. `sync` and `backup` both carry these
@@ -232,7 +232,7 @@ impl BackupSource for SourceClient {
 }
 
 impl UrlKey for SourceClient {
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         match self {
             SourceClient::Reddit(c) => c.dedup_key(url),
             SourceClient::GitHub(c) => c.dedup_key(url),
@@ -329,7 +329,7 @@ impl SourceAccount for RedditAccount {
         let cookie = resolve_reddit_cookie(overrides.reddit_cookie.clone(), account);
         let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
         Ok(SourceClient::Reddit(
-            RedditClient::for_user(username, cookie, reddit_config)?
+            RedditClient::new(username, cookie, reddit_config)?
                 .with_reddit_domains(config.reddit_domains()),
         ))
     }
@@ -449,8 +449,8 @@ fn pinboard_client_for_token(token: String, config: &Config) -> Result<PinboardC
 }
 
 /// Build the client and fetch `posts/all` once. Returns the client and the bookmark
-/// set to share across every account in a run (so `posts/all` — the most rate-limited
-/// endpoint — is hit once, not once per account).
+/// set to share across every account in a run (so `posts/all` -- the most rate-limited
+/// endpoint -- is hit once, not once per account).
 pub async fn open_pinboard(
     token_flag: Option<String>,
     config: &Config,

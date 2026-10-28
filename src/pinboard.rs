@@ -15,6 +15,7 @@ use crate::http::{
     answered_a_retry, client_builder, error_with_body, redact, RetryingClient, REDACTED, USER_AGENT,
 };
 use crate::source::SourceError;
+use crate::tags::Tags;
 
 const PINBOARD_BASE: &str = "https://api.pinboard.in/v1";
 
@@ -23,7 +24,7 @@ pub const RATE_LIMIT: Duration = Duration::from_secs(3);
 const MAX_RETRIES: u32 = 5;
 const RETRY_DELAY: Duration = Duration::from_secs(3);
 
-/// `posts/add` is a GET, so every field — notably `extended` (the notes) — rides in
+/// `posts/add` is a GET, so every field -- notably `extended` (the notes) -- rides in
 /// the request URL. Servers cap the request line (Pinboard answers a long one with
 /// `414 URI Too Long`), so we trim `extended` to keep the encoded URL within a byte
 /// budget. This is the *starting* budget; Pinboard's exact limit is undocumented and
@@ -54,7 +55,7 @@ impl AddResponse {
     }
 }
 
-/// A bookmark exactly as `posts/all` returns it — the Pinboard wire shape, with its
+/// A bookmark exactly as `posts/all` returns it -- the Pinboard wire shape, with its
 /// space-joined tag string, ISO-8601 `time`, and `"yes"/"no"` flags. Converted to the
 /// service-agnostic [`Bookmark`] on read (see the `TryFrom` impl below); nothing outside
 /// this module handles the wire form.
@@ -89,7 +90,7 @@ pub struct UnparseableHref {
 impl TryFrom<PinboardBookmark> for Bookmark {
     /// Fails only when the wire `href` doesn't parse as a URL; `all()` skips (and warns
     /// on) such entries. A non-empty `time` that won't parse is *not* fatal: it becomes
-    /// `timestamp: None` (logged) so the bookmark stays in the set sync dedups against —
+    /// `timestamp: None` (logged) so the bookmark stays in the set sync dedups against --
     /// dropping it would make sync re-add the URL and reset its date/title/tags/notes.
     type Error = UnparseableHref;
     fn try_from(b: PinboardBookmark) -> Result<Self, Self::Error> {
@@ -118,7 +119,7 @@ impl TryFrom<PinboardBookmark> for Bookmark {
             url,
             title: b.description,
             note: b.extended,
-            tags: b.tags.split_whitespace().map(String::from).collect(),
+            tags: Tags::parse(&b.tags),
             timestamp,
             public: b.shared == "yes",
             read_later: b.toread == "yes",
@@ -134,7 +135,7 @@ pub struct PinboardClient {
     rate_limit: Duration,
     /// Set once the first write has happened, so [`Self::pace`] spaces only *successive*
     /// writes. Pacing is the client's own concern, not the generic `BookmarkStore` port's.
-    /// (`Cell` is fine: the client is never used across threads — the futures aren't `Send`.)
+    /// (`Cell` is fine: the futures aren't `Send`, so the client never crosses threads.)
     wrote: Cell<bool>,
     /// API base, e.g. `https://api.pinboard.in/v1`.
     base: String,
@@ -256,7 +257,7 @@ fn redact_auth_token_values(text: &str) -> String {
 
 /// Convert wire bookmarks to the domain type, skipping (and warning on) any whose `href`
 /// doesn't parse as a URL rather than aborting the whole run for one bad entry. An
-/// unparseable `time` is not fatal — the conversion keeps the bookmark with no timestamp
+/// unparseable `time` is not fatal -- the conversion keeps the bookmark with no timestamp
 /// (see `Bookmark::try_from`) so it stays in the set sync dedups against.
 fn wire_to_bookmarks(wire: Vec<PinboardBookmark>) -> Vec<Bookmark> {
     wire.into_iter()
@@ -319,14 +320,14 @@ impl BookmarkStore for PinboardClient {
 
 impl PinboardClient {
     /// `posts/add` with `replace=yes`, mapping a domain [`Bookmark`] to the Pinboard
-    /// parameters (`public`/`read_later` → `shared`/`toread`, `timestamp` → `dt`). A set
+    /// parameters (`public`/`read_later` -> `shared`/`toread`, `timestamp` -> `dt`). A set
     /// `timestamp` sets the bookmark time. `extended` is trimmed if needed to keep the GET
     /// URL under [`MAX_URL_BYTES`].
     async fn post_add(&self, b: &Bookmark) -> Result<()> {
-        // Space successive writes (Pinboard's rate limit) — internal to the client, so
+        // Space successive writes (Pinboard's rate limit) -- internal to the client, so
         // the generic write loops don't manage pacing.
         self.pace().await;
-        let tags = b.tags.join(" ");
+        let tags = b.tags.joined();
         let dt = b
             .timestamp
             .and_then(crate::timefmt::to_pinboard_dt)
@@ -409,7 +410,7 @@ impl PinboardClient {
     /// that, a note `sync` trimmed undated would trim differently once `cleanup` writes it
     /// back with the date Pinboard gave it, and be rewritten for that alone.
     fn fitted_note(&self, b: &Bookmark, budget: usize) -> String {
-        let tags = b.tags.join(" ");
+        let tags = b.tags.joined();
         let dt = b
             .timestamp
             .and_then(crate::timefmt::to_pinboard_dt)
@@ -514,7 +515,7 @@ impl PinboardClient {
     }
 
     /// Fetch the raw `posts/all` JSON body verbatim (with `meta=yes`), for backups. Unlike
-    /// [`Self::all`], this neither parses nor filters — it returns exactly what Pinboard
+    /// [`Self::all`], this neither parses nor filters -- it returns exactly what Pinboard
     /// sends, preserving `meta`/`hash` and any entries `all` would skip.
     pub async fn export_all(&self) -> Result<String> {
         let resp = self.get_posts_all("yes").await?;
@@ -534,7 +535,7 @@ impl PinboardClient {
             "user:tok".into(),
             Duration::ZERO,
             base,
-            client_builder().read_timeout(read_timeout),
+            crate::http::client_builder_with_read_timeout(read_timeout),
         )
     }
 
@@ -582,7 +583,7 @@ mod tests {
         );
     }
 
-    /// A realistic set of fixed params (URL, title, tags, auth, …).
+    /// A realistic set of fixed params (URL, title, tags, auth, ...).
     const FIXED: &[(&str, &str)] = &[
         (
             "url",
@@ -684,16 +685,16 @@ mod tests {
         let huge = "word ".repeat(20_000); // ~100 KB of notes
         let fitted = c.fit_extended(&c.url("posts/add"), FIXED, &huge, MAX_URL_BYTES);
         assert!(fitted.len() < huge.len());
-        assert!(fitted.ends_with(TRUNCATION_MARKER));
+        assert!(fitted.ends_with(TRUNCATION_MARKER), "{fitted:?}");
         assert!(url_len(&c, &fitted) <= MAX_URL_BYTES);
     }
 
     #[test]
     fn trims_on_a_char_boundary_for_multibyte_notes() {
         let c = test_client();
-        let huge = "é".repeat(20_000); // 2 bytes each — a naive byte cut would panic
+        let huge = "é".repeat(20_000); // 2 bytes each -- a naive byte cut would panic
         let fitted = c.fit_extended(&c.url("posts/add"), FIXED, &huge, MAX_URL_BYTES);
-        assert!(fitted.ends_with(TRUNCATION_MARKER));
+        assert!(fitted.ends_with(TRUNCATION_MARKER), "{fitted:?}");
         assert!(url_len(&c, &fitted) <= MAX_URL_BYTES);
     }
 
@@ -763,7 +764,7 @@ mod tests {
     fn unparseable_url_is_the_only_fatal_conversion() {
         let mut bad = wire("");
         bad.url = "not a url".into();
-        assert!(Bookmark::try_from(bad).is_err());
+        Bookmark::try_from(bad).unwrap_err();
     }
 
     #[tokio::test]
@@ -805,6 +806,6 @@ mod tests {
 }
 
 /// Integration tests against a `wiremock` server. These bind a TCP socket, so
-/// they can't run in the Nix build sandbox — the flake skips `net_tests` there.
+/// they can't run in the Nix build sandbox -- the flake skips `net_tests` there.
 #[cfg(test)]
 mod net_tests;

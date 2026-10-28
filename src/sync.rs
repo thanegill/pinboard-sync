@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use log::{debug, error};
 use time::OffsetDateTime;
 
-use crate::bookmark::{Bookmark, BookmarkStore};
+use crate::bookmark::{Bookmark, BookmarkStore, WriteMode};
 use crate::config::SyncLimit;
 use crate::source::{BookmarkDraft, UrlKey};
 use crate::timefmt::DateOpts;
@@ -79,7 +79,7 @@ pub fn prepare_new_drafts<S: UrlKey>(
 
 /// Flatten each job's prepared drafts into one write batch, keeping the first occurrence
 /// of any `dedup_key` so two drafts the dedup logic treats as one item are written once
-/// (matching [`filter_new`]'s existing-key check — otherwise two fresh drafts whose URLs
+/// (matching [`filter_new`]'s existing-key check -- otherwise two fresh drafts whose URLs
 /// differ byte-for-byte but share a key, e.g. two HN favorites of the same article stored
 /// as `http://x` vs `https://x`, would each be written on a first-time run). Order is
 /// preserved: jobs in order, drafts in order within a job.
@@ -103,16 +103,16 @@ pub struct WriteTally {
 /// Write `drafts` to Pinboard sequentially (the store spaces its own `posts/add` calls).
 /// A single bookmark that fails to write (e.g. a rejected URL) is logged and skipped so
 /// the rest still go through; the failure is reflected in the returned [`WriteTally`]
-/// for a non-zero exit. Writes nothing in `dry_run`.
+/// for a non-zero exit. Writes nothing in [`WriteMode::DryRun`].
 pub async fn write_drafts<P: BookmarkStore>(
     pinboard: &P,
     drafts: &[BookmarkDraft],
-    dry_run: bool,
+    mode: WriteMode,
 ) -> WriteTally {
     let mut outcome = WriteTally::default();
     for draft in drafts {
         let bm = &draft.bookmark;
-        if dry_run {
+        if mode.is_dry_run() {
             // The source post date as Pinboard's `dt`, when set (the sync loop has already
             // applied the use_post_date flag + age cap); empty = let Pinboard default.
             let dt = bm
@@ -124,7 +124,7 @@ pub async fn write_drafts<P: BookmarkStore>(
             if !bm.note.is_empty() {
                 println!("          notes: {}", crate::htmltext::preview(&bm.note));
             }
-            println!("          tags:  [{}]", bm.tags.join(" "));
+            println!("          tags:  [{}]", bm.tags.joined());
             if !dt.is_empty() {
                 println!("          date:  {dt}");
             }
@@ -136,9 +136,9 @@ pub async fn write_drafts<P: BookmarkStore>(
         match pinboard.add(bm).await {
             Ok(()) => {
                 outcome.written += 1;
-                debug!("added {}  [{}]", bm.url, bm.tags.join(" "));
+                debug!("added {}  [{}]", bm.url, bm.tags.joined());
             }
-            // Log and skip — one bad bookmark shouldn't abort the rest of the run.
+            // Log and skip -- one bad bookmark shouldn't abort the rest of the run.
             Err(e) => {
                 outcome.failed += 1;
                 error!("adding bookmark {}: {e:#}", bm.url);

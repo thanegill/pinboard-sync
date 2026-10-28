@@ -21,9 +21,10 @@ use crate::http::{client_builder, RetryingClient, USER_AGENT};
 use crate::keys::GitHubKeys;
 use crate::secrets::ConfiguredSecret;
 use crate::source::{
-    deserialize_lenient, page_is_caught_up, BookmarkDraft, Halt, Source, SourceError, UrlKey,
+    deserialize_lenient, page_is_caught_up, BookmarkDraft, DedupKey, Halt, Source, SourceError,
+    UrlKey,
 };
-use crate::tags::{push_prefixed, push_tags};
+use crate::tags::Tags;
 use gists::{GistConfig, GitHubGist};
 use url::Url;
 
@@ -180,7 +181,7 @@ impl GitHubRepo {
             .ok()?;
         let dedup_key = GitHubKeys
             .dedup_key(&url)
-            .unwrap_or_else(|| url.to_string());
+            .unwrap_or_else(|| url.as_str().into());
 
         let note = github_note(
             self.description.as_deref(),
@@ -188,12 +189,12 @@ impl GitHubRepo {
             &self.html_url,
         );
 
-        let mut tags = Vec::new();
-        push_tags(&mut tags, &cfg.tags);
+        let mut tags = Tags::default();
+        tags.push_all(&cfg.tags);
         if let Some(lang) = self.language.as_deref().filter(|s| !s.is_empty()) {
-            push_prefixed(&mut tags, &cfg.lang_prefix, &lang.to_lowercase());
+            tags.push_prefixed(&cfg.lang_prefix, &lang.to_lowercase());
         }
-        push_prefixed(&mut tags, &cfg.author_prefix, self.owner());
+        tags.push_prefixed(&cfg.author_prefix, self.owner());
 
         Some(BookmarkDraft {
             bookmark: Bookmark {
@@ -214,7 +215,7 @@ impl GitHubRepo {
 /// else `None`.
 ///
 /// Needed because GitHub answers *both* its primary and secondary rate limits with a
-/// `403` or a `429`, the same statuses a genuine permission denial uses — so the status
+/// `403` or a `429`, the same statuses a genuine permission denial uses -- so the status
 /// alone cannot tell them apart. The headers can: an exhausted primary quota zeroes
 /// `x-ratelimit-remaining` and dates the reset in `x-ratelimit-reset`, while a secondary
 /// limit carries `retry-after`. Getting this wrong in either direction is costly, so it
@@ -255,8 +256,8 @@ fn rate_limit_message(
             None => "GitHub rate limit exhausted".to_string(),
         });
     }
-    // A secondary limit need carry neither header — the docs' guidance is then simply
-    // "wait at least one minute" — so its error message is the only thing left to go on.
+    // A secondary limit need carry neither header -- the docs' guidance is then simply
+    // "wait at least one minute" -- so its error message is the only thing left to go on.
     if body.to_lowercase().contains("secondary rate limit") {
         return Some("GitHub secondary rate limit hit; wait a minute before retrying".to_string());
     }
@@ -417,7 +418,7 @@ impl GitHubClient {
 
     /// Look up a repo via `/repos/{owner}/{name}` (the API follows renames and
     /// transfers, returning the current name/URL). `None` if it is permanently
-    /// inaccessible — deleted or private (404), or refused for good
+    /// inaccessible -- deleted or private (404), or refused for good
     /// ([`permanent_refusal`]: blocked, or behind SSO this token isn't authorized for).
     async fn repo(&self, owner: &str, name: &str) -> Result<Option<GitHubRepo>, SourceError> {
         let endpoint = format!("{}/repos/{owner}/{name}", self.base);
@@ -502,7 +503,7 @@ impl GitHubClient {
     /// the gists, so a numeric `limit` writes the stars first.
     async fn fetch_capturing(
         &self,
-        synced_keys: Option<&HashSet<String>>,
+        synced_keys: Option<&HashSet<DedupKey>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
         let mut drafts = self.fetch_stars(synced_keys, sink).await?;
@@ -519,7 +520,7 @@ impl GitHubClient {
     /// The starred gists, a second stream: it stops at its own caught-up page.
     async fn fetch_gists(
         &self,
-        synced_keys: Option<&HashSet<String>>,
+        synced_keys: Option<&HashSet<DedupKey>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
         self.walk_drafts(&STARRED_GISTS, synced_keys, sink, |gist: GitHubGist| {
@@ -550,7 +551,7 @@ impl GitHubClient {
     /// The starred repos, each dated by its star time.
     async fn fetch_stars(
         &self,
-        synced_keys: Option<&HashSet<String>>,
+        synced_keys: Option<&HashSet<DedupKey>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
         self.walk_drafts(&STARS, synced_keys, sink, |starred: GitHubStarredRepo| {
@@ -564,7 +565,7 @@ impl GitHubClient {
     async fn walk_drafts<T: serde::de::DeserializeOwned>(
         &self,
         stream: &PagedStream,
-        synced_keys: Option<&HashSet<String>>,
+        synced_keys: Option<&HashSet<DedupKey>>,
         sink: &mut RawSink,
         shape: impl Fn(T) -> Option<BookmarkDraft>,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
@@ -680,7 +681,7 @@ impl BackupSource for GitHubClient {
 
 impl UrlKey for GitHubClient {
     /// [`GitHubKeys`], so a `www.` or `.git` form of a repo dedups against its star.
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         GitHubKeys.dedup_key(url)
     }
 }
@@ -724,6 +725,6 @@ impl GitHubClient {
 mod tests;
 
 /// Integration tests against a `wiremock` server. These bind a TCP socket, so they
-/// can't run in the Nix build sandbox — the flake skips `net_tests` there.
+/// can't run in the Nix build sandbox -- the flake skips `net_tests` there.
 #[cfg(test)]
 mod net_tests;

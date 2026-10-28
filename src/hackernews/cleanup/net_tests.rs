@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{stored_at, strings, FakePinboard, NO_DATING};
+use crate::test_support::{stored_at, strings, tag_list, FakePinboard, NO_DATING};
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -49,11 +49,12 @@ async fn cleanup_merges_a_story_into_a_separately_saved_article() {
 
     let client = algolia_client(&algolia);
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &client,
         &HackerNewsCleanupOpts {
             link_discussions: false,
             dates: NO_DATING,
+            config: HackerNewsConfig::default(),
         },
     )
     .await
@@ -100,7 +101,7 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "old title".into(),
-            tags: vec!["hackernews".into(), "mine".into()],
+            tags: tag_list(&["hackernews", "mine"]),
             timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
             ..stored_at("https://news.ycombinator.com/item?id=42")
         }],
@@ -109,11 +110,12 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
 
     let client = algolia_client(&algolia);
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &client,
         &HackerNewsCleanupOpts {
             link_discussions: false,
             dates: NO_DATING,
+            config: HackerNewsConfig::default(),
         },
     )
     .await
@@ -124,7 +126,11 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
     assert_eq!(updated[0].url, "https://example.com/x");
     assert_eq!(updated[0].description, "Cool");
     // Existing tags are preserved and augmented.
-    assert!(updated[0].tags.contains(&"mine".to_string()));
+    assert!(
+        updated[0].tags.contains(&"mine".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
     // The old HN item URL is deleted after the rewrite.
     assert_eq!(
         pinboard.deleted.borrow().as_slice(),
@@ -152,7 +158,7 @@ async fn cleanup_preserves_existing_note_on_text_post() {
         all: vec![Bookmark {
             title: "Ask HN: How?".into(),
             note: stored_note.into(),
-            tags: vec!["hackernews".into()],
+            tags: tag_list(&["hackernews"]),
             timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
             ..stored_at("https://news.ycombinator.com/item?id=7")
         }],
@@ -161,11 +167,12 @@ async fn cleanup_preserves_existing_note_on_text_post() {
 
     let client = algolia_client(&algolia);
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &client,
         &HackerNewsCleanupOpts {
             link_discussions: false,
             dates: NO_DATING,
+            config: HackerNewsConfig::default(),
         },
     )
     .await
@@ -177,8 +184,16 @@ async fn cleanup_preserves_existing_note_on_text_post() {
     // the user wrote is kept verbatim rather than replaced by the reconstructed one.
     assert_eq!(updated[0].url, "https://news.ycombinator.com/item?id=7");
     assert_eq!(updated[0].extended, stored_note);
-    assert!(updated[0].tags.contains(&"hackernews:ask-hn".to_string()));
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        updated[0].tags.contains(&"hackernews:ask-hn".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -202,7 +217,7 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
         all: vec![Bookmark {
             title: "An article".into(),
             note: "my notes".into(),
-            tags: vec!["find-hn".into(), "reading".into()],
+            tags: tag_list(&["find-hn", "reading"]),
             timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
             ..stored_at("https://example.com/x")
         }],
@@ -211,11 +226,12 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
 
     let client = algolia_client(&algolia);
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &client,
         &HackerNewsCleanupOpts {
             link_discussions: true,
             dates: NO_DATING,
+            config: HackerNewsConfig::default(),
         },
     )
     .await
@@ -226,10 +242,73 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
     // URL unchanged (in-place), notes gain the HN link, marker tag swapped for
     // the base HN tag, existing tags kept.
     assert_eq!(updated[0].url, "https://example.com/x");
-    assert!(updated[0].tags.contains(&"hackernews".to_string()));
-    assert!(!updated[0].tags.contains(&"find-hn".to_string()));
-    assert!(updated[0].tags.contains(&"reading".to_string()));
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        updated[0].tags.contains(&"hackernews".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        !updated[0].tags.contains(&"find-hn".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"reading".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
+}
+
+/// The link pass looks up only articles carrying the marker tag: neither an untagged
+/// article nor a tagged HN item costs a URL search.
+#[tokio::test]
+async fn link_discussions_searches_only_tagged_articles() {
+    let algolia = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .and(query_param_is_missing("restrictSearchableAttributes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "hits": [] })))
+        .mount(&algolia)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .and(query_param("restrictSearchableAttributes", "url"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "hits": [] })))
+        .expect(1)
+        .mount(&algolia)
+        .await;
+    let tagged = |url: &str| Bookmark {
+        tags: tag_list(&["find-hn"]),
+        ..stored_at(url)
+    };
+    let pinboard = FakePinboard {
+        all: vec![
+            tagged("https://example.com/tagged"),
+            stored_at("https://example.com/untagged"),
+            tagged("https://news.ycombinator.com/item?id=7"),
+        ],
+        ..Default::default()
+    };
+    let client = algolia_client(&algolia);
+    let opts = HackerNewsCleanupOpts {
+        link_discussions: true,
+        dates: NO_DATING,
+        config: HackerNewsConfig::default(),
+    };
+    run(&pinboard.cleanup_store(), &client, &opts)
+        .await
+        .unwrap();
+
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 /// Two `find-hn` articles and, unless `with_item` is false, one HN story bookmark whose
@@ -256,7 +335,7 @@ async fn run_with_failing_lookups(with_item: bool) -> String {
         .mount(&algolia)
         .await;
     let article = |url: &str| Bookmark {
-        tags: strings(&["find-hn"]),
+        tags: tag_list(&["find-hn"]),
         ..stored_at(url)
     };
     let mut all = vec![
@@ -275,9 +354,10 @@ async fn run_with_failing_lookups(with_item: bool) -> String {
     let opts = HackerNewsCleanupOpts {
         link_discussions: true,
         dates: NO_DATING,
+        config: HackerNewsConfig::default(),
     };
     let (result, _) =
-        crate::http::recording_waits(run(&pinboard.cleanup_store(false), &client, &opts)).await;
+        crate::http::recording_waits(run(&pinboard.cleanup_store(), &client, &opts)).await;
     format!("{:#}", result.expect_err("the run fails"))
 }
 
@@ -314,10 +394,13 @@ async fn link_pass_counts_an_article_without_a_discussion_as_an_answer() {
         .mount(&algolia)
         .await;
     let client = algolia_client(&algolia);
-    let pass = HackerNewsLinkPass { client: &client };
+    let pass = HackerNewsLinkPass {
+        client: &client,
+        config: &HackerNewsConfig::default(),
+    };
 
     let article = Bookmark {
-        tags: strings(&["find-hn"]),
+        tags: tag_list(&["find-hn"]),
         ..stored_at("https://example.com/x")
     };
     assert_eq!(pass.plan(&article).await.unwrap(), Plan::Unchanged);
@@ -338,7 +421,7 @@ async fn link_discussions_keeps_entity_text_in_the_stored_title() {
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "Use  &amp;amp; to escape".into(),
-            tags: vec!["find-hn".into()],
+            tags: tag_list(&["find-hn"]),
             ..stored_at("https://example.com/x")
         }],
         ..Default::default()
@@ -347,8 +430,9 @@ async fn link_discussions_keeps_entity_text_in_the_stored_title() {
     let opts = HackerNewsCleanupOpts {
         link_discussions: true,
         dates: NO_DATING,
+        config: HackerNewsConfig::default(),
     };
-    run(&pinboard.cleanup_store(false), &client, &opts)
+    run(&pinboard.cleanup_store(), &client, &opts)
         .await
         .unwrap();
 
@@ -357,12 +441,7 @@ async fn link_discussions_keeps_entity_text_in_the_stored_title() {
     assert_eq!(updated[0].description, "Use &amp;amp; to escape");
 }
 
-/// A cleanup client that reads items from `algolia` (cleanup never scrapes favorites).
-fn algolia_client(algolia: &MockServer) -> HackerNewsClient {
-    HackerNewsClient::with_base_urls(
-        String::new(),
-        HackerNewsConfig::default(),
-        "unused".into(),
-        algolia.uri(),
-    )
+/// A cleanup client that reads items from `algolia`.
+fn algolia_client(algolia: &MockServer) -> AlgoliaClient {
+    AlgoliaClient::build(algolia.uri()).unwrap()
 }

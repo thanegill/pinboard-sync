@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{scratch_dir, stored_at, strings};
+use crate::test_support::{scratch_dir, stored_at, strings, tag_list};
 use time::OffsetDateTime;
 
 fn page(stream: &'static str, kind: RawKind, body: &str) -> RawPage {
@@ -14,7 +14,7 @@ fn bookmark() -> Bookmark {
     Bookmark {
         title: "Title".into(),
         note: "Note".into(),
-        tags: vec!["reddit".into()],
+        tags: tag_list(&["reddit"]),
         timestamp: OffsetDateTime::from_unix_timestamp(1_600_000_000).ok(),
         read_later: true,
         ..stored_at("https://example.com/a")
@@ -25,7 +25,8 @@ fn bookmark() -> Bookmark {
 fn disabled_sink_retains_nothing() {
     let mut sink = RawSink::disabled();
     sink.push("saved", RawKind::Json, "[]");
-    assert!(sink.into_parts().0.is_empty());
+    let (pages, _) = sink.into_parts();
+    assert!(pages.is_empty(), "{pages:?}");
 }
 
 #[test]
@@ -46,7 +47,7 @@ fn collecting_sink_preserves_order_and_stream() {
 fn merging_preserves_every_field_but_reorders_keys() {
     // `serde_json` is built without `preserve_order`, so a `Value::Object` is a
     // BTreeMap and merging re-serializes with keys sorted. Pinned here because the
-    // docs promise *fields*, not bytes — see `merge_json_pages`.
+    // docs promise *fields*, not bytes -- see `merge_json_pages`.
     let (merged, _) = merge_json_pages(&[r#"[{"zeta":1,"alpha":2,"href":"x"}]"#]).unwrap();
     assert_eq!(
         serde_json::to_string(&merged).unwrap(),
@@ -82,10 +83,16 @@ fn merge_reports_which_page_failed_to_parse() {
 #[test]
 fn merged_html_keeps_every_page_verbatim_behind_a_marker() {
     let merged = merge_html_pages(&["<a>one</a>", "<a>two</a>"]);
-    assert!(merged.contains("<!-- pinboard-sync page 1 -->"));
-    assert!(merged.contains("<!-- pinboard-sync page 2 -->"));
-    assert!(merged.contains("<a>one</a>"));
-    assert!(merged.contains("<a>two</a>"));
+    assert!(
+        merged.contains("<!-- pinboard-sync page 1 -->"),
+        "{merged:?}"
+    );
+    assert!(
+        merged.contains("<!-- pinboard-sync page 2 -->"),
+        "{merged:?}"
+    );
+    assert!(merged.contains("<a>one</a>"), "{merged:?}");
+    assert!(merged.contains("<a>two</a>"), "{merged:?}");
 }
 
 #[test]
@@ -138,7 +145,7 @@ fn export_omits_absent_timestamp_and_carries_a_draft_dedup_key() {
         json.get("timestamp").is_none(),
         "an absent timestamp is omitted, not null: {json}"
     );
-    assert!(json.get("dedup_key").is_none());
+    assert_eq!(json.get("dedup_key"), None);
 
     let draft = BookmarkDraft {
         bookmark: bookmark(),
@@ -197,7 +204,7 @@ fn layout_flattens_a_source_whose_pages_are_arrays() {
 fn a_stream_that_produced_nothing_still_overwrites_its_file() {
     // An emptied HackerNews favorites list makes zero Algolia requests. Without an
     // unconditional primary stream, `raw/*.json` would keep last run's hits next to a
-    // freshly emptied `normalized/*.json` — the two halves silently disagreeing.
+    // freshly emptied `normalized/*.json` -- the two halves silently disagreeing.
     let dump = BackupDump {
         raw: vec![page("favorites", RawKind::Html, "<a>none</a>")],
         records: Ok(vec![]),
@@ -256,7 +263,7 @@ fn a_partial_run_is_marked_incomplete_in_the_manifest() {
     let ok: Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(ok["complete"], true);
-    assert!(ok.get("failed").is_none());
+    assert_eq!(ok.get("failed"), None);
     assert_eq!(ok["files"][0]["items"], 3);
     assert!(ok["files"][0].get("pages").is_none(), "never both counts");
 
@@ -326,7 +333,7 @@ fn written_snapshots_are_not_world_readable() {
     )
     .unwrap();
 
-    // A snapshot holds every private bookmark — file and directory alike stay private.
+    // A snapshot holds every private bookmark: file and directory alike stay private.
     let mode = |p: PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode(dir.join("raw/pinboard.json")), 0o600);
     assert_eq!(mode(dir.join("raw")), 0o700);
@@ -344,7 +351,7 @@ fn a_bad_body_anywhere_leaves_every_previous_file_intact() {
     .unwrap();
 
     // A 200 that isn't a JSON array (proxy page, empty body) or a connection dropped
-    // mid-array must not clobber a good snapshot — and because every file is checked
+    // mid-array must not clobber a good snapshot -- and because every file is checked
     // before any is written, a bad *second* file can't leave the first replaced.
     for bad in [
         "",
@@ -393,18 +400,23 @@ async fn dry_run_writes_nothing_and_refuses_what_the_real_run_would() {
     let scratch = scratch_dir("backup-dry-run");
     let dir = scratch.path();
 
-    run_job(&FakeSource("[1]"), "pinboard", dir, true)
+    run_job(&FakeSource("[1]"), "pinboard", dir, WriteMode::DryRun)
         .await
         .unwrap();
     assert!(!dir.join("raw").exists(), "a dry run touches no files");
 
-    // A dry run must not bless a plan the real run would abort on — an operator
+    // A dry run must not bless a plan the real run would abort on -- an operator
     // validating a config behind a captive portal would otherwise see "would be
     // written" and conclude the setup is good. (A non-JSON body is rejected by the
     // merge before `check_writable` sees it; either way the run fails.)
-    let err = run_job(&FakeSource("<html>portal</html>"), "pinboard", dir, true)
-        .await
-        .unwrap_err();
+    let err = run_job(
+        &FakeSource("<html>portal</html>"),
+        "pinboard",
+        dir,
+        WriteMode::DryRun,
+    )
+    .await
+    .unwrap_err();
     assert!(
         format!("{err:#}").contains("parsing captured response page 1"),
         "{err:#}"
@@ -430,10 +442,10 @@ async fn a_truncated_dump_is_written_but_reported_failed() {
     let scratch = scratch_dir("backup-truncated");
     let dir = scratch.path();
 
-    // The files are still written — a partial snapshot beats none — but the target
+    // The files are still written -- a partial snapshot beats none -- but the target
     // is reported failed so it lands in the manifest's `failed` list. Silently
     // replacing a complete snapshot with a truncated one is the failure mode here.
-    let outcome = run_job(&TruncatedSource, "github-main", dir, false)
+    let outcome = run_job(&TruncatedSource, "github-main", dir, WriteMode::Live)
         .await
         .unwrap();
     let msg = format!("{:#}", outcome.unusable.expect("reported unusable"));
@@ -470,7 +482,7 @@ fn a_failed_target_updates_its_manifest_entry_rather_than_keeping_the_old_one() 
     // The next run hits a page cap: the file is replaced by a much smaller one and
     // the target is reported failed. Because the manifest *merges*, dropping this
     // run's entry would leave the month-old one vouching for 3000 items in a file
-    // that now holds one — worse than having no entry at all.
+    // that now holds one -- worse than having no entry at all.
     let small = ManifestEntry {
         path: "raw/github-main.json".into(),
         items: Some(1),
@@ -553,7 +565,7 @@ fn a_corrupt_previous_manifest_is_reported_not_silently_dropped() {
     std::fs::write(dir.join("manifest.json"), "{ truncated").unwrap();
 
     // It still writes (the manifest is metadata, not the backup) but the entries it
-    // couldn't read are gone, so this must not pass silently — see the `warn!`.
+    // couldn't read are gone, so this must not pass silently -- see the `warn!`.
     let entry = ManifestEntry {
         path: "raw/pinboard.json".into(),
         items: Some(1),
@@ -581,7 +593,7 @@ fn a_narrowed_run_merges_into_the_manifest_instead_of_replacing_it() {
         unusable: None,
     };
 
-    // A full run describes two targets…
+    // A full run describes two targets...
     touch(dir, "raw/pinboard.json");
     touch(dir, "raw/github-main.json");
     write_manifest(
@@ -592,8 +604,8 @@ fn a_narrowed_run_merges_into_the_manifest_instead_of_replacing_it() {
         "2026-08-01T00:00:00Z",
     )
     .unwrap();
-    // …then `backup pinboard` refreshes only one. Replacing the manifest would leave
-    // github's file present but undescribed — the stale-file-behind-a-fresh-timestamp
+    // ...then `backup pinboard` refreshes only one. Replacing the manifest would leave
+    // github's file present but undescribed -- the stale-file-behind-a-fresh-timestamp
     // problem the manifest exists to prevent.
     write_manifest(
         dir,
@@ -630,7 +642,7 @@ async fn a_dry_run_reports_the_same_verdict_as_the_real_run() {
     // The whole point of `--dry-run` is validating a config before trusting the
     // timer. If it reported a clean plan for a target the real run flags, an operator
     // would conclude the setup is good and only find out from the journal.
-    let dry = run_job(&TruncatedSource, "github-main", dir, true)
+    let dry = run_job(&TruncatedSource, "github-main", dir, WriteMode::DryRun)
         .await
         .unwrap();
     assert!(
@@ -639,7 +651,7 @@ async fn a_dry_run_reports_the_same_verdict_as_the_real_run() {
     );
     assert!(!dir.join("raw").exists(), "and still write nothing");
 
-    let real = run_job(&TruncatedSource, "github-main", dir, false)
+    let real = run_job(&TruncatedSource, "github-main", dir, WriteMode::Live)
         .await
         .unwrap();
     assert_eq!(dry.unusable, real.unusable);
@@ -666,7 +678,7 @@ async fn a_stale_removal_never_costs_the_report_of_what_was_written() {
     std::fs::create_dir_all(dir.join("normalized")).unwrap();
     std::fs::write(dir.join("normalized/reddit-main.json"), "[]").unwrap();
 
-    let outcome = run_job(&ShapeBrokenSource, "reddit-main", dir, false)
+    let outcome = run_job(&ShapeBrokenSource, "reddit-main", dir, WriteMode::Live)
         .await
         .unwrap();
 
@@ -695,7 +707,7 @@ async fn a_stale_removal_that_fails_reports_it_without_losing_the_write() {
     // A read-only parent makes the unlink fail while leaving the file readable.
     std::fs::set_permissions(&normalized, PermissionsExt::from_mode(0o500)).unwrap();
 
-    let outcome = run_job(&ShapeBrokenSource, "reddit-main", dir, false)
+    let outcome = run_job(&ShapeBrokenSource, "reddit-main", dir, WriteMode::Live)
         .await
         .unwrap();
     std::fs::set_permissions(&normalized, PermissionsExt::from_mode(0o700)).unwrap();
@@ -709,9 +721,9 @@ async fn a_stale_removal_that_fails_reports_it_without_losing_the_write() {
     );
     let reason = outcome.unusable.expect("the removal failure is reported");
     assert!(reason.contains("removing stale"), "{reason}");
-    // The file is still there, so its entry must not be dropped — `removed` stays
+    // The file is still there, so its entry must not be dropped -- `removed` stays
     // empty and the manifest keeps describing what is actually on disk.
-    assert!(outcome.removed.is_empty());
+    assert!(outcome.removed.is_empty(), "{:?}", outcome.removed);
     scratch.close().unwrap();
 }
 
@@ -771,7 +783,7 @@ fn a_partial_file_stays_marked_after_a_later_clean_run_of_another_target() {
 
     // Run 2: a clean `backup pinboard`. It rewrites `complete`/`failed`, so without a
     // per-entry flag github's partial file would become indistinguishable from a
-    // healthy one — `generated_at` only ever answers "when", not "trustworthy".
+    // healthy one -- `generated_at` only ever answers "when", not "trustworthy".
     write_manifest(
         dir,
         &[entry("raw/pinboard.json", None)],
@@ -806,17 +818,17 @@ fn probe_creates_nothing_and_reports_a_missing_directory() {
     );
 
     // A missing directory is reported, never created. Creating it would report ✓ for
-    // a typo'd path, and — run as root against the NixOS default — would leave a
+    // a typo'd path, and -- run as root against the NixOS default -- would leave a
     // root-owned /var/lib/pinboard-sync where systemd expects to manage a symlink
     // into /var/lib/private, breaking what the check exists to validate.
-    // A directory that doesn't exist yet is healthy — `backup` creates it on its
-    // first run — so it must not be a `doctor` failure, and must not be created here.
+    // A directory that doesn't exist yet is healthy -- `backup` creates it on its
+    // first run -- so it must not be a `doctor` failure, and must not be created here.
     let missing = dir.join("nested");
     assert_eq!(probe_writable(&missing).unwrap(), DirProbe::WillBeCreated);
     assert!(!missing.exists(), "the probe must not create it");
 
     // A typo'd path, whose parent is missing too, is a real failure.
-    assert!(probe_writable(&dir.join("no/such/parent")).is_err());
+    probe_writable(&dir.join("no/such/parent")).unwrap_err();
 }
 
 #[test]
@@ -827,7 +839,7 @@ fn a_non_array_json_body_may_not_replace_a_snapshot() {
         body: "<html>maintenance</html>".into(),
         count: Count::Items(0),
     };
-    assert!(check_writable(&bad).is_err());
+    check_writable(&bad).unwrap_err();
 
     let empty_html = BackupFile {
         path: "raw/hackernews-me-favorites.html".into(),
@@ -835,7 +847,7 @@ fn a_non_array_json_body_may_not_replace_a_snapshot() {
         body: "   \n".into(),
         count: Count::Pages(1),
     };
-    assert!(check_writable(&empty_html).is_err());
+    check_writable(&empty_html).unwrap_err();
 
     let good = BackupFile {
         path: "raw/pinboard.json".into(),
@@ -843,5 +855,5 @@ fn a_non_array_json_body_may_not_replace_a_snapshot() {
         body: "[]".into(),
         count: Count::Items(0),
     };
-    assert!(check_writable(&good).is_ok());
+    check_writable(&good).unwrap();
 }

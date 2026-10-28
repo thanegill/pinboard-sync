@@ -13,7 +13,7 @@ use url::Url;
 use super::{HackerNewsClient, HackerNewsItemId};
 use crate::backup::{RawKind, RawSink};
 use crate::http::retry_after_up_to;
-use crate::source::{page_is_caught_up, BookmarkDraft, Halt, SourceError};
+use crate::source::{page_is_caught_up, BookmarkDraft, DedupKey, Halt, SourceError};
 
 /// The longest `Retry-After` a favorites-page 429 is waited out for, once. A 429 asking
 /// for longer, or for nothing, fails the fetch at once rather than holding the run open.
@@ -66,7 +66,7 @@ impl HackerNewsClient {
     pub(super) async fn collect_ids(
         &self,
         favorites: FavoritesStream,
-        synced_keys: Option<&HashSet<String>>,
+        synced_keys: Option<&HashSet<DedupKey>>,
         sink: &mut RawSink,
     ) -> Result<FavoriteIds, SourceError> {
         // The scraped page is the only record of a favorite HN's API never exposes, so
@@ -152,7 +152,8 @@ impl HackerNewsClient {
             let ids: Vec<HackerNewsItemId> = ids.into_iter().map(HackerNewsItemId::from).collect();
             let caught_up = match synced_keys {
                 Some(synced_keys) => {
-                    let page_drafts = self.drafts_by_id(self.fetch_items(&ids, sink).await?);
+                    let page_drafts =
+                        self.drafts_by_id(self.algolia.fetch_items(&ids, sink).await?);
                     let caught_up = is_caught_up(&ids, &page_drafts, synced_keys);
                     drafts.extend(page_drafts);
                     caught_up
@@ -199,7 +200,7 @@ impl HackerNewsClient {
 pub(super) fn is_caught_up(
     page: &[HackerNewsItemId],
     drafts: &HashMap<HackerNewsItemId, BookmarkDraft>,
-    synced_keys: &HashSet<String>,
+    synced_keys: &HashSet<DedupKey>,
 ) -> bool {
     page_is_caught_up(
         page.len(),

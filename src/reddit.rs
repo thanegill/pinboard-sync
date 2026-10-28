@@ -1,10 +1,9 @@
-//! The Reddit client: reads the user's private **saved listing**
-//! (`/user/<name>/saved.json`, for `sync`) and looks up post metadata via
-//! **`/api/info.json`** (for `cleanup`). Both run over the same transport — a
-//! `reddit_session` cookie + native-tls, no OAuth app — because Reddit's anti-bot
-//! edge refuses cookieless requests *and* rustls's TLS fingerprint (see CLAUDE.md).
-//! The cookie authenticates the private saved listing; the username (non-secret)
-//! selects whose saves to read.
+//! The Reddit clients: [`RedditClient`] reads the user's private **saved listing**
+//! (`/user/<name>/saved.json`, for `sync`), and [`RedditInfoClient`] looks up post
+//! metadata via **`/api/info.json`** (for `cleanup`). Both run over the same transport --
+//! a `reddit_session` cookie + native-tls, no OAuth app -- because Reddit's anti-bot edge
+//! refuses cookieless requests *and* rustls's TLS fingerprint (see CLAUDE.md). The cookie
+//! authenticates the saved listing, and the non-secret username picks whose saves to read.
 
 pub mod cleanup;
 pub mod cookie;
@@ -27,7 +26,9 @@ use crate::keys::RedditKeys;
 use crate::reddit::cookie::{refused_cookie_advice, SessionCookie};
 use crate::reddit::model::{RedditConfig, RedditListing, RedditListingEntry};
 use crate::secrets::ConfiguredSecret;
-use crate::source::{page_is_caught_up, BookmarkDraft, Halt, Source, SourceError, UrlKey};
+use crate::source::{
+    page_is_caught_up, BookmarkDraft, DedupKey, Halt, Source, SourceError, UrlKey,
+};
 
 /// Host serving both the saved listing and `/api/info.json`; old.reddit.com
 /// matches the bookmark URLs.
@@ -54,52 +55,18 @@ pub trait PostInfo {
     async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError>;
 }
 
-/// Reads Reddit's saved listing and `/api/info.json`, authenticated by a session
-/// cookie over native-tls.
-pub struct RedditClient {
+/// What both Reddit clients send over: native-tls, no redirects, and the session cookie.
+struct RedditSession {
     http: RetryingClient,
     cookie: Option<SessionCookie>,
-    /// Whose saved listing to read; required by `fetch_saved`.
-    username: Option<String>,
-    /// Host base for both endpoints (overridden in tests).
+    /// Host base for every endpoint (overridden in tests).
     base: String,
-    /// Per-account config: bookmark domain + tag vocabulary for shaping drafts.
-    config: RedditConfig,
-    /// Every configured account's `reddit_domain`, so a bookmark another account's
-    /// `cleanup reddit` moved onto its mirror still keys as this save.
-    reddit_domains: Vec<String>,
 }
 
-impl RedditClient {
-    /// Client for `sync`: reads `<base>/user/<username>/saved.json` and shapes
-    /// drafts using `config` (bookmark domain + tag vocabulary).
-    pub fn for_user(
-        username: String,
-        cookie: Option<ConfiguredSecret>,
-        config: RedditConfig,
-    ) -> anyhow::Result<Self> {
-        Self::build(cookie, Some(username), REDDIT_BASE.to_string(), config)
-    }
-
-    /// Client for `cleanup`: `/api/info.json` lookups only (no saved listing, so
-    /// the bookmark domain/tag config are irrelevant).
-    pub fn for_info(cookie: Option<ConfiguredSecret>) -> anyhow::Result<Self> {
-        Self::build(
-            cookie,
-            None,
-            REDDIT_BASE.to_string(),
-            RedditConfig::default(),
-        )
-    }
-
-    fn build(
-        cookie: Option<ConfiguredSecret>,
-        username: Option<String>,
-        base: String,
-        config: RedditConfig,
-    ) -> anyhow::Result<Self> {
+impl RedditSession {
+    fn new(cookie: Option<ConfiguredSecret>, base: String) -> anyhow::Result<Self> {
         // native-tls is the only TLS backend compiled in (see Cargo.toml), so it's
-        // the default connector — Reddit's edge rejects rustls's TLS fingerprint, and
+        // the default connector -- Reddit's edge rejects rustls's TLS fingerprint, and
         // a ClientHello without ALPN (see `http::client_builder`).
         let http = client_builder()
             .user_agent(USER_AGENT)
@@ -109,8 +76,42 @@ impl RedditClient {
         Ok(Self {
             http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
             cookie: cookie.and_then(|cookie| SessionCookie::try_from(cookie).ok()),
-            username,
             base,
+        })
+    }
+
+    /// Attach the session cookie to a request, if one is configured.
+    fn with_cookie(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.cookie {
+            Some(cookie) => req.header(reqwest::header::COOKIE, &cookie.header),
+            None => req,
+        }
+    }
+}
+
+/// Reads a user's saved listing, for `sync` and `backup`.
+pub struct RedditClient {
+    session: RedditSession,
+    /// Whose saved listing to read.
+    username: String,
+    /// Per-account config: bookmark domain + tag vocabulary for shaping drafts.
+    config: RedditConfig,
+    /// Every configured account's `reddit_domain`, so a bookmark another account's
+    /// `cleanup reddit` moved onto its mirror still keys as this save.
+    reddit_domains: Vec<String>,
+}
+
+impl RedditClient {
+    /// Reads `<base>/user/<username>/saved.json` and shapes drafts using `config`
+    /// (bookmark domain + tag vocabulary).
+    pub fn new(
+        username: String,
+        cookie: Option<ConfiguredSecret>,
+        config: RedditConfig,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            session: RedditSession::new(cookie, REDDIT_BASE.to_string())?,
+            username,
             config,
             reddit_domains: Vec::new(),
         })
@@ -124,13 +125,18 @@ impl RedditClient {
             ..self
         }
     }
+}
 
-    /// Attach the session cookie to a request, if one is configured.
-    fn with_cookie(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.cookie {
-            Some(cookie) => req.header(reqwest::header::COOKIE, &cookie.header),
-            None => req,
-        }
+/// Looks posts up by fullname via `/api/info.json`, for `cleanup reddit`.
+pub struct RedditInfoClient {
+    session: RedditSession,
+}
+
+impl RedditInfoClient {
+    pub fn new(cookie: ConfiguredSecret) -> anyhow::Result<Self> {
+        Ok(Self {
+            session: RedditSession::new(Some(cookie), REDDIT_BASE.to_string())?,
+        })
     }
 }
 
@@ -164,11 +170,9 @@ impl RedditClient {
         sink: &mut RawSink,
         mut on_page: impl FnMut(Vec<RedditListingEntry>) -> ControlFlow<()>,
     ) -> Result<(), SourceError> {
-        let username = self
-            .username
-            .as_deref()
-            .context("no username configured (set REDDIT_USERNAME)")?;
-        let endpoint = format!("{}/user/{}/saved.json", self.base, username);
+        let username = &self.username;
+        let session = &self.session;
+        let endpoint = format!("{}/user/{username}/saved.json", session.base);
         let mut after: Option<String> = None;
         let mut visited: HashSet<String> = HashSet::new();
         let mut page: u32 = 0;
@@ -189,20 +193,20 @@ impl RedditClient {
                 crate::http::sleep(REQUEST_PAUSE).await;
             }
             let after_ref = after.as_deref();
-            let resp = self
+            let resp = session
                 .http
                 .send("saved listing", || {
-                    let mut req = self
+                    let mut req = session
                         .http
                         .get(&endpoint)
                         .query(&[("limit", SAVED_PAGE_SIZE), ("raw_json", "1")]);
                     if let Some(a) = after_ref {
                         req = req.query(&[("after", a)]);
                     }
-                    self.with_cookie(req)
+                    session.with_cookie(req)
                 })
                 .await?;
-            let body = reddit_body(resp, "saved listing", self.cookie.as_ref()).await?;
+            let body = reddit_body(resp, "saved listing", session.cookie.as_ref()).await?;
             sink.push("", RawKind::Json, &body);
             let listing: RedditListing =
                 serde_json::from_str(&body).context("parsing saved listing response")?;
@@ -231,29 +235,31 @@ impl RedditClient {
     }
 }
 
-impl PostInfo for RedditClient {
+impl PostInfo for RedditInfoClient {
     /// Batch-fetch Thing data by fullname via `/api/info.json`, [`INFO_BATCH`] per
     /// request. Returns the entries that exist.
     async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError> {
+        let session = &self.session;
         let mut out: Vec<RedditListingEntry> = Vec::new();
-        let endpoint = format!("{}/api/info.json", self.base);
+        let endpoint = format!("{}/api/info.json", session.base);
         for (i, chunk) in fullnames.chunks(INFO_BATCH).enumerate() {
             if i > 0 {
                 crate::http::sleep(REQUEST_PAUSE).await;
             }
             let ids = chunk.join(",");
-            let resp = self
+            let resp = session
                 .http
                 .send("api/info", || {
-                    self.with_cookie(
-                        self.http
+                    session.with_cookie(
+                        session
+                            .http
                             .get(&endpoint)
                             .query(&[("id", ids.as_str()), ("raw_json", "1")]),
                     )
                 })
                 .await?;
             let listing: RedditListing =
-                decode_reddit_json(resp, "api/info", self.cookie.as_ref()).await?;
+                decode_reddit_json(resp, "api/info", session.cookie.as_ref()).await?;
             out.extend(listing.data.children);
         }
         Ok(out)
@@ -336,7 +342,7 @@ fn not_all_dropped(
 
 impl BackupSource for RedditClient {
     /// The listing is fetched in full before any of it is shaped, so a shape break is
-    /// reported *without* discarding the raw pages — a schema change is exactly when the
+    /// reported *without* discarding the raw pages -- a schema change is exactly when the
     /// verbatim body is worth having. (GitHub and HackerNews shape inline as they
     /// paginate, so a failure there means the capture is incomplete and must not be
     /// written over a good snapshot.)
@@ -359,11 +365,11 @@ impl BackupSource for RedditClient {
 impl UrlKey for RedditClient {
     /// Reddit's dedup key is the host-agnostic permalink path, so the same post matches
     /// across `old.`/`www.`/`m.` subdomains and every configured `reddit_domain`.
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         self.keys().dedup_key(url)
     }
 
-    fn synced_keys(&self, existing: &[Bookmark]) -> HashSet<String> {
+    fn synced_keys(&self, existing: &[Bookmark]) -> HashSet<DedupKey> {
         self.keys().synced_keys(existing)
     }
 }
@@ -542,18 +548,36 @@ async fn decode_reddit_json<T: DeserializeOwned>(
 const TEST_COOKIE_SOURCE: &str = "$REDDIT_COOKIE_FILE";
 
 #[cfg(test)]
-impl RedditClient {
-    /// Test constructor pointing both endpoints at a mock server.
-    pub(crate) fn with_base_url(
-        cookie: Option<String>,
-        username: Option<String>,
-        base: String,
-    ) -> Self {
+impl RedditSession {
+    fn with_base_url(cookie: Option<String>, base: String) -> Self {
         let cookie = cookie.map(|value| ConfiguredSecret {
             value,
             source: TEST_COOKIE_SOURCE,
         });
-        Self::build(cookie, username, base, RedditConfig::default()).unwrap()
+        Self::new(cookie, base).unwrap()
+    }
+}
+
+#[cfg(test)]
+impl RedditClient {
+    /// Test constructor reading `username`'s saved listing from a mock server.
+    pub(crate) fn with_base_url(cookie: Option<String>, username: &str, base: String) -> Self {
+        Self {
+            session: RedditSession::with_base_url(cookie, base),
+            username: username.into(),
+            config: RedditConfig::default(),
+            reddit_domains: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl RedditInfoClient {
+    /// Test constructor looking posts up on a mock server.
+    pub(crate) fn with_base_url(cookie: Option<String>, base: String) -> Self {
+        Self {
+            session: RedditSession::with_base_url(cookie, base),
+        }
     }
 }
 
@@ -561,6 +585,6 @@ impl RedditClient {
 mod tests;
 
 /// Integration tests against a `wiremock` server. These bind a TCP socket, so
-/// they can't run in the Nix build sandbox — the flake skips `net_tests` there.
+/// they can't run in the Nix build sandbox -- the flake skips `net_tests` there.
 #[cfg(test)]
 mod net_tests;

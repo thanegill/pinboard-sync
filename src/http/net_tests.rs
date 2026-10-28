@@ -311,7 +311,7 @@ async fn a_reset_stream_or_killed_h2_connection_does_not_count_against_its_host(
         ))
         .await;
 
-        assert!(sent.is_err());
+        sent.unwrap_err();
         assert_eq!(waits, [H2_LINEAR_DELAY, H2_LINEAR_DELAY * 2]);
         let state = budget.host(&addr.to_string()).state();
         assert_eq!((state.failing_since, state.given_up), (None, None));
@@ -551,9 +551,8 @@ async fn a_body_that_stalls_does_not_count_against_its_host() {
 const SHORT_READ_TIMEOUT: Duration = Duration::from_millis(300);
 
 fn short_read_timeout_client() -> reqwest::Client {
-    client_builder()
+    client_builder_with_read_timeout(SHORT_READ_TIMEOUT)
         .no_proxy()
-        .read_timeout(SHORT_READ_TIMEOUT)
         .build()
         .unwrap()
 }

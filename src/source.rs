@@ -1,4 +1,4 @@
-//! The generic source port. Every service (Reddit, …) implements [`Source`]:
+//! The generic source port. Every service (Reddit, ...) implements [`Source`]:
 //! it yields [`BookmarkDraft`]s to write to Pinboard and maps an existing Pinboard
 //! URL back to a dedup key, so the sync loop stays service-agnostic.
 
@@ -62,7 +62,7 @@ impl SourceError {
     /// has decided on the hook; `doctor`, which reports each credential rather than acting
     /// on it; and HackerNews, which is public and cannot need re-authentication. Everywhere
     /// else the variant is what decides whether the `--on-auth-failure` hook fires, so
-    /// flattening early silently loses that hook — don't reach for this to make a type
+    /// flattening early silently loses that hook -- don't reach for this to make a type
     /// mismatch go away.
     pub fn into_anyhow(self) -> anyhow::Error {
         match self {
@@ -83,7 +83,45 @@ pub struct BookmarkDraft {
     /// The bookmark to write.
     pub bookmark: Bookmark,
     /// Key matched against existing Pinboard bookmarks via [`UrlKey::dedup_key`].
-    pub dedup_key: String,
+    pub dedup_key: DedupKey,
+}
+
+/// What `sync` matches a draft against the bookmarks already on Pinboard by: a source's
+/// [`UrlKey`] gives every URL for one item the same key, whatever its host alias, scheme or
+/// tracking query. Comparable only with other keys, so a URL or title can't pass for one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DedupKey(String);
+
+impl DedupKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for DedupKey {
+    fn from(key: String) -> Self {
+        Self(key)
+    }
+}
+
+impl From<&str> for DedupKey {
+    fn from(key: &str) -> Self {
+        Self(key.to_string())
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<&str> for DedupKey {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<String> for DedupKey {
+    fn eq(&self, other: &String) -> bool {
+        &self.0 == other
+    }
 }
 
 /// Maps an existing Pinboard URL to a source's dedup key (matched against the `dedup_key`
@@ -93,11 +131,11 @@ pub struct BookmarkDraft {
 /// uses the host-agnostic permalink path, and HackerNews uses `hn:<id>`, else for an
 /// article the Reddit or GitHub scheme on those hosts and the host+path key elsewhere.
 pub trait UrlKey {
-    fn dedup_key(&self, url: &Url) -> Option<String>;
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey>;
 
     /// The dedup keys of the `existing` bookmarks this source manages: a draft whose
     /// `dedup_key` is among them is already synced.
-    fn synced_keys(&self, existing: &[Bookmark]) -> HashSet<String> {
+    fn synced_keys(&self, existing: &[Bookmark]) -> HashSet<DedupKey> {
         existing
             .iter()
             .filter_map(|bookmark| self.dedup_key(&bookmark.url))
@@ -131,7 +169,7 @@ pub trait Source: UrlKey {
 pub fn page_is_caught_up<'a>(
     page_len: usize,
     page_drafts: impl IntoIterator<Item = &'a BookmarkDraft>,
-    synced_keys: &HashSet<String>,
+    synced_keys: &HashSet<DedupKey>,
 ) -> bool {
     page_len > 0
         && page_drafts
@@ -190,7 +228,7 @@ mod tests {
             bookmark: crate::test_support::stored_at("https://example.com/"),
             dedup_key: key.into(),
         };
-        let synced_keys: HashSet<String> = ["a".into(), "b".into()].into();
+        let synced_keys: HashSet<DedupKey> = ["a".into(), "b".into()].into();
         let caught_up =
             |page_len, drafts: &[BookmarkDraft]| page_is_caught_up(page_len, drafts, &synced_keys);
 

@@ -1,7 +1,7 @@
 use super::*;
-use crate::bookmark::{AccountState, AccountView, CleanupStore};
+use crate::bookmark::{AccountState, AccountView, CleanupStore, WriteMode};
 use crate::pinboard::TRUNCATION_MARKER;
-use crate::test_support::{stored_at, strings, url as u, FakePinboard, Op, NO_DATING};
+use crate::test_support::{stored_at, strings, tag_list, url as u, FakePinboard, Op, NO_DATING};
 use anyhow::anyhow;
 
 /// Wrap the fake in the production store so every test exercises the same view
@@ -9,15 +9,15 @@ use anyhow::anyhow;
 fn store<'a>(
     pinboard: &'a FakePinboard,
     all: &[Bookmark],
-    dry_run: bool,
+    mode: WriteMode,
 ) -> CleanupStore<'a, FakePinboard> {
-    CleanupStore::new(pinboard, AccountView::new(all.to_vec()), dry_run)
+    CleanupStore::new(pinboard, AccountView::new(all.to_vec()), mode)
 }
 
 /// [`run_pass`] over `books`, with the account seeded from them and dating off.
 async fn run<C: CleanupPass>(pinboard: &FakePinboard, books: &[Bookmark], pass: &C) -> PassOutcome {
     run_pass(
-        &store(pinboard, books, false),
+        &store(pinboard, books, WriteMode::Live),
         books,
         "test",
         NO_DATING,
@@ -33,7 +33,7 @@ async fn run_dry<C: CleanupPass>(
     pass: &C,
 ) -> PassOutcome {
     run_pass(
-        &store(pinboard, books, true),
+        &store(pinboard, books, WriteMode::DryRun),
         books,
         "test",
         NO_DATING,
@@ -59,7 +59,7 @@ fn bookmark(url: &str) -> Bookmark {
     Bookmark {
         title: "Title".into(),
         note: "notes".into(),
-        tags: vec!["a".into(), "b".into()],
+        tags: tag_list(&["a", "b"]),
         timestamp: crate::timefmt::from_unix(1_577_836_800), // 2020-01-01T00:00:00Z
         ..stored_at(url)
     }
@@ -116,7 +116,7 @@ async fn one_unreachable_link_does_not_fail_the_run() {
     let pinboard = FakePinboard::default();
 
     let outcome = run(&pinboard, &books, &pass).await;
-    assert!(outcome.into_result().is_ok());
+    outcome.into_result().unwrap();
 }
 
 #[tokio::test]
@@ -134,7 +134,11 @@ async fn a_failed_write_fails_the_run() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.write_failed, 1);
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
     let err = outcome.into_result().unwrap_err();
     assert!(err.to_string().contains("failed to write"), "{err}");
 }
@@ -155,7 +159,7 @@ async fn every_plan_failing_fails_the_run() {
 
 #[tokio::test]
 async fn a_lone_failed_lookup_never_fails_the_run() {
-    // A pass can have a tiny population — `cleanup hackernews --link-discussions`
+    // A pass can have a tiny population -- `cleanup hackernews --link-discussions`
     // strips its own marker tag, so in the steady state it looks up one or two
     // bookmarks. One transient hiccup there must not fail the run, or a single bad
     // lookup wedges the scheduled service exactly as before.
@@ -165,12 +169,12 @@ async fn a_lone_failed_lookup_never_fails_the_run() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!((outcome.reached, outcome.plan_failed), (0, 1));
-    assert!(outcome.into_result().is_ok());
+    outcome.into_result().unwrap();
 }
 
 #[tokio::test]
 async fn a_majority_of_lookups_failing_fails_the_run() {
-    // Not one bad link but widespread trouble — a rate limit or an outage part-way
+    // Not one bad link but widespread trouble -- a rate limit or an outage part-way
     // through the run. Some lookups got through, so the source isn't flat down, but
     // reporting success would hide most of the work never happening.
     let books = vec![
@@ -219,7 +223,7 @@ fn a_halt_reports_the_lookups_and_writes_that_failed_before_it() {
 #[tokio::test]
 async fn a_rate_limit_stops_the_pass_like_a_dead_credential() {
     // Being rate limited fails every remaining lookup just as a dead credential does,
-    // so stop rather than spend one doomed request per bookmark — while still writing
+    // so stop rather than spend one doomed request per bookmark -- while still writing
     // the plans already made.
     let books = vec![
         bookmark("https://x/one"),
@@ -290,7 +294,7 @@ async fn an_edge_block_stops_the_pass_and_is_reported_as_a_block() {
 #[tokio::test]
 async fn reauth_stops_planning_but_still_writes_what_was_planned() {
     // A dead credential fails every remaining lookup, so stop rather than burn a
-    // request per bookmark — but the plans already made are good, so write them
+    // request per bookmark -- but the plans already made are good, so write them
     // rather than throwing the work away.
     let books = vec![
         bookmark("https://x/one"),
@@ -404,7 +408,7 @@ async fn bookmarks_a_pass_skipped_do_not_count_as_reaching_the_source() {
 
 #[tokio::test]
 async fn an_unchanged_plan_counts_as_reaching_the_source() {
-    // The pass looked this one up and found nothing to do — that answer proves the
+    // The pass looked this one up and found nothing to do -- that answer proves the
     // source is up, so a separate failure is just one bad link.
     let books = vec![bookmark("https://x/looked-up"), bookmark("https://x/bad")];
     let pass = FakePass(|bookmark: &Bookmark| {
@@ -418,7 +422,7 @@ async fn an_unchanged_plan_counts_as_reaching_the_source() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.reached, 1);
-    assert!(outcome.into_result().is_ok());
+    outcome.into_result().unwrap();
 }
 
 #[tokio::test]
@@ -429,8 +433,16 @@ async fn none_plan_is_skipped() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -441,7 +453,11 @@ async fn unchanged_plan_is_skipped() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 #[tokio::test]
@@ -451,7 +467,7 @@ async fn url_change_updates_and_deletes_old_preserving_privacy() {
         Ok(Plan::Bookmark(Bookmark {
             url: u("https://new/"),
             title: "New".into(),
-            tags: vec!["x".into()],
+            tags: tag_list(&["x"]),
             ..unchanged_plan(bookmark)
         }))
     });
@@ -474,10 +490,10 @@ async fn colliding_rewrites_are_field_merged() {
     // and B stays put. The driver must field-merge them into one record at that URL and
     // delete A's old URL, rather than clobbering either.
     let mut stored_a = bookmark("https://old-a/");
-    stored_a.tags = vec!["x".into()];
+    stored_a.tags = tag_list(&["x"]);
     stored_a.note = "from A".into();
     let mut stored_b = bookmark("https://collide/");
-    stored_b.tags = vec!["y".into()];
+    stored_b.tags = tag_list(&["y"]);
     stored_b.note = "from B".into();
     let books = vec![stored_a, stored_b];
 
@@ -538,8 +554,14 @@ async fn chained_rewrite_does_not_delete_another_writes_target() {
         let deleted = pinboard.deleted.borrow();
         // old-a is deleted (no other write targets it); collide-b is X's target and
         // must survive Y's rewrite.
-        assert!(deleted.contains(&"https://old-a/".to_string()));
-        assert!(!deleted.contains(&"https://collide-b/".to_string()));
+        assert!(
+            deleted.contains(&"https://old-a/".to_string()),
+            "{deleted:?}"
+        );
+        assert!(
+            !deleted.contains(&"https://collide-b/".to_string()),
+            "{deleted:?}"
+        );
     }
 
     let x = bookmark("https://old-a/");
@@ -550,7 +572,7 @@ async fn chained_rewrite_does_not_delete_another_writes_target() {
 
 #[tokio::test]
 async fn a_refused_rewrite_leaves_its_own_record_protected() {
-    // C's lookup fails, so C is untouchable. A wants C's URL and is refused — meaning
+    // C's lookup fails, so C is untouchable. A wants C's URL and is refused -- meaning
     // A stays put, so A's own URL is occupied after all, and B's rewrite onto it would
     // replace the very record A's refusal just saved. The protection has to propagate.
     let mut a = bookmark("https://x/a");
@@ -574,7 +596,7 @@ async fn a_refused_rewrite_leaves_its_own_record_protected() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -593,7 +615,7 @@ async fn a_refused_rewrite_leaves_its_own_record_protected() {
 async fn a_matching_public_group_merges_and_stays_public() {
     // The mirror of the refusal: when every member agrees with the resident, the merge
     // runs and neither flag moves. This is what lets the converged-state guard use
-    // `diff`, which ignores `public`/`read_later` — those two cannot differ here, so
+    // `diff`, which ignores `public`/`read_later` -- those two cannot differ here, so
     // there is nothing for it to be blind to.
     let mut mover = bookmark("https://x/mine");
     mover.public = true;
@@ -615,7 +637,7 @@ async fn a_matching_public_group_merges_and_stays_public() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -625,7 +647,11 @@ async fn a_matching_public_group_merges_and_stays_public() {
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
-    assert!(updated[0].extended.contains("shared annotation"));
+    assert!(
+        updated[0].extended.contains("shared annotation"),
+        "{:?}",
+        updated[0].extended
+    );
     assert!(updated[0].shared, "a matching group must stay public");
     assert!(
         !updated[0].toread,
@@ -637,8 +663,8 @@ async fn a_matching_public_group_merges_and_stays_public() {
 async fn a_converged_check_uses_the_incumbents_stored_record_not_its_plan() {
     // The guard asks "does the account already hold what this merge produces?", so it
     // has to compare the *stored* record. Comparing the incumbent's plan instead makes
-    // the merge look converged the moment it equals its own plan — which it does by
-    // construction — and the incumbent's pending change is silently dropped.
+    // the merge look converged the moment it equals its own plan -- which it does by
+    // construction -- and the incumbent's pending change is silently dropped.
     let mut sitting = bookmark("https://collide/");
     sitting.title = "stale".into();
     let mover = bookmark("https://x/mover");
@@ -648,7 +674,7 @@ async fn a_converged_check_uses_the_incumbents_stored_record_not_its_plan() {
     let pass = FakePass(|bookmark: &Bookmark| {
         let target = match bookmark.url.as_str() {
             // Keeps the mover's URL a target, so it can't be absorbed and `old_urls`
-            // stays empty — the only way to reach the guard.
+            // stays empty -- the only way to reach the guard.
             "https://x/other" => "https://x/mover",
             _ => "https://collide/",
         };
@@ -674,7 +700,7 @@ async fn a_converged_check_uses_the_incumbents_stored_record_not_its_plan() {
 async fn a_converged_incumbent_merge_is_not_rewritten_every_run() {
     // The incumbent half of the converged-state guard. The bookmark at the target
     // already holds everything the merge produces, and the mover's old URL is another
-    // plan's target so it can't be absorbed — so the group re-merges every run and must
+    // plan's target so it can't be absorbed -- so the group re-merges every run and must
     // recognise that there is nothing left to write.
     let mut sitting = bookmark("https://collide/");
     sitting.note = "settled".into();
@@ -717,7 +743,7 @@ async fn a_converged_incumbent_merge_is_not_rewritten_every_run() {
 async fn the_view_never_drifts_from_the_account() {
     // The view is what every later pass plans against, and nothing ever checks it back
     // against Pinboard mid-run. So a missed, doubled or mis-ordered recording raises no
-    // error at all — it surfaces one pass later as a plan built on an account that never
+    // error at all -- it surfaces one pass later as a plan built on an account that never
     // existed. Run a mixed workload twice over one store and assert the view still
     // equals the account rebuilt from the writes that actually landed.
     let seed = vec![
@@ -752,7 +778,7 @@ async fn the_view_never_drifts_from_the_account() {
     let second_pass = FakePass(|bookmark: &Bookmark| {
         let target = match bookmark.url.as_str() {
             "https://a/new" => "https://a/newer",
-            // Onto the URL the first pass retired — a real `--all` shape, and the one
+            // Onto the URL the first pass retired -- a real `--all` shape, and the one
             // that catches a delete which drops the record but leaves its slot behind.
             "https://e/mover" => "https://a/old",
             _ => return Ok(Plan::Skipped),
@@ -766,7 +792,7 @@ async fn the_view_never_drifts_from_the_account() {
         fail_update_urls: ["https://f/moved".to_string()].into_iter().collect(),
         ..FakePinboard::default()
     };
-    let store = store(&pinboard, &seed, false);
+    let store = store(&pinboard, &seed, WriteMode::Live);
 
     // The resident is held out of the first slice, so `b/mover` is a genuine resident
     // merge rather than a collision between two plans.
@@ -776,7 +802,7 @@ async fn the_view_never_drifts_from_the_account() {
         .cloned()
         .collect();
     let first_outcome = run_pass(&store, &first, "test", NO_DATING, &first_pass).await;
-    // The second pass plans against whatever the first left behind — which is the whole
+    // The second pass plans against whatever the first left behind -- which is the whole
     // reason the view has to be right.
     let second = store.snapshot();
     let second_outcome = run_pass(&store, &second, "test", NO_DATING, &second_pass).await;
@@ -819,15 +845,15 @@ async fn a_mismatched_member_drops_out_while_the_rest_of_the_group_merges() {
     let mut resident = bookmark("https://other/resident");
     resident.public = true;
     resident.note = "resident note".into();
-    resident.tags = vec!["rt".into()];
+    resident.tags = tag_list(&["rt"]);
     let mut agreeing = bookmark("https://x/ok");
     agreeing.public = true;
     agreeing.note = "ok note".into();
-    agreeing.tags = vec!["okt".into()];
+    agreeing.tags = tag_list(&["okt"]);
     let mut disagreeing = bookmark("https://x/secret");
     disagreeing.public = false;
     disagreeing.note = "SECRET".into();
-    disagreeing.tags = vec!["secrett".into()];
+    disagreeing.tags = tag_list(&["secrett"]);
     let slice = vec![agreeing.clone(), disagreeing.clone()];
     let all = vec![agreeing, disagreeing, resident];
 
@@ -840,7 +866,7 @@ async fn a_mismatched_member_drops_out_while_the_rest_of_the_group_merges() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -901,8 +927,8 @@ async fn refusals_propagate_through_a_chain_not_just_one_hop() {
 
 #[tokio::test]
 async fn a_halt_protects_the_bookmark_whose_lookup_raised_it() {
-    // The halting bookmark is itself unread — the lookup that raised the halt is the one
-    // that failed — so the protected range has to start at it, not after it.
+    // The halting bookmark is itself unread -- the lookup that raised the halt is the one
+    // that failed -- so the protected range has to start at it, not after it.
     // The mover is planned first, so it forms a group targeting the halting bookmark's
     // URL; the halt then has to protect that URL from it.
     let books = vec![bookmark("https://mover/"), bookmark("https://halts/")];
@@ -927,7 +953,7 @@ async fn a_halt_protects_the_bookmark_whose_lookup_raised_it() {
 #[tokio::test]
 async fn an_unchanged_bookmark_is_merged_with_not_refused() {
     // `Plan::Unchanged` means the source answered and the record is current, so a
-    // rewrite landing on it merges — the same as `Plan::Skipped`. Treating it as
+    // rewrite landing on it merges -- the same as `Plan::Skipped`. Treating it as
     // unreadable instead would refuse HN's commonest answer (`search_by_url` finding no
     // discussion) and leave the account unconverged.
     let mut settled = bookmark("https://target/");
@@ -979,7 +1005,7 @@ async fn a_merge_whose_delete_fails_reports_the_write_that_landed() {
     };
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1003,7 +1029,7 @@ async fn a_merge_whose_delete_fails_reports_the_write_that_landed() {
 async fn a_plan_can_never_change_the_privacy_flags() {
     // The half of the invariant that makes `Bookmark::diff`'s blindness to these two
     // fields safe. `diff` ignores them *because* the driver forces them from the stored
-    // record — so if the forcing goes, a plan's flags are written with `replace=yes`
+    // record -- so if the forcing goes, a plan's flags are written with `replace=yes`
     // and the dry-run doesn't even render the change. Every other test builds its plan
     // with `unchanged_plan`, which clones the stored flags and so can't catch this.
     let mut stored = bookmark("https://x/keep");
@@ -1062,7 +1088,7 @@ async fn a_rewrite_whose_delete_fails_still_counts_as_written() {
 #[tokio::test]
 async fn a_failed_merge_protects_a_member_another_group_targets() {
     // The merge fails, so M never left `m/`. G is heading there. Protecting only the
-    // URLs the merge would have *absorbed* misses M entirely — those are exactly the
+    // URLs the merge would have *absorbed* misses M entirely -- those are exactly the
     // URLs no other group targets, so the protection covers only cases that were never
     // in danger, while the one case that loses data is filtered out of it.
     let mut stranded = bookmark("https://m/");
@@ -1100,7 +1126,7 @@ async fn a_failed_merge_protects_a_member_another_group_targets() {
 
 #[tokio::test]
 async fn a_failed_write_refusal_propagates_like_any_other() {
-    // A's move fails, so `a/` is occupied and P1+P2 are refused there — which means P1
+    // A's move fails, so `a/` is occupied and P1+P2 are refused there -- which means P1
     // and P2 never moved either, and H1/H2 are heading for *their* URLs. Without
     // re-closing the refusal set, protecting A costs two records instead of saving one:
     // strictly worse than not protecting it at all.
@@ -1144,7 +1170,7 @@ async fn a_failed_write_refusal_propagates_like_any_other() {
 async fn a_failed_move_protects_the_record_it_left_behind() {
     // Y fails to move to its new URL, so its record is still sitting at the old one.
     // A is heading there. Refusals are settled before any write, so nothing had marked
-    // that URL — and `replace=yes` would overwrite Y with A, losing Y from the account
+    // that URL -- and `replace=yes` would overwrite Y with A, losing Y from the account
     // entirely: never written to its new URL, and clobbered at its old one. With A first
     // in the snapshot its group appears first, and only the write order keeps A from
     // landing before Y has tried to leave.
@@ -1297,7 +1323,11 @@ async fn a_swap_still_writes_both_bookmarks() {
         .collect();
     written.sort_unstable();
     assert_eq!(written, strings(&["https://x/", "https://y/"]));
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -1327,7 +1357,7 @@ async fn a_failed_move_protects_every_link_of_the_chain_behind_it() {
 async fn a_visibility_mismatch_refuses_only_the_mover() {
     // The record that stays usually has a plan of its own, and that plan has nothing to
     // do with the mover's visibility. Refusing the whole group would let one mismatched
-    // duplicate freeze an unrelated bookmark's cleanup for good — every run, with no
+    // duplicate freeze an unrelated bookmark's cleanup for good -- every run, with no
     // way out short of the user editing a visibility by hand.
     let mut sitting = bookmark("https://github.com/new/name");
     sitting.public = false;
@@ -1387,7 +1417,7 @@ async fn a_visibility_mismatch_refuses_instead_of_merging() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1400,7 +1430,11 @@ async fn a_visibility_mismatch_refuses_instead_of_merging() {
         pinboard.updated.borrow().is_empty(),
         "a mismatched merge must write nothing at all"
     );
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -1429,7 +1463,7 @@ async fn a_visibility_mismatch_protects_the_movers_own_url() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1446,7 +1480,7 @@ async fn a_visibility_mismatch_protects_the_movers_own_url() {
 #[tokio::test]
 async fn merging_does_not_reset_a_residents_unparseable_date() {
     // A stored date that wouldn't parse reads back as `None`, and writing `None` omits
-    // `dt` — under `replace=yes` Pinboard then dates the record to today. Keep the
+    // `dt` -- under `replace=yes` Pinboard then dates the record to today. Keep the
     // date the merge found rather than losing the record's age.
     let mut mover = bookmark("https://x/mine");
     mover.timestamp = crate::timefmt::from_unix(1_000_000);
@@ -1464,7 +1498,7 @@ async fn merging_does_not_reset_a_residents_unparseable_date() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1504,7 +1538,7 @@ async fn merging_a_resident_keeps_its_read_later_and_date() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1552,7 +1586,7 @@ async fn a_converged_merge_is_not_rewritten_every_run() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1574,13 +1608,13 @@ async fn a_bookmark_is_not_a_resident_of_its_own_plan() {
     // find *itself* sitting there. Merging with itself would union its stored record
     // back into the plan and resurrect exactly what the plan was computed to remove.
     let mut stored = bookmark("https://x/mine");
-    stored.tags = vec!["keep".into(), "drop-me".into()];
+    stored.tags = tag_list(&["keep", "drop-me"]);
     stored.note = "stale note".into();
     let books = vec![stored];
 
     let pass = FakePass(|bookmark: &Bookmark| {
         Ok(Plan::Bookmark(Bookmark {
-            tags: vec!["keep".into()],
+            tags: tag_list(&["keep"]),
             note: "fresh note".into(),
             ..unchanged_plan(bookmark)
         }))
@@ -1603,16 +1637,16 @@ async fn a_bookmark_is_not_a_resident_of_its_own_plan() {
 
 #[tokio::test]
 async fn rewrite_onto_a_resident_outside_the_slice_merges_with_it() {
-    // A plan can target a URL its own filter would have excluded — HackerNews
-    // rewrites a story bookmark to its article — so the resident sitting there is
+    // A plan can target a URL its own filter would have excluded -- HackerNews
+    // rewrites a story bookmark to its article -- so the resident sitting there is
     // invisible to a residency check that only looks at the slice. Pinboard keys on
     // URL, so the end state is one record: merge, keeping what the resident had.
     let mut mover = bookmark("https://x/mine");
     mover.note = "from the mover".into();
-    mover.tags = vec!["moved".into()];
+    mover.tags = tag_list(&["moved"]);
     let mut outsider = bookmark("https://other/resident");
     outsider.note = "hand written".into();
-    outsider.tags = vec!["keepme".into()];
+    outsider.tags = tag_list(&["keepme"]);
     outsider.title = "Resident title".into();
     let slice = vec![mover.clone()];
     let all = vec![mover, outsider];
@@ -1626,7 +1660,7 @@ async fn rewrite_onto_a_resident_outside_the_slice_merges_with_it() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1640,10 +1674,26 @@ async fn rewrite_onto_a_resident_outside_the_slice_merges_with_it() {
     // The resident goes into the merge first, so its title survives and its notes and
     // tags are kept alongside the mover's rather than replaced by them.
     assert_eq!(updated[0].description, "Resident title");
-    assert!(updated[0].extended.contains("hand written"));
-    assert!(updated[0].extended.contains("from the mover"));
-    assert!(updated[0].tags.contains(&"keepme".to_string()));
-    assert!(updated[0].tags.contains(&"moved".to_string()));
+    assert!(
+        updated[0].extended.contains("hand written"),
+        "{:?}",
+        updated[0].extended
+    );
+    assert!(
+        updated[0].extended.contains("from the mover"),
+        "{:?}",
+        updated[0].extended
+    );
+    assert!(
+        updated[0].tags.contains(&"keepme".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"moved".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
     // The mover's old URL is absorbed, so a later run sees one bookmark.
     assert_eq!(*pinboard.deleted.borrow(), strings(&["https://x/mine"]));
 }
@@ -1665,7 +1715,7 @@ async fn a_rewrite_onto_an_unoccupied_url_still_goes_through() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -1683,12 +1733,12 @@ async fn a_rewrite_onto_an_unoccupied_url_still_goes_through() {
 async fn rewrite_onto_skipped_resident_merges_with_it() {
     // A is skipped (it stays put at T with its own record); B rewrites onto T. A being
     // skipped means its stored record is current, so B's plan merges into it rather
-    // than replacing A's title/note/tags — and B's old URL is absorbed.
+    // than replacing A's title/note/tags -- and B's old URL is absorbed.
     let mut stored_a = bookmark("https://collide/");
-    stored_a.tags = vec!["x".into()];
+    stored_a.tags = tag_list(&["x"]);
     stored_a.note = "from A".into();
     let mut stored_b = bookmark("https://old-b/");
-    stored_b.tags = vec!["y".into()];
+    stored_b.tags = tag_list(&["y"]);
     stored_b.note = "from B".into();
     let books = vec![stored_a, stored_b];
 
@@ -1712,8 +1762,16 @@ async fn rewrite_onto_skipped_resident_merges_with_it() {
     assert_eq!(updated[0].url, "https://collide/");
     assert!(updated[0].extended.contains("from A"), "{updated:?}");
     assert!(updated[0].extended.contains("from B"), "{updated:?}");
-    assert!(updated[0].tags.contains(&"x".to_string()));
-    assert!(updated[0].tags.contains(&"y".to_string()));
+    assert!(
+        updated[0].tags.contains(&"x".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"y".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
     assert_eq!(*pinboard.deleted.borrow(), strings(&["https://old-b/"]));
 }
 
@@ -1721,7 +1779,7 @@ async fn rewrite_onto_skipped_resident_merges_with_it() {
 async fn rewrite_onto_a_bookmark_whose_lookup_failed_is_refused() {
     // A failed lookup leaves us not knowing A's end-state, so it is just as much an
     // untouchable resident as a skipped one. Without that, B's rewrite lands on A's
-    // URL with replace=yes and destroys A's record — and now that a failed lookup no
+    // URL with replace=yes and destroys A's record -- and now that a failed lookup no
     // longer fails the run, it would do so while reporting success.
     let mut stored_a = bookmark("https://collide/");
     stored_a.note = "hand written".into();
@@ -1746,7 +1804,11 @@ async fn rewrite_onto_a_bookmark_whose_lookup_failed_is_refused() {
         pinboard.updated.borrow().is_empty(),
         "must not write over a bookmark whose own lookup failed"
     );
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -1772,7 +1834,11 @@ async fn rewrite_onto_a_bookmark_left_unplanned_by_reauth_is_refused() {
     let pinboard = FakePinboard::default();
 
     let outcome = run(&pinboard, &books, &pass).await;
-    assert!(matches!(outcome.halted, Some(Halt::Reauth(_))));
+    assert!(
+        matches!(outcome.halted, Some(Halt::Reauth(_))),
+        "{:?}",
+        outcome.halted
+    );
     assert_eq!(
         outcome.refused, 1,
         "and the rewrite is reported, not just dropped"
@@ -1781,10 +1847,14 @@ async fn rewrite_onto_a_bookmark_left_unplanned_by_reauth_is_refused() {
         pinboard.updated.borrow().is_empty(),
         "must not write over a bookmark reauth left unplanned"
     );
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
-/// Two bookmarks in the slice, both planned onto the second one's own URL — a GitHub
+/// Two bookmarks in the slice, both planned onto the second one's own URL -- a GitHub
 /// repo rename, where the old and new names are separately starred. The bookmark
 /// already stored at the target is the record that stays there, exactly like an
 /// unplanned resident; being inside the slice is an implementation detail the user
@@ -1806,7 +1876,7 @@ async fn run_rename_collision(
         }))
     });
     run_pass(
-        &store(pinboard, &books, false),
+        &store(pinboard, &books, WriteMode::Live),
         &books,
         "test",
         NO_DATING,
@@ -1851,7 +1921,7 @@ async fn a_collision_onto_a_stored_bookmark_refuses_on_a_visibility_mismatch() {
 
 #[tokio::test]
 async fn a_collision_onto_a_stored_bookmark_keeps_its_date_and_reading_state() {
-    // Visibility matches, so the merge runs — and the bookmark already at the target
+    // Visibility matches, so the merge runs -- and the bookmark already at the target
     // keeps its own date and to-read state rather than picking up the absorbed one's
     // under `merge_bookmarks`'s earliest/any rules. Its note leads, too.
     let mut sitting = bookmark("https://github.com/new/name");
@@ -1888,7 +1958,7 @@ async fn a_collision_onto_a_stored_bookmark_keeps_its_date_and_reading_state() {
 #[tokio::test]
 async fn a_collision_refuses_when_a_public_mover_lands_on_a_private_bookmark() {
     // The mirror direction of the mismatch: A (public) normalizes onto B's URL, and B
-    // (private) is the record that stays. Refused rather than merged — narrowing A into
+    // (private) is the record that stays. Refused rather than merged -- narrowing A into
     // a private record is the safe direction for disclosure, but it still makes a
     // bookmark the user chose to share unreachable, and then deletes A.
     let mut stored_a = bookmark("https://old-a/");
@@ -1930,7 +2000,7 @@ async fn a_collision_refuses_when_a_public_mover_lands_on_a_private_bookmark() {
 #[tokio::test]
 async fn an_emptied_group_is_not_counted_as_a_refusal_of_its_own() {
     // Four plans are held back, so four writes are abandoned. The group at `a/` empties
-    // *and* its key is marked occupied by the pair that stayed there — reporting it as
+    // *and* its key is marked occupied by the pair that stayed there -- reporting it as
     // a refusal too would count five, and print a dry-run stanza for a group with no
     // members left in it.
     let mut pub_to_t = bookmark("https://p1/");
@@ -1967,13 +2037,17 @@ async fn an_emptied_group_is_not_counted_as_a_refusal_of_its_own() {
         "no group is previewed twice: {:?}",
         outcome.preview
     );
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 #[tokio::test]
 async fn a_group_emptied_by_a_refusal_no_longer_protects_its_url() {
     // The delete-guard exists because "some other planned write owns that URL". When a
-    // refusal empties a group, nobody owns its target any more — so a bookmark moving
+    // refusal empties a group, nobody owns its target any more -- so a bookmark moving
     // away from that URL must delete its old record. Leaving the guard in place strands
     // the bookmark at both URLs, silently and for good: the next run refuses the same
     // pair, protects the same URL, and finds the copy already converged.
@@ -2010,7 +2084,7 @@ async fn a_group_emptied_by_a_refusal_no_longer_protects_its_url() {
 async fn colliding_peers_that_disagree_are_all_refused() {
     // Neither member is stored at the target: both normalize to a brand-new URL, so
     // there is no record whose visibility the others should defer to. Merging anyway
-    // would have to pick one — and picking the private one silently unshares a bookmark
+    // would have to pick one -- and picking the private one silently unshares a bookmark
     // the user chose to share, then deletes it. With nothing to prefer, none of them
     // may write.
     let mut stored_a = bookmark("https://old-a/");
@@ -2031,7 +2105,11 @@ async fn colliding_peers_that_disagree_are_all_refused() {
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
     assert_eq!(outcome.refused, 2, "neither peer may write");
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
     assert!(
         pinboard.deleted.borrow().is_empty(),
         "and neither is absorbed — the public one must not vanish"
@@ -2070,8 +2148,16 @@ async fn colliding_peers_that_agree_still_merge() {
     );
     // Both notes survive. *Which leads* is first-appearance order in the slice, which
     // the user has no way to see or control, so it is not something to pin here.
-    assert!(updated[0].extended.contains("from A"));
-    assert!(updated[0].extended.contains("from B"));
+    assert!(
+        updated[0].extended.contains("from A"),
+        "{:?}",
+        updated[0].extended
+    );
+    assert!(
+        updated[0].extended.contains("from B"),
+        "{:?}",
+        updated[0].extended
+    );
     assert_eq!(pinboard.deleted.borrow().len(), 2);
 }
 
@@ -2079,7 +2165,7 @@ async fn colliding_peers_that_agree_still_merge() {
 async fn a_dry_run_pass_still_advances_the_view() {
     // A preview has to show the changes a real run would make, including the ones a
     // later pass only makes because an earlier one wrote. So a dry run routes through
-    // the store as usual — the store is what withholds the network, not this loop.
+    // the store as usual -- the store is what withholds the network, not this loop.
     let books = vec![bookmark("https://x/mine")];
     let pass = FakePass(|bookmark: &Bookmark| {
         Ok(Plan::Bookmark(Bookmark {
@@ -2088,7 +2174,7 @@ async fn a_dry_run_pass_still_advances_the_view() {
         }))
     });
     let pinboard = FakePinboard::default();
-    let store = store(&pinboard, &books, true);
+    let store = store(&pinboard, &books, WriteMode::DryRun);
 
     let outcome = run_pass(&store, &books, "test", NO_DATING, &pass).await;
     assert_eq!(outcome.changed, 1);
@@ -2097,9 +2183,13 @@ async fn a_dry_run_pass_still_advances_the_view() {
         store.resident(&u("https://x/moved")).is_some(),
         "the next pass must preview from the state this one would leave"
     );
-    assert!(store.resident(&u("https://x/mine")).is_none());
+    assert_eq!(store.resident(&u("https://x/mine")), None);
     assert!(pinboard.updated.borrow().is_empty(), "and write nothing");
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -2117,7 +2207,7 @@ async fn dry_run_renders_every_field_and_writes_nothing() {
             url: u(&format!("{}new", bookmark.url)),
             title: "New".into(),
             note,
-            tags: vec!["x".into()],
+            tags: tag_list(&["x"]),
             // A datable candidate source time, so the driver re-dates and the
             // `date ->` line renders.
             timestamp: crate::timefmt::from_unix(1_700_000_000),
@@ -2133,7 +2223,7 @@ async fn dry_run_renders_every_field_and_writes_nothing() {
         stale_to_now: false,
     };
     let outcome = run_pass(
-        &store(&pinboard, &books, true),
+        &store(&pinboard, &books, WriteMode::DryRun),
         &books,
         "test",
         dates,
@@ -2141,8 +2231,16 @@ async fn dry_run_renders_every_field_and_writes_nothing() {
     )
     .await;
     assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
     // What the operator actually reads before letting a real run touch the account.
     assert_eq!(
         outcome.preview,
@@ -2166,14 +2264,14 @@ async fn dry_run_renders_every_field_and_writes_nothing() {
 #[tokio::test]
 async fn a_dry_run_previews_a_merge_and_its_absorbed_urls() {
     // The merge preview renders every written field plus one `absorb` line per URL the
-    // merge would delete — the deletions are the destructive half, and the preview is
+    // merge would delete -- the deletions are the destructive half, and the preview is
     // where an operator gets to see them coming.
     let mut resident = bookmark("https://target/");
     resident.note = "resident".into();
-    resident.tags = vec!["rt".into()];
+    resident.tags = tag_list(&["rt"]);
     let mut mover = bookmark("https://mover/");
     mover.note = "mover".into();
-    mover.tags = vec!["mt".into()];
+    mover.tags = tag_list(&["mt"]);
     let slice = vec![mover.clone()];
     let all = vec![mover, resident];
 
@@ -2186,15 +2284,23 @@ async fn a_dry_run_previews_a_merge_and_its_absorbed_urls() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, true),
+        &store(&pinboard, &all, WriteMode::DryRun),
         &slice,
         "test",
         NO_DATING,
         &pass,
     )
     .await;
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
     assert_eq!(
         outcome.preview,
         vec![
@@ -2231,7 +2337,11 @@ async fn a_merge_onto_a_trimmed_note_is_not_rewritten_every_run() {
         note: note_pinboard_trims(),
         ..bookmark("https://collide/")
     });
-    assert!(resident.note.ends_with(TRUNCATION_MARKER));
+    assert!(
+        resident.note.ends_with(TRUNCATION_MARKER),
+        "{:?}",
+        resident.note
+    );
     let mover = bookmark("https://x/mover");
     let other = bookmark("https://x/other");
     let slice = vec![mover.clone(), other.clone()];
@@ -2251,7 +2361,7 @@ async fn a_merge_onto_a_trimmed_note_is_not_rewritten_every_run() {
     });
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -2305,7 +2415,7 @@ async fn a_whole_note_too_long_to_write_is_not_cut_when_nothing_changed() {
     });
 
     let outcome = run_pass(
-        &store(&pinboard, &all, false),
+        &store(&pinboard, &all, WriteMode::Live),
         &slice,
         "test",
         NO_DATING,
@@ -2346,7 +2456,7 @@ async fn a_dry_run_previews_the_note_as_pinboard_will_store_it() {
     });
 
     let (outcome, logs) = crate::test_support::capturing_logs(run_pass(
-        &store(&pinboard, &all, true),
+        &store(&pinboard, &all, WriteMode::DryRun),
         &books,
         "test",
         NO_DATING,
@@ -2391,7 +2501,11 @@ async fn a_change_wholly_past_the_cut_is_not_written() {
 
     let (outcome, logs) = crate::test_support::capturing_logs(run(&pinboard, &books, &pass)).await;
     assert_eq!(outcome.changed, 0);
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
     assert!(crate::test_support::warnings(&logs).is_empty(), "{logs:#?}");
 }
 
@@ -2399,7 +2513,7 @@ async fn a_change_wholly_past_the_cut_is_not_written() {
 async fn a_dry_run_previews_a_refused_target() {
     // The other refusal branch: the whole group is refused because its target holds a
     // record the pass couldn't read. Rendered against the *target*, where the mismatch
-    // branch renders against the mover — two call sites, and only one had a test.
+    // branch renders against the mover -- two call sites, and only one had a test.
     let books = vec![bookmark("https://mover/"), bookmark("https://unreadable/")];
     let pass = FakePass(|bookmark: &Bookmark| match bookmark.url.as_str() {
         "https://unreadable/" => Err(item_error()),
@@ -2424,7 +2538,7 @@ async fn a_dry_run_previews_a_refused_target() {
 #[tokio::test]
 async fn a_dry_run_previews_a_refusal() {
     // A refusal is work the real run would decline to do, so it belongs in the preview
-    // too — it was invisible there while refusals only reached the log.
+    // too -- it was invisible there while refusals only reached the log.
     let mut resident = bookmark("https://target/");
     resident.public = true;
     let mut mover = bookmark("https://mover/");
@@ -2441,7 +2555,7 @@ async fn a_dry_run_previews_a_refusal() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, true),
+        &store(&pinboard, &all, WriteMode::DryRun),
         &slice,
         "test",
         NO_DATING,
@@ -2548,7 +2662,7 @@ async fn a_dry_run_names_a_target_held_by_a_visibility_refusal() {
     let pinboard = FakePinboard::default();
 
     let outcome = run_pass(
-        &store(&pinboard, &all, true),
+        &store(&pinboard, &all, WriteMode::DryRun),
         &slice,
         "test",
         NO_DATING,
@@ -2586,13 +2700,20 @@ async fn stale_to_now_settles_after_one_run() {
     };
 
     let first = FakePinboard::default();
-    let outcome = run_pass(&store(&first, &books, false), &books, "test", dates, &pass).await;
+    let outcome = run_pass(
+        &store(&first, &books, WriteMode::Live),
+        &books,
+        "test",
+        dates,
+        &pass,
+    )
+    .await;
     assert_eq!(outcome.changed, 1);
     let after_first = crate::test_support::replay(&books, &first.ops.borrow());
 
     let second = FakePinboard::default();
     let outcome = run_pass(
-        &store(&second, &after_first, false),
+        &store(&second, &after_first, WriteMode::Live),
         &after_first,
         "test",
         dates,
@@ -2600,7 +2721,11 @@ async fn stale_to_now_settles_after_one_run() {
     )
     .await;
     assert_eq!(outcome.changed, 0);
-    assert!(second.updated.borrow().is_empty());
+    assert!(
+        second.updated.borrow().is_empty(),
+        "{:?}",
+        second.updated.borrow()
+    );
 }
 
 #[tokio::test]
@@ -2621,7 +2746,7 @@ async fn stale_to_now_dates_at_whole_seconds() {
     };
     let pinboard = FakePinboard::default();
     let outcome = run_pass(
-        &store(&pinboard, &books, false),
+        &store(&pinboard, &books, WriteMode::Live),
         &books,
         "test",
         dates,

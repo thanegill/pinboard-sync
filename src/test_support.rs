@@ -14,14 +14,15 @@ use tempfile::TempDir;
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore};
+use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore, WriteMode};
 use crate::config::SyncLimit;
 use crate::keys::RedditKeys;
 use crate::pinboard::{PinboardBookmark, PinboardClient};
 use crate::reddit::model::{RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
-use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
+use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
 use crate::sync::{prepare_new_drafts, write_drafts, JobSettings};
+use crate::tags::Tags;
 use crate::timefmt::DateOpts;
 
 tokio::task_local! {
@@ -187,7 +188,7 @@ pub fn stored_at(url: &str) -> Bookmark {
         url: Url::parse(url).unwrap(),
         title: String::new(),
         note: String::new(),
-        tags: Vec::new(),
+        tags: Tags::default(),
         timestamp: None,
         public: false,
         read_later: false,
@@ -197,6 +198,11 @@ pub fn stored_at(url: &str) -> Bookmark {
 /// `items` as owned strings, for a tag list or any other `Vec<String>` a test spells out.
 pub fn strings(items: &[&str]) -> Vec<String> {
     items.iter().map(|item| item.to_string()).collect()
+}
+
+/// [`strings`] as a bookmark's [`Tags`].
+pub fn tag_list(items: &[&str]) -> Tags {
+    strings(items).into()
 }
 
 /// The titles of `drafts`, in order.
@@ -214,7 +220,7 @@ pub struct FakeReddit {
     pub saved: Vec<RedditListingEntry>,
     /// What `/api/info` knows; `info` answers with the entries whose fullname was asked for.
     pub info: Vec<RedditListingEntry>,
-    /// When set, `info` fails with it instead of answering — for exercising the
+    /// When set, `info` fails with it instead of answering -- for exercising the
     /// expired-cookie path that has to reach the auth-failure hook.
     pub info_error: Option<SourceError>,
 }
@@ -233,7 +239,7 @@ impl Source for FakeReddit {
 }
 
 impl UrlKey for FakeReddit {
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         RedditKeys::new([RedditConfig::default().domain]).dedup_key(url)
     }
 }
@@ -329,7 +335,7 @@ pub struct FakePinboard {
     /// way to reach the half-applied case where the write landed and an absorbed URL
     /// survived.
     pub fail_delete_urls: HashSet<String>,
-    /// The successful writes and deletes, interleaved in call order — see [`replay`].
+    /// The successful writes and deletes, interleaved in call order -- see [`replay`].
     pub ops: RefCell<Vec<Op>>,
     /// Trim a note too long for a `posts/add` URL as the Pinboard client does, both in
     /// [`BookmarkStore::fit`] and in what `add` and `update` record.
@@ -341,8 +347,13 @@ pub struct FakePinboard {
 
 impl FakePinboard {
     /// The production cleanup store over this fake, its view seeded with `all`.
-    pub fn cleanup_store(&self, dry_run: bool) -> CleanupStore<'_, Self> {
-        CleanupStore::new(self, AccountView::new(self.all.clone()), dry_run)
+    pub fn cleanup_store(&self) -> CleanupStore<'_, Self> {
+        CleanupStore::new(self, AccountView::new(self.all.clone()), WriteMode::Live)
+    }
+
+    /// [`Self::cleanup_store`] for a dry run.
+    pub fn dry_cleanup_store(&self) -> CleanupStore<'_, Self> {
+        CleanupStore::new(self, AccountView::new(self.all.clone()), WriteMode::DryRun)
     }
 }
 
@@ -365,7 +376,7 @@ impl BookmarkStore for FakePinboard {
         }
         self.added.borrow_mut().push(AddCall {
             url: b.url.to_string(),
-            tags: b.tags.clone(),
+            tags: b.tags.to_vec(),
             toread: b.read_later,
             shared: b.public,
             dt: bookmark_dt(b),
@@ -382,7 +393,7 @@ impl BookmarkStore for FakePinboard {
             url: b.url.to_string(),
             description: b.title.clone(),
             extended: b.note.clone(),
-            tags: b.tags.clone(),
+            tags: b.tags.to_vec(),
             shared: b.public,
             toread: b.read_later,
             dt: bookmark_dt(b),
@@ -434,7 +445,7 @@ pub async fn synced_account<S: Source>(source: &S, dates: DateOpts) -> Vec<Bookm
     };
     let new = prepare_new_drafts(source, drafts, &[], &settings, now);
     let pinboard = FakePinboard::default();
-    let tally = write_drafts(&pinboard, &new, false).await;
+    let tally = write_drafts(&pinboard, &new, WriteMode::Live).await;
     assert_eq!(tally.failed, 0);
     replay(&[], &pinboard.ops.take())
         .into_iter()
@@ -449,7 +460,7 @@ fn read_back(written: Bookmark, landed: OffsetDateTime) -> Bookmark {
         url: written.url.to_string(),
         description: written.title,
         extended: written.note,
-        tags: written.tags.join(" "),
+        tags: written.tags.joined(),
         time: crate::timefmt::to_pinboard_dt(written.timestamp.unwrap_or(landed))
             .unwrap_or_default(),
         shared: flag(written.public),
@@ -469,7 +480,7 @@ pub async fn assert_cleanup_changes_nothing(
         all: account,
         ..Default::default()
     };
-    let (result, logs) = capturing_logs(cleanup(&pinboard.cleanup_store(false))).await;
+    let (result, logs) = capturing_logs(cleanup(&pinboard.cleanup_store())).await;
     result.unwrap();
     let complaints: Vec<&String> = logs
         .iter()
@@ -482,8 +493,16 @@ pub async fn assert_cleanup_changes_nothing(
         "cleanup rewrote what sync wrote: {updated:#?}\nas sync stored it: {:#?}",
         pinboard.all
     );
-    assert!(pinboard.added.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.added.borrow().is_empty(),
+        "{:?}",
+        pinboard.added.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 /// Parse `argv` as the binary does, but with no flag falling back to an environment

@@ -92,7 +92,7 @@ fn an_anonymous_gist_keeps_the_apis_url_and_gets_no_owner_tag() {
 #[test]
 fn a_gist_with_an_unparseable_url_makes_no_draft() {
     let anonymous = gist(json!({ "id": ID, "html_url": "not a url" }));
-    assert!(anonymous.into_draft(&default_config()).is_none());
+    assert_eq!(anonymous.into_draft(&default_config()), None);
 }
 
 #[test]

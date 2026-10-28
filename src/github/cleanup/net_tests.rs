@@ -3,8 +3,8 @@ use crate::github::gists::GistPostDate;
 use crate::pinboard::TRUNCATION_MARKER;
 use crate::source::{Halt, Source};
 use crate::test_support::{
-    assert_cleanup_changes_nothing, stored_at, strings, synced_account, FakePinboard, NO_DATING,
-    ROUND_TRIP_DATINGS,
+    assert_cleanup_changes_nothing, stored_at, strings, synced_account, tag_list, FakePinboard,
+    NO_DATING, ROUND_TRIP_DATINGS,
 };
 use serde_json::json;
 use wiremock::matchers::{method, path, path_regex};
@@ -26,7 +26,7 @@ async fn cleanup_surfaces_an_expired_token_as_reauth() {
         all: vec![Bookmark {
             title: "o/r".into(),
             note: "notes".into(),
-            tags: vec!["github-star".into()],
+            tags: tag_list(&["github-star"]),
             timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
             ..stored_at("https://github.com/o/r")
         }],
@@ -34,7 +34,7 @@ async fn cleanup_surfaces_an_expired_token_as_reauth() {
     };
     let client = github_client(&server);
 
-    let err = run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    let err = run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap_err();
 
@@ -70,8 +70,8 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
         .mount(&server)
         .await;
     // The point of the test: this one must never be requested. An unmounted path
-    // would not prove it — wiremock answers those with a 404, which `repo()` reads as
-    // a deleted repo and skips silently — so assert zero calls explicitly. The
+    // would not prove it -- wiremock answers those with a 404, which `repo()` reads as
+    // a deleted repo and skips silently -- so assert zero calls explicitly. The
     // expectation is checked when the server drops.
     Mock::given(method("GET"))
         .and(path("/repos/never/looked"))
@@ -83,7 +83,7 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
     let stored = |url: &str, title: &str| Bookmark {
         title: title.into(),
         note: "notes".into(),
-        tags: vec!["github-star".into()],
+        tags: tag_list(&["github-star"]),
         timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
         ..stored_at(url)
     };
@@ -97,12 +97,12 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
     };
     let client = github_client(&server);
 
-    let err = run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    let err = run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap_err();
 
     assert!(err.to_string().contains("rate limit"), "{err}");
-    // The repo read before the limit is still rewritten — the work isn't thrown away.
+    // The repo read before the limit is still rewritten -- the work isn't thrown away.
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].url, "https://github.com/new/name");
@@ -134,7 +134,7 @@ async fn cleanup_survives_a_permanently_blocked_repo() {
     let stored = |url: &str, title: &str| Bookmark {
         title: title.into(),
         note: "notes".into(),
-        tags: vec!["github-star".into()],
+        tags: tag_list(&["github-star"]),
         timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
         ..stored_at(url)
     };
@@ -147,7 +147,7 @@ async fn cleanup_survives_a_permanently_blocked_repo() {
     };
     let client = github_client(&server);
 
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .expect("one dead repo must not fail the whole run");
 
@@ -176,14 +176,14 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
         all: vec![Bookmark {
             title: "old/name".into(),
             note: "notes".into(),
-            tags: vec!["github-star".into(), "lang:python".into(), "mine".into()],
+            tags: tag_list(&["github-star", "lang:python", "mine"]),
             timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
             ..stored_at("https://github.com/old/name")
         }],
         ..Default::default()
     };
     let client = github_client(&server);
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -193,11 +193,27 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
     assert_eq!(updated[0].description, "new/name");
     // Hand-written notes are kept: only a note in the tool's shape is rebuilt.
     assert_eq!(updated[0].extended, "notes");
-    // Language tag refreshed (python → rust), base + user tags kept.
-    assert!(updated[0].tags.contains(&"lang:rust".to_string()));
-    assert!(!updated[0].tags.contains(&"lang:python".to_string()));
-    assert!(updated[0].tags.contains(&"github-star".to_string()));
-    assert!(updated[0].tags.contains(&"mine".to_string()));
+    // Language tag refreshed (python -> rust), base + user tags kept.
+    assert!(
+        updated[0].tags.contains(&"lang:rust".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        !updated[0].tags.contains(&"lang:python".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"github-star".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"mine".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
     // Old URL deleted after the rewrite.
     assert_eq!(
         pinboard.deleted.borrow().as_slice(),
@@ -211,7 +227,7 @@ async fn cleanup_leaves_deep_links_untouched() {
         Bookmark {
             title: "title".into(),
             note: "notes".into(),
-            tags: vec!["github-star".into()],
+            tags: tag_list(&["github-star"]),
             timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
             ..stored_at(url)
         }
@@ -230,12 +246,20 @@ async fn cleanup_leaves_deep_links_untouched() {
         ..Default::default()
     };
     let client = github_client(&server);
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -256,14 +280,14 @@ async fn cleanup_canonicalizes_non_canonical_repo_root() {
         all: vec![Bookmark {
             title: "Owner/Repo".into(),
             note: "https://github.com/Owner/Repo".into(),
-            tags: vec!["github-star".into()],
+            tags: tag_list(&["github-star"]),
             timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
             ..stored_at("https://github.com/Owner/Repo.git/")
         }],
         ..Default::default()
     };
     let client = github_client(&server);
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -295,14 +319,14 @@ async fn cleanup_folds_www_host_onto_github_com() {
         all: vec![Bookmark {
             title: "Owner/Repo".into(),
             note: "https://github.com/Owner/Repo".into(),
-            tags: vec!["github-star".into()],
+            tags: tag_list(&["github-star"]),
             timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
             ..stored_at("https://www.github.com/Owner/Repo")
         }],
         ..Default::default()
     };
     let client = github_client(&server);
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -334,14 +358,14 @@ async fn cleanup_rewrites_notes_only_to_retrofit_the_blockquote() {
         all: vec![Bookmark {
             title: "o/r".into(),
             note: "A thing".into(), // pre-blockquote notes
-            tags: vec!["github-star".into()],
+            tags: tag_list(&["github-star"]),
             timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
             ..stored_at("https://github.com/o/r")
         }],
         ..Default::default()
     };
     let client = github_client(&server);
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -349,7 +373,11 @@ async fn cleanup_rewrites_notes_only_to_retrofit_the_blockquote() {
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].extended, "<blockquote>A thing</blockquote>");
     // Nothing else changed, so no delete (URL is unchanged).
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 /// Mount `/repos/{owner}/{name}` answering with `repo`.
@@ -377,11 +405,11 @@ async fn cleanup_leaves_an_hn_story_of_a_repo_as_hn_wrote_it() {
         all: vec![Bookmark {
             title: "Show HN: My tool".into(),
             note: "HN Link: https://news.ycombinator.com/item?id=42\n\nmy own notes".into(),
-            tags: vec![
-                "hackernews".into(),
-                "author:hackernews:alice".into(),
-                "hackernews:show-hn".into(),
-            ],
+            tags: tag_list(&[
+                "hackernews",
+                "author:hackernews:alice",
+                "hackernews:show-hn",
+            ]),
             timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
             ..stored_at("https://github.com/o/r")
         }],
@@ -389,12 +417,20 @@ async fn cleanup_leaves_an_hn_story_of_a_repo_as_hn_wrote_it() {
     };
     let client = github_client(&server);
 
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -412,11 +448,11 @@ async fn cleanup_refreshes_the_stars_of_every_configured_account_by_their_own_ta
     let pinboard = FakePinboard {
         all: vec![
             Bookmark {
-                tags: vec!["work-star".into(), "language:go".into()],
+                tags: tag_list(&["work-star", "language:go"]),
                 ..stored_at("https://github.com/o/work")
             },
             Bookmark {
-                tags: vec!["github-star".into()],
+                tags: tag_list(&["github-star"]),
                 ..stored_at("https://github.com/o/home")
             },
         ],
@@ -431,7 +467,7 @@ async fn cleanup_refreshes_the_stars_of_every_configured_account_by_their_own_ta
     let client = github_client(&server);
 
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &client,
         NO_DATING,
         &[GitHubConfig::default(), work],
@@ -475,14 +511,14 @@ async fn cleanup_gives_an_unsynced_bookmark_a_note_but_not_a_title_or_tags() {
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "My bookmark".into(),
-            tags: vec!["tools".into()],
+            tags: tag_list(&["tools"]),
             ..stored_at("https://github.com/o/r")
         }],
         ..Default::default()
     };
     let client = github_client(&server);
 
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -519,18 +555,18 @@ async fn cleanup_settles_after_one_run() {
         Bookmark {
             title: "old/name".into(),
             note: "<blockquote>Old description</blockquote>".into(),
-            tags: vec!["github-star".into(), "lang:python".into()],
+            tags: tag_list(&["github-star", "lang:python"]),
             ..stored_at("https://github.com/old/name")
         },
         Bookmark {
             title: "Show HN: Linked".into(),
             note: "HN Link: https://news.ycombinator.com/item?id=7".into(),
-            tags: vec!["hackernews".into()],
+            tags: tag_list(&["hackernews"]),
             ..stored_at("https://www.github.com/o/linked.git")
         },
         Bookmark {
             title: "o/plain".into(),
-            tags: vec!["github-star".into()],
+            tags: tag_list(&["github-star"]),
             ..stored_at("https://github.com/o/plain")
         },
     ];
@@ -577,14 +613,14 @@ async fn cleanup_settles_after_merging_a_renamed_star_into_an_hn_story() {
             Bookmark {
                 title: "old/name".into(),
                 note: "<blockquote>Old</blockquote>".into(),
-                tags: vec!["github-star".into()],
+                tags: tag_list(&["github-star"]),
                 timestamp: crate::timefmt::parse_rfc3339("2023-01-02T03:04:05Z"),
                 ..stored_at("https://github.com/old/name")
             },
             Bookmark {
                 title: "Show HN: New".into(),
                 note: "HN Link: https://news.ycombinator.com/item?id=9".into(),
-                tags: vec!["hackernews".into()],
+                tags: tag_list(&["hackernews"]),
                 timestamp: story_date,
                 ..stored_at(story_url)
             },
@@ -644,7 +680,7 @@ async fn cleanup_redates_only_synced_stars_to_their_star_time() {
     let stored = |url: &str, title: &str, note: &str, tag: &str| Bookmark {
         title: title.into(),
         note: note.into(),
-        tags: vec![tag.into()],
+        tags: tag_list(&[tag]),
         timestamp: crate::timefmt::parse_rfc3339("2020-01-01T00:00:00Z"),
         ..stored_at(url)
     };
@@ -672,7 +708,7 @@ async fn cleanup_redates_only_synced_stars_to_their_star_time() {
         stale_to_now: false,
     };
 
-    run(&pinboard.cleanup_store(false), &client, dates, &[])
+    run(&pinboard.cleanup_store(), &client, dates, &[])
         .await
         .unwrap();
 
@@ -693,7 +729,7 @@ async fn run_and_store(
         all: seed.clone(),
         ..Default::default()
     };
-    run(&pinboard.cleanup_store(false), client, dates, &[])
+    run(&pinboard.cleanup_store(), client, dates, &[])
         .await
         .unwrap();
     let mut stored = crate::test_support::replay(&seed, &pinboard.ops.borrow());
@@ -732,14 +768,14 @@ async fn cleanup_keeps_entity_text_in_a_stored_title() {
             },
             Bookmark {
                 title: "Use &amp;amp; to escape".into(),
-                tags: vec!["github-star".into()],
+                tags: tag_list(&["github-star"]),
                 ..stored_at("https://github.com/o/star")
             },
         ],
         ..Default::default()
     };
     let client = github_client(&server);
-    run(&pinboard.cleanup_store(false), &client, NO_DATING, &[])
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &[])
         .await
         .unwrap();
 
@@ -814,7 +850,7 @@ async fn cleanup_plans_a_starred_gist_from_the_starred_list() {
         .await;
     let seed = vec![Bookmark {
         title: "main.rs".into(),
-        tags: strings(&["github-star", "github-gist"]),
+        tags: tag_list(&["github-star", "github-gist"]),
         ..stored_at(&gist_url(None))
     }];
 
@@ -837,7 +873,7 @@ async fn cleanup_with_gists_off_leaves_gists_alone() {
     }
     let seed = vec![Bookmark {
         title: "Stale".into(),
-        tags: strings(&["github-star", "github-gist"]),
+        tags: tag_list(&["github-star", "github-gist"]),
         ..stored_at(&gist_url(None))
     }];
     let client =
@@ -866,7 +902,7 @@ async fn cleanup_without_gist_bookmarks_reads_no_gists() {
     };
 
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &github_client(&server),
         NO_DATING,
         &[],
@@ -897,14 +933,14 @@ async fn a_failed_starred_gist_read_fails_the_gist_pass() {
             .await;
         let pinboard = FakePinboard {
             all: vec![Bookmark {
-                tags: strings(&["github-star", "github-gist"]),
+                tags: tag_list(&["github-star", "github-gist"]),
                 ..stored_at(&gist_url(None))
             }],
             ..Default::default()
         };
 
         let (result, _) = crate::http::recording_waits(run(
-            &pinboard.cleanup_store(false),
+            &pinboard.cleanup_store(),
             &github_client(&server),
             NO_DATING,
             &[],
@@ -917,7 +953,11 @@ async fn a_failed_starred_gist_read_fails_the_gist_pass() {
             _ => "unexpected",
         };
         assert_eq!(variant, expected, "{err:?}");
-        assert!(pinboard.updated.borrow().is_empty());
+        assert!(
+            pinboard.updated.borrow().is_empty(),
+            "{:?}",
+            pinboard.updated.borrow()
+        );
     }
 }
 
@@ -928,7 +968,7 @@ async fn cleanup_canonicalizes_a_synced_gist_and_refreshes_what_sync_wrote() {
     let seed = vec![Bookmark {
         title: "Stale".into(),
         note: "<blockquote>Stale</blockquote>\n\nFiles: old.go".into(),
-        tags: strings(&["github-star", "github-gist", "lang:go", "mine"]),
+        tags: tag_list(&["github-star", "github-gist", "lang:go", "mine"]),
         ..stored_at(&gist_url(None))
     }];
 
@@ -969,13 +1009,13 @@ async fn cleanup_leaves_a_hand_saved_gist_tagged_like_a_star_as_it_was() {
         Bookmark {
             title: "my gist".into(),
             note: "my notes".into(),
-            tags: strings(&["github-star", "lang:go"]),
+            tags: tag_list(&["github-star", "lang:go"]),
             ..stored_at(&gist_url(None))
         },
         Bookmark {
             title: "Show HN: Fresh".into(),
             note: "HN Link: https://news.ycombinator.com/item?id=7".into(),
-            tags: strings(&["hackernews"]),
+            tags: tag_list(&["hackernews"]),
             ..stored_at(&format!("http://gist.github.com/other/{GIST_ID}.git"))
         },
     ];
@@ -1012,21 +1052,16 @@ async fn cleanup_refreshes_another_accounts_gist_by_its_own_tags() {
         all: vec![Bookmark {
             title: "Fresh".into(),
             note: "<blockquote>Fresh</blockquote>\n\nFiles: main.rs".into(),
-            tags: strings(&["work-star", "github-gist", "lang:go"]),
+            tags: tag_list(&["work-star", "github-gist", "lang:go"]),
             ..stored_at(&gist_url(Some("someone")))
         }],
         ..Default::default()
     };
     let client = GitHubClient::with_base_url("tok".into(), configured[0].clone(), server.uri());
 
-    run(
-        &pinboard.cleanup_store(false),
-        &client,
-        NO_DATING,
-        &configured,
-    )
-    .await
-    .unwrap();
+    run(&pinboard.cleanup_store(), &client, NO_DATING, &configured)
+        .await
+        .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1, "{updated:?}");
@@ -1047,7 +1082,7 @@ async fn cleanup_keeps_a_deleted_gist_where_it_is() {
     let server = MockServer::start().await;
     mount_starred(&server, ResponseTemplate::new(200).set_body_json(json!([]))).await;
     let seed = vec![Bookmark {
-        tags: strings(&["github-star", "github-gist"]),
+        tags: tag_list(&["github-star", "github-gist"]),
         ..stored_at(&gist_url(None))
     }];
 
@@ -1068,7 +1103,7 @@ async fn cleanup_redates_a_synced_gist_by_its_gist_post_date() {
     let stored = Bookmark {
         title: "Fresh".into(),
         note: "<blockquote>Fresh</blockquote>\n\nFiles: main.rs".into(),
-        tags: strings(&[
+        tags: tag_list(&[
             "github-star",
             "github-gist",
             "lang:rust",
@@ -1094,7 +1129,7 @@ async fn cleanup_redates_a_synced_gist_by_its_gist_post_date() {
             all: vec![stored.clone()],
             ..Default::default()
         };
-        run(&pinboard.cleanup_store(false), &client, dates, &[])
+        run(&pinboard.cleanup_store(), &client, dates, &[])
             .await
             .unwrap();
         let updated = pinboard.updated.borrow();
@@ -1127,7 +1162,7 @@ async fn a_dead_token_on_the_repos_skips_the_gists() {
     };
 
     let err = run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &github_client(&server),
         NO_DATING,
         &[],
@@ -1157,7 +1192,7 @@ async fn a_dead_token_on_a_gist_lookup_is_a_reauth() {
     };
 
     let err = run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &github_client(&server),
         NO_DATING,
         &[],
@@ -1194,7 +1229,7 @@ async fn a_dead_token_on_the_gists_is_a_reauth_even_after_failed_repos() {
     };
 
     let (result, _) = crate::http::recording_waits(run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &github_client(&server),
         NO_DATING,
         &[],
@@ -1263,7 +1298,7 @@ async fn synced_trimmed(server: &MockServer) -> Vec<Bookmark> {
         },
         time::OffsetDateTime::now_utc(),
     );
-    let tally = crate::sync::write_drafts(&pinboard, &new, false).await;
+    let tally = crate::sync::write_drafts(&pinboard, &new, crate::bookmark::WriteMode::Live).await;
     assert_eq!(tally.failed, 0);
     let mut synced = crate::test_support::replay(&[], &pinboard.ops.take());
     for bookmark in &mut synced {
@@ -1281,7 +1316,7 @@ async fn clean_trimmed(account: Vec<Bookmark>, server: &MockServer) -> (usize, V
         ..Default::default()
     };
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         &github_client(server),
         NO_DATING,
         &[GitHubConfig::default()],

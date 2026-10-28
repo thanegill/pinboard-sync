@@ -27,7 +27,7 @@ async fn a_hackernews_cleanup_refuses_a_bad_link_tag_before_its_pass() {
         None,
         overrides,
         crate::test_support::NO_DATING,
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
     )
     .await
     .unwrap_err();
@@ -99,11 +99,40 @@ fn sync_all_counts_the_accounts_it_could_not_build() {
 }
 
 #[tokio::test]
+async fn a_dry_sync_reports_no_write_tally() {
+    let pinboard = PinboardClient::new("user:token".into(), std::time::Duration::ZERO).unwrap();
+    let (result, logs) = crate::test_support::capturing_logs(run_sync_jobs(
+        Vec::new(),
+        AllRun::default(),
+        &pinboard,
+        &[],
+        WriteMode::DryRun,
+    ))
+    .await;
+
+    result.unwrap();
+    assert!(
+        logs.contains(&"INFO 0 new bookmark(s) to write (dry run)".to_string()),
+        "{logs:?}"
+    );
+    assert!(
+        !logs.iter().any(|line| line.contains("done: wrote")),
+        "{logs:?}"
+    );
+}
+
+#[tokio::test]
 async fn run_sync_jobs_fails_the_run_for_accounts_it_could_not_build() {
     let pinboard = PinboardClient::new("user:token".into(), std::time::Duration::ZERO).unwrap();
-    let error = run_sync_jobs(Vec::new(), AllRun { failed: 1 }, &pinboard, &[], false)
-        .await
-        .expect_err("an unbuilt account fails the run");
+    let error = run_sync_jobs(
+        Vec::new(),
+        AllRun { failed: 1 },
+        &pinboard,
+        &[],
+        WriteMode::Live,
+    )
+    .await
+    .expect_err("an unbuilt account fails the run");
     assert_eq!(error.to_string(), "1 account(s) failed");
 }
 
@@ -250,9 +279,10 @@ fn top_level_dry_run_reaches_single_source_cleanup() {
             !source_dry_run(&source),
             "per-source dry_run defaults off for {name}"
         );
-        assert!(
-            cleanup_dry_run(cmd.dry_run, source_dry_run(&source)),
-            "effective dry_run true for `cleanup --dry-run {name}`"
+        assert_eq!(
+            WriteMode::from_flags(cmd.dry_run, source_dry_run(&source)),
+            WriteMode::DryRun,
+            "`cleanup --dry-run {name}`"
         );
     }
 }
@@ -264,7 +294,10 @@ fn per_source_dry_run_still_applies_without_top_level() {
     assert!(!cmd.dry_run);
     let source = cmd.source.expect("a source subcommand");
     assert!(source_dry_run(&source));
-    assert!(cleanup_dry_run(cmd.dry_run, source_dry_run(&source)));
+    assert_eq!(
+        WriteMode::from_flags(cmd.dry_run, source_dry_run(&source)),
+        WriteMode::DryRun
+    );
 }
 
 /// Parse `backup <extra>` and return the parsed command.
@@ -377,7 +410,7 @@ fn backup_pinboard_without_a_token_names_every_setting_it_can_come_from() {
 #[test]
 fn backup_dir_prefers_the_flag_then_the_config_then_errors() {
     let mut config = Config::default();
-    assert!(resolve_backup_dir([None, None], &config).is_err());
+    resolve_backup_dir([None, None], &config).unwrap_err();
 
     config.backup.directory = Some("/from-config".into());
     assert_eq!(
@@ -482,7 +515,7 @@ async fn backup_all_backs_up_the_rest_when_one_account_cannot_be_built() {
     // the run accounts for the target it could not build.
     let scratch = crate::test_support::scratch_dir("backup-skipped-account");
     let dir = scratch.path().join("snapshot");
-    let result = back_up(Vec::new(), plan.skipped, &dir, false).await;
+    let result = back_up(Vec::new(), plan.skipped, &dir, WriteMode::Live).await;
 
     let err = result.expect_err("a skipped account fails the run");
     assert_eq!(err.to_string(), "1 account(s) failed");
@@ -622,7 +655,7 @@ async fn cleanup_refuses_a_bad_source_input_before_reading_pinboard() {
 
 mod net_tests {
     use super::*;
-    use crate::test_support::{stored_at, FakePinboard, NO_DATING};
+    use crate::test_support::{stored_at, tag_list, FakePinboard, NO_DATING};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -648,7 +681,7 @@ mod net_tests {
         .unwrap();
         let pinboard = FakePinboard {
             all: vec![Bookmark {
-                tags: vec!["work-star".into()],
+                tags: tag_list(&["work-star"]),
                 ..stored_at("https://github.com/o/r")
             }],
             ..Default::default()
@@ -661,7 +694,7 @@ mod net_tests {
         );
 
         cleanup_github_with_client(
-            &pinboard.cleanup_store(false),
+            &pinboard.cleanup_store(),
             &client,
             Some(home),
             NO_DATING,

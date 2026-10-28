@@ -8,6 +8,8 @@ mod algolia;
 pub mod cleanup;
 mod favorites;
 
+pub use algolia::AlgoliaClient;
+
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -20,15 +22,14 @@ use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_markdown, html_to_plain};
 use crate::http::{client_builder, RetryingClient};
 use crate::keys::{HackerNewsKeys, RedditKeys};
-use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
-use crate::tags::{push_prefixed, push_tag, push_tags};
+use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
+use crate::tags::Tags;
 use favorites::{FavoritesStream, FAVORITES_PAGE_PAUSE};
 use url::Url;
 
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0";
 const HN_BASE: &str = "https://news.ycombinator.com";
-const ALGOLIA_BASE: &str = "https://hn.algolia.com";
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 
@@ -113,18 +114,18 @@ impl HackerNewsItem {
     /// permalink for text posts (Ask HN, etc.). `keys` keys the article.
     fn into_draft(self, cfg: &HackerNewsConfig, keys: &HackerNewsKeys) -> Option<BookmarkDraft> {
         let item_id = HackerNewsItemId::from(self.id);
-        // The HN discussion permalink (always valid — the id sits in the query string).
+        // The HN discussion permalink (always valid -- the id sits in the query string).
         let hn_url = Url::from(&item_id);
         let is_comment = self.kind == HackerNewsItemKind::Comment;
 
-        let mut tags = Vec::new();
-        push_tags(&mut tags, &cfg.tags);
+        let mut tags = Tags::default();
+        tags.push_all(&cfg.tags);
         if is_comment {
-            push_tag(&mut tags, &cfg.comment);
+            tags.push(&cfg.comment);
         }
-        push_prefixed(&mut tags, &cfg.author_prefix, &self.by);
+        tags.push_prefixed(&cfg.author_prefix, &self.by);
         if let Some(special) = self.title.as_deref().and_then(special_type) {
-            push_prefixed(&mut tags, &cfg.special_prefix, &special);
+            tags.push_prefixed(&cfg.special_prefix, &special);
         }
 
         if is_comment {
@@ -149,7 +150,7 @@ impl HackerNewsItem {
                 Ok(parsed) => {
                     let key = keys
                         .dedup_key(&parsed)
-                        .unwrap_or_else(|| parsed.to_string());
+                        .unwrap_or_else(|| parsed.as_str().into());
                     (parsed, key)
                 }
                 Err(e) => {
@@ -166,7 +167,7 @@ impl HackerNewsItem {
                 .unwrap_or_else(|| format!("HN: {} by {}", self.kind, self.by)),
         );
         // The `HN Link:` line points at the discussion. For a text post the bookmark
-        // URL already *is* that permalink, so including it would duplicate the URL —
+        // URL already *is* that permalink, so including it would duplicate the URL --
         // skip it and let the notes carry just the post text.
         let mut note = if article.is_some() {
             format!("HN Link: {hn_url}")
@@ -197,6 +198,15 @@ impl HackerNewsItem {
     }
 }
 
+/// A client for HackerNews requests, the favorites pages and Algolia alike.
+fn retrying_client() -> anyhow::Result<RetryingClient> {
+    let http = client_builder()
+        .user_agent(BROWSER_UA)
+        .build()
+        .context("building HTTP client")?;
+    Ok(RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY))
+}
+
 /// Reads a user's public HackerNews favorites.
 pub struct HackerNewsClient {
     http: RetryingClient,
@@ -206,32 +216,23 @@ pub struct HackerNewsClient {
     keys: HackerNewsKeys,
     /// HN site base (overridden in tests).
     base: String,
-    /// Algolia API base (overridden in tests).
-    algolia: String,
+    /// Looks the favorited items up.
+    algolia: AlgoliaClient,
 }
 
 impl HackerNewsClient {
     pub fn new(username: String, config: HackerNewsConfig) -> anyhow::Result<Self> {
-        Self::build(
-            username,
-            config,
-            HN_BASE.to_string(),
-            ALGOLIA_BASE.to_string(),
-        )
+        Self::build(username, config, HN_BASE.to_string(), AlgoliaClient::new()?)
     }
 
     fn build(
         username: String,
         config: HackerNewsConfig,
         base: String,
-        algolia: String,
+        algolia: AlgoliaClient,
     ) -> anyhow::Result<Self> {
-        let http = client_builder()
-            .user_agent(BROWSER_UA)
-            .build()
-            .context("building HTTP client")?;
         Ok(Self {
-            http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
+            http: retrying_client()?,
             username,
             config,
             keys: HackerNewsKeys::default(),
@@ -275,7 +276,7 @@ impl HackerNewsClient {
     /// looked up in batches at the end.
     async fn fetch_capturing(
         &self,
-        synced_keys: Option<&HashSet<String>>,
+        synced_keys: Option<&HashSet<DedupKey>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
         let stories = self
@@ -294,7 +295,7 @@ impl HackerNewsClient {
         ids.retain(|id| seen.insert(id.clone()));
 
         if synced_keys.is_none() {
-            drafts = self.drafts_by_id(self.fetch_items(&ids, sink).await?);
+            drafts = self.drafts_by_id(self.algolia.fetch_items(&ids, sink).await?);
         }
         Ok(ids.iter().filter_map(|id| drafts.remove(id)).collect())
     }
@@ -323,12 +324,12 @@ impl BackupSource for HackerNewsClient {
 }
 
 impl UrlKey for HackerNewsClient {
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         self.keys.dedup_key(url)
     }
 }
 
-/// A HackerNews item id — the `<n>` in a `news.ycombinator.com/item?id=<n>` URL. Held
+/// A HackerNews item id -- the `<n>` in a `news.ycombinator.com/item?id=<n>` URL. Held
 /// as a string (the favorites page scrapes it as text and Algolia's `objectID` filter
 /// takes it as text); built from a numeric id, a scraped string, or parsed out of a URL
 /// (`TryFrom<&Url>`), and rendered back to the discussion permalink (`From<&Self> for Url`).
@@ -344,8 +345,8 @@ impl std::fmt::Display for HackerNewsItemId {
 impl HackerNewsItemId {
     /// The key `sync` dedups a favorited HN item on: `hn:<id>`, matching however the
     /// bookmark is stored.
-    pub(crate) fn dedup_key(&self) -> String {
-        format!("hn:{self}")
+    pub(crate) fn dedup_key(&self) -> DedupKey {
+        format!("hn:{self}").into()
     }
 }
 
@@ -400,7 +401,7 @@ impl From<&HackerNewsItemId> for Url {
 #[error("not a HackerNews item URL")]
 pub struct NotHnItemUrl;
 
-/// The slug for a `Show/Ask/Tell/Launch HN:` title prefix (e.g. `Show HN:` →
+/// The slug for a `Show/Ask/Tell/Launch HN:` title prefix (e.g. `Show HN:` ->
 /// `show-hn`), or `None` for ordinary titles.
 fn special_type(title: &str) -> Option<String> {
     ["Show HN", "Ask HN", "Tell HN", "Launch HN"]
@@ -421,7 +422,13 @@ impl HackerNewsClient {
         base: String,
         algolia: String,
     ) -> Self {
-        Self::build(username, config, base, algolia).unwrap()
+        Self::build(
+            username,
+            config,
+            base,
+            AlgoliaClient::build(algolia).unwrap(),
+        )
+        .unwrap()
     }
 
     /// The draft `sync` makes for a favorited story with this article `url`.
@@ -450,7 +457,8 @@ impl HackerNewsClient {
             time::OffsetDateTime::UNIX_EPOCH,
         );
         let pinboard = crate::test_support::FakePinboard::default();
-        let tally = crate::sync::write_drafts(&pinboard, &new, false).await;
+        let tally =
+            crate::sync::write_drafts(&pinboard, &new, crate::bookmark::WriteMode::Live).await;
         assert_eq!(tally.failed, 0);
         let ops = pinboard.ops.take();
         crate::test_support::replay(account, &ops)
@@ -461,6 +469,6 @@ impl HackerNewsClient {
 mod tests;
 
 /// Integration tests against a `wiremock` server. These bind a TCP socket, so they
-/// can't run in the Nix build sandbox — the flake skips `net_tests` there.
+/// can't run in the Nix build sandbox -- the flake skips `net_tests` there.
 #[cfg(test)]
 mod net_tests;

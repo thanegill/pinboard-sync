@@ -1,26 +1,123 @@
-//! A bookmark's tag list: the helpers every source shapes its configured tags through,
+//! A bookmark's tag list: the [`Tags`] every source shapes its configured tags into,
 //! where an empty tag means "disabled" and whitespace and commas can't survive (Pinboard
 //! splits the tag string on whitespace and forbids commas).
 
 use std::collections::BTreeSet;
+use std::ops::Deref;
 
-/// Append `key` to `tags` unless it is empty (empty = the tag is disabled).
-pub fn push_tag(tags: &mut Vec<String>, key: &str) {
-    if !key.is_empty() {
-        tags.push(key.to_string());
+/// A bookmark's tags, in order. Pinboard keeps them case-sensitively and stores them as
+/// one space-separated string. Read like a slice; every method that adds a tag skips an
+/// empty one (a disabled tag).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tags(Vec<String>);
+
+impl Tags {
+    /// The tags in Pinboard's space-separated tag string.
+    pub fn parse(stored: &str) -> Self {
+        Self(stored.split_whitespace().map(String::from).collect())
+    }
+
+    /// Pinboard's space-separated form, the inverse of [`Tags::parse`].
+    pub fn joined(&self) -> String {
+        self.0.join(" ")
+    }
+
+    /// Append `tag` unless it is empty (empty = the tag is disabled).
+    pub fn push(&mut self, tag: &str) {
+        if !tag.is_empty() {
+            self.0.push(tag.to_string());
+        }
+    }
+
+    /// [`Tags::push`] every tag in `tags`. Used to seed a draft's tags from a source's
+    /// configurable base `tags` list.
+    pub fn push_all(&mut self, tags: &[String]) {
+        for tag in tags {
+            self.push(tag);
+        }
+    }
+
+    /// Append [`prefixed`]`(prefix, value)`, if there is one.
+    pub fn push_prefixed(&mut self, prefix: &str, value: &str) {
+        self.0.extend(prefixed(prefix, value));
+    }
+
+    /// Append `tag` unless it is empty or already here. Empty tags are skipped for
+    /// parity with [`Tags::push`]: stored tags derive via `split_whitespace` and so can
+    /// never contain `""`, so emitting one would make a cleanup plan diff against
+    /// storage on every run and never converge.
+    pub fn push_unique(&mut self, tag: &str) {
+        if !tag.is_empty() && !self.0.iter().any(|held| held == tag) {
+            self.0.push(tag.to_string());
+        }
+    }
+
+    /// [`Tags::push_unique`] each tag in `add`, in order.
+    pub fn extend_unique(&mut self, add: &[String]) {
+        for tag in add {
+            self.push_unique(tag);
+        }
+    }
+
+    /// Keep only the tags `keep` accepts.
+    pub fn retain(&mut self, keep: impl FnMut(&String) -> bool) {
+        self.0.retain(keep);
+    }
+
+    /// Sort the tags, for a plan whose order is canonical.
+    pub fn sort(&mut self) {
+        self.0.sort();
+    }
+
+    /// Whether the two lists differ as sets (order- and duplicate-insensitive).
+    pub fn differs_from(&self, other: &Tags) -> bool {
+        self.0.iter().collect::<BTreeSet<_>>() != other.0.iter().collect::<BTreeSet<_>>()
     }
 }
 
-/// Append every non-empty key in `keys` to `tags` (via [`push_tag`]). Used to seed a
-/// draft's tags from a source's configurable base `tags` list.
-pub fn push_tags(tags: &mut Vec<String>, keys: &[String]) {
-    for key in keys {
-        push_tag(tags, key);
+impl Deref for Tags {
+    type Target = [String];
+
+    fn deref(&self) -> &[String] {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl From<Vec<String>> for Tags {
+    fn from(tags: Vec<String>) -> Self {
+        Self(tags)
+    }
+}
+
+impl FromIterator<String> for Tags {
+    fn from_iter<I: IntoIterator<Item = String>>(tags: I) -> Self {
+        Self(tags.into_iter().collect())
+    }
+}
+
+#[cfg(test)]
+impl<T> PartialEq<Vec<T>> for Tags
+where
+    String: PartialEq<T>,
+{
+    fn eq(&self, other: &Vec<T>) -> bool {
+        self.0 == *other
+    }
+}
+
+#[cfg(test)]
+impl<T, const N: usize> PartialEq<[T; N]> for Tags
+where
+    String: PartialEq<T>,
+{
+    fn eq(&self, other: &[T; N]) -> bool {
+        self.0 == *other
     }
 }
 
 /// `prefix + value`, with each internal run of whitespace and commas in `value`
-/// collapsed to `-` (Pinboard tags can't contain either — the API splits on whitespace,
+/// collapsed to `-` (Pinboard tags can't contain either -- the API splits on whitespace,
 /// and its docs forbid commas). `None` if `prefix` is empty or `value` is nothing but
 /// whitespace and commas.
 pub fn prefixed(prefix: &str, value: &str) -> Option<String> {
@@ -28,77 +125,67 @@ pub fn prefixed(prefix: &str, value: &str) -> Option<String> {
     (!prefix.is_empty() && !value.is_empty()).then(|| format!("{prefix}{value}"))
 }
 
-/// Append [`prefixed`]`(prefix, value)` to `tags`, if there is one.
-pub fn push_prefixed(tags: &mut Vec<String>, prefix: &str, value: &str) {
-    tags.extend(prefixed(prefix, value));
-}
-
-/// Append `tag` unless it is empty or already in `tags`. Empty tags are skipped for
-/// parity with [`push_tag`] (empty = the tag is disabled): stored tags derive via
-/// `split_whitespace` and so can never contain `""`, so emitting one would make a
-/// cleanup plan diff against storage on every run and never converge.
-pub fn push_unique(tags: &mut Vec<String>, tag: &str) {
-    if !tag.is_empty() && !tags.iter().any(|held| held == tag) {
-        tags.push(tag.to_string());
-    }
-}
-
-/// [`push_unique`] each tag in `add`, in order.
-pub fn extend_unique(tags: &mut Vec<String>, add: &[String]) {
-    for tag in add {
-        push_unique(tags, tag);
-    }
-}
-
-/// Whether two tag lists differ as sets (order- and duplicate-insensitive).
-pub fn tags_differ(a: &[String], b: &[String]) -> bool {
-    a.iter().collect::<BTreeSet<_>>() != b.iter().collect::<BTreeSet<_>>()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::strings as tags;
+    use crate::test_support::strings;
+
+    fn tags(tags: &[&str]) -> Tags {
+        strings(tags).into()
+    }
 
     #[test]
     fn push_prefixed_slugs_internal_whitespace() {
-        let mut tags = Vec::new();
-        push_prefixed(&mut tags, "lang:", "Jupyter Notebook");
-        push_prefixed(&mut tags, "x:", "  spaced  out ");
-        push_prefixed(&mut tags, "y:", "   "); // all whitespace → skipped
-        push_prefixed(&mut tags, "", "v"); // empty prefix → skipped
-        assert_eq!(tags, vec!["lang:Jupyter-Notebook", "x:spaced-out"]);
+        let mut tags = Tags::default();
+        tags.push_prefixed("lang:", "Jupyter Notebook");
+        tags.push_prefixed("x:", "  spaced  out ");
+        tags.push_prefixed("y:", "   "); // all whitespace -> skipped
+        tags.push_prefixed("", "v"); // empty prefix -> skipped
+        assert_eq!(tags, ["lang:Jupyter-Notebook", "x:spaced-out"]);
     }
 
     #[test]
     fn push_prefixed_slugs_commas_like_whitespace() {
-        let mut tags = Vec::new();
-        push_prefixed(&mut tags, "f:", "Help, Question");
-        push_prefixed(&mut tags, "g:", "a,,b");
-        push_prefixed(&mut tags, "h:", " , "); // nothing but separators → skipped
-        assert_eq!(tags, vec!["f:Help-Question", "g:a-b"]);
+        let mut tags = Tags::default();
+        tags.push_prefixed("f:", "Help, Question");
+        tags.push_prefixed("g:", "a,,b");
+        tags.push_prefixed("h:", " , "); // nothing but separators -> skipped
+        assert_eq!(tags, ["f:Help-Question", "g:a-b"]);
+    }
+
+    #[test]
+    fn push_skips_a_disabled_tag() {
+        let mut held = Tags::default();
+        held.push("reddit");
+        held.push("");
+        held.push_all(&strings(&["", "x"]));
+        assert_eq!(held, ["reddit", "x"]);
     }
 
     #[test]
     fn extend_unique_skips_empty_and_duplicate_tags() {
         let mut acc = tags(&["reddit"]);
-        // An empty base tag (config `tags = [""]`) must not add a literal "" — stored
+        // An empty base tag (config `tags = [""]`) must not add a literal "" -- stored
         // tags can never contain one, so it would diff against storage forever.
-        extend_unique(&mut acc, &tags(&["", "reddit", "rust"]));
-        assert_eq!(acc, tags(&["reddit", "rust"]));
+        acc.extend_unique(&strings(&["", "reddit", "rust"]));
+        assert_eq!(acc, ["reddit", "rust"]);
     }
 
     #[test]
-    fn tags_differ_is_set_based() {
+    fn differs_from_is_set_based() {
         // A duplicate on one side must not read as a difference.
-        assert!(!tags_differ(
-            &tags(&["reddit"]),
-            &tags(&["reddit", "reddit"])
-        ));
+        assert!(!tags(&["reddit"]).differs_from(&tags(&["reddit", "reddit"])));
         // Order-insensitive.
-        assert!(!tags_differ(&tags(&["a", "b"]), &tags(&["b", "a"])));
+        assert!(!tags(&["a", "b"]).differs_from(&tags(&["b", "a"])));
         // Genuinely different sets still differ.
-        assert!(tags_differ(&tags(&["reddit"]), &tags(&["reddit", "rust"])));
-        assert!(tags_differ(&tags(&["a", "a"]), &tags(&["a", "b"])));
+        assert!(tags(&["reddit"]).differs_from(&tags(&["reddit", "rust"])));
+        assert!(tags(&["a", "a"]).differs_from(&tags(&["a", "b"])));
+    }
+
+    #[test]
+    fn parse_and_joined_round_trip_pinboards_tag_string() {
+        let parsed = Tags::parse("  reddit  subreddit:rust ");
+        assert_eq!(parsed, ["reddit", "subreddit:rust"]);
+        assert_eq!(parsed.joined(), "reddit subreddit:rust");
     }
 }

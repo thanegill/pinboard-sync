@@ -16,7 +16,7 @@ fn the_pinboard_write_pause_is_rate_limit_secs_else_three_seconds() {
 }
 
 /// Override values chosen so each setting is distinct from the others and from the
-/// `Config::default()` globals — so a builder that wires a flag into the *wrong*
+/// `Config::default()` globals -- so a builder that wires a flag into the *wrong*
 /// `SyncJob` field (e.g. `public` into the `read_later` slot) fails the assertions.
 fn wiring_overrides() -> SyncOverrides {
     SyncOverrides {
@@ -101,12 +101,10 @@ fn a_hackernews_job_keys_articles_on_a_configured_reddit_domain_as_reddit() {
     };
     let job = build_job::<HackerNewsAccount>(None, &overrides, &config).expect("builds");
     assert_eq!(
-        job.client
-            .dedup_key(&crate::test_support::url(
-                "https://reddit.mirror.example/r/rust/comments/abc/title/"
-            ))
-            .as_deref(),
-        Some("/r/rust/comments/abc/title")
+        job.client.dedup_key(&crate::test_support::url(
+            "https://reddit.mirror.example/r/rust/comments/abc/title/"
+        )),
+        Some("/r/rust/comments/abc/title".into())
     );
 }
 

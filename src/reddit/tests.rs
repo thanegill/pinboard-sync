@@ -53,7 +53,10 @@ async fn redacts_the_cookie_from_a_logged_or_quoted_body() {
         Some(&test_cookie()),
     ))
     .await;
-    assert!(matches!(result, Err(SourceError::Halted(Halt::Reauth(_)))));
+    assert!(
+        matches!(result, Err(SourceError::Halted(Halt::Reauth(_)))),
+        "{result:?}"
+    );
     let [_, debug] = logs.as_slice() else {
         panic!("expected the size warning and the body, got {logs:?}");
     };
@@ -212,7 +215,10 @@ async fn logs_an_unrecognised_refusal_page_at_debug() {
         Some(&test_cookie()),
     ))
     .await;
-    assert!(matches!(result, Err(SourceError::Halted(Halt::Reauth(_)))));
+    assert!(
+        matches!(result, Err(SourceError::Halted(Halt::Reauth(_)))),
+        "{result:?}"
+    );
     let [warning, debug] = logs.as_slice() else {
         panic!("expected the size warning and the body, got {logs:?}");
     };
@@ -248,7 +254,7 @@ async fn maps_500_to_other() {
     let err = decode_reddit_json::<Sample>(response(500, "boom"), "req", Some(&test_cookie()))
         .await
         .unwrap_err();
-    assert!(matches!(err, SourceError::Other(_)));
+    assert!(matches!(err, SourceError::Other(_)), "{err:?}");
 }
 
 #[tokio::test]
@@ -262,7 +268,7 @@ async fn parses_success_and_reports_bad_json_as_other() {
     let err = decode_reddit_json::<Sample>(response(200, "not json"), "req", Some(&test_cookie()))
         .await
         .unwrap_err();
-    assert!(matches!(err, SourceError::Other(_)));
+    assert!(matches!(err, SourceError::Other(_)), "{err:?}");
 }
 
 fn redirect(location: Option<&str>) -> reqwest::Response {
@@ -310,23 +316,21 @@ async fn maps_any_other_redirect_to_other() {
 
 #[test]
 fn every_entry_point_names_a_bare_cookie() {
-    let configured = |value: &str| {
-        Some(ConfiguredSecret {
-            value: value.into(),
-            source: TEST_COOKIE_SOURCE,
-        })
+    let configured = |value: &str| ConfiguredSecret {
+        value: value.into(),
+        source: TEST_COOKIE_SOURCE,
     };
-    let sent = |client: &RedditClient| client.cookie.as_ref().map(|c| c.header.clone());
+    let sent = |session: &RedditSession| session.cookie.as_ref().map(|c| c.header.clone());
     let named = Some("reddit_session=bare-value".to_string());
-    let sync = RedditClient::for_user(
+    let sync = RedditClient::new(
         "psophis".into(),
-        configured(" bare-value "),
+        Some(configured(" bare-value ")),
         RedditConfig::default(),
     )
     .unwrap();
-    assert_eq!(sent(&sync), named);
-    let cleanup = RedditClient::for_info(configured("bare-value\n")).unwrap();
-    assert_eq!(sent(&cleanup), named);
+    assert_eq!(sent(&sync.session), named);
+    let cleanup = RedditInfoClient::new(configured("bare-value\n")).unwrap();
+    assert_eq!(sent(&cleanup.session), named);
 }
 
 #[tokio::test]
@@ -347,8 +351,9 @@ async fn names_the_cookie_setting_in_every_refusal() {
         assert!(message.contains(source), "{message}");
         assert!(!message.contains("REDDIT_COOKIE"), "{message}");
     }
-    assert!(unnamed_cookie_warning(source).contains(source));
-    assert!(!unnamed_cookie_warning(source).contains("REDDIT_COOKIE"));
+    let warning = unnamed_cookie_warning(source);
+    assert!(warning.contains(source), "{warning}");
+    assert!(!warning.contains("REDDIT_COOKIE"), "{warning}");
 }
 
 #[tokio::test]
@@ -380,7 +385,7 @@ fn a_saved_page_is_caught_up_when_its_saves_are_on_pinboard() {
         )
     };
     let unshapable = listing_entry("t3", serde_json::json!({ "name": "t3_gone" }));
-    let client = RedditClient::with_base_url(None, None, "http://unused.invalid".into());
+    let client = RedditClient::with_base_url(None, "psophis", "http://unused.invalid".into());
     let synced_keys = client.synced_keys(&[
         stored_at("https://www.reddit.com/r/rust/comments/a/x/"),
         stored_at("https://old.reddit.com/r/Rust/comments/b/x/"),
@@ -411,7 +416,7 @@ fn a_mirror_reddit_domain_dedups_against_its_own_and_reddit_com_bookmarks() {
                                 "title": "T" }),
         )
     };
-    let mut client = RedditClient::with_base_url(None, None, "http://unused.invalid".into());
+    let mut client = RedditClient::with_base_url(None, "psophis", "http://unused.invalid".into());
     client.config.domain = "redlib.example.org".into();
     let drafts = client.shape(vec![post("a"), post("b"), post("c")]);
     let existing = [

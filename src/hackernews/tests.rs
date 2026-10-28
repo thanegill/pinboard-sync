@@ -28,7 +28,7 @@ fn a_page_is_caught_up_only_when_it_has_no_new_draft() {
     })
     .collect();
     let client = HackerNewsClient::new("u".into(), HackerNewsConfig::default()).unwrap();
-    let synced_keys: HashSet<String> = [
+    let synced_keys: HashSet<DedupKey> = [
         "https://news.ycombinator.com/item?id=1",
         "https://example.com/two",
         "https://news.ycombinator.com/item?id=3",
@@ -82,7 +82,7 @@ fn story_with_url_bookmarks_the_article_with_hn_link_in_notes() {
 fn story_whose_article_url_is_an_hn_item_keys_on_the_id() {
     // A meta post whose submitted article URL is itself an HN item permalink. The
     // draft is bookmarked at that URL, so its dedup key must match how the stored
-    // bookmark reads back through `HackerNewsClient::dedup_key` (`hn:<id>`) — a
+    // bookmark reads back through `HackerNewsClient::dedup_key` (`hn:<id>`) -- a
     // generic host+path key drops the `id` query and re-adds it every sync.
     let article = "https://news.ycombinator.com/item?id=999";
     let d = item(json!({
@@ -94,7 +94,7 @@ fn story_whose_article_url_is_an_hn_item_keys_on_the_id() {
     assert_eq!(d.bookmark.url.as_str(), article);
     assert_eq!(d.dedup_key, "hn:999");
     let client = HackerNewsClient::new("u".into(), HackerNewsConfig::default()).unwrap();
-    assert_eq!(client.dedup_key(&d.bookmark.url).as_deref(), Some("hn:999"));
+    assert_eq!(client.dedup_key(&d.bookmark.url), Some("hn:999".into()));
 }
 
 #[test]
@@ -113,8 +113,12 @@ fn text_post_without_url_bookmarks_the_hn_permalink() {
     // The bookmark URL is already the HN permalink, so the notes carry only the post
     // text (no redundant `HN Link:`), with the inner HTML converted to Markdown.
     assert_eq!(d.bookmark.note, "<blockquote>details</blockquote>");
-    // Ask HN: → special-type tag.
-    assert!(d.bookmark.tags.contains(&"hackernews:ask-hn".to_string()));
+    // Ask HN: -> special-type tag.
+    assert!(
+        d.bookmark.tags.contains(&"hackernews:ask-hn".to_string()),
+        "{:?}",
+        d.bookmark.tags
+    );
 }
 
 #[test]
@@ -191,11 +195,9 @@ fn into_draft_skips_story_with_unparseable_article_url() {
     // A story whose article URL doesn't parse is dropped rather than producing a
     // draft with no URL. (Comments/text posts use the HN permalink, which always
     // parses, so only article stories can hit this.)
-    assert!(
-        item(json!({ "id": 5, "type": "story", "by": "ann", "url": "not a url" }))
-            .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default())
-            .is_none()
-    );
+    let draft = item(json!({ "id": 5, "type": "story", "by": "ann", "url": "not a url" }))
+        .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default());
+    assert!(draft.is_none(), "{draft:?}");
 }
 
 #[test]
@@ -261,7 +263,7 @@ fn parse_favorite_ids_accepts_empty_list_with_marker() {
     let FavoritesPage::Recognized { ids, more } = parse_favorite_ids(html) else {
         panic!("expected an empty favorites list to be recognized");
     };
-    assert!(ids.is_empty());
+    assert!(ids.is_empty(), "{ids:?}");
     assert_eq!(more, None);
 }
 
@@ -282,21 +284,20 @@ fn hn_item_id_extracts_only_from_hn_item_urls() {
         Url::from(&id).as_str(),
         "https://news.ycombinator.com/item?id=42"
     );
-    assert!(HackerNewsItemId::try_from(&url("https://example.com/item?id=42")).is_err());
-    assert!(HackerNewsItemId::try_from(&url("https://news.ycombinator.com/news")).is_err());
+    HackerNewsItemId::try_from(&url("https://example.com/item?id=42")).unwrap_err();
+    HackerNewsItemId::try_from(&url("https://news.ycombinator.com/news")).unwrap_err();
 }
 
 #[test]
 fn dedup_key_distinguishes_hn_items_from_articles() {
     let c = HackerNewsClient::new("u".into(), HackerNewsConfig::default()).unwrap();
     assert_eq!(
-        c.dedup_key(&url("https://news.ycombinator.com/item?id=42"))
-            .as_deref(),
-        Some("hn:42")
+        c.dedup_key(&url("https://news.ycombinator.com/item?id=42")),
+        Some("hn:42".into())
     );
     assert_eq!(
-        c.dedup_key(&url("https://example.com/x")).as_deref(),
-        Some("example.com/x")
+        c.dedup_key(&url("https://example.com/x")),
+        Some("example.com/x".into())
     );
 }
 
@@ -329,7 +330,7 @@ async fn assert_cleanup_reddit_converges(domain: &str, article: &str, cleaned_ur
         dates: NO_DATING,
         configured: vec![config],
     };
-    run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts)
+    run(&pinboard.cleanup_store(), None::<&FakeReddit>, &opts)
         .await
         .unwrap();
     let cleaned = replay(&synced, &pinboard.ops.borrow());

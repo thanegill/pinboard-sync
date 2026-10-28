@@ -7,12 +7,14 @@ use anyhow::Context;
 use serde::Deserialize;
 use url::Url;
 
-use super::{HackerNewsClient, HackerNewsItem, HackerNewsItemId, HackerNewsItemKind};
+use super::{HackerNewsItem, HackerNewsItemId, HackerNewsItemKind};
 use crate::backup::{RawKind, RawSink};
+use crate::http::RetryingClient;
 use crate::keys::url_key;
 use crate::source::SourceError;
 
-/// Item IDs per Algolia `objectID:… OR …` query. The API rejects very long filter
+const ALGOLIA_BASE: &str = "https://hn.algolia.com";
+/// Item IDs per Algolia `objectID:... OR ...` query. The API rejects very long filter
 /// strings (~200+ clauses), so stay well under that.
 pub(super) const ITEM_BATCH: usize = 100;
 /// The pause before each Algolia item chunk after the first.
@@ -73,16 +75,41 @@ impl TryFrom<AlgoliaHit> for HackerNewsItem {
     }
 }
 
-impl HackerNewsClient {
+/// Reads HN items from the Algolia search API: all `cleanup hackernews` needs, and the
+/// item details `sync` looks favorites up in.
+pub struct AlgoliaClient {
+    http: RetryingClient,
+    /// API base (overridden in tests).
+    base: String,
+}
+
+impl AlgoliaClient {
+    pub fn new() -> anyhow::Result<Self> {
+        Self::build(ALGOLIA_BASE.to_string())
+    }
+
+    pub(super) fn build(base: String) -> anyhow::Result<Self> {
+        Ok(Self {
+            http: super::retrying_client()?,
+            base,
+        })
+    }
+
+    /// Test constructor pointing the API at a mock server.
+    #[cfg(test)]
+    pub(crate) fn with_base_url(base: String) -> Self {
+        Self::build(base).unwrap()
+    }
+
     /// Batch-fetch item details by ID from the Algolia HN search API, keyed by ID.
-    /// IDs are queried in chunks of [`ITEM_BATCH`] via `objectID:… OR …`; items that
+    /// IDs are queried in chunks of [`ITEM_BATCH`] via `objectID:... OR ...`; items that
     /// no longer exist are simply absent from the map.
     pub(super) async fn fetch_items(
         &self,
         ids: &[HackerNewsItemId],
         sink: &mut RawSink,
     ) -> Result<HashMap<HackerNewsItemId, HackerNewsItem>, SourceError> {
-        let endpoint = format!("{}/api/v1/search", self.algolia);
+        let endpoint = format!("{}/api/v1/search", self.base);
         let mut out = HashMap::new();
         for (i, chunk) in ids.chunks(ITEM_BATCH).enumerate() {
             if i > 0 {
@@ -123,7 +150,7 @@ impl HackerNewsClient {
         &self,
         url: &Url,
     ) -> Result<Option<HackerNewsItemId>, SourceError> {
-        let endpoint = format!("{}/api/v1/search", self.algolia);
+        let endpoint = format!("{}/api/v1/search", self.base);
         let resp = self
             .http
             .send("hn algolia url", || {
@@ -176,6 +203,6 @@ mod tests {
     fn a_hit_is_an_item_only_when_its_object_id_is_a_number() {
         let item = HackerNewsItem::try_from(hit("42")).expect("a numeric objectID");
         assert_eq!(item.id, 42);
-        assert!(HackerNewsItem::try_from(hit("story-42")).is_err());
+        HackerNewsItem::try_from(hit("story-42")).unwrap_err();
     }
 }

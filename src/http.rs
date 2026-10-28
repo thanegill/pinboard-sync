@@ -439,9 +439,14 @@ fn retry_after_verdict(
 /// silence by [`READ_TIMEOUT`]. No overall timeout: it would cap a slow but steady
 /// `posts/all`.
 pub fn client_builder() -> reqwest::ClientBuilder {
+    client_builder_with_read_timeout(READ_TIMEOUT)
+}
+
+/// [`client_builder`] with `read_timeout` in place of [`READ_TIMEOUT`], for tests.
+pub(crate) fn client_builder_with_read_timeout(read_timeout: Duration) -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(READ_TIMEOUT)
+        .read_timeout(read_timeout)
         .http2_keep_alive_interval(H2_PING_INTERVAL)
         .http2_keep_alive_timeout(H2_PING_TIMEOUT)
         .http2_keep_alive_while_idle(true)
@@ -481,7 +486,7 @@ impl RetryingClient {
     /// [`ConnectBudget`], which also gives up hosts). Other transport errors (a connection
     /// dropped mid-request, or no response headers within [`READ_TIMEOUT`]), HTTP 429, and
     /// 5xx are retried with linear backoff, `base_delay * n` for up to `max_attempts`
-    /// attempts. Responses that are not transient — 2xx and other 4xx (e.g. 401/403/400) —
+    /// attempts. Responses that are not transient -- 2xx and other 4xx (e.g. 401/403/400) --
     /// are returned as-is for the caller to interpret, since retrying them would not help.
     ///
     /// Only sending is retried: a body that stalls after this returns fails the caller's

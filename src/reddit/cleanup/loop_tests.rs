@@ -1,6 +1,8 @@
 use super::*;
 use crate::source::Halt;
-use crate::test_support::{listing_entry, stored_at, strings, FakePinboard, FakeReddit, NO_DATING};
+use crate::test_support::{
+    listing_entry, stored_at, strings, tag_list, FakePinboard, FakeReddit, NO_DATING,
+};
 use serde_json::json;
 
 fn opts() -> RedditCleanupOpts {
@@ -52,7 +54,7 @@ async fn normalizes_url_tags_nsfw_and_title() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -63,9 +65,21 @@ async fn normalizes_url_tags_nsfw_and_title() {
         "https://old.reddit.com/r/NEWS/comments/abc/x/"
     );
     assert_eq!(updated[0].description, "Real Title");
-    assert!(updated[0].tags.contains(&"reddit".to_string()));
-    assert!(updated[0].tags.contains(&"subreddit:news".to_string()));
-    assert!(updated[0].tags.contains(&"nsfw".to_string()));
+    assert!(
+        updated[0].tags.contains(&"reddit".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"subreddit:news".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        updated[0].tags.contains(&"nsfw".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
     // Notes, privacy, to-read, and the original creation time are preserved.
     assert_eq!(updated[0].extended, "original notes");
     assert!(updated[0].shared);
@@ -109,14 +123,22 @@ async fn marks_nsfw_with_configured_tag_not_literal_nsfw() {
         ..opts()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap();
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
-    assert!(updated[0].tags.contains(&"adult".to_string()));
-    assert!(!updated[0].tags.contains(&"nsfw".to_string()));
+    assert!(
+        updated[0].tags.contains(&"adult".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
+    assert!(
+        !updated[0].tags.contains(&"nsfw".to_string()),
+        "{:?}",
+        updated[0].tags
+    );
 }
 
 #[tokio::test]
@@ -139,7 +161,7 @@ async fn a_fixed_title_is_the_raw_api_title() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -178,17 +200,21 @@ async fn configured_nsfw_tag_is_idempotent() {
         ..opts()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap();
 
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 #[tokio::test]
 async fn preserves_markup_in_stored_title() {
     // A non-placeholder stored title carrying angle brackets / tag-like text is kept
-    // verbatim through cleanup, not stripped as HTML — the deliberate tradeoff of
+    // verbatim through cleanup, not stripped as HTML -- the deliberate tradeoff of
     // treating every title as plain text. The www host still forces a rewrite so an
     // update is emitted.
     let pinboard = FakePinboard {
@@ -200,7 +226,7 @@ async fn preserves_markup_in_stored_title() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts())
+    run(&pinboard.cleanup_store(), None::<&FakeReddit>, &opts())
         .await
         .unwrap();
 
@@ -230,11 +256,15 @@ async fn keeps_entity_text_in_a_stored_title() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), None::<&FakeReddit>, &opts())
+    run(&pinboard.cleanup_store(), None::<&FakeReddit>, &opts())
         .await
         .unwrap();
 
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 #[tokio::test]
@@ -265,7 +295,7 @@ async fn dates_bookmark_by_created_utc_when_use_post_date() {
         ..opts()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap();
 
@@ -287,7 +317,7 @@ async fn strips_self_link_notes_from_a_self_post() {
         all: vec![Bookmark {
             title: "A real title".into(),
             note: "https://www.reddit.com/r/rust/comments/a/x/".into(),
-            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            tags: tag_list(&["reddit", "subreddit:rust"]),
             timestamp: crate::timefmt::parse_rfc3339("2023-11-14T22:13:20Z"),
             ..stored_at("https://old.reddit.com/r/rust/comments/a/x/")
         }],
@@ -300,7 +330,7 @@ async fn strips_self_link_notes_from_a_self_post() {
     };
 
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         Some(&FakeReddit::default()),
         &opts,
     )
@@ -311,18 +341,22 @@ async fn strips_self_link_notes_from_a_self_post() {
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].extended, "");
     // URL was already normalized, so nothing is deleted.
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
 async fn keeps_external_link_notes_on_a_link_post() {
-    // A link post's notes hold the external URL — not the bookmark's own
-    // permalink — so cleanup must preserve them while rewriting the host.
+    // A link post's notes hold the external URL -- not the bookmark's own
+    // permalink -- so cleanup must preserve them while rewriting the host.
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "A real title".into(),
             note: "https://example.com/article".into(),
-            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            tags: tag_list(&["reddit", "subreddit:rust"]),
             timestamp: crate::timefmt::parse_rfc3339("2023-11-14T22:13:20Z"),
             ..stored_at("https://www.reddit.com/r/rust/comments/b/y/")
         }],
@@ -335,7 +369,7 @@ async fn keeps_external_link_notes_on_a_link_post() {
     };
 
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         Some(&FakeReddit::default()),
         &opts,
     )
@@ -360,7 +394,7 @@ async fn retrofits_self_post_notes_with_blockquote() {
         all: vec![Bookmark {
             title: "A real title".into(),
             note: "the body text".into(), // pre-blockquote notes
-            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            tags: tag_list(&["reddit", "subreddit:rust"]),
             ..stored_at("https://old.reddit.com/r/rust/comments/a/x/")
         }],
         ..Default::default()
@@ -375,7 +409,7 @@ async fn retrofits_self_post_notes_with_blockquote() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -386,7 +420,11 @@ async fn retrofits_self_post_notes_with_blockquote() {
         "<blockquote>the body text</blockquote>"
     );
     // Notes-only change: URL unchanged, so nothing is deleted.
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -399,7 +437,7 @@ async fn preserves_hand_written_note_on_a_self_post() {
         all: vec![Bookmark {
             title: "A real title".into(),
             note: "my own thoughts -- revisit this later".into(),
-            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            tags: tag_list(&["reddit", "subreddit:rust"]),
             ..stored_at("https://www.reddit.com/r/rust/comments/a/x/")
         }],
         ..Default::default()
@@ -414,7 +452,7 @@ async fn preserves_hand_written_note_on_a_self_post() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -431,7 +469,7 @@ async fn retrofits_empty_note_from_authoritative_selftext() {
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "A real title".into(),
-            tags: vec!["reddit".into(), "subreddit:rust".into()],
+            tags: tag_list(&["reddit", "subreddit:rust"]),
             ..stored_at("https://www.reddit.com/r/rust/comments/a/x/")
         }],
         ..Default::default()
@@ -446,7 +484,7 @@ async fn retrofits_empty_note_from_authoritative_selftext() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -461,18 +499,14 @@ async fn retrofits_empty_note_from_authoritative_selftext() {
 #[tokio::test]
 async fn leaves_comment_notes_untouched() {
     // A comment bookmark: /api/info only returns the parent *post* (post_fullname keys
-    // by t3), never the comment body, so the comment's notes must be left as-is — the
+    // by t3), never the comment body, so the comment's notes must be left as-is -- the
     // post's selftext must not leak into the comment's notes.
     let stored = "Thread: https://old.reddit.com/r/rust/comments/a/x/\n\nmy comment";
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "Parent title".into(),
             note: stored.into(),
-            tags: vec![
-                "reddit".into(),
-                "subreddit:rust".into(),
-                "reddit-comment".into(),
-            ],
+            tags: tag_list(&["reddit", "subreddit:rust", "reddit-comment"]),
             ..stored_at("https://old.reddit.com/r/rust/comments/a/x/c/")
         }],
         ..Default::default()
@@ -487,28 +521,28 @@ async fn leaves_comment_notes_untouched() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
     // Nothing changed (notes preserved, URL/title/tags already current), so no write.
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 #[tokio::test]
 async fn use_post_date_leaves_comment_timestamp_untouched() {
     // A comment bookmark under `use_post_date`: /api/info is keyed by the parent post
-    // (post_fullname → t3), so its `created_utc` is the *thread* creation time, not the
-    // comment's. That must not be applied to the comment — its stored date stays.
+    // (post_fullname -> t3), so its `created_utc` is the *thread* creation time, not the
+    // comment's. That must not be applied to the comment -- its stored date stays.
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "Parent title".into(),
             note: "my comment note".into(),
-            tags: vec![
-                "reddit".into(),
-                "subreddit:rust".into(),
-                "reddit-comment".into(),
-            ],
+            tags: tag_list(&["reddit", "subreddit:rust", "reddit-comment"]),
             timestamp: crate::timefmt::parse_rfc3339("2019-01-01T00:00:00Z"),
             ..stored_at("https://old.reddit.com/r/rust/comments/a/x/c/")
         }],
@@ -530,13 +564,17 @@ async fn use_post_date_leaves_comment_timestamp_untouched() {
         ..opts()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap();
 
     // Only the date could have changed, and the fix keeps the comment's own date, so
     // nothing is written. Without the guard the thread's created_utc would leak in.
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 #[tokio::test]
@@ -562,11 +600,19 @@ async fn skips_unchanged_and_non_reddit() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -589,7 +635,7 @@ async fn bookmarks_moved_to_a_mirror_domain_still_dedup_for_sync() {
         ..opts()
     };
     run(
-        &pinboard.cleanup_store(false),
+        &pinboard.cleanup_store(),
         Some(&FakeReddit::default()),
         &opts,
     )
@@ -601,7 +647,8 @@ async fn bookmarks_moved_to_a_mirror_domain_still_dedup_for_sync() {
         "https://redlib.example.org/r/rust/comments/a/x/"
     );
 
-    let mut client = crate::reddit::RedditClient::with_base_url(None, None, "http://unused".into());
+    let mut client =
+        crate::reddit::RedditClient::with_base_url(None, "psophis", "http://unused".into());
     client.config = mirror;
     let saved = listing_entry(
         "t3",
@@ -661,7 +708,7 @@ async fn cleanup_running(
         configured: accounts.to_vec(),
         ..opts()
     };
-    run(&pinboard.cleanup_store(false), Some(reddit), &opts)
+    run(&pinboard.cleanup_store(), Some(reddit), &opts)
         .await
         .unwrap();
     let ops = pinboard.ops.borrow();
@@ -882,10 +929,7 @@ async fn a_comment_tag_named_like_the_subreddit_settles_between_accounts_on_one_
         ),
     ];
     let account = settled_by_turns(&accounts, &FakeReddit::default(), &seed).await;
-    let tags: Vec<&[String]> = account
-        .iter()
-        .map(|bookmark| bookmark.tags.as_slice())
-        .collect();
+    let tags: Vec<&[String]> = account.iter().map(|bookmark| &bookmark.tags[..]).collect();
     assert_eq!(
         tags,
         [
@@ -943,11 +987,19 @@ async fn dry_run_writes_nothing() {
         fix_titles: false,
         ..opts()
     };
-    run(&pinboard.cleanup_store(true), Some(&reddit), &opts)
+    run(&pinboard.dry_cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap();
-    assert!(pinboard.updated.borrow().is_empty());
-    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    assert!(
+        pinboard.deleted.borrow().is_empty(),
+        "{:?}",
+        pinboard.deleted.borrow()
+    );
 }
 
 #[tokio::test]
@@ -968,7 +1020,7 @@ async fn an_expired_cookie_surfaces_as_reauth_not_a_flattened_error() {
         ..Default::default()
     };
 
-    let err = run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    let err = run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap_err();
     assert!(
@@ -994,7 +1046,7 @@ async fn an_api_info_block_stays_a_block() {
         ..Default::default()
     };
 
-    let err = run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    let err = run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap_err();
     assert!(
@@ -1024,10 +1076,10 @@ async fn logs_and_skips_a_failing_update_then_continues() {
     };
 
     // The run reports failure (non-zero exit)...
-    let err = run(&pinboard.cleanup_store(false), Some(&reddit), &opts)
+    let err = run(&pinboard.cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("1 bookmark(s) failed"));
+    assert!(err.to_string().contains("1 bookmark(s) failed"), "{err}");
     // ...but the second bookmark was still updated despite the first failing.
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1104,7 +1156,7 @@ async fn plans_the_tags_sync_writes_for_each_tag_config() {
             let mut want = synced.tags.clone();
             want.sort();
 
-            for stored_tags in [vec![], synced.tags.clone()] {
+            for stored_tags in [Tags::default(), synced.tags.clone()] {
                 let stored = Bookmark {
                     tags: stored_tags.clone(),
                     ..synced.clone()
@@ -1156,7 +1208,7 @@ async fn backfills_a_detail_tag_only_when_its_family_is_absent() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
@@ -1234,11 +1286,15 @@ async fn a_comment_missing_from_the_lookup_adds_nothing_and_does_not_fail() {
         ..Default::default()
     };
 
-    run(&pinboard.cleanup_store(false), Some(&reddit), &opts())
+    run(&pinboard.cleanup_store(), Some(&reddit), &opts())
         .await
         .unwrap();
 
-    assert!(pinboard.updated.borrow().is_empty());
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
 }
 
 /// One cleanup run over `seed`, returning how many bookmarks it wrote and the account as
@@ -1253,9 +1309,7 @@ async fn run_and_store(
         all: seed.clone(),
         ..Default::default()
     };
-    run(&pinboard.cleanup_store(false), reddit, opts)
-        .await
-        .unwrap();
+    run(&pinboard.cleanup_store(), reddit, opts).await.unwrap();
     let mut stored = crate::test_support::replay(&seed, &pinboard.ops.borrow());
     for bookmark in &mut stored {
         bookmark.tags = bookmark

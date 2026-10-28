@@ -5,11 +5,11 @@ use url::Url;
 
 use super::Member;
 use crate::bookmark::Bookmark;
-use crate::tags::extend_unique;
+use crate::tags::Tags;
 
 /// The index within `members` of the group's *incumbent*: the member whose stored URL is
 /// already the group's target. It is the record that stays at that URL, so it plays the
-/// same role a resident does — its plan leads the merge, and its own reading state and date
+/// same role a resident does -- its plan leads the merge, and its own reading state and date
 /// survive the merge's field rules. A resident is by definition unplanned, so a group has
 /// at most one of the two, and being inside the pass's slice is an implementation detail
 /// that must not decide whether a bookmark is protected.
@@ -21,26 +21,26 @@ pub(super) fn incumbent_of(members: &[Member<'_>], target: &Url) -> Option<usize
 
 /// Field-merge the PLANNED bookmarks of a collision group, `lead` then `rest` (all sharing
 /// `lead`'s URL, in stable order), into one bookmark. Tags are an order-preserving union
-/// (first occurrence wins, case-sensitive, empty tags dropped as by `extend_unique`); the
-/// note is `lead`'s verbatim, extended with whichever blank-line-separated blocks of the
-/// rest it doesn't already hold; title is the first non-empty; timestamp the earliest
+/// (first occurrence wins, case-sensitive, empty tags dropped as by `Tags::extend_unique`);
+/// the note is `lead`'s verbatim, extended with whichever blank-line-separated blocks of
+/// the rest it doesn't already hold; title is the first non-empty; timestamp the earliest
 /// present. Privacy never widens: the merge is `public` only if every merged member is
-/// public (a single private member keeps it private), and `read_later` if any member is,
-/// so a merge can never republish a private bookmark as public.
+/// public (a single private member keeps it private), and `read_later` if any member is, so
+/// a merge can never republish a private bookmark as public.
 pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
     let group = || std::iter::once(lead).chain(rest.iter().copied());
     let url = lead.url.clone();
 
-    let mut tags: Vec<String> = Vec::new();
+    let mut tags = Tags::default();
     for b in group() {
-        extend_unique(&mut tags, &b.tags);
+        tags.extend_unique(&b.tags);
     }
 
     // The first member's note is the base, carried byte for byte: it is the record that
     // stays, and its spacing is the user's. Later members contribute only the
     // blank-line-separated blocks the base doesn't already have. Blocks are compared
     // trimmed so re-merging an already-merged note is a no-op even when the base ends in a
-    // newline, which otherwise re-splits as a block the plain comparison can't recognise —
+    // newline, which otherwise re-splits as a block the plain comparison can't recognise --
     // and any group whose old URL is never absorbed re-merges every run. A note long enough
     // that `PinboardClient::fit_extended` trims it comes back as a fragment no block
     // matches, so the cut blocks are re-appended here; the driver fits the merged record
@@ -84,13 +84,13 @@ pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{stored_at, strings, url as u};
+    use crate::test_support::{stored_at, strings, tag_list, url as u};
 
     fn bookmark(url: &str) -> Bookmark {
         Bookmark {
             title: "Title".into(),
             note: "notes".into(),
-            tags: vec!["a".into(), "b".into()],
+            tags: tag_list(&["a", "b"]),
             timestamp: crate::timefmt::from_unix(1_577_836_800), // 2020-01-01T00:00:00Z
             ..stored_at(url)
         }
@@ -138,7 +138,7 @@ mod tests {
     fn merge_bookmarks_keeps_a_later_members_block_verbatim() {
         // Carrying the first member's note byte for byte is only half of it: an absorbed
         // member's blocks are the user's writing too. Comparing them trimmed is what makes
-        // re-merging settle, but appending them trimmed dedents a Markdown code block —
+        // re-merging settle, but appending them trimmed dedents a Markdown code block --
         // Pinboard renders notes as markup, so that changes what the note says.
         let mut resident = bookmark("https://t/");
         resident.note = "A".into();
@@ -172,9 +172,9 @@ mod tests {
         // Pinboard treats tags case-sensitively, so `Rust` and `rust` are two tags and the
         // union must keep both. Folding them would silently drop one of the user's.
         let mut first = bookmark("https://t/");
-        first.tags = vec!["Rust".into()];
+        first.tags = tag_list(&["Rust"]);
         let mut second = bookmark("https://t/");
-        second.tags = vec!["rust".into(), "Rust".into()];
+        second.tags = tag_list(&["rust", "Rust"]);
 
         assert_eq!(
             merge_bookmarks(&first, &[&second]).tags,
@@ -185,9 +185,9 @@ mod tests {
     #[test]
     fn merge_bookmarks_drops_an_empty_planned_tag() {
         let mut first = bookmark("https://t/");
-        first.tags = vec![String::new(), "a".into()];
+        first.tags = tag_list(&["", "a"]);
         let mut second = bookmark("https://t/");
-        second.tags = vec!["b".into(), String::new()];
+        second.tags = tag_list(&["b", ""]);
 
         assert_eq!(
             merge_bookmarks(&first, &[&second]).tags,
@@ -215,7 +215,7 @@ mod tests {
             url: u("https://collide/"),
             title: String::new(),
             note: "from A".into(),
-            tags: vec!["x".into(), "shared".into()],
+            tags: tag_list(&["x", "shared"]),
             timestamp: ts_late,
             public: false,
             read_later: true,
@@ -224,7 +224,7 @@ mod tests {
             url: u("https://collide/"),
             title: "Title B".into(),
             note: "from B".into(),
-            tags: vec!["shared".into(), "y".into()],
+            tags: tag_list(&["shared", "y"]),
             timestamp: ts_early,
             public: true,
             read_later: false,
@@ -234,7 +234,7 @@ mod tests {
             title: "Title C".into(),
             // A duplicate of B's note must not be repeated in the join.
             note: "from B".into(),
-            tags: vec!["z".into()],
+            tags: tag_list(&["z"]),
             timestamp: None,
             public: false,
             read_later: false,

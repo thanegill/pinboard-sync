@@ -18,7 +18,7 @@ fn headers(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
 
 #[test]
 fn retry_after_as_a_date_is_not_rendered_as_seconds() {
-    // RFC 7231 allows an HTTP-date, which must not be suffixed into "…GMTs".
+    // RFC 7231 allows an HTTP-date, which must not be suffixed into "...GMTs".
     let message = rate_limit_message(
         reqwest::StatusCode::TOO_MANY_REQUESTS,
         &headers(&[("retry-after", "Sun, 30 Aug 2026 15:00:00 GMT")]),
@@ -179,9 +179,9 @@ fn a_star_is_dated_in_utc_at_whole_seconds() {
 #[test]
 fn into_draft_skips_repo_with_unparseable_url() {
     // A repo whose `html_url` doesn't parse is dropped rather than producing a draft.
-    assert!(repo(json!({ "full_name": "o/r", "html_url": "not a url" }))
-        .into_draft(&GitHubConfig::default())
-        .is_none());
+    let draft = repo(json!({ "full_name": "o/r", "html_url": "not a url" }))
+        .into_draft(&GitHubConfig::default());
+    assert!(draft.is_none(), "{draft:?}");
 }
 
 #[test]
@@ -225,7 +225,7 @@ fn draft_without_description_or_language() {
     }))
     .into_draft(&GitHubConfig::default())
     .unwrap();
-    // Missing description falls back to the URL; no language → no lang tag.
+    // Missing description falls back to the URL; no language -> no lang tag.
     assert_eq!(d.bookmark.note, "https://github.com/o/r");
     assert_eq!(d.bookmark.tags, vec!["github-star", "author:github:o"]);
 }
@@ -331,20 +331,19 @@ fn dedup_key_only_matches_github() {
     let c =
         GitHubClient::with_base_url("t".into(), GitHubConfig::default(), GITHUB_API_BASE.into());
     assert_eq!(
-        c.dedup_key(&url("https://github.com/o/r")).as_deref(),
-        Some("github.com/o/r")
+        c.dedup_key(&url("https://github.com/o/r")),
+        Some("github.com/o/r".into())
     );
-    assert!(c.dedup_key(&url("https://example.com/o/r")).is_none());
+    assert_eq!(c.dedup_key(&url("https://example.com/o/r")), None);
     // The www. alias folds onto the bare host so it dedups against a github.com
     // star with the same owner/repo.
     assert_eq!(
-        c.dedup_key(&url("https://www.github.com/o/r")).as_deref(),
-        Some("github.com/o/r")
+        c.dedup_key(&url("https://www.github.com/o/r")),
+        Some("github.com/o/r".into())
     );
     // Other subdomains keep their own host in the key (they are not repo stars).
     assert_eq!(
-        c.dedup_key(&url("https://gist.github.com/user/abcd1234"))
-            .as_deref(),
-        Some("gist.github.com/user/abcd1234")
+        c.dedup_key(&url("https://gist.github.com/user/abcd1234")),
+        Some("gist.github.com/user/abcd1234".into())
     );
 }

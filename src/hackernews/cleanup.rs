@@ -8,16 +8,13 @@ use anyhow::anyhow;
 use log::debug;
 use url::Url;
 
-use super::{
-    HackerNewsClient, HackerNewsConfig, HackerNewsItem, HackerNewsItemId, ALGOLIA_BASE, HN_BASE,
-};
+use super::{AlgoliaClient, HackerNewsConfig, HackerNewsItem, HackerNewsItemId};
 use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, PassOutcome, Plan};
 use crate::htmltext::collapse_whitespace;
 use crate::keys::HackerNewsKeys;
 use crate::source::SourceError;
-use crate::tags::extend_unique;
 use crate::timefmt::DateOpts;
 
 /// The `cleanup hackernews` choices that are not account settings. The default, which
@@ -35,19 +32,8 @@ pub struct HackerNewsCleanupOpts {
     pub link_discussions: bool,
     /// Whether and how to re-date bookmarks by the source item's creation time.
     pub dates: DateOpts,
-}
-
-impl HackerNewsClient {
-    /// Client for `cleanup hackernews`: only the Algolia API is used (no favorites
-    /// scraping), so no username is needed.
-    pub fn for_cleanup(config: HackerNewsConfig) -> anyhow::Result<Self> {
-        Self::build(
-            String::new(),
-            config,
-            HN_BASE.to_string(),
-            ALGOLIA_BASE.to_string(),
-        )
-    }
+    /// The account's tag vocabulary `sync` writes with, and the `link_tag` marker.
+    pub config: HackerNewsConfig,
 }
 
 /// Normalize existing `news.ycombinator.com/item?id=*` bookmarks: re-fetch each item and
@@ -55,7 +41,7 @@ impl HackerNewsClient {
 /// comments/text posts update in place), preserving existing tags and the creation time.
 pub async fn run<S: BookmarkStore + AccountState>(
     store: &S,
-    client: &HackerNewsClient,
+    client: &AlgoliaClient,
     opts: &HackerNewsCleanupOpts,
 ) -> Result<(), SourceError> {
     // Taken from the run's live view, so an earlier source's writes are already
@@ -75,13 +61,13 @@ pub async fn run<S: BookmarkStore + AccountState>(
 
     let pass = HackerNewsCleanupPass {
         items,
-        config: &client.config,
+        config: &opts.config,
     };
     let items = run_pass(store, &hackernews_bookmarks, "HN", opts.dates, &pass).await;
 
     // Each pass reaches its own verdict. Merging the tallies first would let this
-    // pass's bookmarks — which are planned from prefetched items and so can never
-    // fail — vouch for the discussion lookups, which are the only per-item network
+    // pass's bookmarks -- which are planned from prefetched items and so can never
+    // fail -- vouch for the discussion lookups, which are the only per-item network
     // calls here and can fail on their own.
     // Its candidates come from the view *after* the item pass wrote, so a bookmark that
     // pass merged is re-planned from the merged record rather than from a stale copy.
@@ -112,7 +98,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
 /// it issues one Algolia query per tagged bookmark.
 async fn link_discussions<S: BookmarkStore + AccountState>(
     store: &S,
-    client: &HackerNewsClient,
+    client: &AlgoliaClient,
     opts: &HackerNewsCleanupOpts,
 ) -> PassOutcome {
     // Read after the item pass, so a bookmark it merged into is seen as it now stands.
@@ -123,17 +109,14 @@ async fn link_discussions<S: BookmarkStore + AccountState>(
         .into_iter()
         .filter(|bookmark| {
             HackerNewsItemId::try_from(&bookmark.url).is_err()
-                && bookmark.tags.contains(&client.config.link_tag)
+                && bookmark.tags.contains(&opts.config.link_tag)
         })
         .collect();
-    run_pass(
-        store,
-        &candidates,
-        "HN discussion",
-        opts.dates,
-        &HackerNewsLinkPass { client },
-    )
-    .await
+    let pass = HackerNewsLinkPass {
+        client,
+        config: &opts.config,
+    };
+    run_pass(store, &candidates, "HN discussion", opts.dates, &pass).await
 }
 
 /// The HN item id referenced by a note's `HN Link: <url>` back-link marker, if the note
@@ -206,7 +189,7 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
             return Ok(Plan::Skipped);
         };
         let mut tags = bookmark.tags.clone();
-        extend_unique(&mut tags, &new.tags);
+        tags.extend_unique(&new.tags);
         new.tags = tags;
         new.public = bookmark.public;
         new.read_later = bookmark.read_later;
@@ -229,16 +212,17 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
 
 /// Links one `link_tag`-tagged article bookmark to its HN discussion: look it up by URL,
 /// add an `HN Link:` line to the notes, and swap the marker tag for the base HN tags.
-/// Always in-place — the URL is unchanged and the planned `timestamp` is `None`, so the
+/// Always in-place -- the URL is unchanged and the planned `timestamp` is `None`, so the
 /// driver preserves the stored date regardless of the dating policy.
 struct HackerNewsLinkPass<'a> {
-    client: &'a HackerNewsClient,
+    client: &'a AlgoliaClient,
+    config: &'a HackerNewsConfig,
 }
 
 impl CleanupPass for HackerNewsLinkPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
-        // Unlike the other passes' early exits, this one is an *answer* from Algolia —
-        // the search ran and the article simply has no discussion — so it counts as
+        // Unlike the other passes' early exits, this one is an *answer* from Algolia --
+        // the search ran and the article simply has no discussion -- so it counts as
         // having reached the source.
         let Some(id) = self.client.search_by_url(&bookmark.url).await? else {
             return Ok(Plan::Unchanged);
@@ -250,20 +234,16 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
         let title = collapse_whitespace(&bookmark.title, " ");
 
         // Drop the marker tag, add the base HN tags.
-        let mut tags: Vec<String> = bookmark
-            .tags
-            .iter()
-            .filter(|t| **t != self.client.config.link_tag)
-            .cloned()
-            .collect();
-        extend_unique(&mut tags, &self.client.config.tags);
+        let mut tags = bookmark.tags.clone();
+        tags.retain(|t| *t != self.config.link_tag);
+        tags.extend_unique(&self.config.tags);
 
         Ok(Plan::Bookmark(Bookmark {
             url: bookmark.url.clone(),
             title,
             note,
             tags,
-            // No candidate source time — the driver preserves the stored time.
+            // No candidate source time -- the driver preserves the stored time.
             timestamp: None,
             public: bookmark.public,
             read_later: bookmark.read_later,
@@ -274,7 +254,7 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::stored_at;
+    use crate::test_support::{stored_at, tag_list};
     use serde_json::json;
 
     fn item(value: serde_json::Value) -> HackerNewsItem {
@@ -327,7 +307,7 @@ mod tests {
         let stored = Bookmark {
             title: "old title".into(),
             note: "my own thoughts on this".into(),
-            tags: vec!["mine".into()],
+            tags: tag_list(&["mine"]),
             ..stored_at("https://news.ycombinator.com/item?id=42")
         };
         let items = story_pass_items();
@@ -347,8 +327,16 @@ mod tests {
         // The re-derived url/title still apply and the base tags still merge in.
         assert_eq!(planned.url.as_str(), "https://example.com/x");
         assert_eq!(planned.title, "Cool thing");
-        assert!(planned.tags.contains(&"mine".to_string()));
-        assert!(planned.tags.contains(&"hackernews".to_string()));
+        assert!(
+            planned.tags.contains(&"mine".to_string()),
+            "{:?}",
+            planned.tags
+        );
+        assert!(
+            planned.tags.contains(&"hackernews".to_string()),
+            "{:?}",
+            planned.tags
+        );
     }
 
     #[tokio::test]
@@ -380,7 +368,7 @@ mod tests {
         let stored = Bookmark {
             title: "old title".into(),
             note: "my note\n\nHN Link: https://news.ycombinator.com/item?id=42".into(),
-            tags: vec!["mine".into()],
+            tags: tag_list(&["mine"]),
             ..stored_at("https://news.ycombinator.com/item?id=42")
         };
         let items = story_pass_items();
@@ -408,7 +396,7 @@ mod tests {
         let stored = Bookmark {
             title: "Meta post".into(),
             note: "HN Link: https://news.ycombinator.com/item?id=42".into(),
-            tags: vec!["hackernews".into()],
+            tags: tag_list(&["hackernews"]),
             ..stored_at("https://news.ycombinator.com/item?id=999")
         };
         // The fetched item 999 is a *different* item (an external article) that a
@@ -435,7 +423,7 @@ mod tests {
     async fn plan_uses_generated_note_when_stored_note_empty() {
         let stored = Bookmark {
             title: "old title".into(),
-            tags: vec!["mine".into()],
+            tags: tag_list(&["mine"]),
             ..stored_at("https://news.ycombinator.com/item?id=42")
         };
         let items = story_pass_items();

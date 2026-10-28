@@ -12,11 +12,11 @@ use log::warn;
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::tags::tags_differ;
+use crate::tags::Tags;
 
 /// A bookmark in service-agnostic domain form. The field names are the domain's
 /// (`title`/`note`/`public`/`read_later`), not Pinboard's wire names
-/// (`description`/`extended`/`shared`/`toread` — those stay on
+/// (`description`/`extended`/`shared`/`toread` -- those stay on
 /// [`PinboardBookmark`](crate::pinboard::PinboardBookmark)). The
 /// URL is a parsed [`Url`], so consumers don't re-parse it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +24,7 @@ pub struct Bookmark {
     pub url: Url,
     pub title: String,
     pub note: String,
-    pub tags: Vec<String>,
+    pub tags: Tags,
     /// Creation time, or `None` when none was set (an empty wire `time`) or a non-empty
     /// `time` that won't parse (logged on read). It stays `None` rather than dropping the
     /// whole bookmark so the record remains visible to sync's dedup set (see the `TryFrom`
@@ -39,12 +39,12 @@ pub struct Bookmark {
 impl Bookmark {
     /// The written fields where `new` differs from `self` (the stored bookmark), each as a
     /// `(label, rendered new value)` pair for the cleanup dry-run. Empty when nothing a
-    /// write would change differs — so `cleanup` skips the bookmark. `timestamp` compares
+    /// write would change differs -- so `cleanup` skips the bookmark. `timestamp` compares
     /// by instant (a re-formatted but equivalent time isn't a change). The `public` and
     /// `read_later` flags are not compared, because on the paths that call this they cannot
     /// differ, though for different reasons. A single plan carries the stored values,
-    /// forced there before diffing. In a merge, `public` is enforced — a member that
-    /// disagrees with the record staying at the target is refused and never joins — while
+    /// forced there before diffing. In a merge, `public` is enforced -- a member that
+    /// disagrees with the record staying at the target is refused and never joins -- while
     /// `read_later` is *restored* from that record afterwards, because members are free to
     /// disagree about it and the merge's any()-rule would otherwise flip it on. See
     /// `cleanup_pass::hold_back_visibility_mismatches` and `cleanup_pass::write_merge`.
@@ -64,8 +64,8 @@ impl Bookmark {
             };
             changes.push(("notes", value));
         }
-        if tags_differ(&self.tags, &new.tags) {
-            changes.push(("tags", format!("[{}]", new.tags.join(" "))));
+        if self.tags.differs_from(&new.tags) {
+            changes.push(("tags", format!("[{}]", new.tags.joined())));
         }
         if new.timestamp != self.timestamp {
             let value = new
@@ -162,7 +162,7 @@ pub trait BookmarkStore {
 pub struct WriteOutcome {
     /// The record was written to its URL.
     pub wrote: bool,
-    /// URLs the store confirmed it removed — a subset of those asked for.
+    /// URLs the store confirmed it removed -- a subset of those asked for.
     pub deleted: Vec<Url>,
     /// The first failure, if any. Later deletes are still attempted.
     pub error: Option<anyhow::Error>,
@@ -187,7 +187,7 @@ impl WriteOutcome {
         match result {
             Ok(()) => self.deleted.push(url.clone()),
             Err(e) => {
-                // Only the first error is carried out, since the caller reports one — but
+                // Only the first error is carried out, since the caller reports one -- but
                 // the later ones are separate failures with their own causes, so log them
                 // here rather than letting them vanish.
                 if self.error.is_none() {
@@ -201,8 +201,8 @@ impl WriteOutcome {
 }
 
 /// The account as a run currently believes it to be: seeded once from `posts/all` and
-/// updated as passes write and delete, so a later pass never plans against — or merges
-/// with — a record an earlier one already changed.
+/// updated as passes write and delete, so a later pass never plans against -- or merges
+/// with -- a record an earlier one already changed.
 ///
 /// `cleanup --all` fetches `posts/all` once and runs github, then reddit, then
 /// hackernews, each of which writes; a plain snapshot leaves the later two reasoning
@@ -266,6 +266,28 @@ impl AccountView {
     }
 }
 
+/// Whether a run writes, or only previews what it would write (`--dry-run`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteMode {
+    Live,
+    DryRun,
+}
+
+impl WriteMode {
+    /// The mode set by `--dry-run`, given before the subcommand, after it, or both.
+    pub fn from_flags(before: bool, after: bool) -> Self {
+        if before || after {
+            WriteMode::DryRun
+        } else {
+            WriteMode::Live
+        }
+    }
+
+    pub fn is_dry_run(self) -> bool {
+        self == WriteMode::DryRun
+    }
+}
+
 /// The cleanup driver's read side of the account. Separate from [`BookmarkStore`] because
 /// only the driver needs it, and it must answer from the run's live view rather than a
 /// fetch. `dry_run` lives here rather than being passed alongside so the driver's preview
@@ -282,7 +304,7 @@ pub trait AccountState {
 /// A [`BookmarkStore`] that keeps an [`AccountView`] in step with what it writes.
 ///
 /// Every write goes through here, so there is no separate bookkeeping call for a caller
-/// to forget — and because [`BookmarkStore::apply_update`] and
+/// to forget -- and because [`BookmarkStore::apply_update`] and
 /// [`BookmarkStore::apply_merge`] are default methods built from `update` and `delete`,
 /// intercepting just those two covers both.
 ///
@@ -296,11 +318,11 @@ pub struct CleanupStore<'a, P> {
 }
 
 impl<'a, P: BookmarkStore> CleanupStore<'a, P> {
-    pub fn new(inner: &'a P, view: AccountView, dry_run: bool) -> Self {
+    pub fn new(inner: &'a P, view: AccountView, mode: WriteMode) -> Self {
         Self {
             inner,
             view: std::cell::RefCell::new(view),
-            dry_run,
+            dry_run: mode.is_dry_run(),
         }
     }
 }

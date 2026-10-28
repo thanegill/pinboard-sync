@@ -156,15 +156,21 @@ pub(crate) fn repo_path<'a>(
 /// leaves no name, or a dot segment (`.` or `..`, raw or percent-encoded), which a URL
 /// parser drops, so a URL built from it names the owner or the site rather than a repo.
 fn repo_name(segment: &str) -> Option<&str> {
-    let mut name = segment;
-    while let Some(shorter) = strip_git_suffix(name) {
-        name = shorter;
-    }
+    let name = without_git_suffixes(segment);
     let is_dot_segment = matches!(
         name.to_ascii_lowercase().as_str(),
         "." | ".." | "%2e" | ".%2e" | "%2e." | "%2e%2e"
     );
     (!name.is_empty() && !is_dot_segment).then_some(name)
+}
+
+/// `segment` less every trailing `.git`, in any case: `Repo.git.GIT` is `Repo`.
+pub(crate) fn without_git_suffixes(segment: &str) -> &str {
+    let mut name = segment;
+    while let Some(shorter) = strip_git_suffix(name) {
+        name = shorter;
+    }
+    name
 }
 
 fn strip_git_suffix(segment: &str) -> Option<&str> {

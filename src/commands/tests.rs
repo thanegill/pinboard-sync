@@ -1,8 +1,6 @@
 use super::*;
-use crate::cli::{BackupTarget, Cli, Command, RedditSyncArgs};
+use crate::cli::{BackupTarget, Command, RedditSyncArgs};
 use crate::jobs::build_job;
-use crate::test_support::lock_on_auth_failure_env;
-use clap::Parser;
 
 #[test]
 fn link_tag_override_rejects_whitespace_and_commas() {
@@ -18,6 +16,27 @@ fn link_tag_override_rejects_whitespace_and_commas() {
     assert_eq!(refused("find,hn"), "`--tag-link` must not contain a comma");
 }
 
+#[tokio::test]
+async fn a_hackernews_cleanup_refuses_a_bad_link_tag_before_its_pass() {
+    let pinboard = crate::test_support::FakePinboard::default();
+    let overrides = HackerNewsCleanupOverrides {
+        link_tag: Some("find hn".into()),
+        ..Default::default()
+    };
+    let error = cleanup_hackernews_account(
+        None,
+        overrides,
+        crate::test_support::NO_DATING,
+        &pinboard.cleanup_store(false),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "`--tag-link` must not contain whitespace"
+    );
+}
+
 #[test]
 fn link_tag_override_accepts_a_bare_tag() {
     let hn_config =
@@ -30,7 +49,9 @@ fn parse(subcommand: &str, extra: &[&str]) -> Command {
     let argv = ["pinboard-sync", subcommand]
         .into_iter()
         .chain(extra.iter().copied());
-    Cli::try_parse_from(argv).expect("parses").command
+    crate::test_support::parse_cli(argv)
+        .expect("parses")
+        .command
 }
 
 /// Parse `sync <extra>` and return the top-level command.
@@ -42,18 +63,17 @@ fn parse_sync(extra: &[&str]) -> SyncCmd {
 }
 
 /// The `sync reddit` args of a parsed `sync`.
-fn reddit_sync_args(cmd: &SyncCmd) -> RedditSyncArgs {
-    let Some(SyncSource::Reddit(args)) = &cmd.source else {
+fn reddit_sync_args(cmd: &mut SyncCmd) -> RedditSyncArgs {
+    let Some(SyncSource::Reddit(args)) = cmd.source.take() else {
         panic!("expected `sync reddit` args");
     };
-    args.clone()
+    args
 }
 
 /// Both `--all` forms must carry the accounts they could not build out in
 /// `SyncPlan::skipped`, or a run that synced only the healthy ones exits 0.
 #[test]
 fn sync_all_counts_the_accounts_it_could_not_build() {
-    let _env = lock_on_auth_failure_env();
     let config = Config {
         github: vec![
             GitHubAccount {
@@ -89,7 +109,6 @@ async fn run_sync_jobs_fails_the_run_for_accounts_it_could_not_build() {
 
 #[test]
 fn top_level_all_threads_on_auth_failure_into_the_hook() {
-    let _env = lock_on_auth_failure_env();
     // The `sync --all` path builds `SyncOverrides` itself (not from the source args),
     // so the hook must be carried explicitly from the top-level flag.
     let cmd = parse_sync(&["--all", "--on-auth-failure", "refresh-cookie"]);
@@ -108,16 +127,11 @@ fn top_level_all_threads_on_auth_failure_into_the_hook() {
 
 #[test]
 fn sync_all_falls_back_to_on_auth_failure_env_when_flag_absent() {
-    let _env = lock_on_auth_failure_env();
     // The NixOS service runs `sync --all` with the hook supplied only via
     // `PINBOARD_SYNC_ON_AUTH_FAILURE`. The top-level flag doesn't bind that env,
     // so the `--all` arm must read it directly or the hook silently never fires.
-    std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
+    let _env = crate::secrets::FakeSecretEnv::set(&[("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook")]);
     let cmd = parse_sync(&["--all"]);
-    assert_eq!(
-        cmd.on_auth_failure, None,
-        "top-level flag must not bind the env"
-    );
 
     let overrides = SyncOverrides {
         dry_run: cmd.dry_run,
@@ -126,7 +140,6 @@ fn sync_all_falls_back_to_on_auth_failure_env_when_flag_absent() {
         reddit_cookie: Some("reddit_session=x".into()),
         ..SyncOverrides::default()
     };
-    std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
 
     let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
     assert_eq!(job.hook.as_deref(), Some("env-hook"));
@@ -134,11 +147,10 @@ fn sync_all_falls_back_to_on_auth_failure_env_when_flag_absent() {
 
 #[test]
 fn top_level_on_auth_failure_reaches_single_source_hook() {
-    let _env = lock_on_auth_failure_env();
     // `--on-auth-failure` placed before the source subcommand must reach the
     // job just like the `--all` path; the overrides from the source args alone only see the
     // per-source flag.
-    let cmd = parse_sync(&[
+    let mut cmd = parse_sync(&[
         "--on-auth-failure",
         "top-hook",
         "reddit",
@@ -147,7 +159,7 @@ fn top_level_on_auth_failure_reaches_single_source_hook() {
         "--reddit-cookie",
         "reddit_session=x",
     ]);
-    let args = reddit_sync_args(&cmd);
+    let args = reddit_sync_args(&mut cmd);
     assert_eq!(args.on_auth_failure, None);
 
     let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
@@ -157,8 +169,7 @@ fn top_level_on_auth_failure_reaches_single_source_hook() {
 
 #[test]
 fn per_source_on_auth_failure_falls_back_when_no_top_level() {
-    let _env = lock_on_auth_failure_env();
-    let cmd = parse_sync(&[
+    let mut cmd = parse_sync(&[
         "reddit",
         "--reddit-username",
         "alice",
@@ -168,64 +179,11 @@ fn per_source_on_auth_failure_falls_back_when_no_top_level() {
         "source-hook",
     ]);
     assert_eq!(cmd.on_auth_failure, None);
-    let args = reddit_sync_args(&cmd);
+    let args = reddit_sync_args(&mut cmd);
 
     let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
     let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
     assert_eq!(job.hook.as_deref(), Some("source-hook"));
-}
-
-#[test]
-fn explicit_per_source_on_auth_failure_beats_env() {
-    let _env = lock_on_auth_failure_env();
-    std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
-    let parsed = std::panic::catch_unwind(|| {
-        parse_sync(&[
-            "reddit",
-            "--reddit-username",
-            "alice",
-            "--reddit-cookie",
-            "reddit_session=x",
-            "--on-auth-failure",
-            "explicit-hook",
-        ])
-    });
-    std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
-    let cmd = parsed.expect("parses");
-
-    // The env only backs the per-source flag, so the top level stays empty and
-    // the explicit per-source flag wins over the env value.
-    assert_eq!(cmd.on_auth_failure, None);
-    let args = reddit_sync_args(&cmd);
-    assert_eq!(args.on_auth_failure.as_deref(), Some("explicit-hook"));
-
-    let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
-    let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
-    assert_eq!(job.hook.as_deref(), Some("explicit-hook"));
-}
-
-#[test]
-fn on_auth_failure_env_fills_per_source_when_flag_absent() {
-    let _env = lock_on_auth_failure_env();
-    std::env::set_var("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook");
-    let parsed = std::panic::catch_unwind(|| {
-        parse_sync(&[
-            "reddit",
-            "--reddit-username",
-            "alice",
-            "--reddit-cookie",
-            "reddit_session=x",
-        ])
-    });
-    std::env::remove_var("PINBOARD_SYNC_ON_AUTH_FAILURE");
-    let cmd = parsed.expect("parses");
-
-    assert_eq!(cmd.on_auth_failure, None);
-    let args = reddit_sync_args(&cmd);
-
-    let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
-    let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
-    assert_eq!(job.hook.as_deref(), Some("env-hook"));
 }
 
 /// Parse `cleanup <extra>` and return the top-level command.
@@ -237,20 +195,20 @@ fn parse_cleanup(extra: &[&str]) -> CleanupCmd {
 }
 
 /// The `cleanup reddit` args of a parsed `cleanup`.
-fn reddit_cleanup_args(cmd: &CleanupCmd) -> RedditCleanupArgs {
-    let Some(CleanupSource::Reddit(args)) = &cmd.source else {
+fn reddit_cleanup_args(cmd: &mut CleanupCmd) -> RedditCleanupArgs {
+    let Some(CleanupSource::Reddit(args)) = cmd.source.take() else {
         panic!("expected `cleanup reddit` args");
     };
-    args.clone()
+    args
 }
 
 #[test]
 fn top_level_use_post_date_reaches_single_source_cleanup() {
     // `--use-post-date` placed before the source subcommand must reach the
     // cleanup pass; the per-source `dates` alone only sees a flag placed after.
-    let cmd = parse_cleanup(&["--use-post-date", "reddit", "alice"]);
+    let mut cmd = parse_cleanup(&["--use-post-date", "reddit", "alice"]);
     assert_eq!(cmd.dates.use_post_date, Some(true));
-    let args = reddit_cleanup_args(&cmd);
+    let args = reddit_cleanup_args(&mut cmd);
     assert_eq!(args.dates.use_post_date, None);
 
     let overrides = args.dates.with_top_level(&cmd.dates);
@@ -261,9 +219,9 @@ fn top_level_use_post_date_reaches_single_source_cleanup() {
 fn per_source_cleanup_date_flag_falls_back_when_no_top_level() {
     // A flag placed after the source subcommand still applies when the
     // top-level `dates` is empty.
-    let cmd = parse_cleanup(&["reddit", "alice", "--use-post-date=false"]);
+    let mut cmd = parse_cleanup(&["reddit", "alice", "--use-post-date=false"]);
     assert_eq!(cmd.dates.use_post_date, None);
-    let args = reddit_cleanup_args(&cmd);
+    let args = reddit_cleanup_args(&mut cmd);
     assert_eq!(args.dates.use_post_date, Some(false));
 
     let overrides = args.dates.with_top_level(&cmd.dates);
@@ -317,6 +275,41 @@ fn parse_backup(extra: &[&str]) -> BackupCmd {
     cmd
 }
 
+#[tokio::test]
+async fn run_sync_refuses_all_with_no_configured_account() {
+    let error = run_sync(parse_sync(&["--all"]), &Config::default())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "--all requires a --config with at least one configured account"
+    );
+}
+
+#[tokio::test]
+async fn run_backup_refuses_an_empty_out() {
+    let cmd = parse_backup(&["pinboard", "--pinboard-token", "u:x", "--out", ""]);
+    let error = run_backup(cmd, &Config::default()).await.unwrap_err();
+    assert_eq!(error.to_string(), "`--out` must not be empty");
+}
+
+/// `--dry-run` before the target counts as much as after it. The run still fails over its
+/// skipped targets, but writes nothing, the manifest included.
+#[tokio::test]
+async fn a_backup_dry_run_given_before_the_target_writes_no_manifest() {
+    let scratch = crate::test_support::scratch_dir("backup-top-dry-run");
+    let out = scratch.path().to_str().unwrap();
+    let config = Config {
+        github: vec![GitHubAccount::default()],
+        ..Default::default()
+    };
+
+    let result = run_backup(parse_backup(&["--dry-run", "--out", out, "--all"]), &config).await;
+
+    assert!(result.is_err(), "the skipped targets fail the run");
+    assert!(!scratch.path().join("manifest.json").exists());
+}
+
 #[test]
 fn backup_accepts_out_before_or_after_the_target() {
     let cmd = parse_backup(&["--all", "--out", "/snap"]);
@@ -334,10 +327,14 @@ fn backup_accepts_out_before_or_after_the_target() {
     }
 
     // Backing up a source never contacts Pinboard, so it takes no token.
-    assert!(
-        Cli::try_parse_from(["pinboard-sync", "backup", "reddit", "--pinboard-token", "x"])
-            .is_err()
-    );
+    assert!(crate::test_support::parse_cli([
+        "pinboard-sync",
+        "backup",
+        "reddit",
+        "--pinboard-token",
+        "x"
+    ])
+    .is_err());
     // Pinboard is a target now, not a positional path.
     assert!(matches!(
         parse_backup(&["pinboard"]).target,
@@ -350,7 +347,7 @@ fn backup_all_conflicts_with_a_target_and_a_bare_backup_is_rejected() {
     let config = Config::default();
 
     let cmd = parse_backup(&["--all", "pinboard"]);
-    let err = build_backup_plan(&cmd, &config)
+    let err = build_backup_plan(cmd, &config)
         .err()
         .expect("should be rejected");
     assert!(
@@ -359,7 +356,7 @@ fn backup_all_conflicts_with_a_target_and_a_bare_backup_is_rejected() {
     );
 
     let cmd = parse_backup(&[]);
-    let err = build_backup_plan(&cmd, &config)
+    let err = build_backup_plan(cmd, &config)
         .err()
         .expect("should be rejected");
     assert!(err.to_string().contains("specify a target"), "{err}");
@@ -367,7 +364,7 @@ fn backup_all_conflicts_with_a_target_and_a_bare_backup_is_rejected() {
 
 #[test]
 fn backup_pinboard_without_a_token_names_every_setting_it_can_come_from() {
-    let error = build_backup_plan(&parse_backup(&["pinboard"]), &Config::default())
+    let error = build_backup_plan(parse_backup(&["pinboard"]), &Config::default())
         .err()
         .expect("no token is set");
     assert_eq!(
@@ -435,7 +432,7 @@ fn backup_all_names_each_source_in_its_labels_and_stems() {
         }],
         ..Default::default()
     };
-    let plan = build_backup_plan(&parse_backup(&["--all"]), &config).expect("plans");
+    let plan = build_backup_plan(parse_backup(&["--all"]), &config).expect("plans");
     let named: Vec<(&str, &str)> = plan
         .jobs
         .iter()
@@ -476,7 +473,7 @@ async fn backup_all_backs_up_the_rest_when_one_account_cannot_be_built() {
     };
     config.pinboard.token = Some("user:tok".into());
 
-    let plan = build_backup_plan(&parse_backup(&["--all"]), &config).expect("plans");
+    let plan = build_backup_plan(parse_backup(&["--all"]), &config).expect("plans");
     let labels: Vec<&str> = plan.jobs.iter().map(|job| job.label.as_str()).collect();
     assert_eq!(labels, ["reddit[alice]", "pinboard"]);
     assert_eq!(skipped_labels(&plan.skipped), ["github[default]"]);
@@ -511,7 +508,7 @@ fn backup_source_all_backs_up_the_rest_when_one_account_cannot_be_built() {
         ],
         ..Default::default()
     };
-    let plan = build_backup_plan(&parse_backup(&["github", "--all"]), &config).expect("plans");
+    let plan = build_backup_plan(parse_backup(&["github", "--all"]), &config).expect("plans");
     let labels: Vec<&str> = plan.jobs.iter().map(|job| job.label.as_str()).collect();
     assert_eq!(labels, ["github[main]"]);
     assert_eq!(skipped_labels(&plan.skipped), ["github[tokenless]"]);

@@ -368,11 +368,13 @@ under `/login` to `Halt::Reauth` and any other to `Other`. Nothing needs to foll
   fires early, unless that firing *is* the expected outcome. To skip the clients' pauses,
   run the fetch inside `http::recording_waits`, which records each `http::sleep` instead, so
   a client's new pause must go through `http::sleep`.
-- **Tests never read a secret from the real environment.** Under `cfg(test)`,
-  `secret_ladder`'s `$VAR`/`$VAR_FILE` rungs read a per-thread fake environment, set with
-  the `secrets::FakeSecretEnv` guard, so a test can't pick up the developer's real cookie or
-  token. `std::env::set_var` on a secret does nothing in a test; use `FakeSecretEnv` or a
-  synthetic ladder (`first_cookie_on`).
+- **Tests never read the real environment.** Under `cfg(test)`, `secrets::env_var`, which
+  the secret ladder's `$VAR`/`$VAR_FILE` rungs and `PINBOARD_SYNC_ON_AUTH_FAILURE` read
+  through, sees a per-thread fake environment set with the `secrets::FakeSecretEnv` guard,
+  so a test can't pick up the developer's real cookie, token or hook. `std::env::set_var`
+  does nothing in a test; use `FakeSecretEnv` or a synthetic ladder (`first_cookie_on`).
+  Clap reads the process environment itself, so tests parse with `test_support::parse_cli`,
+  which drops every flag's `env` fallback.
 - **A test that touches the filesystem takes its directory from
   `test_support::scratch_dir`**, a `tempfile::TempDir` removed on drop, so keep the guard
   bound while the path is in use. A fixed path under `temp_dir()` collides with a concurrent

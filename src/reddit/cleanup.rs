@@ -40,6 +40,12 @@ pub struct RedditCleanupOpts {
 }
 
 impl RedditCleanupOpts {
+    /// Whether the pass reads `/api/info`: for NSFW tagging, title fixing or
+    /// `use_post_date`. The notes retrofit and the tag backfill ride on that read.
+    pub fn needs_post_info(&self) -> bool {
+        self.mark_nsfw || self.fix_titles || self.dates.use_post_date
+    }
+
     /// The account's own domain, then every configured one.
     fn domains(&self) -> impl Iterator<Item = &str> {
         own_then_configured(&self.config, &self.configured).map(|account| account.domain.as_str())
@@ -283,16 +289,14 @@ impl CleanupPass for RedditCleanupPass<'_> {
 
 /// Batch-fetch `over_18` + `title` + `created_utc` + the rebuilt notes for every post
 /// referenced by the bookmarks, and each post and comment bookmark's own entry for its
-/// tags. Empty when none of NSFW tagging, title fixing, or `use_post_date` is requested —
-/// the notes retrofit and the tag backfill then ride on whichever of those caused the
-/// `/api/info` call (they need no extra fetch of their own).
+/// tags. Empty unless [`RedditCleanupOpts::needs_post_info`].
 async fn fetch_post_info<R: PostInfo>(
     reddit: Option<&R>,
     opts: &RedditCleanupOpts,
     bookmarks: &[Bookmark],
 ) -> Result<RedditInfo, SourceError> {
     let mut info = RedditInfo::default();
-    if !(opts.mark_nsfw || opts.fix_titles || opts.dates.use_post_date) {
+    if !opts.needs_post_info() {
         return Ok(info);
     }
     let Some(reddit) = reddit else {

@@ -1,5 +1,5 @@
 use super::algolia::{ALGOLIA_CHUNK_PAUSE, ITEM_BATCH};
-use super::favorites::MAX_FAVORITES_PAGES;
+use super::favorites::{FavoritesStream, MAX_FAVORITES_PAGES};
 use super::*;
 use crate::backup::RawKind;
 use crate::source::Halt;
@@ -409,19 +409,16 @@ async fn collect_ids_stops_at_the_page_cap() {
         hn.uri(),
         UNUSED.into(),
     );
-    let mut ids = Vec::new();
-    crate::http::recording_waits(client.collect_ids(
-        false,
+    let read = crate::http::recording_waits(client.collect_ids(
+        FavoritesStream::Stories,
         None,
-        &mut ids,
-        &mut HashMap::new(),
         &mut RawSink::disabled(),
     ))
     .await
     .0
     .unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), MAX_FAVORITES_PAGES);
-    assert_eq!(ids.len(), MAX_FAVORITES_PAGES);
+    assert_eq!(read.ids.len(), MAX_FAVORITES_PAGES);
 }
 
 #[tokio::test]

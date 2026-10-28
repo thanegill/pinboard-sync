@@ -13,7 +13,7 @@ use crate::cli::{
 };
 use crate::config::{Config, GitHubAccount, HackerNewsAccount, RedditAccount};
 use crate::github::{GitHubClient, GitHubConfig};
-use crate::hackernews::cleanup::HackerNewsCleanupOpts;
+use crate::hackernews::cleanup::{HackerNewsCleanupOpts, HackerNewsCleanupOverrides};
 use crate::hackernews::{HackerNewsClient, HackerNewsConfig};
 use crate::hook::{cleanup_hook, handle_source_err, on_auth_failure_from_env};
 use crate::jobs::backup_jobs::{build_backup_plan, BackupJob};
@@ -37,11 +37,11 @@ use crate::{backup, config, github, hackernews, reddit, sync, timefmt};
 
 pub async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     let top_dry_run = cmd.dry_run;
-    let plan = build_sync_plan(cmd, config)?;
+    let mut plan = build_sync_plan(cmd, config)?;
     let mut run = AllRun::default();
     run.record_skipped(plan.skipped, "could not be built");
     let (pinboard, bookmarks) =
-        open_pinboard(plan.overrides.flags.pinboard_token.clone(), config).await?;
+        open_pinboard(plan.overrides.flags.pinboard_token.take(), config).await?;
     // `--dry-run` is accepted both before the source subcommand (on `SyncCmd`) and
     // after it (per-source); honor either placement. (`--verbose` is global.)
     run_sync_jobs(
@@ -78,22 +78,22 @@ fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<SyncPlan> {
             let (jobs, skipped) = build_all_jobs(config, &overrides);
             (jobs, overrides, skipped)
         }
-        (false, Some(SyncSource::Reddit(args))) => {
-            let (account, all) = (args.account.clone(), args.all);
+        (false, Some(SyncSource::Reddit(mut args))) => {
+            let (account, all) = (args.account.take(), args.all);
             let selection = Selection::new(account.as_deref(), all)?;
             let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
             let (jobs, skipped) = build_jobs::<RedditAccount>(selection, &overrides, config)?;
             (jobs, overrides, skipped)
         }
-        (false, Some(SyncSource::Github(args))) => {
-            let (account, all) = (args.account.clone(), args.all);
+        (false, Some(SyncSource::Github(mut args))) => {
+            let (account, all) = (args.account.take(), args.all);
             let selection = Selection::new(account.as_deref(), all)?;
             let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
             let (jobs, skipped) = build_jobs::<GitHubAccount>(selection, &overrides, config)?;
             (jobs, overrides, skipped)
         }
-        (false, Some(SyncSource::Hackernews(args))) => {
-            let (account, all) = (args.account.clone(), args.all);
+        (false, Some(SyncSource::Hackernews(mut args))) => {
+            let (account, all) = (args.account.take(), args.all);
             let selection = Selection::new(account.as_deref(), all)?;
             let overrides = SyncOverrides::from(args).with_top_level_hook(cmd.on_auth_failure);
             let (jobs, skipped) = build_jobs::<HackerNewsAccount>(selection, &overrides, config)?;
@@ -172,10 +172,11 @@ async fn run_sync_jobs(
 /// Write a snapshot of every selected service: the verbatim API responses under `raw/`
 /// and the same items as domain bookmarks under `normalized/`, plus a `manifest.json`.
 /// Each run replaces the previous snapshot in place.
-pub async fn run_backup(cmd: BackupCmd, config: &Config) -> Result<()> {
-    let plan = build_backup_plan(&cmd, config)?;
-    let dir = resolve_backup_dir([plan.out, cmd.out.out.clone()], config)?;
-    back_up(plan.jobs, plan.skipped, &dir, plan.dry_run || cmd.dry_run).await
+pub async fn run_backup(mut cmd: BackupCmd, config: &Config) -> Result<()> {
+    let (top_out, top_dry_run) = (cmd.out.out.take(), cmd.dry_run);
+    let plan = build_backup_plan(cmd, config)?;
+    let dir = resolve_backup_dir([plan.out, top_out], config)?;
+    back_up(plan.jobs, plan.skipped, &dir, plan.dry_run || top_dry_run).await
 }
 
 /// Run every job of a backup plan into `dir`, then write the manifest, failing the run
@@ -275,9 +276,7 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), cmd.dry_run);
             let mut run = AllRun::default();
             if let Some(CleanupTarget { account, dates }) = github {
-                run.record(
-                    cleanup_github_account(&store, Some(account), None, dates, config).await,
-                );
+                run.record(cleanup_github_account(&store, account, None, dates, config).await);
             }
             if let Some(CleanupTarget { account, dates }) = reddit {
                 let reddit_overrides = RedditCleanupOverrides {
@@ -286,21 +285,12 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                     fix_titles: true,
                 };
                 run.record(
-                    cleanup_reddit_account(Some(account), reddit_overrides, dates, &store, config)
-                        .await,
+                    cleanup_reddit_account(account, reddit_overrides, dates, &store, config).await,
                 );
             }
             if let Some(CleanupTarget { account, dates }) = hackernews {
-                run.record(
-                    cleanup_hackernews_account(
-                        Some(account),
-                        false, // linking is opt-in via `cleanup hackernews --link-discussions`
-                        None,
-                        dates,
-                        &store,
-                    )
-                    .await,
-                );
+                let overrides = HackerNewsCleanupOverrides::default();
+                run.record(cleanup_hackernews_account(account, overrides, dates, &store).await);
             }
             run.finish()
         }
@@ -317,15 +307,50 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
     }
 }
 
-/// One source's pass of a `cleanup --all` run: the account it runs as and its dates.
+/// One source's cleanup pass: the account it runs as (`None` for the implicit CLI/env
+/// account) and its dates. Resolved before `posts/all` is read, so a refused run does not
+/// spend that rate-limited call.
 struct CleanupTarget<'a, A> {
-    account: &'a A,
+    account: Option<&'a A>,
     dates: DateOpts,
 }
 
+/// `A`'s [`CleanupTarget`] run as `account`. `pass` names the run in a refusal.
+fn cleanup_target<'a, A: SourceAccount>(
+    pass: &str,
+    account: Option<&'a A>,
+    overrides: &DateFlags,
+    config: &'a Config,
+) -> Result<CleanupTarget<'a, A>> {
+    let dates = resolve_cleanup_dates(
+        pass,
+        A::SOURCE,
+        overrides,
+        account,
+        A::defaults(config),
+        config,
+    )?;
+    Ok(CleanupTarget { account, dates })
+}
+
+/// The [`CleanupTarget`] of `cleanup <source> [account]`: the account named `name`, else
+/// the first, else the implicit CLI/env account.
+fn source_cleanup_target<'a, A: SourceAccount>(
+    name: Option<&str>,
+    overrides: &DateFlags,
+    config: &'a Config,
+) -> Result<CleanupTarget<'a, A>> {
+    let account = config::select_account(A::configured(config), name)?;
+    cleanup_target(
+        &format!("`cleanup {}`", A::SOURCE),
+        account,
+        overrides,
+        config,
+    )
+}
+
 /// The [`CleanupTarget`] of `A`'s pass in `cleanup --all`, run as the source's first
-/// account, or `None` for a source with no accounts. Resolved before `posts/all` is read,
-/// so a refused run does not spend that rate-limited call.
+/// account, or `None` for a source with no accounts.
 fn cleanup_all_target<'a, A: SourceAccount>(
     overrides: &DateFlags,
     config: &'a Config,
@@ -334,15 +359,7 @@ fn cleanup_all_target<'a, A: SourceAccount>(
         return Ok(None);
     };
     let pass = format!("`cleanup --all` ({} pass)", A::SOURCE);
-    let dates = resolve_cleanup_dates(
-        &pass,
-        A::SOURCE,
-        overrides,
-        Some(account),
-        A::defaults(config),
-        config,
-    )?;
-    Ok(Some(CleanupTarget { account, dates }))
+    cleanup_target(&pass, Some(account), overrides, config).map(Some)
 }
 
 /// A cleanup pass runs dry when `--dry-run` is given either before the source
@@ -358,14 +375,9 @@ async fn run_cleanup_github(
     top_overrides: &DateFlags,
     config: &Config,
 ) -> Result<()> {
-    let overrides = args.dates.with_top_level(top_overrides);
-    let account = config::select_account(&config.github, args.account.as_deref())?;
-    let dates = resolve_cleanup_dates(
-        "`cleanup github`",
-        "github",
-        &overrides,
-        account,
-        &config.defaults.github.common,
+    let CleanupTarget { account, dates } = source_cleanup_target::<GitHubAccount>(
+        args.account.as_deref(),
+        &args.dates.with_top_level(top_overrides),
         config,
     )?;
     let client = github_cleanup_client(account, args.github_token, config)?;
@@ -422,25 +434,20 @@ async fn cleanup_github_with_client<S: BookmarkStore + AccountState>(
 }
 
 async fn run_cleanup_reddit(
-    args: RedditCleanupArgs,
+    mut args: RedditCleanupArgs,
     top_dry_run: bool,
     top_overrides: &DateFlags,
     config: &Config,
 ) -> Result<()> {
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
-    // One pass over the Pinboard account's reddit bookmarks, using the selected (or
-    // first, or implicit CLI/env) account's cookie + domain/tags.
-    let account = config::select_account(&config.reddit, args.account.as_deref())?;
-    let dates = resolve_cleanup_dates(
-        "`cleanup reddit`",
-        "reddit",
+    let CleanupTarget { account, dates } = source_cleanup_target::<RedditAccount>(
+        args.account.as_deref(),
         &args.dates.with_top_level(top_overrides),
-        account,
-        &config.defaults.reddit,
         config,
     )?;
-    let reddit = RedditCleanup::build(account, RedditCleanupOverrides::from(&args), dates, config)?;
-    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
+    let pinboard_token = args.pinboard_token.take();
+    let reddit = RedditCleanup::build(account, RedditCleanupOverrides::from(args), dates, config)?;
+    let (pinboard, bookmarks) = open_pinboard(pinboard_token, config).await?;
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
     reddit.run(&store, account, config).await
 }
@@ -478,9 +485,7 @@ impl RedditCleanup {
             configured: config.reddit.iter().map(RedditConfig::from).collect(),
         };
 
-        // Reddit (for /api/info) is needed when marking NSFW, fixing titles, or dating by
-        // the source post (the post's created_utc comes from /api/info too).
-        let client = if opts.mark_nsfw || opts.fix_titles || opts.dates.use_post_date {
+        let client = if opts.needs_post_info() {
             let cookie = resolve_reddit_cookie(overrides.cookie, account)
                 .with_context(missing_reddit_cookie)?;
             Some(RedditClient::for_info(Some(cookie))?)
@@ -504,27 +509,23 @@ impl RedditCleanup {
 }
 
 async fn run_cleanup_hackernews(
-    args: HackerNewsCleanupArgs,
+    mut args: HackerNewsCleanupArgs,
     top_dry_run: bool,
     top_overrides: &DateFlags,
     config: &Config,
 ) -> Result<()> {
-    // One pass over the Pinboard account's HN bookmarks, using the selected (or
-    // first, or implicit) account's tag config.
-    let account = config::select_account(&config.hackernews, args.account.as_deref())?;
-    let dates = resolve_cleanup_dates(
-        "`cleanup hackernews`",
-        "hackernews",
+    let CleanupTarget { account, dates } = source_cleanup_target::<HackerNewsAccount>(
+        args.account.as_deref(),
         &args.dates.with_top_level(top_overrides),
-        account,
-        &config.defaults.hackernews,
         config,
     )?;
-    let hn = hackernews_cleanup_client(account, args.link_tag)?;
-    let (pinboard, bookmarks) = open_pinboard(args.pinboard_token.clone(), config).await?;
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
+    let pinboard_token = args.pinboard_token.take();
+    let hackernews =
+        HackerNewsCleanup::build(account, HackerNewsCleanupOverrides::from(args), dates)?;
+    let (pinboard, bookmarks) = open_pinboard(pinboard_token, config).await?;
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), dry_run);
-    cleanup_hackernews_with_client(&store, &hn, args.link_discussions, dates).await
+    hackernews.run(&store).await
 }
 
 /// Build the HackerNews tag config for a cleanup run, letting `--tag-link` override the
@@ -542,43 +543,46 @@ fn resolve_hackernews_cleanup_config(
     Ok(hn_config)
 }
 
-/// The HackerNews client for a cleanup pass, built on the tag config
-/// [`resolve_hackernews_cleanup_config`] gives.
-fn hackernews_cleanup_client(
-    account: Option<&HackerNewsAccount>,
-    link_tag: Option<String>,
-) -> Result<HackerNewsClient> {
-    HackerNewsClient::for_cleanup(resolve_hackernews_cleanup_config(account, link_tag)?)
-}
-
 async fn cleanup_hackernews_account<S: BookmarkStore + AccountState>(
     account: Option<&HackerNewsAccount>,
-    link_discussions: bool,
-    link_tag: Option<String>,
+    overrides: HackerNewsCleanupOverrides,
     dates: DateOpts,
     store: &S,
 ) -> Result<()> {
-    let hn = hackernews_cleanup_client(account, link_tag)?;
-    cleanup_hackernews_with_client(store, &hn, link_discussions, dates).await
+    HackerNewsCleanup::build(account, overrides, dates)?
+        .run(store)
+        .await
 }
 
-async fn cleanup_hackernews_with_client<S: BookmarkStore + AccountState>(
-    store: &S,
-    hn: &HackerNewsClient,
-    link_discussions: bool,
-    dates: DateOpts,
-) -> Result<()> {
-    hackernews::cleanup::run(
-        store,
-        hn,
-        &HackerNewsCleanupOpts {
-            link_discussions,
-            dates,
-        },
-    )
-    .await
-    // No hook: HackerNews is public, so nothing here can be a re-auth to act on.
-    .map_err(SourceError::into_anyhow)
+/// A HackerNews cleanup pass's options and its client, built on the tag config
+/// [`resolve_hackernews_cleanup_config`] gives.
+struct HackerNewsCleanup {
+    opts: HackerNewsCleanupOpts,
+    client: HackerNewsClient,
+}
+
+impl HackerNewsCleanup {
+    fn build(
+        account: Option<&HackerNewsAccount>,
+        overrides: HackerNewsCleanupOverrides,
+        dates: DateOpts,
+    ) -> Result<Self> {
+        let config = resolve_hackernews_cleanup_config(account, overrides.link_tag)?;
+        Ok(Self {
+            opts: HackerNewsCleanupOpts {
+                link_discussions: overrides.link_discussions,
+                dates,
+            },
+            client: HackerNewsClient::for_cleanup(config)?,
+        })
+    }
+
+    async fn run<S: BookmarkStore + AccountState>(&self, store: &S) -> Result<()> {
+        hackernews::cleanup::run(store, &self.client, &self.opts)
+            .await
+            // No hook: HackerNews is public, so nothing here can be a re-auth to act on.
+            .map_err(SourceError::into_anyhow)
+    }
 }
 
 #[cfg(test)]

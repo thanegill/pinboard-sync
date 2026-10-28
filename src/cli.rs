@@ -7,6 +7,7 @@ use clap::{Args, Parser, Subcommand, ValueHint};
 use clap_complete::Shell;
 
 use crate::config::SyncLimit;
+use crate::hackernews::cleanup::HackerNewsCleanupOverrides;
 use crate::jobs::SyncOverrides;
 use crate::reddit::cleanup::RedditCleanupOverrides;
 
@@ -96,7 +97,7 @@ pub enum BackupTarget {
 // Backing up a source never contacts Pinboard, so none of the source targets take a
 // Pinboard token — the one place `backup` deliberately diverges from `sync`/`cleanup`.
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct RedditBackupArgs {
     /// Account name to select from the config (default: the first reddit account).
     pub account: Option<String>,
@@ -121,7 +122,7 @@ pub struct RedditBackupArgs {
     pub dry_run: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct GitHubBackupArgs {
     /// Account name to select from the config (default: the first github account).
     pub account: Option<String>,
@@ -141,7 +142,7 @@ pub struct GitHubBackupArgs {
     pub dry_run: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct HackerNewsBackupArgs {
     /// Account name to select from the config (default: the first hackernews account).
     pub account: Option<String>,
@@ -160,7 +161,7 @@ pub struct HackerNewsBackupArgs {
 
 /// Pinboard has no `account`/`--all`: `[pinboard]` is a single destination table, not an
 /// array of accounts like the sources.
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct PinboardBackupArgs {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
@@ -203,7 +204,7 @@ pub enum SyncSource {
     Hackernews(HackerNewsSyncArgs),
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct RedditSyncArgs {
     /// Account name to select from the config (default: the first reddit account).
     pub account: Option<String>,
@@ -228,7 +229,7 @@ pub struct RedditSyncArgs {
     pub dry_run: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct GitHubSyncArgs {
     /// Account name to select from the config (default: the first github account).
     pub account: Option<String>,
@@ -248,7 +249,7 @@ pub struct GitHubSyncArgs {
     pub dry_run: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct HackerNewsSyncArgs {
     /// Account name to select from the config (default: the first hackernews account).
     pub account: Option<String>,
@@ -267,7 +268,7 @@ pub struct HackerNewsSyncArgs {
 
 /// The Pinboard and write/dating flags every `sync <source>` takes, flattened into each so
 /// the declarations live in one place.
-#[derive(Args, Clone, Default)]
+#[derive(Args, Default)]
 pub struct SyncFlags {
     /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
     #[arg(long)]
@@ -361,7 +362,7 @@ impl DateFlags {
     }
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct GitHubCleanupArgs {
     /// Account name whose token/tags to use (default: the first github account).
     pub account: Option<String>,
@@ -378,7 +379,7 @@ pub struct GitHubCleanupArgs {
     pub dry_run: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct HackerNewsCleanupArgs {
     /// Account name whose tag config to use (default: the first hackernews account).
     pub account: Option<String>,
@@ -399,7 +400,7 @@ pub struct HackerNewsCleanupArgs {
     pub dry_run: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args)]
 pub struct RedditCleanupArgs {
     /// Account name whose cookie + domain/tags to use (default: the first reddit account).
     pub account: Option<String>,
@@ -509,10 +510,19 @@ impl From<HackerNewsSyncArgs> for SyncOverrides {
     }
 }
 
-impl From<&RedditCleanupArgs> for RedditCleanupOverrides {
-    fn from(args: &RedditCleanupArgs) -> Self {
+impl From<HackerNewsCleanupArgs> for HackerNewsCleanupOverrides {
+    fn from(args: HackerNewsCleanupArgs) -> Self {
+        HackerNewsCleanupOverrides {
+            link_discussions: args.link_discussions,
+            link_tag: args.link_tag,
+        }
+    }
+}
+
+impl From<RedditCleanupArgs> for RedditCleanupOverrides {
+    fn from(args: RedditCleanupArgs) -> Self {
         RedditCleanupOverrides {
-            cookie: args.reddit_cookie.clone(),
+            cookie: args.reddit_cookie,
             mark_nsfw: !args.no_nsfw,
             fix_titles: !args.no_titles,
         }
@@ -526,10 +536,9 @@ mod tests {
 
     #[test]
     fn limit_flag_takes_auto_all_or_a_count() {
-        use clap::Parser;
         let limit = |value: &str| {
             let argv = ["pinboard-sync", "sync", "hackernews", "--limit", value];
-            match Cli::try_parse_from(argv).map(|cli| cli.command) {
+            match crate::test_support::parse_cli(argv).map(|cli| cli.command) {
                 Ok(Command::Sync(SyncCmd {
                     source: Some(SyncSource::Hackernews(args)),
                     ..
@@ -551,10 +560,12 @@ mod tests {
 
     /// Parse `sync reddit <extra>` and return the parsed source args.
     fn parse_reddit_sync(extra: &[&str]) -> RedditSyncArgs {
-        use clap::Parser;
         let mut argv = vec!["pinboard-sync", "sync", "reddit"];
         argv.extend_from_slice(extra);
-        match Cli::try_parse_from(argv).expect("parses").command {
+        match crate::test_support::parse_cli(argv)
+            .expect("parses")
+            .command
+        {
             Command::Sync(SyncCmd {
                 source: Some(SyncSource::Reddit(args)),
                 ..
@@ -599,9 +610,8 @@ mod tests {
     /// Each renamed flag parses under its new name and, for one release, its old one.
     #[test]
     fn each_renamed_flag_takes_its_new_and_its_old_name() {
-        use clap::Parser;
         let command = |argv: &[&str]| {
-            Cli::try_parse_from([&["pinboard-sync"][..], argv].concat())
+            crate::test_support::parse_cli([&["pinboard-sync"][..], argv].concat())
                 .expect("parses")
                 .command
         };
@@ -653,14 +663,13 @@ mod tests {
 
     #[test]
     fn a_source_all_refuses_an_account_name() {
-        use clap::Parser;
         for command in ["sync", "backup"] {
             for source in ["reddit", "github", "hackernews"] {
                 for argv in [
                     ["pinboard-sync", command, source, "main", "--all"],
                     ["pinboard-sync", command, source, "--all", "main"],
                 ] {
-                    let Err(error) = Cli::try_parse_from(argv) else {
+                    let Err(error) = crate::test_support::parse_cli(argv) else {
                         panic!("{argv:?} must be refused");
                     };
                     assert_eq!(
@@ -670,11 +679,42 @@ mod tests {
                     );
                 }
                 assert!(
-                    Cli::try_parse_from(["pinboard-sync", command, source, "--all"]).is_ok(),
+                    crate::test_support::parse_cli(["pinboard-sync", command, source, "--all"])
+                        .is_ok(),
                     "{command} {source} --all"
                 );
             }
         }
+    }
+
+    /// `PINBOARD_SYNC_ON_AUTH_FAILURE` backs each per-source `--on-auth-failure`, so an
+    /// explicit flag outranks it, but not `sync`'s top-level one: the `--all` path reads
+    /// the variable itself (`hook::on_auth_failure_from_env`).
+    #[test]
+    fn on_auth_failure_env_backs_only_the_per_source_flags() {
+        use clap::CommandFactory;
+        let cli = Cli::command();
+        let env_of = |path: &[&str]| {
+            let command = path.iter().fold(&cli, |command, name| {
+                command.find_subcommand(name).expect("subcommand exists")
+            });
+            let flag = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == "on_auth_failure")
+                .expect("takes --on-auth-failure");
+            flag.get_env().map(|var| var.to_string_lossy().into_owned())
+        };
+        let env = Some("PINBOARD_SYNC_ON_AUTH_FAILURE".to_string());
+
+        for path in [
+            ["sync", "reddit"],
+            ["sync", "github"],
+            ["backup", "reddit"],
+            ["backup", "github"],
+        ] {
+            assert_eq!(env_of(&path), env, "{path:?}");
+        }
+        assert_eq!(env_of(&["sync"]), None);
     }
 
     /// `--help` offers each renamed flag under its new name only.

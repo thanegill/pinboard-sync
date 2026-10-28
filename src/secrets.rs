@@ -240,10 +240,10 @@ fn secret_ladder_reading(
 ) -> [(SecretRung, Option<String>); 5] {
     [
         (SecretRung::Flag, flag),
-        (SecretRung::Env, secret_env(var)),
+        (SecretRung::Env, env_var(var)),
         (
             SecretRung::EnvFile,
-            secret_env(&format!("{var}_FILE")).and_then(|p| read_file(&p)),
+            env_var(&format!("{var}_FILE")).and_then(|p| read_file(&p)),
         ),
         (SecretRung::ConfigInline, cfg_inline),
         (SecretRung::ConfigFile, cfg_file.and_then(read_file)),
@@ -271,8 +271,9 @@ pub fn warn_if_env_shared(source: &str, secrets: &[SecretSpec], accounts: usize)
     );
 }
 
+/// An environment variable the run reads: the secret rungs and the auth-failure hook.
 #[cfg(not(test))]
-fn secret_env(var: &str) -> Option<String> {
+pub(crate) fn env_var(var: &str) -> Option<String> {
     std::env::var(var).ok()
 }
 
@@ -282,11 +283,11 @@ thread_local! {
         std::cell::RefCell::default();
 }
 
-/// Tests read [`secret_ladder`]'s environment rungs only from the fake environment a
-/// [`FakeSecretEnv`] sets, so a test that builds a job or resolves a secret can't
-/// pick up, or depend on, the developer's real credentials.
+/// Tests read the environment only from the fake one a [`FakeSecretEnv`] sets, so a test
+/// that builds a job, resolves a secret or picks a hook can't pick up, or depend on, the
+/// developer's real environment.
 #[cfg(test)]
-fn secret_env(var: &str) -> Option<String> {
+pub(crate) fn env_var(var: &str) -> Option<String> {
     FAKE_SECRET_ENV.with(|env| env.borrow().get(var).cloned())
 }
 
@@ -323,9 +324,8 @@ pub fn resolve_pinboard_token(flag: Option<String>, pb: &PinboardConfig) -> Opti
 }
 
 #[cfg(test)]
-/// Sets variables in the environment [`secret_env`] shows this test's thread, and
-/// removes them on drop, so a setting can't outlive the test whichever thread runs the
-/// next one.
+/// Sets variables in the environment [`env_var`] shows this test's thread, and removes
+/// them on drop, so a setting can't outlive the test whichever thread runs the next one.
 #[must_use]
 pub struct FakeSecretEnv {
     vars: Vec<String>,

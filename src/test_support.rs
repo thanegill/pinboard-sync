@@ -377,12 +377,19 @@ impl BookmarkStore for FakePinboard {
     }
 }
 
-/// Serializes tests that read or write `PINBOARD_SYNC_ON_AUTH_FAILURE`, since
-/// the env var is process-global and clap reads it at parse time.
-static ON_AUTH_FAILURE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Parse `argv` as the binary does, but with no flag falling back to an environment
+/// variable: clap reads the process environment at parse time, which a test must not
+/// depend on. `cli`'s tests pin which flags the environment backs.
+pub fn parse_cli<T: Into<std::ffi::OsString> + Clone>(
+    argv: impl IntoIterator<Item = T>,
+) -> Result<crate::cli::Cli, clap::Error> {
+    use clap::{CommandFactory, FromArgMatches};
 
-pub fn lock_on_auth_failure_env() -> std::sync::MutexGuard<'static, ()> {
-    ON_AUTH_FAILURE_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    fn without_env(command: clap::Command) -> clap::Command {
+        command
+            .mut_args(|arg| arg.env(None))
+            .mut_subcommands(without_env)
+    }
+    let matches = without_env(crate::cli::Cli::command()).try_get_matches_from(argv)?;
+    crate::cli::Cli::from_arg_matches(&matches)
 }

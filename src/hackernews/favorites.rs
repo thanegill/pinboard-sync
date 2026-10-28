@@ -26,32 +26,60 @@ pub(super) const FAVORITES_PAGE_PAUSE: Duration = Duration::from_millis(500);
 /// scrape can't spin forever.
 pub(super) const MAX_FAVORITES_PAGES: usize = 100;
 
+/// One of a user's two favorites listings.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum FavoritesStream {
+    Stories,
+    Comments,
+}
+
+impl FavoritesStream {
+    /// The `backup` stream its pages are captured under, which also names it in messages.
+    fn name(self) -> &'static str {
+        match self {
+            FavoritesStream::Stories => "favorites",
+            FavoritesStream::Comments => "favorites-comments",
+        }
+    }
+
+    /// What the `/favorites` URL appends to read this stream.
+    fn query_suffix(self) -> &'static str {
+        match self {
+            FavoritesStream::Stories => "",
+            FavoritesStream::Comments => "&comments=t",
+        }
+    }
+}
+
+/// What [`HackerNewsClient::collect_ids`] read from one stream.
+pub(super) struct FavoriteIds {
+    /// The favorited item IDs, newest first.
+    pub ids: Vec<HackerNewsItemId>,
+    /// The drafts the pages' items made, when they were looked up page by page.
+    pub drafts: HashMap<HackerNewsItemId, BookmarkDraft>,
+}
+
 impl HackerNewsClient {
-    /// Collect favorited item IDs from the stories page (`comments=false`) or the
-    /// comments page (`comments=true`), following the "More" link across pages. With
-    /// `synced_keys`, each page's items are looked up as it is read and shaped into
-    /// `drafts`, and the walk stops at the first page that has nothing new
-    /// ([`is_caught_up`]).
+    /// Collect the item IDs of the `favorites` stream, following the "More" link across
+    /// pages. With `synced_keys`, each page's items are shaped into drafts as it is read,
+    /// and the walk stops at the first page with nothing new ([`is_caught_up`]).
     pub(super) async fn collect_ids(
         &self,
-        comments: bool,
+        favorites: FavoritesStream,
         synced_keys: Option<&HashSet<String>>,
-        out: &mut Vec<HackerNewsItemId>,
-        drafts: &mut HashMap<HackerNewsItemId, BookmarkDraft>,
         sink: &mut RawSink,
-    ) -> Result<(), SourceError> {
+    ) -> Result<FavoriteIds, SourceError> {
         // The scraped page is the only record of a favorite HN's API never exposes, so
         // `backup` keeps it verbatim alongside the Algolia details.
-        let stream = if comments {
-            "favorites-comments"
-        } else {
-            "favorites"
-        };
+        let stream = favorites.name();
         let label = format!("hn {stream}");
-        let suffix = if comments { "&comments=t" } else { "" };
+        let mut out = Vec::new();
+        let mut drafts = HashMap::new();
         let mut next = Some(format!(
             "{}/favorites?id={}{}",
-            self.base, self.username, suffix
+            self.base,
+            self.username,
+            favorites.query_suffix()
         ));
         let mut visited = HashSet::new();
         let mut page = 0usize;
@@ -141,7 +169,7 @@ impl HackerNewsClient {
             }
             next = more.and_then(|href| self.resolve(&href, stream));
         }
-        Ok(())
+        Ok(FavoriteIds { ids: out, drafts })
     }
 
     /// Resolve an HN "More" href (typically relative, e.g. `favorites?id=u&p=2`)

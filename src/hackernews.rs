@@ -22,7 +22,7 @@ use crate::http::{client_builder, RetryingClient};
 use crate::keys::{HackerNewsKeys, RedditKeys};
 use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
 use crate::tags::{push_prefixed, push_tag, push_tags};
-use favorites::FAVORITES_PAGE_PAUSE;
+use favorites::{FavoritesStream, FAVORITES_PAGE_PAUSE};
 use url::Url;
 
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.
@@ -278,13 +278,17 @@ impl HackerNewsClient {
         synced_keys: Option<&HashSet<String>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
-        let mut ids: Vec<HackerNewsItemId> = Vec::new();
-        let mut drafts = HashMap::new();
-        self.collect_ids(false, synced_keys, &mut ids, &mut drafts, sink)
+        let stories = self
+            .collect_ids(FavoritesStream::Stories, synced_keys, sink)
             .await?;
         crate::http::sleep(FAVORITES_PAGE_PAUSE).await;
-        self.collect_ids(true, synced_keys, &mut ids, &mut drafts, sink)
+        let comments = self
+            .collect_ids(FavoritesStream::Comments, synced_keys, sink)
             .await?;
+        let mut ids = stories.ids;
+        ids.extend(comments.ids);
+        let mut drafts = stories.drafts;
+        drafts.extend(comments.drafts);
         // De-dup IDs while preserving order (newest first).
         let mut seen = HashSet::new();
         ids.retain(|id| seen.insert(id.clone()));

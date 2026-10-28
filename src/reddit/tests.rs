@@ -310,23 +310,21 @@ async fn maps_any_other_redirect_to_other() {
 
 #[test]
 fn every_entry_point_names_a_bare_cookie() {
-    let configured = |value: &str| {
-        Some(ConfiguredSecret {
-            value: value.into(),
-            source: TEST_COOKIE_SOURCE,
-        })
+    let configured = |value: &str| ConfiguredSecret {
+        value: value.into(),
+        source: TEST_COOKIE_SOURCE,
     };
-    let sent = |client: &RedditClient| client.cookie.as_ref().map(|c| c.header.clone());
+    let sent = |session: &RedditSession| session.cookie.as_ref().map(|c| c.header.clone());
     let named = Some("reddit_session=bare-value".to_string());
-    let sync = RedditClient::for_user(
+    let sync = RedditClient::new(
         "psophis".into(),
-        configured(" bare-value "),
+        Some(configured(" bare-value ")),
         RedditConfig::default(),
     )
     .unwrap();
-    assert_eq!(sent(&sync), named);
-    let cleanup = RedditClient::for_info(configured("bare-value\n")).unwrap();
-    assert_eq!(sent(&cleanup), named);
+    assert_eq!(sent(&sync.session), named);
+    let cleanup = RedditInfoClient::new(configured("bare-value\n")).unwrap();
+    assert_eq!(sent(&cleanup.session), named);
 }
 
 #[tokio::test]
@@ -380,7 +378,7 @@ fn a_saved_page_is_caught_up_when_its_saves_are_on_pinboard() {
         )
     };
     let unshapable = listing_entry("t3", serde_json::json!({ "name": "t3_gone" }));
-    let client = RedditClient::with_base_url(None, None, "http://unused.invalid".into());
+    let client = RedditClient::with_base_url(None, "psophis", "http://unused.invalid".into());
     let synced_keys = client.synced_keys(&[
         stored_at("https://www.reddit.com/r/rust/comments/a/x/"),
         stored_at("https://old.reddit.com/r/Rust/comments/b/x/"),
@@ -411,7 +409,7 @@ fn a_mirror_reddit_domain_dedups_against_its_own_and_reddit_com_bookmarks() {
                                 "title": "T" }),
         )
     };
-    let mut client = RedditClient::with_base_url(None, None, "http://unused.invalid".into());
+    let mut client = RedditClient::with_base_url(None, "psophis", "http://unused.invalid".into());
     client.config.domain = "redlib.example.org".into();
     let drafts = client.shape(vec![post("a"), post("b"), post("c")]);
     let existing = [

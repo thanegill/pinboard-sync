@@ -197,7 +197,7 @@ item on every run. `cleanup hackernews --link-discussions` is the reverse, addin
 discussion to article bookmarks carrying the `link_tag` marker (default `find-hn`).
 
 **The Reddit cookie is shaped in one place**, [`src/reddit/cookie.rs`](src/reddit/cookie.rs)
-(its docs give the rules): `RedditClient::build` turns it into the `SessionCookie` every
+(its docs give the rules): `RedditSession::new` turns it into the `SessionCookie` every
 entry point sends. `secrets`'s `resolve_reddit_cookie` skips a value that sets no session
 (`is_configured_cookie`), as it does a blank one.
 
@@ -341,12 +341,13 @@ handling (no hook; a pass halts via `Halt::Blocked`) but keeps its own variant s
 message names a block, which no reset is known to lift. A 401/403 whose body is cut off
 mid-read is `Other`, since without the whole page a block and a refused cookie look alike.
 
-**The Reddit client never follows a redirect.** Reddit answers a request without a session
+**The Reddit clients never follow a redirect.** Reddit answers a request without a session
 it accepts with a 302 to `/login`, and following it can land on a login page that answers
-403, which the 401/403 arm would misreport as a 403 on the endpoint itself. So
-`RedditClient` is built with `redirect::Policy::none()`, and `reddit_body` maps a 3xx to or
-under `/login` to `Halt::Reauth` and any other to `Other`. Nothing needs to follow one:
-`saved.json` pagination only changes query parameters, and `/api/info` is a single GET.
+403, which the 401/403 arm would misreport as a 403 on the endpoint itself. So the
+`RedditSession` both clients send through is built with `redirect::Policy::none()`, and
+`reddit_body` maps a 3xx to or under `/login` to `Halt::Reauth` and any other to `Other`.
+Nothing needs to follow one: `saved.json` pagination only changes query parameters, and
+`/api/info` is a single GET.
 
 **Pinboard field names are inverted.** In `posts/add`, `description` is the *title* and
 `extended` is the notes (delicious backcompat). Bookmarks are written `replace=yes`

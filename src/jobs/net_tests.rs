@@ -135,13 +135,7 @@ async fn only_an_auto_sync_job_stops_reddit_at_a_synced_page() {
     };
     assert_second_page_reads(
         mount,
-        |server| {
-            SourceClient::Reddit(RedditClient::with_base_url(
-                None,
-                Some("u".into()),
-                server.uri(),
-            ))
-        },
+        |server| SourceClient::Reddit(RedditClient::with_base_url(None, "u", server.uri())),
         |request| request.url.query_pairs().any(|(key, _)| key == "after"),
         &[crate::test_support::stored_at(
             "https://old.reddit.com/r/rust/comments/n/x/",

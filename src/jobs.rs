@@ -329,7 +329,7 @@ impl SourceAccount for RedditAccount {
         let cookie = resolve_reddit_cookie(overrides.reddit_cookie.clone(), account);
         let reddit_config = account.map(RedditConfig::from).unwrap_or_default();
         Ok(SourceClient::Reddit(
-            RedditClient::for_user(username, cookie, reddit_config)?
+            RedditClient::new(username, cookie, reddit_config)?
                 .with_reddit_domains(config.reddit_domains()),
         ))
     }

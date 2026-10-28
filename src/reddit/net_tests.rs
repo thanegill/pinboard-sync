@@ -40,7 +40,7 @@ async fn fetch_saved_sends_cookie_paginates_and_parses_metadata() {
 
     let client = RedditClient::with_base_url(
         Some("reddit_session=secret".into()),
-        Some("psophis".into()),
+        "psophis",
         server.uri(),
     );
     let items: Vec<_> = crate::http::recording_waits(client.fetch_saved())
@@ -77,11 +77,7 @@ async fn sends_a_bare_cookie_value_as_reddit_session() {
         .mount(&server)
         .await;
 
-    let client = RedditClient::with_base_url(
-        Some("bare-value\n".into()),
-        Some("psophis".into()),
-        server.uri(),
-    );
+    let client = RedditClient::with_base_url(Some("bare-value\n".into()), "psophis", server.uri());
     assert!(client.fetch_saved().await.unwrap().is_empty());
 }
 
@@ -130,11 +126,8 @@ async fn fetch_saved_maps_a_login_redirect_to_reauth_without_following_it() {
         .await;
     mount_login_page(&server).await;
 
-    let client = RedditClient::with_base_url(
-        Some("reddit_session=stale".into()),
-        Some("psophis".into()),
-        server.uri(),
-    );
+    let client =
+        RedditClient::with_base_url(Some("reddit_session=stale".into()), "psophis", server.uri());
     let err = client.fetch_saved().await.unwrap_err();
     assert_refused_at_login(err);
 }
@@ -296,7 +289,7 @@ async fn fetch_saved_maps_a_block_page_to_blocked() {
         .await;
     let client = RedditClient::with_base_url(
         Some("reddit_session=secret".into()),
-        Some("psophis".into()),
+        "psophis",
         server.uri(),
     );
     let err = client.fetch_saved().await.unwrap_err();
@@ -418,12 +411,12 @@ async fn three_saved_pages(server: &MockServer, hits: [u64; 3]) {
 
 /// A client reading `psophis`'s saved listing from `server`, with no cookie.
 fn reddit_client(server: &MockServer) -> RedditClient {
-    RedditClient::with_base_url(None, Some("psophis".into()), server.uri())
+    RedditClient::with_base_url(None, "psophis", server.uri())
 }
 
 /// A client for `/api/info` lookups on `server`, sending `cookie`.
-fn info_client(server: &MockServer, cookie: &str) -> RedditClient {
-    RedditClient::with_base_url(Some(cookie.into()), None, server.uri())
+fn info_client(server: &MockServer, cookie: &str) -> RedditInfoClient {
+    RedditInfoClient::with_base_url(Some(cookie.into()), server.uri())
 }
 
 /// Pinboard already holds the second page's save, so that page has nothing new.
@@ -579,7 +572,7 @@ fn truncated_client(
 ) -> RedditClient {
     RedditClient::with_base_url(
         Some("reddit_session=secret".into()),
-        Some("psophis".into()),
+        "psophis",
         crate::test_support::truncated_body_server(status, content_type, body),
     )
 }
@@ -752,10 +745,12 @@ async fn cleanup_leaves_what_sync_wrote_as_it_is() {
                 .await;
             let mut client = RedditClient::with_base_url(
                 Some("reddit_session=secret".into()),
-                Some("psophis".into()),
+                "psophis",
                 server.uri(),
             );
             client.config = config.clone();
+            let info =
+                RedditInfoClient::with_base_url(Some("reddit_session=secret".into()), server.uri());
 
             let account = synced_account(&client, dates).await;
             assert_eq!(account.len(), saves.len(), "{} {dates:?}", config.domain);
@@ -767,7 +762,7 @@ async fn cleanup_leaves_what_sync_wrote_as_it_is() {
                 configured: vec![config.clone()],
             };
             assert_cleanup_changes_nothing(account, async |store| {
-                run(store, Some(&client), &opts).await
+                run(store, Some(&info), &opts).await
             })
             .await;
         }

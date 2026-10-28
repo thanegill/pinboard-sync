@@ -334,34 +334,52 @@ impl Config {
 
         for (index, account) in self.reddit.iter().enumerate() {
             let at = |field: &str| format!("reddit[{index}].{field}");
-            check_domain(&at("reddit_domain"), &account.reddit_domain)?;
-            check_tags(&at("tags"), &account.tags)?;
-            check_tag(&at("tag_subreddit_prefix"), &account.tag_subreddit_prefix)?;
-            check_tag(&at("tag_comment"), &account.tag_comment)?;
-            check_tag(&at("tag_nsfw"), &account.tag_nsfw)?;
-            check_tag(&at("tag_author_prefix"), &account.tag_author_prefix)?;
-            check_tag(&at("tag_flair_prefix"), &account.tag_flair_prefix)?;
-            check_tag(&at("tag_media_prefix"), &account.tag_media_prefix)?;
+            check_domain(&at("reddit_domain"), account.reddit_domain.as_deref())?;
+            check_tags(&at("tags"), account.tags.as_deref())?;
+            check_tag(
+                &at("tag_subreddit_prefix"),
+                account.tag_subreddit_prefix.as_deref(),
+            )?;
+            check_tag(&at("tag_comment"), account.tag_comment.as_deref())?;
+            check_tag(&at("tag_nsfw"), account.tag_nsfw.as_deref())?;
+            check_tag(
+                &at("tag_author_prefix"),
+                account.tag_author_prefix.as_deref(),
+            )?;
+            check_tag(&at("tag_flair_prefix"), account.tag_flair_prefix.as_deref())?;
+            check_tag(&at("tag_media_prefix"), account.tag_media_prefix.as_deref())?;
         }
         for (index, account) in self.github.iter().enumerate() {
             let at = |field: &str| format!("github[{index}].{field}");
-            check_tags(&at("tags"), &account.tags)?;
-            check_tag(&at("tag_lang_prefix"), &account.tag_lang_prefix)?;
-            check_tag(&at("tag_author_prefix"), &account.tag_author_prefix)?;
-            check_tags(&at("gist_tags"), &account.gist_tags)?;
-            check_tag(&at("gist_tag_lang_prefix"), &account.gist_tag_lang_prefix)?;
+            check_tags(&at("tags"), account.tags.as_deref())?;
+            check_tag(&at("tag_lang_prefix"), account.tag_lang_prefix.as_deref())?;
+            check_tag(
+                &at("tag_author_prefix"),
+                account.tag_author_prefix.as_deref(),
+            )?;
+            check_tags(&at("gist_tags"), account.gist_tags.as_deref())?;
+            check_tag(
+                &at("gist_tag_lang_prefix"),
+                account.gist_tag_lang_prefix.as_deref(),
+            )?;
             check_tag(
                 &at("gist_tag_author_prefix"),
-                &account.gist_tag_author_prefix,
+                account.gist_tag_author_prefix.as_deref(),
             )?;
         }
         for (index, account) in self.hackernews.iter().enumerate() {
             let at = |field: &str| format!("hackernews[{index}].{field}");
-            check_tags(&at("tags"), &account.tags)?;
-            check_tag(&at("tag_comment"), &account.tag_comment)?;
-            check_tag(&at("tag_author_prefix"), &account.tag_author_prefix)?;
-            check_tag(&at("tag_special_prefix"), &account.tag_special_prefix)?;
-            check_tag(&at("tag_link"), &account.tag_link)?;
+            check_tags(&at("tags"), account.tags.as_deref())?;
+            check_tag(&at("tag_comment"), account.tag_comment.as_deref())?;
+            check_tag(
+                &at("tag_author_prefix"),
+                account.tag_author_prefix.as_deref(),
+            )?;
+            check_tag(
+                &at("tag_special_prefix"),
+                account.tag_special_prefix.as_deref(),
+            )?;
+            check_tag(&at("tag_link"), account.tag_link.as_deref())?;
         }
         Ok(())
     }
@@ -457,15 +475,13 @@ pub(crate) fn check_taggable(setting: &str, value: &str) -> Result<()> {
 }
 
 /// Error if an optional tag/prefix in config `field` contains whitespace or a comma.
-fn check_tag(field: &str, value: &Option<String>) -> Result<()> {
-    value
-        .as_deref()
-        .map_or(Ok(()), |v| check_taggable(&format!("config: `{field}`"), v))
+fn check_tag(field: &str, value: Option<&str>) -> Result<()> {
+    value.map_or(Ok(()), |v| check_taggable(&format!("config: `{field}`"), v))
 }
 
 /// Error if any tag in the config list `field` contains whitespace or a comma.
-fn check_tags(field: &str, values: &Option<Vec<String>>) -> Result<()> {
-    for (index, v) in values.iter().flatten().enumerate() {
+fn check_tags(field: &str, values: Option<&[String]>) -> Result<()> {
+    for (index, v) in values.unwrap_or_default().iter().enumerate() {
         check_taggable(&format!("config: `{field}[{index}]`"), v)?;
     }
     Ok(())
@@ -523,7 +539,7 @@ fn check_unique_names<T: Named>(source: &str, accounts: &[T]) -> Result<()> {
 /// the parser rewrites (percent-escapes, non-ASCII) would corrupt the URLs or never match.
 /// A trailing `.` would be set as the host, which `cleanup reddit`'s reddit.com filter
 /// then no longer recognizes.
-fn check_domain(field: &str, value: &Option<String>) -> Result<()> {
+fn check_domain(field: &str, value: Option<&str>) -> Result<()> {
     let Some(domain) = value else {
         return Ok(());
     };
@@ -611,20 +627,23 @@ impl GitHubConfig {
     /// `[defaults.github]` and then `now`.
     pub fn resolve(account: Option<&GitHubAccount>, defaults: &GitHubDefaults) -> Self {
         let d = GitHubConfig::default();
-        let field = |pick: fn(&GitHubAccount) -> &Option<String>, default: String| {
-            account.and_then(|a| pick(a).clone()).unwrap_or(default)
+        let field = |pick: fn(&GitHubAccount) -> Option<&String>, default: String| {
+            account.and_then(pick).cloned().unwrap_or(default)
         };
         let tags = account.and_then(|a| a.tags.clone()).unwrap_or(d.tags);
-        let lang_prefix = field(|a| &a.tag_lang_prefix, d.lang_prefix);
-        let author_prefix = field(|a| &a.tag_author_prefix, d.author_prefix);
+        let lang_prefix = field(|a| a.tag_lang_prefix.as_ref(), d.lang_prefix);
+        let author_prefix = field(|a| a.tag_author_prefix.as_ref(), d.author_prefix);
         let inherited = GistConfig::inheriting(&tags, &lang_prefix, &author_prefix);
         let gists = GistConfig {
             enabled: account.and_then(|a| a.gists).unwrap_or(inherited.enabled),
             tags: account
                 .and_then(|a| a.gist_tags.clone())
                 .unwrap_or(inherited.tags),
-            lang_prefix: field(|a| &a.gist_tag_lang_prefix, inherited.lang_prefix),
-            author_prefix: field(|a| &a.gist_tag_author_prefix, inherited.author_prefix),
+            lang_prefix: field(|a| a.gist_tag_lang_prefix.as_ref(), inherited.lang_prefix),
+            author_prefix: field(
+                |a| a.gist_tag_author_prefix.as_ref(),
+                inherited.author_prefix,
+            ),
             post_date: crate::settings::resolve_setting(
                 None,
                 account.and_then(|a| a.gist_post_date),
@@ -687,7 +706,7 @@ impl From<&HackerNewsAccount> for HackerNewsConfig {
 
 /// Shows whether an inline secret is set, never its value. The `Debug` impls below
 /// destructure every field so a new one cannot be added without deciding how it shows.
-struct Redacted<'a>(&'a Option<String>);
+struct Redacted<'a>(Option<&'a str>);
 
 impl fmt::Debug for Redacted<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -712,7 +731,7 @@ impl fmt::Debug for PinboardConfig {
             cleanup_stale_to_now,
         } = self;
         f.debug_struct("PinboardConfig")
-            .field("token", &Redacted(token))
+            .field("token", &Redacted(token.as_deref()))
             .field("token_file", token_file)
             .field("public", public)
             .field("toread", toread)
@@ -752,7 +771,7 @@ impl fmt::Debug for RedditAccount {
         f.debug_struct("RedditAccount")
             .field("name", name)
             .field("username", username)
-            .field("cookie", &Redacted(cookie))
+            .field("cookie", &Redacted(cookie.as_deref()))
             .field("cookie_file", cookie_file)
             .field("on_auth_failure", on_auth_failure)
             .field("limit", limit)
@@ -798,7 +817,7 @@ impl fmt::Debug for GitHubAccount {
         } = self;
         f.debug_struct("GitHubAccount")
             .field("name", name)
-            .field("token", &Redacted(token))
+            .field("token", &Redacted(token.as_deref()))
             .field("token_file", token_file)
             .field("on_auth_failure", on_auth_failure)
             .field("limit", limit)
@@ -825,19 +844,23 @@ pub trait Named {
     fn account_name(&self) -> Option<&str>;
 }
 
-/// Implement [`Named`] as `self.name`, optionally falling back to another field
-/// (`=> username`) when `name` is unset.
-macro_rules! impl_named {
-    ($($t:ty $(=> $fallback:ident)?),+ $(,)?) => {
-        $(impl Named for $t {
-            fn account_name(&self) -> Option<&str> {
-                self.name.as_deref()
-                $(.or(self.$fallback.as_deref()))?
-            }
-        })+
-    };
+impl Named for RedditAccount {
+    fn account_name(&self) -> Option<&str> {
+        self.name.as_deref().or(self.username.as_deref())
+    }
 }
-impl_named!(RedditAccount => username, GitHubAccount, HackerNewsAccount => username);
+
+impl Named for GitHubAccount {
+    fn account_name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+}
+
+impl Named for HackerNewsAccount {
+    fn account_name(&self) -> Option<&str> {
+        self.name.as_deref().or(self.username.as_deref())
+    }
+}
 
 /// The per-account settings shared across every source. Each returns the account-level
 /// override, or `None` to fall through to the per-source default and then the
@@ -854,21 +877,83 @@ pub trait Account: Named {
     fn stale_to_now(&self) -> Option<bool>;
 }
 
-/// Implement [`Account`] by reading the identically-purposed fields each account
-/// struct carries (all `Copy` `Option`s).
-macro_rules! impl_account {
-    ($($t:ty),+ $(,)?) => {
-        $(impl Account for $t {
-            fn limit(&self) -> Option<SyncLimit> { self.limit }
-            fn toread(&self) -> Option<bool> { self.toread }
-            fn public(&self) -> Option<bool> { self.public }
-            fn use_post_date(&self) -> Option<bool> { self.use_post_date }
-            fn max_age_days(&self) -> Option<u64> { self.post_date_max_age_days }
-            fn stale_to_now(&self) -> Option<bool> { self.cleanup_stale_to_now }
-        })+
-    };
+impl Account for RedditAccount {
+    fn limit(&self) -> Option<SyncLimit> {
+        self.limit
+    }
+
+    fn toread(&self) -> Option<bool> {
+        self.toread
+    }
+
+    fn public(&self) -> Option<bool> {
+        self.public
+    }
+
+    fn use_post_date(&self) -> Option<bool> {
+        self.use_post_date
+    }
+
+    fn max_age_days(&self) -> Option<u64> {
+        self.post_date_max_age_days
+    }
+
+    fn stale_to_now(&self) -> Option<bool> {
+        self.cleanup_stale_to_now
+    }
 }
-impl_account!(RedditAccount, GitHubAccount, HackerNewsAccount);
+
+impl Account for GitHubAccount {
+    fn limit(&self) -> Option<SyncLimit> {
+        self.limit
+    }
+
+    fn toread(&self) -> Option<bool> {
+        self.toread
+    }
+
+    fn public(&self) -> Option<bool> {
+        self.public
+    }
+
+    fn use_post_date(&self) -> Option<bool> {
+        self.use_post_date
+    }
+
+    fn max_age_days(&self) -> Option<u64> {
+        self.post_date_max_age_days
+    }
+
+    fn stale_to_now(&self) -> Option<bool> {
+        self.cleanup_stale_to_now
+    }
+}
+
+impl Account for HackerNewsAccount {
+    fn limit(&self) -> Option<SyncLimit> {
+        self.limit
+    }
+
+    fn toread(&self) -> Option<bool> {
+        self.toread
+    }
+
+    fn public(&self) -> Option<bool> {
+        self.public
+    }
+
+    fn use_post_date(&self) -> Option<bool> {
+        self.use_post_date
+    }
+
+    fn max_age_days(&self) -> Option<u64> {
+        self.post_date_max_age_days
+    }
+
+    fn stale_to_now(&self) -> Option<bool> {
+        self.cleanup_stale_to_now
+    }
+}
 
 /// `own`, then each of `configured`: the order a source checks its accounts in when it
 /// recognises a bookmark another of them wrote, its own account first.

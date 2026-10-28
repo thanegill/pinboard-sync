@@ -2,6 +2,19 @@ use super::*;
 use crate::test_support::warnings;
 use std::num::NonZeroUsize;
 
+#[test]
+fn the_pinboard_write_pause_is_rate_limit_secs_else_three_seconds() {
+    let pause = |rate_limit_secs| {
+        let mut config = Config::default();
+        config.pinboard.rate_limit_secs = rate_limit_secs;
+        pinboard_client_for_token("user:tok".into(), &config)
+            .unwrap()
+            .rate_limit()
+    };
+    assert_eq!(pause(Some(7)), Duration::from_secs(7));
+    assert_eq!(pause(None), Duration::from_secs(3));
+}
+
 /// Override values chosen so each setting is distinct from the others and from the
 /// `Config::default()` globals — so a builder that wires a flag into the *wrong*
 /// `SyncJob` field (e.g. `public` into the `read_later` slot) fails the assertions.
@@ -237,6 +250,32 @@ async fn an_env_secret_shared_by_several_accounts_is_warned_about_once() {
         [
             "WARN $REDDIT_COOKIE_FILE is set in the environment, so all 2 configured \
              reddit accounts use it, whatever their own config sets"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_shared_hackernews_username_is_warned_about() {
+    let _env = crate::secrets::FakeSecretEnv::set(&[("HN_USERNAME", "shared")]);
+    let account = |name: &str| HackerNewsAccount {
+        name: Some(name.into()),
+        ..Default::default()
+    };
+    let config = Config {
+        hackernews: vec![account("a"), account("b")],
+        ..Default::default()
+    };
+
+    let (_, logs) = crate::test_support::capturing_logs(async {
+        build_all_jobs(&config, &SyncOverrides::default())
+    })
+    .await;
+
+    assert_eq!(
+        warnings(&logs),
+        [
+            "WARN $HN_USERNAME is set in the environment, so all 2 configured hackernews \
+             accounts use it, whatever their own config sets"
         ]
     );
 }

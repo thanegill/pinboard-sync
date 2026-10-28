@@ -509,11 +509,11 @@ mod tests {
     #[test]
     fn a_synced_star_carries_the_first_enabled_base_tag() {
         let cfg = |tags: &[&str]| GitHubConfig {
-            tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            tags: crate::test_support::strings(tags),
             ..GitHubConfig::default()
         };
         let tagged = |tags: &[&str]| Bookmark {
-            tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            tags: crate::test_support::strings(tags),
             ..crate::test_support::stored_at("https://github.com/o/r")
         };
         assert!(is_synced_star(
@@ -578,7 +578,7 @@ mod tests {
     #[test]
     fn star_configs_keep_one_config_per_base_tag_the_clients_first() {
         let cfg = |tags: &[&str], lang_prefix: &str| GitHubConfig {
-            tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            tags: crate::test_support::strings(tags),
             lang_prefix: lang_prefix.into(),
             ..GitHubConfig::default()
         };

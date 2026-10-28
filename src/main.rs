@@ -39,7 +39,7 @@ use cli::{Cli, Command, ConfigAction};
 use commands::{run_backup, run_cleanup, run_sync};
 use config::Config;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let _ = dotenvy::dotenv();
     let cli = Cli::parse();
@@ -138,17 +138,13 @@ fn print_man() -> Result<()> {
 /// TOML file); absent = defaults. Unlike secrets, the config takes no `_FILE` form —
 /// it is already a file path.
 fn load_config(flag: Option<String>) -> Result<Config> {
-    match config_path(flag, std::env::var("PINBOARD_SYNC_CONFIG").ok()) {
-        Some(path) => {
-            let config = read_config(Path::new(&path))?;
-            info!("loaded config {path}: {}", account_counts(&config));
-            Ok(config)
-        }
-        None => {
-            debug!("no --config / PINBOARD_SYNC_CONFIG; using built-in defaults");
-            Ok(Config::default())
-        }
-    }
+    let Some(path) = config_path(flag, std::env::var("PINBOARD_SYNC_CONFIG").ok()) else {
+        debug!("no --config / PINBOARD_SYNC_CONFIG; using built-in defaults");
+        return Ok(Config::default());
+    };
+    let config = read_config(Path::new(&path))?;
+    info!("loaded config {path}: {}", account_counts(&config));
+    Ok(config)
 }
 
 /// The config file to load: the `--config` flag, else `$PINBOARD_SYNC_CONFIG`, else none.
@@ -207,6 +203,16 @@ mod tests {
             None,
             "`--config ''` turns the env var off"
         );
+    }
+
+    #[test]
+    fn load_config_reads_the_flagged_file() {
+        let dir = crate::test_support::scratch_dir("load-config");
+        let path = dir.path().join("pinboard-sync.toml");
+        std::fs::write(&path, "[[github]]\nname = \"main\"\n").unwrap();
+
+        let config = load_config(Some(path.display().to_string())).expect("loads");
+        assert_eq!(config.github.len(), 1, "{config:?}");
     }
 
     #[test]

@@ -282,10 +282,14 @@ fn debug_of_a_parsed_config_redacts_inline_secrets() {
         assert!(rendered.contains("/run/cookie"), "{rendered}");
     }
     assert_eq!(
-        format!("{:?}", Redacted(&cfg.pinboard.token)),
+        format!("{:?}", Redacted(cfg.pinboard.token.as_deref())),
         "Some(<redacted>)"
     );
-    assert_eq!(format!("{:?}", Redacted(&cfg.reddit[1].cookie)), "None");
+    assert_eq!(
+        format!("{:?}", Redacted(cfg.reddit[1].cookie.as_deref())),
+        "None"
+    );
+    assert!(format!("{:?}", cfg.pinboard).contains("token: Some(<redacted>)"));
     assert!(format!("{:?}", cfg.reddit[0]).contains("cookie: Some(<redacted>)"));
     assert!(format!("{:?}", cfg.reddit[1]).contains("cookie: None"));
     assert!(format!("{:?}", cfg.github[0]).contains("token: Some(<redacted>)"));
@@ -533,7 +537,7 @@ fn shipped_example_config_parses() {
 fn documents_key(example: &str, key: &str) -> bool {
     example.lines().any(|line| {
         let line = line.trim_start();
-        let line = line.strip_prefix('#').map(str::trim_start).unwrap_or(line);
+        let line = line.strip_prefix('#').map_or(line, str::trim_start);
         line.strip_prefix(key)
             .map(str::trim_start)
             .is_some_and(|rest| rest.starts_with('='))
@@ -724,6 +728,73 @@ fn account_name_falls_back_to_username() {
         .account_name(),
         None
     );
+}
+
+/// The six shared settings an [`Account`] reports, in declaration order.
+type Settings = (
+    Option<SyncLimit>,
+    Option<bool>,
+    Option<bool>,
+    Option<bool>,
+    Option<u64>,
+    Option<bool>,
+);
+
+fn settings_of<A: Account>(account: &A) -> Settings {
+    (
+        account.limit(),
+        account.toread(),
+        account.public(),
+        account.use_post_date(),
+        account.max_age_days(),
+        account.stale_to_now(),
+    )
+}
+
+#[test]
+fn every_account_type_reports_its_own_shared_settings() {
+    // Across accounts `a` and `b`, each bool setting takes a different pair of values, so
+    // a getter that reads another setting's field fails.
+    let a = "limit = 7\ntoread = true\npublic = true\nuse_post_date = false\n\
+             post_date_max_age_days = 9\ncleanup_stale_to_now = false\n";
+    let b = "limit = \"all\"\ntoread = true\npublic = false\nuse_post_date = true\n\
+             post_date_max_age_days = 10\ncleanup_stale_to_now = false\n";
+    let text: String = ["reddit", "github", "hackernews"]
+        .iter()
+        .map(|source| {
+            format!(
+                "[[{source}]]\nname = \"a\"\n{a}[[{source}]]\nname = \"b\"\n{b}\
+                 [[{source}]]\nname = \"unset\"\n"
+            )
+        })
+        .collect();
+    let cfg = Config::parse(&text).unwrap();
+    let want: [Settings; 3] = [
+        (
+            Some(SyncLimit::Max(NonZeroUsize::new(7).unwrap())),
+            Some(true),
+            Some(true),
+            Some(false),
+            Some(9),
+            Some(false),
+        ),
+        (
+            Some(SyncLimit::All),
+            Some(true),
+            Some(false),
+            Some(true),
+            Some(10),
+            Some(false),
+        ),
+        (None, None, None, None, None, None),
+    ];
+
+    let reddit: Vec<Settings> = cfg.reddit.iter().map(settings_of).collect();
+    let github: Vec<Settings> = cfg.github.iter().map(settings_of).collect();
+    let hackernews: Vec<Settings> = cfg.hackernews.iter().map(settings_of).collect();
+    assert_eq!(reddit, want, "reddit");
+    assert_eq!(github, want, "github");
+    assert_eq!(hackernews, want, "hackernews");
 }
 
 #[test]

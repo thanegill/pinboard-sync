@@ -461,3 +461,31 @@ async fn a_first_delete_that_finds_no_item_fails() {
         .unwrap_err();
     assert!(err.to_string().contains("item not found"), "{err}");
 }
+
+#[tokio::test]
+async fn successive_adds_wait_out_the_rate_limit_between_them() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/add"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let rate_limit = Duration::from_secs(7);
+    let pinboard = PinboardClient::build(
+        "user:tok".into(),
+        rate_limit,
+        server.uri(),
+        client_builder(),
+    )
+    .unwrap();
+
+    let (written, waits) = crate::http::recording_waits(async {
+        pinboard.add(&post()).await?;
+        pinboard.add(&post()).await
+    })
+    .await;
+
+    written.unwrap();
+    assert_eq!(waits, [rate_limit], "a pause before the second add only");
+}

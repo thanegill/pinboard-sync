@@ -1,23 +1,24 @@
-//! Date conversions for the `use_post_date` option: between unix epoch seconds (how
-//! source post dates are carried internally, so the age cap is a plain integer compare)
-//! and the RFC 3339 string Pinboard's `dt` expects (e.g. `2010-12-11T19:48:02Z`) — plus
-//! the option itself, [`DateOpts`], which sync and every cleanup pass apply (resolved
-//! through the config tiers by [`resolve_dates`](crate::settings::resolve_dates)).
+//! Date conversions for the `use_post_date` option: a source post date, as epoch seconds
+//! or an RFC 3339 string, becomes the [`OffsetDateTime`] a bookmark carries, and that
+//! becomes the RFC 3339 `dt` Pinboard expects (e.g. `2010-12-11T19:48:02Z`). Also the
+//! option itself, [`DateOpts`], which sync and every cleanup pass apply (resolved through
+//! the config tiers by [`resolve_dates`](crate::settings::resolve_dates)).
 
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
-/// Parse an RFC 3339 timestamp (e.g. GitHub's `starred_at`) to unix epoch seconds.
-pub fn rfc3339_to_unix(s: &str) -> Option<i64> {
-    OffsetDateTime::parse(s, &Rfc3339)
-        .ok()
-        .map(|t| t.unix_timestamp())
-}
+const SECS_PER_DAY: i128 = 86_400;
 
-/// Parse an RFC 3339 timestamp into an [`OffsetDateTime`] — the `cleanup` domain form of
-/// a bookmark's creation time. `None` if it doesn't parse.
+/// Parse an RFC 3339 timestamp into an [`OffsetDateTime`], keeping its offset and any
+/// fractional seconds. `None` if it doesn't parse.
 pub fn parse_rfc3339(s: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(s, &Rfc3339).ok()
+}
+
+/// `dt` in UTC at whole seconds, or `None` if that can't be represented.
+pub fn utc_whole_seconds(dt: OffsetDateTime) -> Option<OffsetDateTime> {
+    dt.checked_to_offset(UtcOffset::UTC)
+        .map(OffsetDateTime::truncate_to_second)
 }
 
 /// Format an [`OffsetDateTime`] as RFC 3339, keeping its offset and any fractional
@@ -29,9 +30,7 @@ pub fn to_rfc3339(dt: OffsetDateTime) -> Option<String> {
 /// Format an [`OffsetDateTime`] as Pinboard's `dt`, which its API documents as
 /// `CCYY-MM-DDThh:mm:ssZ`: UTC, at whole seconds. `None` if it can't be represented.
 pub fn to_pinboard_dt(dt: OffsetDateTime) -> Option<String> {
-    dt.checked_to_offset(UtcOffset::UTC)
-        .map(OffsetDateTime::truncate_to_second)
-        .and_then(to_rfc3339)
+    utc_whole_seconds(dt).and_then(to_rfc3339)
 }
 
 /// An [`OffsetDateTime`] from unix epoch seconds — used to lift a source's epoch post
@@ -44,7 +43,7 @@ pub fn from_unix(secs: i64) -> Option<OffsetDateTime> {
 /// to `now` (epoch) — the `use_post_date` backdate cap. Shared by
 /// [`DateOpts::sync_date`] and [`DateOpts::cleanup_date`].
 fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
-    now as i128 - timestamp as i128 <= max_age_days as i128 * 86_400
+    i128::from(now) - i128::from(timestamp) <= i128::from(max_age_days) * SECS_PER_DAY
 }
 
 /// The `use_post_date` policy: whether to date bookmarks by the source date, the backdate
@@ -122,7 +121,7 @@ mod tests {
             from_unix(secs).and_then(to_rfc3339).unwrap(),
             "2010-12-11T19:48:02Z"
         );
-        assert_eq!(rfc3339_to_unix("2010-12-11T19:48:02Z"), Some(secs));
+        assert_eq!(parse_rfc3339("2010-12-11T19:48:02Z"), from_unix(secs));
     }
 
     #[test]
@@ -136,12 +135,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_an_offset_back_to_utc_epoch() {
-        // Same instant expressed with a +00:00 offset parses to the same epoch.
-        assert_eq!(
-            rfc3339_to_unix("2010-12-11T19:48:02+00:00"),
-            Some(1_292_096_882)
-        );
+    fn utc_whole_seconds_moves_to_utc_and_drops_the_fraction() {
+        let parsed = parse_rfc3339("2010-12-11T20:48:02.661+01:00").unwrap();
+        let normalized = utc_whole_seconds(parsed).unwrap();
+        assert_eq!(normalized.offset(), UtcOffset::UTC);
+        assert_eq!(to_rfc3339(normalized).unwrap(), "2010-12-11T19:48:02Z");
     }
 
     #[test]
@@ -157,7 +155,7 @@ mod tests {
 
     #[test]
     fn rejects_garbage() {
-        assert_eq!(rfc3339_to_unix("not a date"), None);
+        assert_eq!(parse_rfc3339("not a date"), None);
     }
 
     #[test]

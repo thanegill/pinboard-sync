@@ -7,6 +7,8 @@
 
 pub mod backup_jobs;
 
+use std::time::Duration;
+
 use anyhow::{bail, Context, Result};
 use log::{debug, error, info};
 use url::Url;
@@ -17,7 +19,7 @@ use crate::cli::SyncFlags;
 use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit};
 use crate::github::{GitHubClient, GitHubConfig};
 use crate::hackernews::{HackerNewsClient, HackerNewsConfig};
-use crate::pinboard::{PinboardClient, RATE_LIMIT_SECS};
+use crate::pinboard::{PinboardClient, RATE_LIMIT};
 use crate::reddit::model::RedditConfig;
 use crate::reddit::RedditClient;
 use crate::secrets::{
@@ -82,10 +84,10 @@ pub fn warn_shared_env_secrets<A: SourceAccount>(overrides: &SyncOverrides, conf
 
 /// The secrets among `flagged` whose CLI flag holds no value the ladder would take, so
 /// that the environment rung is the highest one that can apply.
-fn unflagged(flagged: &[(SecretSpec, &Option<String>)]) -> Vec<SecretSpec> {
+fn unflagged(flagged: &[(SecretSpec, Option<&str>)]) -> Vec<SecretSpec> {
     flagged
         .iter()
-        .filter(|(secret, flag)| !flag.as_deref().is_some_and(|value| secret.accepts(value)))
+        .filter(|(secret, flag)| !flag.is_some_and(|value| secret.accepts(value)))
         .map(|(secret, _)| *secret)
         .collect()
 }
@@ -299,8 +301,14 @@ impl SourceAccount for RedditAccount {
 
     fn env_secrets(overrides: &SyncOverrides) -> Vec<SecretSpec> {
         unflagged(&[
-            (SecretSpec::REDDIT_USERNAME, &overrides.reddit_username),
-            (SecretSpec::REDDIT_COOKIE, &overrides.reddit_cookie),
+            (
+                SecretSpec::REDDIT_USERNAME,
+                overrides.reddit_username.as_deref(),
+            ),
+            (
+                SecretSpec::REDDIT_COOKIE,
+                overrides.reddit_cookie.as_deref(),
+            ),
         ])
     }
 
@@ -342,7 +350,7 @@ impl SourceAccount for GitHubAccount {
     }
 
     fn env_secrets(overrides: &SyncOverrides) -> Vec<SecretSpec> {
-        unflagged(&[(SecretSpec::GITHUB_TOKEN, &overrides.github_token)])
+        unflagged(&[(SecretSpec::GITHUB_TOKEN, overrides.github_token.as_deref())])
     }
 
     fn client(
@@ -376,7 +384,10 @@ impl SourceAccount for HackerNewsAccount {
     }
 
     fn env_secrets(overrides: &SyncOverrides) -> Vec<SecretSpec> {
-        unflagged(&[(SecretSpec::HN_USERNAME, &overrides.hackernews_username)])
+        unflagged(&[(
+            SecretSpec::HN_USERNAME,
+            overrides.hackernews_username.as_deref(),
+        )])
     }
 
     fn client(
@@ -429,7 +440,10 @@ fn build_pinboard_client(token_flag: Option<String>, config: &Config) -> Result<
 
 /// The client for an already-resolved token, at the configured write pacing.
 fn pinboard_client_for_token(token: String, config: &Config) -> Result<PinboardClient> {
-    let rate_limit = config.pinboard.rate_limit_secs.unwrap_or(RATE_LIMIT_SECS);
+    let rate_limit = config
+        .pinboard
+        .rate_limit_secs
+        .map_or(RATE_LIMIT, Duration::from_secs);
     PinboardClient::new(token, rate_limit)
 }
 

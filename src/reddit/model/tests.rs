@@ -95,7 +95,7 @@ fn every_non_empty_base_tag_is_added() {
         ),
     ] {
         let cfg = RedditConfig {
-            tags: tags.iter().map(|t| t.to_string()).collect(),
+            tags: crate::test_support::strings(&tags),
             ..RedditConfig::default()
         };
         assert_eq!(it.tags(&cfg), want, "tags = {tags:?}");
@@ -196,6 +196,15 @@ fn tags_come_in_a_fixed_order() {
             "type:image"
         ]
     );
+}
+
+#[test]
+fn a_video_is_typed_by_its_flag_or_either_video_hint() {
+    assert_eq!(post_media_type(true, None), Some("video"));
+    assert_eq!(post_media_type(false, Some("hosted:video")), Some("video"));
+    assert_eq!(post_media_type(false, Some("rich:video")), Some("video"));
+    assert_eq!(post_media_type(false, Some("image")), Some("image"));
+    assert_eq!(post_media_type(false, Some("link")), None);
 }
 
 #[test]

@@ -71,8 +71,7 @@ pub(super) fn create_backup_tmp(dir: &Path, file_name: &str) -> Result<(PathBuf,
     create_new_temp(dir, || {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         let nonce = nanos ^ u128::from(COUNTER.fetch_add(1, Ordering::Relaxed));
         format!(".{file_name}.tmp.{pid}.{nonce:x}")
     })

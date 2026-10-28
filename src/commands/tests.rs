@@ -80,7 +80,7 @@ fn sync_all_counts_the_accounts_it_could_not_build() {
 
 #[tokio::test]
 async fn run_sync_jobs_fails_the_run_for_accounts_it_could_not_build() {
-    let pinboard = PinboardClient::new("user:token".into(), 0).unwrap();
+    let pinboard = PinboardClient::new("user:token".into(), std::time::Duration::ZERO).unwrap();
     let error = run_sync_jobs(Vec::new(), AllRun { failed: 1 }, &pinboard, &[], false)
         .await
         .expect_err("an unbuilt account fails the run");

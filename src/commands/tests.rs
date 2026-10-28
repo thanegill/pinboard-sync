@@ -139,22 +139,25 @@ async fn run_sync_jobs_fails_the_run_for_accounts_it_could_not_build() {
     assert_eq!(error.to_string(), "1 account(s) failed");
 }
 
+/// A config with one Reddit account that builds, for the `sync --all` plans.
+fn one_reddit_account() -> Config {
+    Config {
+        reddit: vec![RedditAccount {
+            username: Some("alice".into()),
+            cookie: Some("reddit_session=x".into()),
+            ..RedditAccount::default()
+        }],
+        ..Config::default()
+    }
+}
+
 #[test]
 fn top_level_all_threads_on_auth_failure_into_the_hook() {
     // The `sync --all` path builds `SyncOverrides` itself (not from the source args),
     // so the hook must be carried explicitly from the top-level flag.
     let cmd = parse_sync(&["--all", "--on-auth-failure", "refresh-cookie"]);
-    assert_eq!(cmd.on_auth_failure.as_deref(), Some("refresh-cookie"));
-
-    let overrides = SyncOverrides {
-        dry_run: cmd.dry_run,
-        on_auth_failure: cmd.on_auth_failure,
-        reddit_username: Some("alice".into()),
-        reddit_cookie: Some("reddit_session=x".into()),
-        ..SyncOverrides::default()
-    };
-    let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
-    assert_eq!(job.hook.as_deref(), Some("refresh-cookie"));
+    let plan = build_sync_plan(cmd, &one_reddit_account()).expect("plans");
+    assert_eq!(plan.jobs[0].hook.as_deref(), Some("refresh-cookie"));
 }
 
 #[test]
@@ -163,18 +166,8 @@ fn sync_all_falls_back_to_on_auth_failure_env_when_flag_absent() {
     // `PINBOARD_SYNC_ON_AUTH_FAILURE`. The top-level flag doesn't bind that env,
     // so the `--all` arm must read it directly or the hook silently never fires.
     let _env = crate::secrets::FakeSecretEnv::set(&[("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook")]);
-    let cmd = parse_sync(&["--all"]);
-
-    let overrides = SyncOverrides {
-        dry_run: cmd.dry_run,
-        on_auth_failure: cmd.on_auth_failure.or_else(on_auth_failure_from_env),
-        reddit_username: Some("alice".into()),
-        reddit_cookie: Some("reddit_session=x".into()),
-        ..SyncOverrides::default()
-    };
-
-    let job = build_job::<RedditAccount>(None, &overrides, &Config::default()).expect("builds");
-    assert_eq!(job.hook.as_deref(), Some("env-hook"));
+    let plan = build_sync_plan(parse_sync(&["--all"]), &one_reddit_account()).expect("plans");
+    assert_eq!(plan.jobs[0].hook.as_deref(), Some("env-hook"));
 }
 
 #[test]

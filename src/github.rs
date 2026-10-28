@@ -135,17 +135,42 @@ impl GitHubStarredRepo {
     }
 }
 
-/// The repo name a repo-root URL's last path segment spells: the segment less one `.git`
-/// suffix. `None` when that leaves no name, or a dot segment (`.` or `..`, raw or
-/// percent-encoded), which a URL parser drops, so a URL built from it names the owner or
-/// the site rather than a repo.
-pub(crate) fn repo_name(segment: &str) -> Option<&str> {
-    let name = segment.strip_suffix(".git").unwrap_or(segment);
+/// The owner and [`repo_name`] a repo-root path spells, from its segments: exactly two once
+/// empty segments are dropped, so `/owner//repo/` reads as `/owner/repo`. `None` for a path
+/// of any other length, or a last segment that names no repo.
+pub(crate) fn repo_path<'a>(
+    segments: impl IntoIterator<Item = &'a str>,
+) -> Option<(&'a str, &'a str)> {
+    let segments: Vec<&str> = segments
+        .into_iter()
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let [owner, last] = segments[..] else {
+        return None;
+    };
+    Some((owner, repo_name(last)?))
+}
+
+/// The repo name a repo-root URL's last path segment spells: the segment less every
+/// trailing `.git`, in any case, as `GitHubKeys`, which lowercases, does. `None` when that
+/// leaves no name, or a dot segment (`.` or `..`, raw or percent-encoded), which a URL
+/// parser drops, so a URL built from it names the owner or the site rather than a repo.
+fn repo_name(segment: &str) -> Option<&str> {
+    let mut name = segment;
+    while let Some(shorter) = strip_git_suffix(name) {
+        name = shorter;
+    }
     let is_dot_segment = matches!(
         name.to_ascii_lowercase().as_str(),
         "." | ".." | "%2e" | ".%2e" | "%2e." | "%2e%2e"
     );
     (!name.is_empty() && !is_dot_segment).then_some(name)
+}
+
+fn strip_git_suffix(segment: &str) -> Option<&str> {
+    let split = segment.len().checked_sub(".git".len())?;
+    let (name, suffix) = (segment.get(..split)?, segment.get(split..)?);
+    suffix.eq_ignore_ascii_case(".git").then_some(name)
 }
 
 /// What sets a repo note's homepage line apart from the rest, which `cleanup` reads back.

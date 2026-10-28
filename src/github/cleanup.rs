@@ -10,7 +10,7 @@ use anyhow::Context;
 use time::OffsetDateTime;
 use url::Url;
 
-use super::{github_note, repo_name, GitHubClient, GitHubConfig, GitHubRepo, HOMEPAGE_SEPARATOR};
+use super::{github_note, repo_path, GitHubClient, GitHubConfig, GitHubRepo, HOMEPAGE_SEPARATOR};
 use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, two_pass_verdict, CleanupPass, Plan};
@@ -198,22 +198,18 @@ impl RepoName {
 }
 
 /// The [`RepoName`] of a genuine repo-root URL: the host must be the `github.com` repo host
-/// (bare or the `www.` alias, not another subdomain) and the path exactly two non-empty
-/// segments, ignoring a trailing slash, the second a [`repo_name`]. `None` for anything
-/// else -- a deep link (`/issues`, `/tree/...`), a gist or other subdomain, a non-GitHub
-/// host, or a name that is no repo's (`/owner/.git`, `/owner/..git`) -- which cleanup
-/// leaves untouched.
+/// (bare or the `www.` alias, not another subdomain) and the path a [`repo_path`]: exactly
+/// two non-empty segments, the second naming a repo. `None` for anything else -- a deep
+/// link (`/issues`, `/tree/...`), a gist or other subdomain, a non-GitHub host, or a name
+/// that is no repo's (`/owner/.git`, `/owner/..git`) -- which cleanup leaves untouched.
 fn repo_root(url: &Url) -> Option<RepoName> {
     if !is_repo_host(url.host_str()?) {
         return None;
     }
-    let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
-    let [owner, repo] = segments[..] else {
-        return None;
-    };
+    let (owner, name) = repo_path(url.path_segments()?)?;
     Some(RepoName {
         owner: owner.to_string(),
-        name: repo_name(repo)?.to_string(),
+        name: name.to_string(),
     })
 }
 
@@ -367,6 +363,8 @@ mod tests {
             "https://github.com/o/.git",
             "https://github.com/o/..git",
             "https://github.com/o/%2E%2E.git",
+            "https://github.com/o/.GIT",
+            "https://github.com/o/.git.git",
         ] {
             let (plan, waits) = crate::http::recording_waits(pass.plan(&stored_at(stored))).await;
             assert_eq!(plan.unwrap(), Plan::Skipped, "{stored}");
@@ -384,6 +382,14 @@ mod tests {
         assert_eq!(repo_root(&url("https://github.com/Owner/Repo")), owner_repo);
         assert_eq!(
             repo_root(&url("https://github.com/Owner/Repo.git")),
+            owner_repo
+        );
+        assert_eq!(
+            repo_root(&url("https://github.com/Owner/Repo.GIT")),
+            owner_repo
+        );
+        assert_eq!(
+            repo_root(&url("https://github.com/Owner/Repo.git.GIT")),
             owner_repo
         );
         assert_eq!(
@@ -413,6 +419,8 @@ mod tests {
             "https://github.com/o/...git",
             "https://github.com/o/%2e.git",
             "https://github.com/o/%2E%2E.git",
+            "https://github.com/o/.GIT",
+            "https://github.com/o/.git.git",
         ] {
             assert_eq!(repo_root(&url(stored)), None, "{stored}");
         }
@@ -599,24 +607,32 @@ mod tests {
     }
 
     /// A repo-root URL in any of the forms `cleanup github` canonicalizes: either host,
-    /// either scheme, any case, with or without `.git`, a trailing slash, a query or a
-    /// fragment. The name itself never ends in `.git`: `repo_root` strips one `.git` and
-    /// `GitHubKeys` one more, so `<name>.git.git` and `.git` key differently afterwards.
+    /// either scheme, any case, doubled slashes, with or without `.git` in either case, a
+    /// trailing slash, a query or a fragment. The name may end in `.git`s too, as long as
+    /// stripping them leaves a name, and not `.` or `..`.
     fn stored_repo_root() -> impl Strategy<Value = String> {
         (
             prop::sample::select(vec!["http", "https"]),
             prop::sample::select(vec!["github.com", "www.github.com", "GitHub.com"]),
+            prop::sample::select(vec!["/", "//"]),
             "[A-Za-z0-9]([A-Za-z0-9-]{0,10}[A-Za-z0-9])?",
-            "[A-Za-z0-9._-]{1,20}".prop_filter("a repo name", |name| {
-                !matches!(name.as_str(), "." | "..") && !name.ends_with(".git")
+            prop::sample::select(vec!["/", "//"]),
+            "([A-Za-z0-9._-]{1,12})(\\.[gG][iI][tT]){0,2}".prop_filter("a repo name", |name| {
+                let mut bare = name.to_ascii_lowercase();
+                while bare.ends_with(".git") {
+                    bare.truncate(bare.len() - ".git".len());
+                }
+                !matches!(bare.as_str(), "" | "." | "..")
             }),
-            prop::sample::select(vec!["", ".git"]),
-            prop::sample::select(vec!["", "/"]),
+            prop::sample::select(vec!["", ".git", ".GIT"]),
+            prop::sample::select(vec!["", "/", "//"]),
             prop::sample::select(vec!["", "?tab=readme-ov-file", "#readme"]),
         )
-            .prop_map(|(scheme, host, owner, name, suffix, slash, tail)| {
-                format!("{scheme}://{host}/{owner}/{name}{suffix}{slash}{tail}")
-            })
+            .prop_map(
+                |(scheme, host, lead, owner, separator, name, suffix, slash, tail)| {
+                    format!("{scheme}://{host}{lead}{owner}{separator}{name}{suffix}{slash}{tail}")
+                },
+            )
     }
 
     proptest! {
@@ -627,6 +643,8 @@ mod tests {
             let stored = url(&stored);
             let root = repo_root(&stored).expect("a repo root");
             let canonical = root.canonical_url().expect("a canonical URL");
+            let rerun = repo_root(&canonical);
+            prop_assert_eq!(rerun.as_ref(), Some(&root), "{}", canonical);
             prop_assert!(GitHubKeys.dedup_key(&stored).is_some(), "{} has no key", stored);
             prop_assert_eq!(
                 GitHubKeys.dedup_key(&canonical),

@@ -14,16 +14,20 @@ fn store<'a>(
     CleanupStore::new(pinboard, AccountView::new(all.to_vec()), mode)
 }
 
-/// [`run_pass`] over `books`, with the account seeded from them and dating off.
+/// [`run_pass`] over `slice`, with the account seeded from `all` and dating off.
+async fn run_over<C: CleanupPass>(
+    pinboard: &FakePinboard,
+    all: &[Bookmark],
+    slice: &[Bookmark],
+    mode: WriteMode,
+    pass: &C,
+) -> PassOutcome {
+    run_pass(&store(pinboard, all, mode), slice, "test", NO_DATING, pass).await
+}
+
+/// [`run_over`] the whole account `books`.
 async fn run<C: CleanupPass>(pinboard: &FakePinboard, books: &[Bookmark], pass: &C) -> PassOutcome {
-    run_pass(
-        &store(pinboard, books, WriteMode::Live),
-        books,
-        "test",
-        NO_DATING,
-        pass,
-    )
-    .await
+    run_over(pinboard, books, books, WriteMode::Live, pass).await
 }
 
 /// [`run`] as a dry run.
@@ -32,14 +36,7 @@ async fn run_dry<C: CleanupPass>(
     books: &[Bookmark],
     pass: &C,
 ) -> PassOutcome {
-    run_pass(
-        &store(pinboard, books, WriteMode::DryRun),
-        books,
-        "test",
-        NO_DATING,
-        pass,
-    )
-    .await
+    run_over(pinboard, books, books, WriteMode::DryRun, pass).await
 }
 
 /// A `CleanupPass` whose `plan` is a closure, so each test scripts its own outcome.
@@ -594,14 +591,7 @@ async fn a_refused_rewrite_leaves_its_own_record_protected() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 2, "both rewrites must be refused");
     assert!(
         pinboard.updated.borrow().is_empty(),
@@ -635,14 +625,7 @@ async fn a_matching_public_group_merges_and_stays_public() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -864,14 +847,7 @@ async fn a_mismatched_member_drops_out_while_the_rest_of_the_group_merges() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 1, "only the private one is held back");
     assert_eq!(outcome.changed, 1);
     let updated = pinboard.updated.borrow();
@@ -1003,14 +979,7 @@ async fn a_merge_whose_delete_fails_reports_the_write_that_landed() {
         ..FakePinboard::default()
     };
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(
         outcome.write_failed, 1,
         "the stranded URL still fails the run"
@@ -1405,14 +1374,7 @@ async fn a_visibility_mismatch_refuses_instead_of_merging() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 1);
     assert_eq!(outcome.changed, 0);
     assert!(
@@ -1451,14 +1413,7 @@ async fn a_visibility_mismatch_protects_the_movers_own_url() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 2);
     assert!(
         pinboard.updated.borrow().is_empty(),
@@ -1486,14 +1441,7 @@ async fn merging_does_not_reset_a_residents_unparseable_date() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1529,14 +1477,7 @@ async fn merging_a_resident_keeps_its_read_later_and_date() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1577,14 +1518,7 @@ async fn a_converged_merge_is_not_rewritten_every_run() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     let written = pinboard.updated_urls();
     assert!(
         !written.iter().any(|url| url == "https://collide/"),
@@ -1650,14 +1584,7 @@ async fn rewrite_onto_a_resident_outside_the_slice_merges_with_it() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1705,14 +1632,7 @@ async fn a_rewrite_onto_an_unoccupied_url_still_goes_through() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     assert_eq!(outcome.refused, 0);
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
@@ -1866,14 +1786,7 @@ async fn run_rename_collision(
             ..unchanged_plan(bookmark)
         }))
     });
-    run_pass(
-        &store(pinboard, &books, WriteMode::Live),
-        &books,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await
+    run_over(pinboard, &books, &books, WriteMode::Live, &pass).await
 }
 
 #[tokio::test]
@@ -2274,14 +2187,7 @@ async fn a_dry_run_previews_a_merge_and_its_absorbed_urls() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::DryRun),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::DryRun, &pass).await;
     assert!(
         pinboard.updated.borrow().is_empty(),
         "{:?}",
@@ -2348,14 +2254,7 @@ async fn a_merge_onto_a_trimmed_note_is_not_rewritten_every_run() {
         }))
     });
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     let written = pinboard.updated_urls();
     assert!(
         !written.iter().any(|url| url == "https://collide/"),
@@ -2398,14 +2297,7 @@ async fn a_whole_note_too_long_to_write_is_not_cut_when_nothing_changed() {
         }))
     });
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
     let written = pinboard.updated_urls();
     assert_eq!(
         written,
@@ -2435,11 +2327,11 @@ async fn a_dry_run_previews_the_note_as_pinboard_will_store_it() {
         }))
     });
 
-    let (outcome, logs) = crate::test_support::capturing_logs(run_pass(
-        &store(&pinboard, &all, WriteMode::DryRun),
+    let (outcome, logs) = crate::test_support::capturing_logs(run_over(
+        &pinboard,
+        &all,
         &books,
-        "test",
-        NO_DATING,
+        WriteMode::DryRun,
         &pass,
     ))
     .await;
@@ -2531,14 +2423,7 @@ async fn a_dry_run_previews_a_refusal() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::DryRun),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::DryRun, &pass).await;
     assert_eq!(outcome.refused, 1);
     assert_eq!(
         outcome.preview,
@@ -2638,14 +2523,7 @@ async fn a_dry_run_names_a_target_held_by_a_visibility_refusal() {
     });
     let pinboard = FakePinboard::default();
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::DryRun),
-        &slice,
-        "test",
-        NO_DATING,
-        &pass,
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &slice, WriteMode::DryRun, &pass).await;
     assert_eq!(outcome.refused, 2);
     assert_eq!(
         outcome.preview,
@@ -2767,14 +2645,7 @@ async fn a_merge_that_stores_nothing_new_only_absorbs() {
     let (resident, mover) = long_resident_and_short_mover();
     let all = vec![mover.clone(), resident.clone()];
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &[mover],
-        "test",
-        NO_DATING,
-        &onto_target(),
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &[mover], WriteMode::Live, &onto_target()).await;
     assert!(
         pinboard.updated.borrow().is_empty(),
         "{:?}",
@@ -2796,14 +2667,7 @@ async fn an_absorb_whose_delete_fails_is_half_applied() {
     let (resident, mover) = long_resident_and_short_mover();
     let all = vec![mover.clone(), resident];
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &[mover],
-        "test",
-        NO_DATING,
-        &onto_target(),
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &[mover], WriteMode::Live, &onto_target()).await;
     assert!(pinboard.updated.borrow().is_empty());
     assert_eq!(outcome.changed, 0, "nothing in the account changed");
     assert_eq!(outcome.write_failed, 1);
@@ -2815,11 +2679,11 @@ async fn an_absorb_warns_that_the_movers_note_does_not_fit() {
     let (resident, mover) = long_resident_and_short_mover();
     let all = vec![mover.clone(), resident];
 
-    let (_, logs) = crate::test_support::capturing_logs(run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
+    let (_, logs) = crate::test_support::capturing_logs(run_over(
+        &pinboard,
+        &all,
         &[mover],
-        "test",
-        NO_DATING,
+        WriteMode::Live,
         &onto_target(),
     ))
     .await;
@@ -2954,14 +2818,7 @@ async fn a_merge_appending_to_a_note_just_under_the_budget_only_absorbs() {
     mover.note = "HN Link: https://news.ycombinator.com/item?id=1".into();
     let all = vec![mover.clone(), resident.clone()];
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::Live),
-        &[mover],
-        "test",
-        NO_DATING,
-        &onto_target(),
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &[mover], WriteMode::Live, &onto_target()).await;
     assert!(
         pinboard.updated.borrow().is_empty(),
         "{:?}",
@@ -2999,14 +2856,7 @@ async fn a_dry_run_previews_an_absorb_without_fields() {
     let (resident, mover) = long_resident_and_short_mover();
     let all = vec![mover.clone(), resident];
 
-    let outcome = run_pass(
-        &store(&pinboard, &all, WriteMode::DryRun),
-        &[mover],
-        "test",
-        NO_DATING,
-        &onto_target(),
-    )
-    .await;
+    let outcome = run_over(&pinboard, &all, &[mover], WriteMode::DryRun, &onto_target()).await;
     assert_eq!(
         outcome.preview,
         [

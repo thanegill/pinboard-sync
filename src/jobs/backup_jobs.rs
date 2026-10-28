@@ -8,7 +8,7 @@ use log::warn;
 
 use super::{
     build_every, build_job, build_selected, pinboard_client_for_token, Built, Selection,
-    SkippedTarget, SourceAccount, SourceClient, SyncOverrides,
+    SkippedTarget, SourceAccount, SourceClient, SyncJob, SyncOverrides,
 };
 use crate::backup::{self, BackupSource};
 use crate::cli::{BackupCmd, BackupTarget};
@@ -179,16 +179,21 @@ fn build_backup_job<A: SourceAccount>(
     overrides: &SyncOverrides,
     config: &Config,
 ) -> Result<BackupJob> {
-    let job = build_job(account, overrides, config)?;
+    let SyncJob {
+        client,
+        label,
+        hook,
+        settings: _,
+    } = build_job(account, overrides, config)?;
     Ok(BackupJob {
         stem: format!(
             "{}-{}",
             A::SOURCE,
             backup::slug(account.and_then(config::Named::account_name))
         ),
-        label: job.label.clone(),
-        hook: job.hook.clone(),
-        client: BackupClient::Source(Box::new(job.client)),
+        label,
+        hook,
+        client: BackupClient::Source(Box::new(client)),
     })
 }
 

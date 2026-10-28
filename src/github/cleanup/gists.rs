@@ -74,8 +74,8 @@ struct MarkedGistConfig {
 
 impl MarkedGistConfig {
     /// Whether a bookmark tagged `tags` is synced under this config.
-    fn syncs(&self, tags: &[String]) -> bool {
-        self.markers.iter().all(|marker| tags.contains(marker))
+    fn syncs(&self, tags: &Tags) -> bool {
+        self.markers.iter().all(|marker| tags.has(marker))
     }
 }
 
@@ -226,7 +226,7 @@ fn refresh_tags(existing: Tags, gist: &GitHubGist, configs: &[&GistConfig]) -> T
     let additions = configs.iter().flat_map(|cfg| {
         let mut tags = Tags::default();
         tags.push_all(&cfg.tags);
-        tags.extend_unique(&gist.derived_tags(cfg));
+        tags.push_all(&gist.derived_tags(cfg));
         tags.to_vec()
     });
     retag(existing, &prefixes, additions)

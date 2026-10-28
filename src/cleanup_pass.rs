@@ -44,6 +44,10 @@ use merge::{incumbent_of, merge_bookmarks};
 /// Only the first is evidence the source is reachable, which is what lets the driver
 /// tell one dead link apart from an outage.
 #[derive(Debug, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a plan is returned and unpacked at once, never stored as a Plan"
+)]
 pub enum Plan {
     /// The bookmark's desired end-state; the driver diffs it and writes what changed.
     Bookmark(Bookmark),

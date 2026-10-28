@@ -1,4 +1,5 @@
 use super::*;
+use crate::tags::Tags;
 use crate::test_support::{scratch_dir, stored_at, strings, tag_list};
 use time::OffsetDateTime;
 
@@ -134,6 +135,13 @@ fn export_bookmark_is_the_on_disk_contract() {
             "read_later": true,
         })
     );
+}
+
+#[test]
+fn export_lists_a_repeated_tag_once() {
+    let mut b = bookmark();
+    b.tags = Tags::parse("a b a");
+    assert_eq!(ExportBookmark::from(&b).tags, ["a", "b"]);
 }
 
 #[test]

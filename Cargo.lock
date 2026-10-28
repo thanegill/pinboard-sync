@@ -1255,6 +1255,7 @@ dependencies = [
  "h2",
  "htmd",
  "http",
+ "indexmap",
  "log",
  "reqwest",
  "scraper",

@@ -222,7 +222,8 @@ not silently change an operator's files.
 **All tags are config-driven; there are no tag CLI flags.** Each source's tag config
 (`RedditConfig`, `GitHubConfig`, `HackerNewsConfig`) has defaulted fields, rendered into a
 bookmark's `Tags` by `Tags::push`/`Tags::push_prefixed` in [`src/tags.rs`](src/tags.rs)
-(empty string disables a tag). The tag tests in
+(empty string disables a tag). `Tags` is an insertion-ordered set, so a tag is held once,
+at its first place; its `==` sees order and `differs_from` does not. The tag tests in
 [`src/reddit/model/tests.rs`](src/reddit/model/tests.rs) are the spec — keep them in sync
 with rule changes. Pinboard tags can't contain whitespace or commas, so
 `Tags::push_prefixed` slugs them in the value (`lang:jupyter-notebook`) and `Config::parse`

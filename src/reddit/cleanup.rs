@@ -207,11 +207,11 @@ impl CleanupPass for RedditCleanupPass<'_> {
         let post = post_fullname(&new_url).and_then(|f| self.info.posts.get(&f));
 
         if opts.mark_nsfw && post.is_some_and(|p| p.over_18) {
-            tags.push_unique(&owner.nsfw);
+            tags.push(&owner.nsfw);
         }
 
         let own_fullname = if is_comment_url(&new_url) {
-            tags.push_unique(&owner.comment);
+            tags.push(&owner.comment);
             comment_fullname(&new_url)
         } else {
             post_fullname(&new_url)
@@ -459,14 +459,14 @@ fn comment_fullname(url: &Url) -> Option<String> {
 /// the URL (casing per [`cased_subreddit`]), and strip bare/legacy/duplicate
 /// subreddit forms, except a bare one in `kept`. An empty base tag or prefix adds no
 /// tag, as in sync. Returns a sorted, de-duplicated list.
-pub fn normalize_tags(
+pub fn normalize_tags<'e>(
     url: &Url,
-    existing: &[String],
+    existing: impl IntoIterator<Item = &'e String>,
     base_tags: &[String],
     prefix: &str,
     kept: &[&str],
 ) -> Tags {
-    let mut set: BTreeSet<String> = existing.iter().cloned().collect();
+    let mut set: BTreeSet<String> = existing.into_iter().cloned().collect();
     let mut ensured = Tags::default();
     ensured.push_all(base_tags);
     let bare_prefixes = [prefix, prefix.strip_suffix(':').unwrap_or(prefix)];

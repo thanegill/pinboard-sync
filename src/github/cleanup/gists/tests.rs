@@ -72,7 +72,7 @@ fn two_default_accounts_each_own_only_their_gists() {
     let work = GitHubConfig::resolve(Some(&work_account), &Default::default());
     let configs = gist_configs(&home, &[home.clone(), work]);
     let owners = |tags: &[&str]| -> Vec<Vec<String>> {
-        let tags = strings(tags);
+        let tags = Tags::from(strings(tags));
         configs
             .iter()
             .filter(|marked| marked.syncs(&tags))

@@ -21,7 +21,7 @@ pub(super) fn incumbent_of(members: &[Member<'_>], target: &Url) -> Option<usize
 
 /// Field-merge the PLANNED bookmarks of a collision group, `lead` then `rest` (all sharing
 /// `lead`'s URL, in stable order), into one bookmark. Tags are an order-preserving union
-/// (first occurrence wins, case-sensitive, empty tags dropped as by `Tags::extend_unique`);
+/// (first occurrence wins, case-sensitive, empty tags dropped as by `Tags::push_all`);
 /// the note is `lead`'s verbatim, extended with whichever blank-line-separated blocks of
 /// the rest it doesn't already hold; title is the first non-empty; timestamp the earliest
 /// present. Privacy never widens: the merge is `public` only if every merged member is
@@ -33,7 +33,7 @@ pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
 
     let mut tags = Tags::default();
     for b in group() {
-        tags.extend_unique(&b.tags);
+        tags.push_all(&b.tags);
     }
 
     // The first member's note is the base, carried byte for byte: it is the record that

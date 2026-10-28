@@ -189,7 +189,7 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
             return Ok(Plan::Skipped);
         };
         let mut tags = bookmark.tags.clone();
-        tags.extend_unique(&new.tags);
+        tags.push_all(&new.tags);
         new.tags = tags;
         new.public = bookmark.public;
         new.read_later = bookmark.read_later;
@@ -232,7 +232,7 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
         // Drop the marker tag, add the base HN tags.
         let mut tags = bookmark.tags.clone();
         tags.retain(|t| *t != self.config.link_tag);
-        tags.extend_unique(&self.config.tags);
+        tags.push_all(&self.config.tags);
 
         Ok(Plan::Bookmark(Bookmark {
             url: bookmark.url.clone(),

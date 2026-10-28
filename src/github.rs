@@ -470,7 +470,7 @@ impl GitHubClient {
         synced_keys: Option<&HashSet<String>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
-        self.walk(&STARRED_GISTS, synced_keys, sink, |gist: GitHubGist| {
+        self.walk_drafts(&STARRED_GISTS, synced_keys, sink, |gist: GitHubGist| {
             gist.into_draft(&self.config.gists)
         })
         .await
@@ -482,24 +482,46 @@ impl GitHubClient {
         synced_keys: Option<&HashSet<String>>,
         sink: &mut RawSink,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
-        self.walk(&STARS, synced_keys, sink, |starred: GitHubStarredRepo| {
+        self.walk_drafts(&STARS, synced_keys, sink, |starred: GitHubStarredRepo| {
             starred.into_draft(&self.config)
         })
         .await
     }
 
-    /// Walk `stream`'s `Link: rel="next"` pages, shaping each element with `shape`. An
-    /// element that fails to deserialize is skipped with a warning rather than discarding
-    /// its page (and every earlier one); a body that isn't a JSON array still fails the
-    /// walk, and so does a non-empty page where every element fails, a schema break (see
-    /// [`deserialize_lenient`]).
-    async fn walk<T: serde::de::DeserializeOwned>(
+    /// [`Self::walk`] `stream`, shaping each element into a draft with `shape` and, with
+    /// `synced_keys`, stopping at the first page with nothing new ([`page_is_caught_up`]).
+    async fn walk_drafts<T: serde::de::DeserializeOwned>(
         &self,
         stream: &PagedStream,
         synced_keys: Option<&HashSet<String>>,
         sink: &mut RawSink,
         shape: impl Fn(T) -> Option<BookmarkDraft>,
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        let mut drafts = Vec::new();
+        self.walk(stream, sink, |items: Vec<T>| {
+            let page_len = items.len();
+            let page_drafts: Vec<BookmarkDraft> = items.into_iter().filter_map(&shape).collect();
+            let caught_up =
+                synced_keys.is_some_and(|keys| page_is_caught_up(page_len, &page_drafts, keys));
+            drafts.extend(page_drafts);
+            caught_up
+        })
+        .await?;
+        Ok(drafts)
+    }
+
+    /// Walk `stream`'s `Link: rel="next"` pages, handing each page's elements to `on_page`,
+    /// which says whether the walk is caught up and should stop there. An element that
+    /// fails to deserialize is skipped with a warning rather than discarding its page (and
+    /// every earlier one); a body that isn't a JSON array still fails the walk, and so does
+    /// a non-empty page where every element fails, a schema break (see
+    /// [`deserialize_lenient`]).
+    async fn walk<T: serde::de::DeserializeOwned>(
+        &self,
+        stream: &PagedStream,
+        sink: &mut RawSink,
+        mut on_page: impl FnMut(Vec<T>) -> bool,
+    ) -> Result<(), SourceError> {
         let PagedStream {
             label,
             raw_stream,
@@ -508,7 +530,6 @@ impl GitHubClient {
             query,
         } = *stream;
         let endpoint = format!("{}{path}", self.base);
-        let mut out = Vec::new();
         let mut page: u32 = 1;
         let mut visited = HashSet::new();
 
@@ -560,12 +581,7 @@ impl GitHubClient {
                          deserialize — the API response shape may have changed"
                     ))
                 })?;
-            let page_len = items.len();
-            let page_drafts: Vec<BookmarkDraft> = items.into_iter().filter_map(&shape).collect();
-            let caught_up =
-                synced_keys.is_some_and(|keys| page_is_caught_up(page_len, &page_drafts, keys));
-            out.extend(page_drafts);
-            if caught_up {
+            if on_page(items) {
                 debug!("{label}: page {page} has nothing new; stopping");
                 break;
             }
@@ -575,7 +591,7 @@ impl GitHubClient {
                 None => break,
             }
         }
-        Ok(out)
+        Ok(())
     }
 }
 

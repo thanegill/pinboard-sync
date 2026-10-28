@@ -3859,3 +3859,198 @@ fn a_two_pass_verdict_keeps_and_leads_with_a_halt() {
     };
     assert_eq!(message, "spent; and for repos: other trouble");
 }
+
+/// A member held back from a group that is then refused whole is counted with the group,
+/// once, not again on its own: `refused` counts abandoned writes.
+#[tokio::test]
+async fn a_member_held_back_from_a_refused_group_is_not_counted_twice() {
+    // `unread` fails its lookup, so `https://y/` is untouchable and the group moving `m`
+    // there is refused, which keeps `m` at the target and refuses the group heading there
+    // too. That group had already held `second` back, whose note won't fit beside
+    // `first`'s.
+    let pinboard = FakePinboard::trimming();
+    let unread = bookmark("https://y/");
+    let m = bookmark("https://target/");
+    let first = bookmark("https://first/");
+    let second = Bookmark {
+        url: u("https://second/"),
+        ..with_note_just_under_the_budget(&pinboard, bookmark("https://target/"))
+    };
+    let books = vec![unread, m, first, second];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        let url = match bookmark.url.as_str() {
+            "https://y/" => return Err(item_error()),
+            "https://target/" => "https://y/",
+            _ => "https://target/",
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(url),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+
+    let (outcome, logs) = crate::test_support::capturing_logs(run(&pinboard, &books, &pass)).await;
+    assert!(
+        pinboard.ops.borrow().is_empty(),
+        "{:?}",
+        pinboard.ops.borrow()
+    );
+    assert_eq!(
+        outcome.refused, 2,
+        "the group at y and the group at the target"
+    );
+    assert!(
+        crate::test_support::warnings(&logs)
+            .iter()
+            .any(|line| line.contains("not merging https://second/ into https://target/")),
+        "the held member's own warning stays: {logs:#?}"
+    );
+}
+
+/// A cut fragment is credited only to the block it was cut from: an `HN Link:` cut short
+/// is not kept by a different link that starts the same way.
+#[test]
+fn a_fragment_is_not_kept_by_another_block_that_starts_alike() {
+    let store = FakePinboard::trimming();
+    let other_link = "a\n\nHN Link: https://news.ycombinator.com/item?id=2";
+    let own_link = "a\n\nHN Link: https://news.ycombinator.com/item?id=1";
+    let alone = format!("a\n\nHN Link: https://news.ycombinat{TRUNCATION_MARKER}");
+    assert!(!holds_what_it_keeps(
+        &store,
+        other_link,
+        [other_link, ""],
+        other_link,
+        own_link,
+        own_link,
+        &alone
+    ));
+}
+
+/// The target is cut inside its own `id=2` link, a little past where the mover's `id=1`
+/// link is cut: the target's cut starts the same way, but comes from another block.
+#[test]
+fn a_fragment_is_not_kept_by_a_target_cut_inside_another_block() {
+    let store = FakePinboard::trimming();
+    let id1 = "HN Link: https://news.ycombinator.com/item?id=1";
+    let id2 = "HN Link: https://news.ycombinator.com/item?id=2";
+    let merged = format!("user text\n\n{id2}\n\nlead extra text");
+    let held = format!("user text\n\n{}{TRUNCATION_MARKER}", &id2[..43]);
+    let mover = format!("user text\n\n{id1}");
+    let alone = format!("user text\n\n{}{TRUNCATION_MARKER}", &id1[..30]);
+    assert!(!holds_what_it_keeps(
+        &store,
+        &held,
+        [&merged, "user text"],
+        &merged,
+        &mover,
+        &mover,
+        &alone
+    ));
+}
+
+/// The mover stores a block whole that its plan extends in place. Its lone rewrite is cut
+/// inside that block, and the target earlier: the stored text between the two cuts is the
+/// mover's own, though the lead's plan carries the extended block too.
+#[test]
+fn a_block_the_plan_extends_is_still_the_members_own() {
+    let store = FakePinboard::trimming();
+    let stored = format!("user text\n\n{LONG_USER_TEXT}");
+    let planned = format!("user text\n\n{LONG_USER_TEXT} and more besides");
+    let held = format!("user text\n\n{}{TRUNCATION_MARKER}", &LONG_USER_TEXT[..30]);
+    let alone = format!("user text\n\n{}{TRUNCATION_MARKER}", &LONG_USER_TEXT[..60]);
+    assert!(!holds_what_it_keeps(
+        &store,
+        &held,
+        [&planned, "user text"],
+        &planned,
+        &stored,
+        &planned,
+        &alone
+    ));
+}
+
+/// A target cut whose own block isn't known is credited only at the member's block's place:
+/// the same start one block further on is another block.
+#[test]
+fn a_target_cut_of_an_unknown_block_counts_only_in_its_place() {
+    let store = FakePinboard::trimming();
+    let held = format!("abc\n\nxyzw f{TRUNCATION_MARKER}");
+    let alone = format!("xyzw{TRUNCATION_MARKER}");
+    assert!(!holds_what_it_keeps(
+        &store,
+        &held,
+        [&held, ""],
+        "",
+        "",
+        "xyzw full block",
+        &alone
+    ));
+}
+
+/// A stored cut stays the member's own when its plan moves the block it was cut from to
+/// another place: the lead's plan carrying the block doesn't excuse losing the cut.
+#[test]
+fn a_stored_cut_is_the_members_own_wherever_its_plan_puts_the_block() {
+    let store = FakePinboard::trimming();
+    let stored = format!("s\n\nabc{TRUNCATION_MARKER}");
+    let planned = "new\n\ns\n\nabcdef full";
+    assert!(!holds_what_it_keeps(
+        &store,
+        "new\n\ns",
+        ["new\n\ns", ""],
+        planned,
+        &stored,
+        planned,
+        planned
+    ));
+}
+
+/// A fragment cut from a note already cut there is known only by its start, so it is
+/// credited to the target's block at the same place, here cut later inside that block.
+#[test]
+fn a_fragment_known_only_by_its_start_is_kept_by_the_block_in_its_place() {
+    let store = FakePinboard::trimming();
+    let held = format!("x\n\nabcdefgh{TRUNCATION_MARKER}");
+    let mover = format!("x\n\nabcd{TRUNCATION_MARKER}");
+    assert!(holds_what_it_keeps(
+        &store,
+        &held,
+        [&held, ""],
+        &held,
+        &mover,
+        &mover,
+        &mover
+    ));
+    let elsewhere = format!("abcdefgh\n\nx\n\nzz{TRUNCATION_MARKER}");
+    assert!(
+        !holds_what_it_keeps(
+            &store,
+            &elsewhere,
+            [&elsewhere, ""],
+            &elsewhere,
+            &mover,
+            &mover,
+            &mover
+        ),
+        "the same start in another place is not its block"
+    );
+}
+
+/// A stored cut is credited only to the block it was cut from: a one-character cut is not
+/// kept by an unrelated block that starts with the same character.
+#[test]
+fn a_stored_cut_is_not_kept_by_another_block_that_starts_alike() {
+    let store = FakePinboard::trimming();
+    let held = "x\n\n4zzz another block";
+    let carried = "x\n\n4abc the stored block";
+    let stored = format!("x\n\n4{TRUNCATION_MARKER}");
+    assert!(!holds_what_it_keeps(
+        &store,
+        held,
+        [held, ""],
+        carried,
+        &stored,
+        carried,
+        carried
+    ));
+}

@@ -104,8 +104,8 @@ pub struct PassOutcome {
     /// Rewrites this pass declined to make: a target that must not be written at all (see
     /// [`Refusal`]), or a plan held back over visibility or over a note its merge would cut
     /// off. Not a failure, but work that did not happen, so it is reported. Counted per
-    /// *group* for an untouchable target and per *plan* for one held back, so it counts
-    /// abandoned writes, not bookmarks.
+    /// *group* for an untouchable target and per *plan* for one held back, unless its group
+    /// is refused whole, so it counts abandoned writes, not bookmarks, and none twice.
     pub refused: usize,
     /// Bookmarks the source gave an answer for -- the evidence that it is reachable.
     /// Excludes [`Plan::Skipped`], which never asked it anything.
@@ -263,7 +263,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     let (first_appearance, mut groups) = group_by_target(&pairs);
     let group_order = write_order(&first_appearance, &groups);
     let residents = residents_of(store, &pairs, &group_order, &untouchable);
-    hold_back_visibility_mismatches(
+    let mut held_back = hold_back_visibility_mismatches(
         &group_order,
         &mut groups,
         &residents,
@@ -271,7 +271,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         dry_run,
         &mut outcome,
     );
-    hold_back_cut_notes(
+    for (key, count) in hold_back_cut_notes(
         store,
         &group_order,
         &mut groups,
@@ -279,7 +279,9 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         &mut untouchable,
         dry_run,
         &mut outcome,
-    );
+    ) {
+        *held_back.entry(key).or_default() += count;
+    }
 
     // The URLs a planned write still owns. A rewrite's old URL is never deleted when it is
     // one of these, because that write's record will live there and deleting it would
@@ -299,12 +301,15 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
 
     for key in &group_order {
         let group = groups.remove(*key).expect("key came from group_order");
+        // Each plan held back from this group is one write abandoned, unless the group is
+        // refused whole: then they are part of the one write the refusal abandons.
+        let held_here = held_back.get(*key).copied().unwrap_or(0);
         // The hold-backs can empty a group outright, when every plan heading here was held
         // back. There is nothing left to refuse *or* write, so this comes before the
-        // untouchable check: those plans were already counted as they were held back, and
-        // reporting the group again would inflate `refused` past the number of writes
-        // actually abandoned. It is also what guarantees `write_merge` a member to lead.
+        // untouchable check, and reporting the group too would count those plans twice.
+        // It is also what guarantees `write_merge` a member to lead.
         if group.is_empty() {
+            outcome.refused += held_here;
             continue;
         }
         // The target must not be written, so leave the rewriting bookmark(s) at their old
@@ -314,6 +319,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             refuse_group(key, *reason, dry_run, &mut outcome);
             continue;
         }
+        outcome.refused += held_here;
         // Pinboard keys on URL, so the end state at this target has to be one record.
         // Anything already stored there joins the group rather than being replaced by it;
         // which member leads that merge is settled in `write_merge`.
@@ -530,7 +536,7 @@ struct HeldBack<'p> {
 }
 
 /// Drop from each group the plans that disagree about visibility with what stays at its
-/// target, counting each as refused and marking its own URL occupied.
+/// target, marking each one's own URL occupied, and return how many each target lost.
 ///
 /// A merge fuses the members' notes and tags into one record, so a bookmark may only join
 /// when it agrees with the record that stays there about who may read it. Widening would
@@ -550,7 +556,8 @@ fn hold_back_visibility_mismatches<'p>(
     untouchable: &mut HashMap<Url, Refusal>,
     dry_run: bool,
     outcome: &mut PassOutcome,
-) {
+) -> HashMap<Url, usize> {
+    let mut held_from: HashMap<Url, usize> = HashMap::new();
     let mut held_back: Vec<HeldBack> = Vec::new();
     for key in group_order {
         if untouchable.contains_key(*key) {
@@ -599,7 +606,7 @@ fn hold_back_visibility_mismatches<'p>(
         staying,
     } in held_back
     {
-        outcome.refused += 1;
+        *held_from.entry(target.clone()).or_default() += 1;
         let describe = |public| if public { "public" } else { "private" };
         match staying {
             Some(staying) => warn!(
@@ -634,15 +641,16 @@ fn hold_back_visibility_mismatches<'p>(
             .entry(mover)
             .or_insert(Refusal::OccupiedByRefused);
     }
+    held_from
 }
 
-/// Drop from each merging group the members that would make the merge lose text, counting
-/// each as refused and marking its own URL occupied. The merge is built up from the record
-/// that leads it, adding the others in merge order and keeping each only when, with it,
-/// what the target will hold still has all of the note a lone rewrite of each member would
-/// keep, short of plan text the member doesn't store that the leading plan has too
-/// ([`Merge::would_lose`]), and the leading note keeps all it would keep on its own: other
-/// members' tags take room from the note too.
+/// Drop from each merging group the members that would make the merge lose text, marking
+/// each one's own URL occupied, and return how many each target lost. The merge is built up
+/// from the record that leads it, adding the others in merge order and keeping each only
+/// when, with it, what the target will hold still has all of the note a lone rewrite of
+/// each member would keep, short of plan text the member doesn't store that the leading
+/// plan has too ([`Merge::would_lose`]), and the leading note keeps all it would keep on
+/// its own: other members' tags take room from the note too.
 ///
 /// Absorbing a member deletes it, and leaving its URL to another group writes over it, so
 /// either way the text the cut lost would be gone; a cut leading note loses its tail for
@@ -658,7 +666,8 @@ fn hold_back_cut_notes<'p, S: BookmarkStore>(
     untouchable: &mut HashMap<Url, Refusal>,
     dry_run: bool,
     outcome: &mut PassOutcome,
-) {
+) -> HashMap<Url, usize> {
+    let mut held_from: HashMap<Url, usize> = HashMap::new();
     for key in group_order {
         if untouchable.contains_key(*key) {
             continue;
@@ -696,7 +705,7 @@ fn hold_back_cut_notes<'p, S: BookmarkStore>(
                 continue;
             };
             merging.pop();
-            outcome.refused += 1;
+            *held_from.entry((*key).clone()).or_default() += 1;
             warn!("not merging {} into {key}: {why}", member.stored.url);
             if dry_run {
                 emit_preview(
@@ -714,6 +723,7 @@ fn hold_back_cut_notes<'p, S: BookmarkStore>(
         }
         members.retain(|member| !held.contains(&member.stored.url));
     }
+    held_from
 }
 
 /// The index among `members` of the one that leads their merge at `key`: none when a
@@ -939,6 +949,8 @@ struct Merge<'p> {
     /// The note of the record that leads the merge: the resident's stored note, or the
     /// incumbent's or base's plan.
     lead_note: String,
+    /// The stored record `fitted` was fitted against: the one at the target, or the base's.
+    fitted_from: Option<&'p Bookmark>,
 }
 
 impl Merge<'_> {
@@ -958,62 +970,171 @@ impl Merge<'_> {
             return false;
         }
         let alone = fit_plan(store, Some(member.stored), member.planned);
+        let fitted_from = self.fitted_from.map_or("", |record| record.note.as_str());
         !holds_what_it_keeps(
             store,
-            &kept_text(store, self.kept()),
+            self.kept(),
+            [&self.merged.note, fitted_from],
             &self.lead_note,
             &member.stored.note,
+            &member.planned.note,
             &alone.note,
         )
     }
 }
 
-/// Whether `held`, the text a target keeps, holds `note`, a member's note as a lone rewrite
+/// Whether `held`, the note a target keeps, holds `note`, a member's note as a lone rewrite
 /// of it would keep it: each of its blocks, and for a cut note the start of the block the
-/// cut fell in, which `held` may keep more of. A cut's fragment is matched as the start of
-/// any block, so which block it came from is not checked.
+/// cut fell in, credited only to that same block, held whole or cut inside it no earlier.
+/// The notes each was cut from say which block a cut fell in: `held_sources` for the
+/// target, and the member's `planned` and `stored` for `note`.
 ///
 /// A block or fragment the note of the record leading the merge, `carried`, also has is
-/// excused when the member does not store it itself (`stored`): what a plan adds and the
-/// lead's plan adds too is the lead's to keep, while what the member stores is lost with it.
+/// excused when the member does not store it itself: what a plan adds and the lead's plan
+/// adds too is the lead's to keep, while what the member stores is lost with it. The
+/// member stores a block when its stored note holds it, or has the same text as `note` up
+/// to some way into it, or a cut it starts with, that the target does not hold.
 fn holds_what_it_keeps<S: BookmarkStore>(
     store: &S,
     held: &str,
+    held_sources: [&str; 2],
     carried: &str,
     stored: &str,
+    planned: &str,
     note: &str,
 ) -> bool {
-    let begins = |text: &str, fragment: &str| {
-        fragment.is_empty()
-            || text
-                .split("\n\n")
-                .any(|block| block.trim().starts_with(fragment))
+    let held = Kept::of(store, held, held_sources);
+    let carried = Kept::of(store, carried, [carried, ""]);
+    let stored_kept = Kept::of(store, stored, [stored, ""]);
+    let kept = Kept::of(store, note, [planned, stored]);
+    let note_text = store.kept_of_cut(note).unwrap_or(note);
+    let stored_text = store.kept_of_cut(stored).unwrap_or(stored);
+    let shared = shared_prefix_len(note_text, stored_text);
+    let stores = |block: &str, index: usize, span: std::ops::Range<usize>| {
+        let start_lost = |start: &str| !start.is_empty() && !held.holds_start(block, index, start);
+        stored_kept.holds(block)
+            || (block.starts_with(stored_kept.cut) && start_lost(stored_kept.cut))
+            || (shared > span.start
+                && start_lost(note_text[span.start..shared.min(span.end)].trim()))
     };
-    let (stored_whole, stored_cut) = whole_and_cut(store, stored);
-    let stored_cut_lost = !stored_cut.is_empty() && !begins(held, stored_cut);
-    let stores_block = |block: &str| {
-        holds_block(stored_whole, block)
-            || (stored_cut_lost && block.trim().starts_with(stored_cut))
-    };
-    let stores_fragment = |fragment: &str| {
-        begins(stored_whole, fragment)
-            || (stored_cut_lost
-                && (fragment.starts_with(stored_cut) || stored_cut.starts_with(fragment)))
-    };
-    let (whole, cut) = whole_and_cut(store, note);
-    whole.split("\n\n").all(|block| {
-        holds_block(held, block) || (!stores_block(block) && holds_block(carried, block))
-    }) && (begins(held, cut) || (!stores_fragment(cut) && begins(carried, cut)))
+    let mut start = 0;
+    for (index, raw) in kept.whole_blocks().enumerate() {
+        let block = raw.trim();
+        let span = start..start + raw.len();
+        start = span.end + 2;
+        if !held.holds(block) && (stores(block, index, span) || !carried.holds(block)) {
+            return false;
+        }
+    }
+    if kept.cut.is_empty() {
+        return true;
+    }
+    let index = kept.whole_count();
+    match kept.cut_block {
+        Some(block) => {
+            held.holds_start(block, index, kept.cut)
+                || (!stores(block, index, start..note_text.len())
+                    && carried.holds_start(block, index, kept.cut))
+        }
+        // The note was cut from a note already cut there, so all that is known of the
+        // block is this start: only the target's block at the same place in the note,
+        // whole or cut no earlier, can be holding it.
+        None => held
+            .block_at(index)
+            .is_some_and(|block| block.starts_with(kept.cut)),
+    }
 }
 
-/// `note` as a store keeps it, split into its whole blocks and, for a cut note, the start
-/// of the block the cut fell in (trimmed; empty when the cut fell between blocks).
-fn whole_and_cut<'n, S: BookmarkStore>(store: &S, note: &'n str) -> (&'n str, &'n str) {
-    let Some(kept) = store.kept_of_cut(note) else {
-        return (note, "");
-    };
-    let (whole, cut) = kept.rsplit_once("\n\n").unwrap_or(("", kept));
-    (whole, cut.trim())
+/// The length of the longest common prefix of `a` and `b`, on a char boundary.
+fn shared_prefix_len(a: &str, b: &str) -> usize {
+    a.char_indices()
+        .zip(b.chars())
+        .find(|((_, x), y)| x != y)
+        .map_or(a.len().min(b.len()), |((at, _), _)| at)
+}
+
+/// A note as a store keeps it: its whole blocks, and for a cut note the start of the block
+/// the cut fell in (trimmed; empty when the note is whole or the cut fell between blocks),
+/// with that block whole when a note it was cut from has it.
+struct Kept<'n> {
+    whole: &'n str,
+    cut: &'n str,
+    cut_block: Option<&'n str>,
+}
+
+impl<'n> Kept<'n> {
+    /// `note` as kept, with `sources`, the notes it may have been cut from, to find its cut
+    /// block in. A block of a source that was itself cut there is not known whole.
+    fn of<S: BookmarkStore>(store: &S, note: &'n str, sources: [&'n str; 2]) -> Self {
+        let Some(kept) = store.kept_of_cut(note) else {
+            return Kept {
+                whole: note,
+                cut: "",
+                cut_block: None,
+            };
+        };
+        let (whole, cut) = kept.rsplit_once("\n\n").unwrap_or(("", kept));
+        Kept {
+            whole,
+            cut: cut.trim(),
+            cut_block: block_cut_from(kept, sources)
+                .filter(|block| store.kept_of_cut(block).is_none()),
+        }
+    }
+
+    /// Its whole blocks, untrimmed, in order.
+    fn whole_blocks(&self) -> impl Iterator<Item = &'n str> {
+        (!self.whole.is_empty())
+            .then_some(self.whole)
+            .into_iter()
+            .flat_map(|whole| whole.split("\n\n"))
+    }
+
+    /// How many whole blocks it holds.
+    fn whole_count(&self) -> usize {
+        self.whole_blocks().count()
+    }
+
+    /// Its block at `index`, whole or the cut one, trimmed.
+    fn block_at(&self, index: usize) -> Option<&'n str> {
+        self.whole_blocks()
+            .map(str::trim)
+            .chain((!self.cut.is_empty()).then_some(self.cut))
+            .nth(index)
+    }
+
+    /// Whether it holds `block` whole.
+    fn holds(&self, block: &str) -> bool {
+        holds_block(self.whole, block)
+    }
+
+    /// Whether it holds `block`, the note's block at `index`, up to the end of `fragment`,
+    /// a start of it: whole, or cut inside that same block no earlier. Its cut is that same
+    /// block when it was cut from it, or, when its own block isn't known whole, when it
+    /// falls at the same place in the note.
+    fn holds_start(&self, block: &str, index: usize, fragment: &str) -> bool {
+        if self.holds(block) {
+            return true;
+        }
+        let same_block = match self.cut_block {
+            Some(own) => own == block,
+            None => self.whole_count() == index && block.starts_with(self.cut),
+        };
+        !self.cut.is_empty() && self.cut.starts_with(fragment) && same_block
+    }
+}
+
+/// The whole block of one of `sources` that `kept`, a cut note's kept text, was cut inside:
+/// in the first source `kept` starts, the block running from the boundary before the cut.
+fn block_cut_from<'n>(kept: &str, sources: [&'n str; 2]) -> Option<&'n str> {
+    let source = sources
+        .into_iter()
+        .find(|source| source.starts_with(kept))?;
+    let start = source[..kept.len()]
+        .rfind("\n\n")
+        .map_or(0, |boundary| boundary + 2);
+    let block = &source[start..];
+    Some(block.split("\n\n").next().unwrap_or(block).trim())
 }
 
 /// Merge `members` heading for `key`, with `resident` if one is stored there, and fit the
@@ -1073,11 +1194,8 @@ fn merge_members<'p, S: BookmarkStore>(
     // The *stored* record at the target, which for an incumbent is not the plan that led
     // the merge: the merge is fitted against it, and compared with it.
     let stored_at_target = resident.or_else(|| lifted.map(|at| members[at].stored));
-    let fitted = fit_plan(
-        store,
-        stored_at_target.or(base.map(|member| member.stored)),
-        &merged,
-    );
+    let fitted_from = stored_at_target.or(base.map(|member| member.stored));
+    let fitted = fit_plan(store, fitted_from, &merged);
     // A merge that stores nothing new only absorbs: rewriting the target would store
     // nothing, and would cut a whole note there longer than a write allows.
     let rewrite =
@@ -1089,6 +1207,7 @@ fn merge_members<'p, S: BookmarkStore>(
         stored_at_target,
         base: base.map(|member| &member.stored.url),
         lead_note,
+        fitted_from,
     }
 }
 

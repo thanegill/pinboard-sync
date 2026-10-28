@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use log::{debug, warn};
 use serde::Deserialize;
+use time::OffsetDateTime;
 
 use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
 use crate::bookmark::Bookmark;
@@ -124,11 +125,12 @@ struct GitHubStarredRepo {
 }
 
 impl GitHubStarredRepo {
-    /// Shape into a draft, dating it by the (RFC3339) star time. `None` (with a warning)
-    /// if the repo's `html_url` doesn't parse.
+    /// Shape into a draft, dating it by the star time in UTC at whole seconds. `None` (with
+    /// a warning) if the repo's `html_url` doesn't parse.
     fn into_draft(self, cfg: &GitHubConfig) -> Option<BookmarkDraft> {
-        let post_date = crate::timefmt::rfc3339_to_unix(&self.starred_at);
-        self.repo.into_draft_with_date(cfg, post_date)
+        let starred_at = crate::timefmt::parse_rfc3339(&self.starred_at)
+            .and_then(crate::timefmt::utc_whole_seconds);
+        self.repo.into_draft_with_date(cfg, starred_at)
     }
 }
 
@@ -165,7 +167,7 @@ impl GitHubRepo {
     fn into_draft_with_date(
         self,
         cfg: &GitHubConfig,
-        post_date: Option<i64>,
+        post_date: Option<OffsetDateTime>,
     ) -> Option<BookmarkDraft> {
         let url = Url::parse(&self.html_url)
             .map_err(|e| {
@@ -198,7 +200,7 @@ impl GitHubRepo {
                 title: html_to_plain(&self.full_name),
                 note,
                 tags,
-                timestamp: post_date.and_then(crate::timefmt::from_unix),
+                timestamp: post_date,
                 public: false,
                 read_later: false,
             },

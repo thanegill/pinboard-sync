@@ -140,7 +140,7 @@ async fn run_sync_jobs(
     for (job, result) in jobs.iter().zip(fetched) {
         match result {
             Ok(drafts) => per_job.push(drafts),
-            // Surface the failure (firing the hook on ReauthRequired) but keep going.
+            // Surface the failure (firing the hook on Halt::Reauth) but keep going.
             Err(e) => {
                 warn!("{}: fetch failed", job.label);
                 run.record(Err(handle_source_err(e, job.hook.as_deref())));

@@ -234,7 +234,9 @@ async fn a_rate_limit_stops_the_pass_like_a_dead_credential() {
                 ..unchanged_plan(bookmark)
             }));
         }
-        Err(SourceError::RateLimited("resets at 14:23".into()))
+        Err(SourceError::Halted(Halt::RateLimited(
+            "resets at 14:23".into(),
+        )))
     });
     let pinboard = FakePinboard::default();
 
@@ -268,7 +270,7 @@ async fn an_edge_block_stops_the_pass_and_is_reported_as_a_block() {
                 ..unchanged_plan(bookmark)
             }));
         }
-        Err(SourceError::Blocked("edge block".into()))
+        Err(SourceError::Halted(Halt::Blocked("edge block".into())))
     });
     let pinboard = FakePinboard::default();
 
@@ -279,7 +281,7 @@ async fn an_edge_block_stops_the_pass_and_is_reported_as_a_block() {
     assert_eq!(pinboard.updated.borrow().len(), 1);
     let err = outcome.into_result().unwrap_err();
     assert!(
-        matches!(&err, SourceError::Blocked(m) if m == "edge block"),
+        matches!(&err, SourceError::Halted(Halt::Blocked(m)) if m == "edge block"),
         "got {err:?}"
     );
 }
@@ -303,7 +305,7 @@ async fn reauth_stops_planning_but_still_writes_what_was_planned() {
                 ..unchanged_plan(bookmark)
             }));
         }
-        Err(SourceError::ReauthRequired("token expired".into()))
+        Err(SourceError::Halted(Halt::Reauth("token expired".into())))
     });
     let pinboard = FakePinboard::default();
 
@@ -328,7 +330,7 @@ async fn a_reauth_alongside_failed_writes_reports_both() {
     let books = vec![bookmark("https://x/one"), bookmark("https://x/dead")];
     let pass = FakePass(|bookmark: &Bookmark| {
         if bookmark.url.as_str().ends_with("dead") {
-            return Err(SourceError::ReauthRequired("token expired".into()));
+            return Err(SourceError::Halted(Halt::Reauth("token expired".into())));
         }
         Ok(Plan::Bookmark(Bookmark {
             title: "New".into(),
@@ -356,7 +358,7 @@ async fn a_reauth_does_not_hide_lookups_that_already_failed() {
     ];
     let pass = FakePass(|bookmark: &Bookmark| {
         if bookmark.url.as_str().ends_with("dead") {
-            return Err(SourceError::ReauthRequired("token expired".into()));
+            return Err(SourceError::Halted(Halt::Reauth("token expired".into())));
         }
         Err(item_error())
     });
@@ -904,7 +906,7 @@ async fn a_halt_protects_the_bookmark_whose_lookup_raised_it() {
     // URL; the halt then has to protect that URL from it.
     let books = vec![bookmark("https://mover/"), bookmark("https://halts/")];
     let pass = FakePass(|bookmark: &Bookmark| match bookmark.url.as_str() {
-        "https://halts/" => Err(SourceError::ReauthRequired("cookie expired".into())),
+        "https://halts/" => Err(SourceError::Halted(Halt::Reauth("cookie expired".into()))),
         _ => Ok(Plan::Bookmark(Bookmark {
             url: u("https://halts/"),
             ..unchanged_plan(bookmark)
@@ -1759,7 +1761,7 @@ async fn rewrite_onto_a_bookmark_left_unplanned_by_reauth_is_refused() {
 
     let pass = FakePass(|bookmark: &Bookmark| {
         if bookmark.url.as_str().contains("dead") {
-            return Err(SourceError::ReauthRequired("token expired".into()));
+            return Err(SourceError::Halted(Halt::Reauth("token expired".into())));
         }
         Ok(Plan::Bookmark(Bookmark {
             url: u("https://collide/"),

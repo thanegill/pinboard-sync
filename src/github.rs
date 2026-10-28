@@ -21,7 +21,7 @@ use crate::http::{client_builder, RetryingClient, USER_AGENT};
 use crate::keys::GitHubKeys;
 use crate::secrets::ConfiguredSecret;
 use crate::source::{
-    deserialize_lenient, page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKey,
+    deserialize_lenient, page_is_caught_up, BookmarkDraft, Halt, Source, SourceError, UrlKey,
 };
 use crate::tags::{push_prefixed, push_tags};
 use gists::{GistConfig, GitHubGist};
@@ -381,16 +381,16 @@ impl GitHubClient {
     }
 
     fn token_refused(&self) -> SourceError {
-        SourceError::ReauthRequired(format!(
+        SourceError::Halted(Halt::Reauth(format!(
             "GitHub returned 401 — the token from {} is invalid or expired.",
             self.token_source
-        ))
+        )))
     }
 
     /// The error for an unsuccessful (non-401) response to the `what` request:
-    /// [`SourceError::RateLimited`] when [`rate_limit_message`] recognises one, the read
-    /// error [`refusal_body`] returns for a body it needed whole, else the status with an
-    /// excerpt of the body, the token redacted.
+    /// [`Halt::RateLimited`] when [`rate_limit_message`] recognises one, the read error
+    /// [`refusal_body`] returns for a body it needed whole, else the status with an excerpt
+    /// of the body, the token redacted.
     async fn refusal(&self, what: &str, resp: reqwest::Response) -> SourceError {
         let status = resp.status();
         let headers = resp.headers().clone();
@@ -409,7 +409,7 @@ impl GitHubClient {
         body: &str,
     ) -> SourceError {
         if let Some(message) = rate_limit_message(status, headers, body) {
-            return SourceError::RateLimited(message);
+            return SourceError::Halted(Halt::RateLimited(message));
         }
         crate::http::error_with_body(&format!("{what} returned {status}"), body, &[&self.token])
             .into()

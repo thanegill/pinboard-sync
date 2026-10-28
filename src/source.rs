@@ -8,34 +8,55 @@ use url::Url;
 
 use crate::bookmark::Bookmark;
 
-/// Errors from a source, separating the "operator must re-authenticate" case (an
-/// expired/missing credential → a 401/403) from transient/other failures, because
-/// only the former should fire the auth-failure hook.
+/// Errors from a source: a [`Halt`], which every remaining request would hit too, or any
+/// other failure, which may be one item's.
 #[derive(Debug, thiserror::Error)]
 pub enum SourceError {
-    /// The service rejected the request (401/403); a credential needs refreshing.
-    #[error("re-authentication required: {0}")]
-    ReauthRequired(String),
-    /// The service is refusing further requests until a reset. Distinct from
-    /// [`SourceError::ReauthRequired`] because no credential change fixes it, so it must
-    /// not fire the auth-failure hook — but it is alike in that every *remaining* request
-    /// would fail the same way, so a caller should stop rather than work through them.
-    #[error("rate limited: {0}")]
-    RateLimited(String),
-    /// The service's edge refused the request as a matter of policy (Reddit's "blocked by
-    /// network security" page), whatever the credential. Like
-    /// [`SourceError::RateLimited`] it must not fire the auth-failure hook and it fails
-    /// every remaining request to the same endpoint the same way; unlike it, waiting is
-    /// not known to help.
-    #[error("blocked: {0}")]
-    Blocked(String),
+    #[error(transparent)]
+    Halted(#[from] Halt),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
 
+/// Why a source can't go on: every remaining request would fail the same way, so a caller
+/// stops rather than spend requests collecting identical errors. Only [`Halt::Reauth`]
+/// fires the auth-failure hook, since no credential change clears a quota or an edge block.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Halt {
+    /// The service rejected the request (401/403); a credential needs refreshing.
+    #[error("re-authentication required: {0}")]
+    Reauth(String),
+    /// The service is refusing further requests until a reset.
+    #[error("rate limited: {0}")]
+    RateLimited(String),
+    /// The service's edge refused the request as a matter of policy (Reddit's "blocked by
+    /// network security" page), whatever the credential. Waiting is not known to help.
+    #[error("blocked: {0}")]
+    Blocked(String),
+}
+
+impl Halt {
+    /// The operator-facing explanation, without the variant's prefix.
+    pub fn message(&self) -> &str {
+        match self {
+            Halt::Reauth(message) | Halt::RateLimited(message) | Halt::Blocked(message) => message,
+        }
+    }
+
+    /// The same halt with its message rewritten by `f`.
+    #[must_use]
+    pub fn map_message(self, f: impl FnOnce(String) -> String) -> Self {
+        match self {
+            Halt::Reauth(message) => Halt::Reauth(f(message)),
+            Halt::RateLimited(message) => Halt::RateLimited(f(message)),
+            Halt::Blocked(message) => Halt::Blocked(f(message)),
+        }
+    }
+}
+
 impl SourceError {
-    /// Flatten into a plain `anyhow::Error`: the re-auth, rate-limit or block message on
-    /// its own (without the variant's prefix) or the inner error unwrapped.
+    /// Flatten into a plain `anyhow::Error`: a halt's message on its own (without the
+    /// variant's prefix) or the inner error unwrapped.
     ///
     /// Only once nothing needs the variant any more: `hook::handle_source_err`, after it
     /// has decided on the hook; `doctor`, which reports each credential rather than acting
@@ -45,9 +66,7 @@ impl SourceError {
     /// mismatch go away.
     pub fn into_anyhow(self) -> anyhow::Error {
         match self {
-            SourceError::ReauthRequired(m)
-            | SourceError::RateLimited(m)
-            | SourceError::Blocked(m) => anyhow::anyhow!(m),
+            SourceError::Halted(halt) => anyhow::anyhow!(halt.message().to_string()),
             SourceError::Other(e) => e,
         }
     }
@@ -156,15 +175,12 @@ mod tests {
     #[test]
     fn into_anyhow_keeps_a_halts_message_without_its_prefix() {
         let flattened = |error: SourceError| error.into_anyhow().to_string();
+        assert_eq!(flattened(Halt::Reauth("expired".into()).into()), "expired");
         assert_eq!(
-            flattened(SourceError::ReauthRequired("expired".into())),
-            "expired"
-        );
-        assert_eq!(
-            flattened(SourceError::RateLimited("resets soon".into())),
+            flattened(Halt::RateLimited("resets soon".into()).into()),
             "resets soon"
         );
-        assert_eq!(flattened(SourceError::Blocked("edge".into())), "edge");
+        assert_eq!(flattened(Halt::Blocked("edge".into()).into()), "edge");
         assert_eq!(flattened(anyhow::anyhow!("other").into()), "other");
     }
 

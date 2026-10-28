@@ -237,9 +237,7 @@ impl UrlKey for FakeReddit {
 impl PostInfo for FakeReddit {
     async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError> {
         match &self.info_error {
-            Some(SourceError::ReauthRequired(m)) => Err(SourceError::ReauthRequired(m.clone())),
-            Some(SourceError::RateLimited(m)) => Err(SourceError::RateLimited(m.clone())),
-            Some(SourceError::Blocked(m)) => Err(SourceError::Blocked(m.clone())),
+            Some(SourceError::Halted(halt)) => Err(halt.clone().into()),
             Some(SourceError::Other(e)) => Err(SourceError::Other(anyhow::anyhow!("{e}"))),
             None => Ok(self
                 .info

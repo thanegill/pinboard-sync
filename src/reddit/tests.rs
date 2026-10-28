@@ -53,7 +53,7 @@ async fn redacts_the_cookie_from_a_logged_or_quoted_body() {
         Some(&test_cookie()),
     ))
     .await;
-    assert!(matches!(result, Err(SourceError::ReauthRequired(_))));
+    assert!(matches!(result, Err(SourceError::Halted(Halt::Reauth(_)))));
     let [_, debug] = logs.as_slice() else {
         panic!("expected the size warning and the body, got {logs:?}");
     };
@@ -68,7 +68,7 @@ async fn maps_401_and_403_to_reauth() {
                 .await
                 .unwrap_err();
         assert!(
-            matches!(err, SourceError::ReauthRequired(_)),
+            matches!(err, SourceError::Halted(Halt::Reauth(_))),
             "status {code} should require re-auth"
         );
     }
@@ -166,7 +166,7 @@ async fn keeps_the_network_policy_page_a_credential_problem() {
     )
     .await
     .unwrap_err();
-    let SourceError::ReauthRequired(message) = err else {
+    let SourceError::Halted(Halt::Reauth(message)) = err else {
         panic!("a junk credential must still fire the hook: {err:?}");
     };
     assert!(message.contains(TEST_COOKIE_SOURCE), "{message}");
@@ -197,7 +197,7 @@ async fn keeps_other_403s_as_reauth() {
             .await
             .unwrap_err();
         assert!(
-            matches!(err, SourceError::ReauthRequired(_)),
+            matches!(err, SourceError::Halted(Halt::Reauth(_))),
             "{label}: got {err:?}"
         );
     }
@@ -212,7 +212,7 @@ async fn logs_an_unrecognised_refusal_page_at_debug() {
         Some(&test_cookie()),
     ))
     .await;
-    assert!(matches!(result, Err(SourceError::ReauthRequired(_))));
+    assert!(matches!(result, Err(SourceError::Halted(Halt::Reauth(_)))));
     let [warning, debug] = logs.as_slice() else {
         panic!("expected the size warning and the body, got {logs:?}");
     };
@@ -236,7 +236,7 @@ async fn maps_a_403_block_page_to_blocked_not_reauth() {
         decode_reddit_json::<Sample>(html_response(403, BLOCK_PAGE), "req", Some(&test_cookie()))
             .await
             .unwrap_err();
-    let SourceError::Blocked(message) = err else {
+    let SourceError::Halted(Halt::Blocked(message)) = err else {
         panic!("a block page must not ask for a new cookie: {err:?}");
     };
     assert!(message.contains("issues/78"), "{message}");
@@ -283,7 +283,7 @@ async fn maps_a_redirect_to_login_to_reauth() {
             decode_reddit_json::<Sample>(redirect(Some(location)), "req", Some(&test_cookie()))
                 .await
                 .unwrap_err();
-        let SourceError::ReauthRequired(message) = err else {
+        let SourceError::Halted(Halt::Reauth(message)) = err else {
             panic!("a login redirect to {location} must ask for a new cookie: {err:?}");
         };
         assert!(message.contains("reddit_session"), "{message}");
@@ -341,7 +341,7 @@ async fn names_the_cookie_setting_in_every_refusal() {
         decode_reddit_json::<Sample>(redirect(Some("/login")), "req", Some(&cookie)),
     ];
     for refusal in refusals {
-        let SourceError::ReauthRequired(message) = refusal.await.unwrap_err() else {
+        let SourceError::Halted(Halt::Reauth(message)) = refusal.await.unwrap_err() else {
             panic!("a refused cookie must ask for a new one");
         };
         assert!(message.contains(source), "{message}");
@@ -358,7 +358,7 @@ async fn says_no_cookie_is_configured_when_none_was() {
         decode_reddit_json::<Sample>(redirect(Some("/login")), "req", None),
     ];
     for refusal in refusals {
-        let SourceError::ReauthRequired(message) = refusal.await.unwrap_err() else {
+        let SourceError::Halted(Halt::Reauth(message)) = refusal.await.unwrap_err() else {
             panic!("a refusal without a cookie must ask for one");
         };
         assert!(

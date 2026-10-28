@@ -69,12 +69,12 @@ mean post-retry 5xx, network trouble and unlabelled throttling: a few are a blip
 most of the work silently did not happen. `cleanup` runs as a scheduled service, and a
 permanently dead URL must not wedge it into a failed state forever.
 
-**A halt stops the pass but still writes the plans already made.**
-`SourceError::ReauthRequired`, `RateLimited` and `Blocked` each fail every remaining lookup
-too, which is why `plan` returns `SourceError` rather than a flattened `anyhow::Error`.
-`PassOutcome::halted` records which it was as a `Halt`, and `into_result` maps each back to
-its own `SourceError` so the `cleanup` command fires the auth-failure hook for
-`Halt::Reauth` only: no credential change clears a rate limit or an edge block.
+**A halt stops the pass but still writes the plans already made.** A `SourceError::Halted`
+(`Halt::Reauth`, `RateLimited` or `Blocked`) fails every remaining lookup too, which is why
+`plan` returns `SourceError` rather than a flattened `anyhow::Error`. `PassOutcome::halted`
+records the `Halt`, and `into_result` hands it back as `SourceError::Halted` so the
+`cleanup` command fires the auth-failure hook for `Halt::Reauth` only: no credential change
+clears a rate limit or an edge block.
 
 **The run has one live view of the account, not a snapshot.** `posts/all` is read once into
 an `AccountView` ([`src/bookmark.rs`](src/bookmark.rs)), and `CleanupStore` wraps the real
@@ -265,14 +265,14 @@ rate-limited writer (`sync::write_drafts`), reading `posts/all` once for all job
 `completions <shell>` and `config example` are utility subcommands the Nix package install
 consumes; `config check <file>` runs `Config::parse` without resolving a secret.
 
-**Re-auth vs other errors drive a side effect.** `SourceError::ReauthRequired` (Reddit
-401/403 that isn't the "blocked by network security" page, a Reddit redirect to `/login`,
-GitHub 401) fires the `--on-auth-failure` hook and exits non-zero; `SourceError::Other`
-(transient/parse) doesn't. HackerNews never re-auths. **`cleanup` fires it too**, for every
-re-auth-capable read: GitHub's `repo()` mid-pass (via `Halt`), GitHub's `fetch_stars()` for
-star dates, and Reddit's `/api/info`, whose expired cookie is by far the most common case.
-That is why the three `cleanup` entry points return `Result<(), SourceError>` rather than
-`anyhow::Result`: flattening the variant would lose the hook. [`src/hook.rs`](src/hook.rs)'s
+**Re-auth vs other errors drive a side effect.** `Halt::Reauth` (Reddit 401/403 that isn't
+the "blocked by network security" page, a Reddit redirect to `/login`, GitHub 401) fires the
+`--on-auth-failure` hook and exits non-zero; `SourceError::Other` (transient/parse) doesn't.
+HackerNews never re-auths. **`cleanup` fires it too**, for every re-auth-capable read:
+GitHub's `repo()` mid-pass (via `Halt`), GitHub's `fetch_stars()` for star dates, and
+Reddit's `/api/info`, whose expired cookie is by far the most common case. That is why the
+three `cleanup` entry points return `Result<(), SourceError>` rather than `anyhow::Result`:
+flattening the variant would lose the hook. [`src/hook.rs`](src/hook.rs)'s
 `handle_source_err` is the single place the hook is fired; `cleanup` resolves the command
 through `PINBOARD_SYNC_ON_AUTH_FAILURE` → account → `[defaults.<source>]` → `[hooks]` (it
 has no `--on-auth-failure` flag). **Reading that env var is load-bearing**:
@@ -287,8 +287,8 @@ classifier returning an `http::Verdict` decides which responses retry: `send` us
 `backoff_if_transient`, while the HackerNews favorites pages pass
 `retry_after_up_to(FAVORITES_MAX_RETRY_AFTER)` to `send_with`, because quick retries of a
 429 there only prolong HN's block: it is retried at most once, after a `Retry-After` of at
-most 120s, and a 429 that comes back becomes `SourceError::RateLimited`. There is
-deliberately no overall `timeout`, which would cap a slow but steady `posts/all`.
+most 120s, and a 429 that comes back becomes `Halt::RateLimited`. There is deliberately no
+overall `timeout`, which would cap a slow but steady `posts/all`.
 
 **A connect failure gets one long wait per host, then the host is given up.** A request that
 could not connect (`is_connect`: DNS, TCP or TLS) retries on the exponential
@@ -309,32 +309,31 @@ client's secrets, which `http::redact` removes from the whole body before anythi
 logged. Pinboard response text in an error goes through `redacted_error`, which also covers
 the token's other echoed forms. Tests read the log through `test_support::capturing_logs`.
 
-**`SourceError::RateLimited` is the third case, and deliberately not either of those.**
-GitHub answers its rate limits with a **403 or 429**, the statuses a real permission denial
-uses, so `github::rate_limit_message` matches on the headers instead. It must not become
-`ReauthRequired` (no credential change clears a quota, and the hook would send the operator
+**`Halt::RateLimited` is the third case, and deliberately not either of those.** GitHub
+answers its rate limits with a **403 or 429**, the statuses a real permission denial uses,
+so `github::rate_limit_message` matches on the headers instead. It must not become
+`Halt::Reauth` (no credential change clears a quota, and the hook would send the operator
 after the wrong problem) nor a permanent skip (`github::permanent_refusal`, which defers to
 `rate_limit_message` first), and retrying won't help: `send`'s backoff totals ~12s, while a
 primary limit resets up to an hour out. Stopping the pass is the response instead. The 429
 form is still retried by `backoff_if_transient`, wasting those ~12s harmlessly, which is why
 its unit test uses a synthesized `HeaderMap`, not a wiremock 429.
 
-**`SourceError::Blocked` is the fourth: Reddit's edge refusing the request by policy.** It
-is known only by its body (its `retry-after: 0` must not be read as a rate limit), so
-`reddit_body` checks a 403 with `reddit::edge_page`: "blocked by network security" is
-`Blocked`, and any other 401/403 is `ReauthRequired`, including the "whoa there, pardner"
-page, which Reddit also serves for a junk cookie. A block arrives with a valid cookie (#78),
-so the hook would send the operator to re-copy a credential that isn't the problem. It
-shares `RateLimited`'s handling (no hook; a pass halts via `Halt::Blocked`) but keeps its
-own variant so the message names a block, which no reset is known to lift. A 401/403 whose
-body is cut off mid-read is `Other`, since without the whole page a block and a refused
-cookie look alike.
+**`Halt::Blocked` is the fourth: Reddit's edge refusing the request by policy.** It is known
+only by its body (its `retry-after: 0` must not be read as a rate limit), so `reddit_body`
+checks a 403 with `reddit::edge_page`: "blocked by network security" is `Blocked`, and any
+other 401/403 is `Halt::Reauth`, including the "whoa there, pardner" page, which Reddit also
+serves for a junk cookie. A block arrives with a valid cookie (#78), so the hook would send
+the operator to re-copy a credential that isn't the problem. It shares `RateLimited`'s
+handling (no hook; a pass halts via `Halt::Blocked`) but keeps its own variant so the
+message names a block, which no reset is known to lift. A 401/403 whose body is cut off
+mid-read is `Other`, since without the whole page a block and a refused cookie look alike.
 
 **The Reddit client never follows a redirect.** Reddit answers a request without a session
 it accepts with a 302 to `/login`, and following it can land on a login page that answers
 403, which the 401/403 arm would misreport as a 403 on the endpoint itself. So
 `RedditClient` is built with `redirect::Policy::none()`, and `reddit_body` maps a 3xx to or
-under `/login` to `ReauthRequired` and any other to `Other`. Nothing needs to follow one:
+under `/login` to `Halt::Reauth` and any other to `Other`. Nothing needs to follow one:
 `saved.json` pagination only changes query parameters, and `/api/info` is a single GET.
 
 **Pinboard field names are inverted.** In `posts/add`, `description` is the *title* and

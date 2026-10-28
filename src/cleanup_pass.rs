@@ -29,7 +29,7 @@ use time::OffsetDateTime;
 use url::Url;
 
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
-use crate::source::SourceError;
+use crate::source::{Halt, SourceError};
 use crate::timefmt::DateOpts;
 
 mod merge;
@@ -70,8 +70,7 @@ pub trait CleanupPass {
     /// ([`Plan::Skipped`]): how the driver tells one dead link from an unreachable source.
     ///
     /// [`SourceError::Other`] is a per-item failure: logged and counted, and the pass goes
-    /// on. [`SourceError::ReauthRequired`], [`SourceError::RateLimited`] and
-    /// [`SourceError::Blocked`] stop the pass, since each fails every remaining lookup too.
+    /// on. [`SourceError::Halted`] stops the pass, since every remaining lookup fails too.
     ///
     /// A plan's `timestamp` is only the candidate source date: the driver resolves the
     /// final date with the pass's [`DateOpts`] and takes `public`/`read_later` from the
@@ -105,26 +104,10 @@ pub struct PassOutcome {
     pub plan_failed: usize,
     /// Bookmarks whose write to the store failed.
     pub write_failed: usize,
-    /// Set when the source told us to stop partway. See [`Halt`].
+    /// Set when the source told us to stop partway. [`PassOutcome::into_result`] hands it
+    /// back as [`SourceError::Halted`], so the `cleanup` command can tell a dead credential
+    /// from a quota or an edge block.
     pub halted: Option<Halt>,
-}
-
-/// Why a pass stopped planning early: the source said something that makes every
-/// *remaining* lookup fail the same way, so working through them would only spend
-/// requests to collect identical errors.
-///
-/// Variants rather than one message because only one of them is an auth problem:
-/// [`PassOutcome::into_result`] maps each to its own [`SourceError`], which is what lets
-/// the `cleanup` command fire the auth-failure hook for [`Halt::Reauth`] and withhold it
-/// for the others, since no credential change clears a quota or an edge block.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Halt {
-    /// A credential needs refreshing.
-    Reauth(String),
-    /// The service is refusing requests until a reset; no credential change helps.
-    RateLimited(String),
-    /// The service's edge is refusing the request by policy; no credential change helps.
-    Blocked(String),
 }
 
 /// Why a rewrite was left in place rather than written.
@@ -154,29 +137,6 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-/// The halt an error calls for, or the error back when it is a per-item failure. Matched
-/// exhaustively so a new [`SourceError`] variant has to choose a side here.
-impl TryFrom<SourceError> for Halt {
-    type Error = SourceError;
-    fn try_from(error: SourceError) -> Result<Self, Self::Error> {
-        match error {
-            SourceError::ReauthRequired(message) => Ok(Halt::Reauth(message)),
-            SourceError::RateLimited(message) => Ok(Halt::RateLimited(message)),
-            SourceError::Blocked(message) => Ok(Halt::Blocked(message)),
-            other @ SourceError::Other(_) => Err(other),
-        }
-    }
-}
-
-impl Halt {
-    /// The operator-facing explanation, without a variant prefix.
-    fn message(&self) -> &str {
-        match self {
-            Halt::Reauth(message) | Halt::RateLimited(message) | Halt::Blocked(message) => message,
-        }
-    }
-}
-
 impl PassOutcome {
     /// The run's verdict. A link that could not be looked up does not fail the run: it is
     /// logged and skipped, so one dead URL can't wedge a scheduled service. A [`Halt`], a
@@ -189,7 +149,7 @@ impl PassOutcome {
     /// [`SourceError`] so the `cleanup` command fires the auth-failure hook for a halted
     /// credential, and only for that.
     pub fn into_result(self) -> Result<(), SourceError> {
-        if let Some(halt) = &self.halted {
+        if let Some(halt) = self.halted {
             // Why we stopped is the headline, but it must not bury what else went wrong
             // before it: those counts are the only record once this returns.
             let mut also = Vec::new();
@@ -199,16 +159,13 @@ impl PassOutcome {
             if self.write_failed > 0 {
                 also.push(format!("{} write(s)", self.write_failed));
             }
-            let message = if also.is_empty() {
-                halt.message().to_string()
-            } else {
-                format!("{} (also failed: {})", halt.message(), also.join(", "))
-            };
-            return Err(match halt {
-                Halt::Reauth(_) => SourceError::ReauthRequired(message),
-                Halt::RateLimited(_) => SourceError::RateLimited(message),
-                Halt::Blocked(_) => SourceError::Blocked(message),
-            });
+            if also.is_empty() {
+                return Err(halt.into());
+            }
+            let also = also.join(", ");
+            return Err(halt
+                .map_message(|message| format!("{message} (also failed: {also})"))
+                .into());
         }
         if self.write_failed > 0 {
             return Err(anyhow!("{} bookmark(s) failed to write", self.write_failed).into());
@@ -391,30 +348,28 @@ async fn plan_all<'b, C: CleanupPass>(
                 continue;
             }
             Ok(Plan::Skipped) => continue,
-            Err(error) => match Halt::try_from(error) {
-                // Every remaining lookup would fail the same way, so stop planning, but
-                // fall through to write the plans already made rather than discard them.
-                // This one and everything after it goes unplanned, so protect all of them:
-                // a record we never looked at must not be written over.
-                Ok(halt) => {
-                    outcome.halted = Some(halt);
-                    untouchable.extend(
-                        bookmarks[index..]
-                            .iter()
-                            .map(|b| (b.url.clone(), Refusal::Unreadable)),
-                    );
-                    break;
-                }
-                // Log and skip a single failed plan so the rest of the pass still runs. Its
-                // end-state is unknown, which makes it as untouchable as a skipped one:
-                // another bookmark rewriting onto its URL would clobber the record.
-                Err(e) => {
-                    outcome.plan_failed += 1;
-                    untouchable.insert(bookmark.url.clone(), Refusal::Unreadable);
-                    error!("looking up bookmark {}: {e:#}", bookmark.url);
-                    continue;
-                }
-            },
+            // Every remaining lookup would fail the same way, so stop planning, but fall
+            // through to write the plans already made rather than discard them. This one
+            // and everything after it goes unplanned, so protect all of them: a record we
+            // never looked at must not be written over.
+            Err(SourceError::Halted(halt)) => {
+                outcome.halted = Some(halt);
+                untouchable.extend(
+                    bookmarks[index..]
+                        .iter()
+                        .map(|b| (b.url.clone(), Refusal::Unreadable)),
+                );
+                break;
+            }
+            // Log and skip a single failed plan so the rest of the pass still runs. Its
+            // end-state is unknown, which makes it as untouchable as a skipped one: another
+            // bookmark rewriting onto its URL would clobber the record.
+            Err(e @ SourceError::Other(_)) => {
+                outcome.plan_failed += 1;
+                untouchable.insert(bookmark.url.clone(), Refusal::Unreadable);
+                error!("looking up bookmark {}: {e:#}", bookmark.url);
+                continue;
+            }
         };
 
         // Resolve the final creation time here, at the write boundary: the candidate

@@ -172,17 +172,20 @@ there is half-applied like any merge's. **A merge never deletes text the cut los
 member leaving its URL joins only when, with it, every member keeps in what the target will
 hold (the stored note on an absorb, the fitted one on a rewrite) all of the note a lone
 rewrite of it would keep, short of text it doesn't store that the leading plan carries too
-(`Merge::would_lose`), and the leading note (the resident's, the incumbent's plan or the
-base mover's) keeps all of what it keeps on its own, since other members' tags take room
-from the note too. Before any write, `hold_back_cut_notes` builds each merge up from its
-lead, adding members in merge order and holding back each one that would break either rule;
-each is refused like a visibility mismatch, its URL marked `OccupiedByRefused` ahead of the
-fixpoint, so not even a cycle of moves loses it. A merge with no record staying is fitted
-against the base's stored record, so its cut is the one a lone rewrite makes.
-`PinboardClient` implements `fit` with `fitted_note`, which `post_add` uses too, so the two
-can't drift. It measures as if a `dt` were sent, so a note `sync` wrote undated cuts the
-same once `cleanup` writes it back dated. A test models the cut with `FakePinboard`'s
-`trims_notes`, which applies the real `fitted_note` to the fit and writes.
+(`Merge::would_lose`). A cut fragment counts only in the block it was cut from: the full
+block when the member's plan or record has it, else the target's block at the same position
+(`holds_what_it_keeps`), never another block that merely starts alike. And the leading note
+(the resident's, the incumbent's plan or the base mover's) keeps all of what it keeps on
+its own, since other members' tags take room from the note too. Before any write,
+`hold_back_cut_notes` builds each merge up from its lead, adding members in merge order and
+holding back each one that would break either rule; each is refused like a visibility
+mismatch, its URL marked `OccupiedByRefused` ahead of the fixpoint, so not even a cycle of
+moves loses it. A merge with no record staying is fitted against the base's stored record,
+so its cut is the one a lone rewrite makes. `PinboardClient` implements `fit` with
+`fitted_note`, which `post_add` uses too, so the two can't drift. It measures as if a `dt`
+were sent, so a note `sync` wrote undated cuts the same once `cleanup` writes it back
+dated. A test models the cut with `FakePinboard`'s `trims_notes`, which applies the real
+`fitted_note` to the fit and writes.
 
 **Every source is a `Source`, and one sync loop drives them all.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `BookmarkDraft`s (a `Bookmark`

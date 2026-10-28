@@ -169,6 +169,9 @@ All notable changes to this project are documented here. The format is based on
   `HN Link:` past a long note's cut, nor cuts the note already there to make room for a
   bookmark's tags. That bookmark stays where it is and is reported as refused, and the
   rest of the merge goes ahead without it.
+- That check credits the cut-off end of a note only to the block it was cut from, so a
+  bookmark is no longer absorbed because another block starts the same way, such as a
+  different `HN Link:`.
 - `cleanup` no longer cuts a whole note just under the URL limit when what a plan appends
   to it would be cut off anyway. The rest of the plan is still written, over the note kept
   whole if it still fits.

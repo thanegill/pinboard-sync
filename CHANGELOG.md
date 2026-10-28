@@ -41,6 +41,9 @@ All notable changes to this project are documented here. The format is based on
   fall back to `[backup].directory`.
 - A token or username set by flag, environment variable or inline config is trimmed of
   surrounding whitespace, as one read from a `*_FILE` already was.
+- An `--all` run's per-account errors and the `--on-auth-failure` hook's messages go
+  through the logger, so they read `ERROR ...`/`INFO ...` like a single-account run's
+  instead of `error: ...` and bare text.
 
 ### Deprecated
 

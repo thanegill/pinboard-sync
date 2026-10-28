@@ -8,7 +8,7 @@
 pub mod backup_jobs;
 
 use anyhow::{bail, Context, Result};
-use log::{debug, info};
+use log::{debug, error, info};
 use url::Url;
 
 use crate::backup::{self, BackupSource};
@@ -434,7 +434,7 @@ pub struct AllRun {
 impl AllRun {
     pub fn record(&mut self, result: Result<()>) {
         if let Err(e) = result {
-            eprintln!("error: {e:#}");
+            error!("{e:#}");
             self.failed += 1;
         }
     }

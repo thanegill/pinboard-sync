@@ -60,7 +60,7 @@ async fn fetch_saved_sends_cookie_paginates_and_parses_metadata() {
             "type:image"
         ]
     );
-    assert!(items[1].is_comment);
+    assert_eq!(items[1].kind, crate::reddit::model::RedditKind::Comment);
 }
 
 #[tokio::test]

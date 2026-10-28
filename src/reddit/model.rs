@@ -125,11 +125,25 @@ pub struct RedditEntryFields {
     pub body: Option<String>,
 }
 
+impl RedditEntryFields {
+    /// The Pinboard notes for a Reddit post, shared by sync and cleanup: its `selftext` in
+    /// a literal `<blockquote>`; nothing for an empty self-post, whose `url` is its own
+    /// permalink and so the bookmark URL; else a link post's external `url`, bare.
+    pub(crate) fn post_note(&self) -> String {
+        match self.selftext.as_deref().unwrap_or_default() {
+            "" if self.is_self => String::new(),
+            "" => self.url.clone().unwrap_or_default(),
+            selftext => blockquote(selftext),
+        }
+    }
+}
+
 /// A normalized saved item ready to become a Pinboard bookmark.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RedditSavedItem {
     pub fullname: String,
-    pub is_comment: bool,
+    /// [`RedditKind::Post`] or [`RedditKind::Comment`]; never [`RedditKind::Other`].
+    pub kind: RedditKind,
     pub subreddit: String,
     /// Relative permalink, e.g. `/r/rust/comments/.../`.
     pub permalink: String,
@@ -156,12 +170,23 @@ impl RedditListingEntry {
     /// still deserializes (as `None`) and slips past the listing's all-fail guard -- the
     /// warning keeps that silent loss visible.
     pub fn into_saved_item(self, domain: &str) -> Option<RedditSavedItem> {
-        let (is_comment, wire_kind) = match self.kind {
-            RedditKind::Comment => (true, "t1"),
-            RedditKind::Post => (false, "t3"),
+        let kind = self.kind;
+        let wire_kind = match kind {
+            RedditKind::Comment => "t1",
+            RedditKind::Post => "t3",
             RedditKind::Other => return None,
         };
+        let is_comment = kind == RedditKind::Comment;
         let fields = self.fields;
+        let note = if is_comment {
+            comment_note(
+                fields.body.as_deref().unwrap_or_default(),
+                fields.link_permalink.as_deref(),
+                domain,
+            )
+        } else {
+            fields.post_note()
+        };
         let (Some(subreddit), Some(permalink)) = (fields.subreddit, fields.permalink) else {
             log::warn!(
                 "skipping reddit {wire_kind} entry: missing subreddit/permalink — \
@@ -189,23 +214,9 @@ impl RedditListingEntry {
             post_media_type(fields.is_video, fields.post_hint.as_deref())
         };
 
-        let note = if is_comment {
-            comment_note(
-                fields.body.as_deref().unwrap_or_default(),
-                fields.link_permalink.as_deref(),
-                domain,
-            )
-        } else {
-            post_note(
-                fields.selftext.as_deref().unwrap_or_default(),
-                fields.url.as_deref().unwrap_or_default(),
-                fields.is_self,
-            )
-        };
-
         Some(RedditSavedItem {
             fullname,
-            is_comment,
+            kind,
             subreddit,
             permalink,
             over_18: fields.over_18,
@@ -232,19 +243,6 @@ pub(crate) fn comment_note(body: &str, link_permalink: Option<&str>, domain: &st
         Some(thread) if quoted.is_empty() => format!("Thread: {thread}"),
         Some(thread) => format!("Thread: {thread}\n\n{quoted}"),
         None => quoted,
-    }
-}
-
-/// The Pinboard notes for a Reddit post, shared by sync and cleanup: its `selftext` in a
-/// literal `<blockquote>`; nothing for an empty self-post, whose `url` is its own
-/// permalink and so the bookmark URL; else a link post's external `url`, bare.
-pub(crate) fn post_note(selftext: &str, url: &str, is_self: bool) -> String {
-    if !selftext.is_empty() {
-        blockquote(selftext)
-    } else if is_self {
-        String::new()
-    } else {
-        url.to_string()
     }
 }
 
@@ -317,7 +315,7 @@ impl RedditSavedItem {
         let mut tags = Tags::default();
         tags.push_all(&cfg.tags);
         tags.push_prefixed(&cfg.subreddit_prefix, &cased_subreddit(&self.subreddit));
-        if self.is_comment {
+        if self.kind == RedditKind::Comment {
             tags.push(&cfg.comment);
         }
         if self.over_18 {

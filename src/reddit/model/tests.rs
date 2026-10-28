@@ -35,7 +35,7 @@ fn post_url_and_tags() {
             "url": "https://example.com",
         }),
     );
-    assert!(!it.is_comment);
+    assert_eq!(it.kind, RedditKind::Post);
     assert_eq!(
         it.bookmark_url("old.reddit.com"),
         "https://old.reddit.com/r/rust/comments/abc/title/"
@@ -320,7 +320,7 @@ fn comment_gets_reddit_comment_tag_and_link_title() {
             "body": "my comment",
         }),
     );
-    assert!(it.is_comment);
+    assert_eq!(it.kind, RedditKind::Comment);
     assert_eq!(it.title, "The story");
     assert_eq!(it.note, "<blockquote>my comment</blockquote>");
     // All-caps subreddit lowercased.
@@ -348,6 +348,15 @@ fn notes_wrap_the_quoted_body_and_keep_links_outside() {
         comment_note("hi", None, domain),
         "<blockquote>hi</blockquote>"
     );
+    let post_note = |selftext: &str, url: &str, is_self| {
+        RedditEntryFields {
+            selftext: Some(selftext.to_string()),
+            url: Some(url.to_string()),
+            is_self,
+            ..RedditEntryFields::default()
+        }
+        .post_note()
+    };
     // Self-post: selftext wrapped.
     assert_eq!(
         post_note("post body", "", true),
@@ -358,6 +367,16 @@ fn notes_wrap_the_quoted_body_and_keep_links_outside() {
     // Link post: external URL is a bare fallback, not quoted.
     assert_eq!(
         post_note("", "https://example.com", false),
+        "https://example.com"
+    );
+    // Absent fields read as empty.
+    assert_eq!(RedditEntryFields::default().post_note(), "");
+    assert_eq!(
+        RedditEntryFields {
+            url: Some("https://example.com".into()),
+            ..RedditEntryFields::default()
+        }
+        .post_note(),
         "https://example.com"
     );
 }
@@ -514,6 +533,6 @@ fn deserializes_a_listing_with_after_and_mixed_children() {
         .filter_map(|e| e.into_saved_item("old.reddit.com"))
         .collect();
     assert_eq!(items.len(), 2);
-    assert!(items[1].is_comment);
+    assert_eq!(items[1].kind, RedditKind::Comment);
     assert!(items[1].over_18);
 }

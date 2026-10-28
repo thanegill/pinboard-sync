@@ -8,6 +8,8 @@ mod algolia;
 pub mod cleanup;
 mod favorites;
 
+pub use algolia::AlgoliaClient;
+
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -28,7 +30,6 @@ use url::Url;
 /// HN blocks some default User-Agents on the HTML pages, so present a browser one.
 const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0";
 const HN_BASE: &str = "https://news.ycombinator.com";
-const ALGOLIA_BASE: &str = "https://hn.algolia.com";
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 
@@ -197,6 +198,15 @@ impl HackerNewsItem {
     }
 }
 
+/// A client for HackerNews requests, the favorites pages and Algolia alike.
+fn retrying_client() -> anyhow::Result<RetryingClient> {
+    let http = client_builder()
+        .user_agent(BROWSER_UA)
+        .build()
+        .context("building HTTP client")?;
+    Ok(RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY))
+}
+
 /// Reads a user's public HackerNews favorites.
 pub struct HackerNewsClient {
     http: RetryingClient,
@@ -206,32 +216,23 @@ pub struct HackerNewsClient {
     keys: HackerNewsKeys,
     /// HN site base (overridden in tests).
     base: String,
-    /// Algolia API base (overridden in tests).
-    algolia: String,
+    /// Looks the favorited items up.
+    algolia: AlgoliaClient,
 }
 
 impl HackerNewsClient {
     pub fn new(username: String, config: HackerNewsConfig) -> anyhow::Result<Self> {
-        Self::build(
-            username,
-            config,
-            HN_BASE.to_string(),
-            ALGOLIA_BASE.to_string(),
-        )
+        Self::build(username, config, HN_BASE.to_string(), AlgoliaClient::new()?)
     }
 
     fn build(
         username: String,
         config: HackerNewsConfig,
         base: String,
-        algolia: String,
+        algolia: AlgoliaClient,
     ) -> anyhow::Result<Self> {
-        let http = client_builder()
-            .user_agent(BROWSER_UA)
-            .build()
-            .context("building HTTP client")?;
         Ok(Self {
-            http: RetryingClient::new(http, MAX_RETRIES, RETRY_DELAY),
+            http: retrying_client()?,
             username,
             config,
             keys: HackerNewsKeys::default(),
@@ -294,7 +295,7 @@ impl HackerNewsClient {
         ids.retain(|id| seen.insert(id.clone()));
 
         if synced_keys.is_none() {
-            drafts = self.drafts_by_id(self.fetch_items(&ids, sink).await?);
+            drafts = self.drafts_by_id(self.algolia.fetch_items(&ids, sink).await?);
         }
         Ok(ids.iter().filter_map(|id| drafts.remove(id)).collect())
     }
@@ -421,7 +422,13 @@ impl HackerNewsClient {
         base: String,
         algolia: String,
     ) -> Self {
-        Self::build(username, config, base, algolia).unwrap()
+        Self::build(
+            username,
+            config,
+            base,
+            AlgoliaClient::build(algolia).unwrap(),
+        )
+        .unwrap()
     }
 
     /// The draft `sync` makes for a favorited story with this article `url`.

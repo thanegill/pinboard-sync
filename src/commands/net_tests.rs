@@ -21,13 +21,9 @@ async fn a_hackernews_cleanup_fails_when_algolia_refuses_its_items() {
         opts: HackerNewsCleanupOpts {
             link_discussions: false,
             dates: NO_DATING,
+            config: HackerNewsConfig::default(),
         },
-        client: HackerNewsClient::with_base_urls(
-            String::new(),
-            HackerNewsConfig::default(),
-            "unused".into(),
-            algolia.uri(),
-        ),
+        client: AlgoliaClient::with_base_url(algolia.uri()),
     };
 
     let error = cleanup

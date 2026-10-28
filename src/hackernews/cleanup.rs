@@ -8,9 +8,7 @@ use anyhow::anyhow;
 use log::debug;
 use url::Url;
 
-use super::{
-    HackerNewsClient, HackerNewsConfig, HackerNewsItem, HackerNewsItemId, ALGOLIA_BASE, HN_BASE,
-};
+use super::{AlgoliaClient, HackerNewsConfig, HackerNewsItem, HackerNewsItemId};
 use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, PassOutcome, Plan};
@@ -35,19 +33,8 @@ pub struct HackerNewsCleanupOpts {
     pub link_discussions: bool,
     /// Whether and how to re-date bookmarks by the source item's creation time.
     pub dates: DateOpts,
-}
-
-impl HackerNewsClient {
-    /// Client for `cleanup hackernews`: only the Algolia API is used (no favorites
-    /// scraping), so no username is needed.
-    pub fn for_cleanup(config: HackerNewsConfig) -> anyhow::Result<Self> {
-        Self::build(
-            String::new(),
-            config,
-            HN_BASE.to_string(),
-            ALGOLIA_BASE.to_string(),
-        )
-    }
+    /// The account's tag vocabulary `sync` writes with, and the `link_tag` marker.
+    pub config: HackerNewsConfig,
 }
 
 /// Normalize existing `news.ycombinator.com/item?id=*` bookmarks: re-fetch each item and
@@ -55,7 +42,7 @@ impl HackerNewsClient {
 /// comments/text posts update in place), preserving existing tags and the creation time.
 pub async fn run<S: BookmarkStore + AccountState>(
     store: &S,
-    client: &HackerNewsClient,
+    client: &AlgoliaClient,
     opts: &HackerNewsCleanupOpts,
 ) -> Result<(), SourceError> {
     // Taken from the run's live view, so an earlier source's writes are already
@@ -75,7 +62,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
 
     let pass = HackerNewsCleanupPass {
         items,
-        config: &client.config,
+        config: &opts.config,
     };
     let items = run_pass(store, &hackernews_bookmarks, "HN", opts.dates, &pass).await;
 
@@ -112,7 +99,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
 /// it issues one Algolia query per tagged bookmark.
 async fn link_discussions<S: BookmarkStore + AccountState>(
     store: &S,
-    client: &HackerNewsClient,
+    client: &AlgoliaClient,
     opts: &HackerNewsCleanupOpts,
 ) -> PassOutcome {
     // Read after the item pass, so a bookmark it merged into is seen as it now stands.
@@ -123,17 +110,14 @@ async fn link_discussions<S: BookmarkStore + AccountState>(
         .into_iter()
         .filter(|bookmark| {
             HackerNewsItemId::try_from(&bookmark.url).is_err()
-                && bookmark.tags.contains(&client.config.link_tag)
+                && bookmark.tags.contains(&opts.config.link_tag)
         })
         .collect();
-    run_pass(
-        store,
-        &candidates,
-        "HN discussion",
-        opts.dates,
-        &HackerNewsLinkPass { client },
-    )
-    .await
+    let pass = HackerNewsLinkPass {
+        client,
+        config: &opts.config,
+    };
+    run_pass(store, &candidates, "HN discussion", opts.dates, &pass).await
 }
 
 /// The HN item id referenced by a note's `HN Link: <url>` back-link marker, if the note
@@ -232,7 +216,8 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
 /// Always in-place — the URL is unchanged and the planned `timestamp` is `None`, so the
 /// driver preserves the stored date regardless of the dating policy.
 struct HackerNewsLinkPass<'a> {
-    client: &'a HackerNewsClient,
+    client: &'a AlgoliaClient,
+    config: &'a HackerNewsConfig,
 }
 
 impl CleanupPass for HackerNewsLinkPass<'_> {
@@ -253,10 +238,10 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
         let mut tags: Vec<String> = bookmark
             .tags
             .iter()
-            .filter(|t| **t != self.client.config.link_tag)
+            .filter(|t| **t != self.config.link_tag)
             .cloned()
             .collect();
-        extend_unique(&mut tags, &self.client.config.tags);
+        extend_unique(&mut tags, &self.config.tags);
 
         Ok(Plan::Bookmark(Bookmark {
             url: bookmark.url.clone(),

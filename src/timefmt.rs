@@ -111,6 +111,8 @@ impl DateOpts {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -235,5 +237,41 @@ mod tests {
             redate(a_cap_later + time::Duration::hours(1), after_cap),
             after_cap
         );
+    }
+
+    /// The seconds RFC 3339 can spell at any offset: years 0001 to 9998.
+    const RFC3339_SECONDS: std::ops::Range<i64> = -62_135_596_800..253_370_764_800;
+
+    /// An instant with nanoseconds, at an offset of whole minutes (RFC 3339 has no
+    /// seconds in an offset).
+    fn date_time() -> impl Strategy<Value = OffsetDateTime> {
+        (RFC3339_SECONDS, 0..1_000_000_000u32, -1439..=1439i32).prop_map(
+            |(secs, nanos, offset_minutes)| {
+                let offset = UtcOffset::from_whole_seconds(offset_minutes * 60).unwrap();
+                (OffsetDateTime::from_unix_timestamp(secs).unwrap()
+                    + time::Duration::nanoseconds(nanos.into()))
+                .to_offset(offset)
+            },
+        )
+    }
+
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config())]
+
+        #[test]
+        fn rfc3339_round_trips_the_instant_and_offset(dt in date_time()) {
+            let written = to_rfc3339(dt).expect("an RFC 3339 date");
+            let read = parse_rfc3339(&written).expect("a parseable date");
+            prop_assert_eq!(read, dt, "{}", written);
+            prop_assert_eq!(read.offset(), dt.offset(), "{}", written);
+        }
+
+        #[test]
+        fn pinboard_dt_is_the_utc_second(dt in date_time()) {
+            let written = to_pinboard_dt(dt).expect("a Pinboard date");
+            prop_assert!(written.ends_with('Z'), "{}", written);
+            prop_assert!(!written.contains('.'), "{}", written);
+            prop_assert_eq!(parse_rfc3339(&written), utc_whole_seconds(dt), "{}", written);
+        }
     }
 }

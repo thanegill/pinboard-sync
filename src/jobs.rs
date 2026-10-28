@@ -389,7 +389,7 @@ pub fn build_job<A: SourceAccount>(
         client: A::client(account, overrides, config)?,
         label: job_label(account),
         hook: A::hook(account, overrides.on_auth_failure.clone(), config),
-        settings: resolve_job_settings(account, overrides, A::defaults(config), config),
+        settings: resolve_job_settings(account, overrides, config),
     })
 }
 

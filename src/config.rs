@@ -394,13 +394,8 @@ impl Config {
     fn check_stale_to_now_cap<T: Account>(&self, accounts: &[T]) -> Result<()> {
         let source = T::SOURCE;
         let check = |account: Option<&T>, scope: String| {
-            crate::settings::resolve_dates(
-                &crate::cli::DateFlags::default(),
-                account,
-                T::defaults(self),
-                self,
-            )
-            .check_redating(&format!("config: {scope}"), source)
+            crate::settings::resolve_dates(&crate::cli::DateFlags::default(), account, self)
+                .check_redating(&format!("config: {scope}"), source)
         };
         if accounts.is_empty() {
             return check(None, format!("{source} (implicit CLI/env account)"));

@@ -318,14 +318,7 @@ fn cleanup_target<'a, A: SourceAccount>(
     overrides: &DateFlags,
     config: &'a Config,
 ) -> Result<CleanupTarget<'a, A>> {
-    let dates = resolve_cleanup_dates(
-        pass,
-        A::SOURCE,
-        overrides,
-        account,
-        A::defaults(config),
-        config,
-    )?;
+    let dates = resolve_cleanup_dates(pass, overrides, account, config)?;
     Ok(CleanupTarget { account, dates })
 }
 

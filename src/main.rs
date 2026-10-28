@@ -179,6 +179,31 @@ fn check_config(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{capturing_logs, capturing_stdout};
+
+    #[tokio::test]
+    async fn the_startup_banner_names_the_version_and_the_command() {
+        let ((), logs) = capturing_logs(async { log_start("sync") }).await;
+        assert_eq!(
+            logs,
+            [format!(
+                "INFO pinboard-sync {} starting (sync)",
+                env!("CARGO_PKG_VERSION")
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn completions_and_the_man_page_go_to_stdout() {
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+            let (result, out) = capturing_stdout(async { print_completions(shell) }).await;
+            result.expect("writes");
+            assert!(out.contains("pinboard-sync"), "{shell}: {out}");
+        }
+        let (result, out) = capturing_stdout(async { print_man() }).await;
+        result.expect("writes");
+        assert!(out.contains(".TH pinboard-sync"), "{out}");
+    }
 
     #[test]
     fn the_config_path_is_the_flag_then_the_env_var() {

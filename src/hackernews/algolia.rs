@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::Context;
+use log::warn;
 use serde::Deserialize;
 use url::Url;
 
@@ -171,7 +172,18 @@ impl AlgoliaClient {
                 .as_deref()
                 .and_then(|s| Url::parse(s).ok())
                 .and_then(|u| url_key(&u));
-            (want.is_some() && hit_key == want).then(|| HackerNewsItemId::from(h.object_id))
+            if want.is_none() || hit_key != want {
+                return None;
+            }
+            let id = &h.object_id;
+            id.parse()
+                .map_err(|_| {
+                    warn!(
+                        "hn algolia url search for {url}: ignoring a hit with the non-numeric \
+                         objectID {id:?}"
+                    );
+                })
+                .ok()
         }))
     }
 }

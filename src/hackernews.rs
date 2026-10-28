@@ -331,8 +331,9 @@ impl UrlKey for HackerNewsClient {
 
 /// A HackerNews item id -- the `<n>` in a `news.ycombinator.com/item?id=<n>` URL. Held
 /// as a string (the favorites page scrapes it as text and Algolia's `objectID` filter
-/// takes it as text); built from a numeric id, a scraped string, or parsed out of a URL
-/// (`TryFrom<&Url>`), and rendered back to the discussion permalink (`From<&Self> for Url`).
+/// takes it as text); built from a numeric id, parsed from scraped or searched text
+/// (`FromStr`), or parsed out of a URL (`TryFrom<&Url>`), and rendered back to the
+/// discussion permalink (`From<&Self> for Url`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HackerNewsItemId(String);
 
@@ -356,9 +357,15 @@ impl From<u64> for HackerNewsItemId {
     }
 }
 
-impl From<String> for HackerNewsItemId {
-    fn from(id: String) -> Self {
-        Self(id)
+/// Parse a scraped or searched id, which must be all ASCII digits: it is interpolated into
+/// Algolia's `objectID:` filter and the `HN Link:` note, so anything else is refused.
+impl std::str::FromStr for HackerNewsItemId {
+    type Err = NotHnItemId;
+    fn from_str(id: &str) -> Result<Self, Self::Err> {
+        if !id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(NotHnItemId);
+        }
+        id.parse::<u64>().map(Self::from).map_err(|_| NotHnItemId)
     }
 }
 
@@ -400,6 +407,11 @@ impl From<&HackerNewsItemId> for Url {
 #[derive(Debug, thiserror::Error)]
 #[error("not a HackerNews item URL")]
 pub struct NotHnItemUrl;
+
+/// The text isn't an HN item id, which is all digits.
+#[derive(Debug, thiserror::Error)]
+#[error("not a HackerNews item id")]
+pub struct NotHnItemId;
 
 /// The slug for a `Show/Ask/Tell/Launch HN:` title prefix (e.g. `Show HN:` ->
 /// `show-hn`), or `None` for ordinary titles.

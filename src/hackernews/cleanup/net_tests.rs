@@ -381,6 +381,90 @@ async fn cleanup_reports_both_passes_when_both_fail() {
     );
 }
 
+/// A search hit whose `objectID` isn't a number is no discussion: it is never written into
+/// the note, and the article keeps its marker tag for the next run.
+#[tokio::test]
+async fn link_discussions_ignores_a_non_numeric_object_id() {
+    let algolia = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .and(query_param("restrictSearchableAttributes", "url"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": [{ "objectID": "99<script>", "url": "https://example.com/x",
+                       "_tags": ["story"] }]
+        })))
+        .expect(1)
+        .mount(&algolia)
+        .await;
+    let pinboard = FakePinboard {
+        all: vec![Bookmark {
+            note: "my notes".into(),
+            tags: tag_list(&["find-hn"]),
+            ..stored_at("https://example.com/x")
+        }],
+        ..Default::default()
+    };
+    let client = algolia_client(&algolia);
+    let opts = HackerNewsCleanupOpts {
+        link_discussions: true,
+        dates: NO_DATING,
+        config: HackerNewsConfig::default(),
+    };
+    let (result, logs) =
+        crate::test_support::capturing_logs(run(&pinboard.cleanup_store(), &client, &opts)).await;
+    result.unwrap();
+
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+    let warned = crate::test_support::warnings(&logs);
+    assert!(
+        warned
+            .iter()
+            .any(|line| line.contains(r#"non-numeric objectID "99<script>""#)),
+        "{warned:?}"
+    );
+}
+
+/// A non-numeric hit is skipped, not taken as the answer: a later matching hit with a real
+/// id is still linked.
+#[tokio::test]
+async fn link_discussions_looks_past_a_non_numeric_object_id() {
+    let algolia = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .and(query_param("restrictSearchableAttributes", "url"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": [
+                { "objectID": "99<script>", "url": "https://example.com/x", "_tags": ["story"] },
+                { "objectID": "99", "url": "https://example.com/x", "_tags": ["story"] }
+            ]
+        })))
+        .mount(&algolia)
+        .await;
+    let client = algolia_client(&algolia);
+    let pass = HackerNewsLinkPass {
+        client: &client,
+        config: &HackerNewsConfig::default(),
+    };
+    let article = Bookmark {
+        tags: tag_list(&["find-hn"]),
+        ..stored_at("https://example.com/x")
+    };
+
+    let planned = pass.plan(&article).await.unwrap().bookmark().unwrap();
+    assert!(
+        planned
+            .note
+            .contains("https://news.ycombinator.com/item?id=99"),
+        "{}",
+        planned.note
+    );
+    assert!(!planned.note.contains("script"), "{}", planned.note);
+}
+
 /// An article with no HN discussion is still an answer from Algolia, so the link pass
 /// reports it as `Unchanged` (counted in `PassOutcome::reached`), not `Skipped`.
 #[tokio::test]

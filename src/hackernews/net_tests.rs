@@ -127,6 +127,84 @@ async fn fetch_succeeds_on_genuinely_empty_favorites() {
     assert!(drafts.is_empty(), "{drafts:?}");
 }
 
+/// A scraped row id that isn't a number is dropped before it reaches Algolia's
+/// `objectID:` filter, where it could widen the query.
+#[tokio::test]
+async fn fetch_drops_a_non_numeric_favorite_id() {
+    let hn = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/favorites"))
+        .and(query_param_is_missing("comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<html op="favorites"><body><table>
+                 <tr class="athing" id="42"><td>x</td></tr>
+                 <tr class="athing" id="1 OR author:x"><td>y</td></tr>
+               </table></body></html>"#,
+        ))
+        .mount(&hn)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/favorites"))
+        .and(query_param("comments", "t"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<html op="favorites"><body><table id="hnmain"></table></body></html>"#,
+        ))
+        .mount(&hn)
+        .await;
+    let algolia = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .and(query_param("filters", "objectID:42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "hits": [{ "objectID": "42", "title": "Cool", "url": "https://example.com/x",
+                       "_tags": ["story", "story_42"] }]
+        })))
+        .expect(1)
+        .mount(&algolia)
+        .await;
+
+    let client = hackernews_client(hn.uri(), algolia.uri());
+    let ((drafts, _), logs) =
+        crate::test_support::capturing_logs(crate::http::recording_waits(client.fetch())).await;
+    let drafts = drafts.unwrap();
+    assert_eq!(drafts.len(), 1, "{drafts:?}");
+    assert_eq!(drafts[0].bookmark.url.as_str(), "https://example.com/x");
+    let warned = crate::test_support::warnings(&logs);
+    assert_eq!(warned.len(), 1, "{warned:?}");
+    assert!(
+        warned[0].contains(r#"non-numeric id "1 OR author:x""#),
+        "{warned:?}"
+    );
+}
+
+/// A page of rows none of which has a numeric id is changed markup, not an empty page.
+#[tokio::test]
+async fn fetch_errors_when_no_favorite_id_is_numeric() {
+    let hn = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/favorites"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<html op="favorites"><body><table>
+                 <tr class="athing" id="item-42"><td>x</td></tr>
+               </table></body></html>"#,
+        ))
+        .mount(&hn)
+        .await;
+
+    let client = hackernews_client(hn.uri(), UNUSED.into());
+    let err = crate::http::recording_waits(client.fetch())
+        .await
+        .0
+        .unwrap_err();
+    let SourceError::Other(err) = err else {
+        panic!("expected Other, got {err:?}");
+    };
+    assert!(
+        err.to_string().contains("had no numeric item ids"),
+        "{err:#}"
+    );
+}
+
 /// A client reading favorites from `hn` and items from `algolia`, as `psophis`.
 fn hackernews_client(hn: String, algolia: String) -> HackerNewsClient {
     HackerNewsClient::with_base_urls("psophis".into(), HackerNewsConfig::default(), hn, algolia)

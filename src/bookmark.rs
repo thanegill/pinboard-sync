@@ -98,6 +98,13 @@ pub trait BookmarkStore {
         b
     }
 
+    /// The part [`Self::fit`] kept of `note`, a note it returned cut; `None` from a store
+    /// that never cuts. Asked only of a note `fit` just shortened, since a whole note may
+    /// end in the same marker text.
+    fn kept_of_cut<'n>(&self, _note: &'n str) -> Option<&'n str> {
+        None
+    }
+
     /// The cleanup re-write step: `update` the bookmark, then `delete` the old URL when it
     /// changed (`old_url`). Any inter-write pacing is the store's own concern (the Pinboard
     /// client spaces its `posts/add` calls internally).
@@ -375,6 +382,10 @@ impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
 
     fn fit(&self, b: Bookmark) -> Bookmark {
         self.inner.fit(b)
+    }
+
+    fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str> {
+        self.inner.kept_of_cut(note)
     }
 }
 

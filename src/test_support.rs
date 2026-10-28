@@ -379,6 +379,12 @@ impl BookmarkStore for FakePinboard {
         pinboard.fit(b)
     }
 
+    fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str> {
+        self.trims_notes
+            .then(|| note.strip_suffix(crate::pinboard::TRUNCATION_MARKER))
+            .flatten()
+    }
+
     async fn add(&self, b: &Bookmark) -> Result<()> {
         let b = &self.fit(b.clone());
         if self.fail_add_urls.contains(b.url.as_str()) {

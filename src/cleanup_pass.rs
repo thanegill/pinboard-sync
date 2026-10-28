@@ -611,7 +611,7 @@ async fn write_single<S: BookmarkStore>(
     dry_run: bool,
     outcome: &mut PassOutcome,
 ) -> Vec<Url> {
-    let fitted = store.fit(planned.clone());
+    let fitted = fit_plan(store, Some(original), planned);
     if stores_nothing_new(store, original, &fitted) {
         return Vec::new();
     }
@@ -718,7 +718,10 @@ async fn write_merge<S: BookmarkStore>(
         // now. Keep the earliest date the merge found instead of losing the record's age.
         merged.timestamp = survivor.timestamp.or(merged.timestamp);
     }
-    let fitted = store.fit(merged.clone());
+    // The *stored* record at the target, which for an incumbent is not the plan that led
+    // the merge: the merge is fitted against it, and compared with it.
+    let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].stored));
+    let fitted = fit_plan(store, stored_at_target, &merged);
     let target = &fitted.url;
 
     // Absorbed URLs to delete: an original that is neither the target nor another planned
@@ -734,10 +737,7 @@ async fn write_merge<S: BookmarkStore>(
     }
 
     // Nothing to do when the merge reproduces what is already stored at the target and
-    // there is nothing to absorb -- otherwise a converged state would rewrite itself every
-    // run. Compared against the *stored* record, which for an incumbent is not the plan
-    // that led the merge.
-    let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].stored));
+    // there is nothing to absorb, or a converged state would rewrite itself every run.
     let converged =
         stored_at_target.is_some_and(|stored| stores_nothing_new(store, stored, &fitted));
     if converged && old_urls.is_empty() {
@@ -814,11 +814,42 @@ async fn write_merge<S: BookmarkStore>(
     }
 }
 
-/// Whether writing `fitted`, a plan as the store would keep it, would store nothing that
-/// writing `stored` back wouldn't: both, fitted, differ in nothing a write changes. That
-/// covers a plan identical to the stored record, a note already stored cut (a cut note
-/// fits as it is), and a change that lies wholly past the cut, which a write would lose
-/// while cutting a whole note the user saved, longer than a write allows, for nothing.
+/// `planned` as `store` would keep it, with `stored`'s note in place of its own when the
+/// store would cut the plan's note down to part of the stored one. Writing that cut would
+/// only shorten the stored note and keep none of the plan's text, as when a plan appends to
+/// a whole note just under the limit, so the rest of the plan goes over the stored note,
+/// itself fitted: kept whole when it still fits beside the plan's other fields.
+fn fit_plan<S: BookmarkStore>(
+    store: &S,
+    stored: Option<&Bookmark>,
+    planned: &Bookmark,
+) -> Bookmark {
+    let fitted = store.fit(planned.clone());
+    let Some(stored) = stored else {
+        return fitted;
+    };
+    let only_shortens = fitted.note != planned.note
+        && store
+            .kept_of_cut(&fitted.note)
+            .is_some_and(|kept| stored.note.starts_with(kept));
+    if !only_shortens {
+        return fitted;
+    }
+    debug!(
+        "using the stored note of {} in place of the plan's, which would be cut inside it",
+        stored.url
+    );
+    store.fit(Bookmark {
+        note: stored.note.clone(),
+        ..planned.clone()
+    })
+}
+
+/// Whether writing `fitted`, a plan from [`fit_plan`], would store nothing that writing
+/// `stored` back wouldn't: both, fitted, differ in nothing a write changes. That covers a
+/// plan identical to the stored record, a note already stored cut (a cut note fits as it
+/// is), and a change that lies wholly past the cut, which a write would lose while cutting
+/// a whole note the user saved for nothing.
 fn stores_nothing_new<S: BookmarkStore>(store: &S, stored: &Bookmark, fitted: &Bookmark) -> bool {
     store.fit(stored.clone()).diff(fitted).is_empty()
 }

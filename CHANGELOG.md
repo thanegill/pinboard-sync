@@ -136,6 +136,9 @@ All notable changes to this project are documented here. The format is based on
   undated `sync` cut, it rewrites it once to match.
 - A `cleanup` merge that adds nothing to the bookmark it lands on now only deletes the one
   it absorbs, instead of rewriting, and cutting, a long note there.
+- `cleanup` no longer cuts a whole note just under the URL limit when what a plan appends
+  to it would be cut off anyway. The rest of the plan is still written, over the note kept
+  whole if it still fits.
 
 ## [0.6.0] - 2026-10-25
 

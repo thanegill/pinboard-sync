@@ -316,6 +316,10 @@ impl BookmarkStore for PinboardClient {
         b.note = self.fitted_note(&b, MAX_URL_BYTES);
         b
     }
+
+    fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str> {
+        note.strip_suffix(TRUNCATION_MARKER)
+    }
 }
 
 impl PinboardClient {

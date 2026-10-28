@@ -276,9 +276,7 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), cmd.dry_run);
             let mut run = AllRun::default();
             if let Some(CleanupTarget { account, dates }) = github {
-                run.record(
-                    cleanup_github_account(&store, Some(account), None, dates, config).await,
-                );
+                run.record(cleanup_github_account(&store, account, None, dates, config).await);
             }
             if let Some(CleanupTarget { account, dates }) = reddit {
                 let reddit_overrides = RedditCleanupOverrides {
@@ -287,15 +285,12 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
                     fix_titles: true,
                 };
                 run.record(
-                    cleanup_reddit_account(Some(account), reddit_overrides, dates, &store, config)
-                        .await,
+                    cleanup_reddit_account(account, reddit_overrides, dates, &store, config).await,
                 );
             }
             if let Some(CleanupTarget { account, dates }) = hackernews {
                 let overrides = HackerNewsCleanupOverrides::default();
-                run.record(
-                    cleanup_hackernews_account(Some(account), overrides, dates, &store).await,
-                );
+                run.record(cleanup_hackernews_account(account, overrides, dates, &store).await);
             }
             run.finish()
         }
@@ -312,15 +307,50 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
     }
 }
 
-/// One source's pass of a `cleanup --all` run: the account it runs as and its dates.
+/// One source's cleanup pass: the account it runs as (`None` for the implicit CLI/env
+/// account) and its dates. Resolved before `posts/all` is read, so a refused run does not
+/// spend that rate-limited call.
 struct CleanupTarget<'a, A> {
-    account: &'a A,
+    account: Option<&'a A>,
     dates: DateOpts,
 }
 
+/// `A`'s [`CleanupTarget`] run as `account`. `pass` names the run in a refusal.
+fn cleanup_target<'a, A: SourceAccount>(
+    pass: &str,
+    account: Option<&'a A>,
+    overrides: &DateFlags,
+    config: &'a Config,
+) -> Result<CleanupTarget<'a, A>> {
+    let dates = resolve_cleanup_dates(
+        pass,
+        A::SOURCE,
+        overrides,
+        account,
+        A::defaults(config),
+        config,
+    )?;
+    Ok(CleanupTarget { account, dates })
+}
+
+/// The [`CleanupTarget`] of `cleanup <source> [account]`: the account named `name`, else
+/// the first, else the implicit CLI/env account.
+fn source_cleanup_target<'a, A: SourceAccount>(
+    name: Option<&str>,
+    overrides: &DateFlags,
+    config: &'a Config,
+) -> Result<CleanupTarget<'a, A>> {
+    let account = config::select_account(A::configured(config), name)?;
+    cleanup_target(
+        &format!("`cleanup {}`", A::SOURCE),
+        account,
+        overrides,
+        config,
+    )
+}
+
 /// The [`CleanupTarget`] of `A`'s pass in `cleanup --all`, run as the source's first
-/// account, or `None` for a source with no accounts. Resolved before `posts/all` is read,
-/// so a refused run does not spend that rate-limited call.
+/// account, or `None` for a source with no accounts.
 fn cleanup_all_target<'a, A: SourceAccount>(
     overrides: &DateFlags,
     config: &'a Config,
@@ -329,15 +359,7 @@ fn cleanup_all_target<'a, A: SourceAccount>(
         return Ok(None);
     };
     let pass = format!("`cleanup --all` ({} pass)", A::SOURCE);
-    let dates = resolve_cleanup_dates(
-        &pass,
-        A::SOURCE,
-        overrides,
-        Some(account),
-        A::defaults(config),
-        config,
-    )?;
-    Ok(Some(CleanupTarget { account, dates }))
+    cleanup_target(&pass, Some(account), overrides, config).map(Some)
 }
 
 /// A cleanup pass runs dry when `--dry-run` is given either before the source
@@ -353,14 +375,9 @@ async fn run_cleanup_github(
     top_overrides: &DateFlags,
     config: &Config,
 ) -> Result<()> {
-    let overrides = args.dates.with_top_level(top_overrides);
-    let account = config::select_account(&config.github, args.account.as_deref())?;
-    let dates = resolve_cleanup_dates(
-        "`cleanup github`",
-        "github",
-        &overrides,
-        account,
-        &config.defaults.github.common,
+    let CleanupTarget { account, dates } = source_cleanup_target::<GitHubAccount>(
+        args.account.as_deref(),
+        &args.dates.with_top_level(top_overrides),
         config,
     )?;
     let client = github_cleanup_client(account, args.github_token, config)?;
@@ -423,15 +440,9 @@ async fn run_cleanup_reddit(
     config: &Config,
 ) -> Result<()> {
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);
-    // One pass over the Pinboard account's reddit bookmarks, using the selected (or
-    // first, or implicit CLI/env) account's cookie + domain/tags.
-    let account = config::select_account(&config.reddit, args.account.as_deref())?;
-    let dates = resolve_cleanup_dates(
-        "`cleanup reddit`",
-        "reddit",
+    let CleanupTarget { account, dates } = source_cleanup_target::<RedditAccount>(
+        args.account.as_deref(),
         &args.dates.with_top_level(top_overrides),
-        account,
-        &config.defaults.reddit,
         config,
     )?;
     let pinboard_token = args.pinboard_token.take();
@@ -503,15 +514,9 @@ async fn run_cleanup_hackernews(
     top_overrides: &DateFlags,
     config: &Config,
 ) -> Result<()> {
-    // One pass over the Pinboard account's HN bookmarks, using the selected (or
-    // first, or implicit) account's tag config.
-    let account = config::select_account(&config.hackernews, args.account.as_deref())?;
-    let dates = resolve_cleanup_dates(
-        "`cleanup hackernews`",
-        "hackernews",
+    let CleanupTarget { account, dates } = source_cleanup_target::<HackerNewsAccount>(
+        args.account.as_deref(),
         &args.dates.with_top_level(top_overrides),
-        account,
-        &config.defaults.hackernews,
         config,
     )?;
     let dry_run = cleanup_dry_run(top_dry_run, args.dry_run);

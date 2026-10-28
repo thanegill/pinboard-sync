@@ -31,8 +31,7 @@ on:
         required: true
         default: true
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: release-${{ github.ref }}
@@ -40,7 +39,10 @@ concurrency:
 
 jobs:
   release:
+    name: Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the bump and the tags, and create the release
     env:
       REHEARSE: ${{ github.event_name == 'workflow_dispatch' }}
     steps:

@@ -18,7 +18,7 @@ fn headers(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
 
 #[test]
 fn retry_after_as_a_date_is_not_rendered_as_seconds() {
-    // RFC 7231 allows an HTTP-date, which must not be suffixed into "…GMTs".
+    // RFC 7231 allows an HTTP-date, which must not be suffixed into "...GMTs".
     let message = rate_limit_message(
         reqwest::StatusCode::TOO_MANY_REQUESTS,
         &headers(&[("retry-after", "Sun, 30 Aug 2026 15:00:00 GMT")]),
@@ -225,7 +225,7 @@ fn draft_without_description_or_language() {
     }))
     .into_draft(&GitHubConfig::default())
     .unwrap();
-    // Missing description falls back to the URL; no language → no lang tag.
+    // Missing description falls back to the URL; no language -> no lang tag.
     assert_eq!(d.bookmark.note, "https://github.com/o/r");
     assert_eq!(d.bookmark.tags, vec!["github-star", "author:github:o"]);
 }

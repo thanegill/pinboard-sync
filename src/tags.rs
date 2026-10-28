@@ -20,7 +20,7 @@ pub fn push_tags(tags: &mut Vec<String>, keys: &[String]) {
 }
 
 /// `prefix + value`, with each internal run of whitespace and commas in `value`
-/// collapsed to `-` (Pinboard tags can't contain either — the API splits on whitespace,
+/// collapsed to `-` (Pinboard tags can't contain either -- the API splits on whitespace,
 /// and its docs forbid commas). `None` if `prefix` is empty or `value` is nothing but
 /// whitespace and commas.
 pub fn prefixed(prefix: &str, value: &str) -> Option<String> {
@@ -65,8 +65,8 @@ mod tests {
         let mut tags = Vec::new();
         push_prefixed(&mut tags, "lang:", "Jupyter Notebook");
         push_prefixed(&mut tags, "x:", "  spaced  out ");
-        push_prefixed(&mut tags, "y:", "   "); // all whitespace → skipped
-        push_prefixed(&mut tags, "", "v"); // empty prefix → skipped
+        push_prefixed(&mut tags, "y:", "   "); // all whitespace -> skipped
+        push_prefixed(&mut tags, "", "v"); // empty prefix -> skipped
         assert_eq!(tags, vec!["lang:Jupyter-Notebook", "x:spaced-out"]);
     }
 
@@ -75,14 +75,14 @@ mod tests {
         let mut tags = Vec::new();
         push_prefixed(&mut tags, "f:", "Help, Question");
         push_prefixed(&mut tags, "g:", "a,,b");
-        push_prefixed(&mut tags, "h:", " , "); // nothing but separators → skipped
+        push_prefixed(&mut tags, "h:", " , "); // nothing but separators -> skipped
         assert_eq!(tags, vec!["f:Help-Question", "g:a-b"]);
     }
 
     #[test]
     fn extend_unique_skips_empty_and_duplicate_tags() {
         let mut acc = tags(&["reddit"]);
-        // An empty base tag (config `tags = [""]`) must not add a literal "" — stored
+        // An empty base tag (config `tags = [""]`) must not add a literal "" -- stored
         // tags can never contain one, so it would diff against storage forever.
         extend_unique(&mut acc, &tags(&["", "reddit", "rust"]));
         assert_eq!(acc, tags(&["reddit", "rust"]));

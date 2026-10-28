@@ -48,7 +48,7 @@ pub fn preview(text: &str) -> String {
 }
 
 /// Convert a HackerNews note body (raw HTML from Algolia `story_text`/`comment_text`)
-/// to Markdown. Only ever run over HN HTML — never over Reddit/GitHub bodies, which are
+/// to Markdown. Only ever run over HN HTML -- never over Reddit/GitHub bodies, which are
 /// already Markdown/plain and would be corrupted by escaping. Returns the input verbatim
 /// if the converter errors, so a single odd item never aborts the pass.
 pub fn html_to_markdown(s: &str) -> String {

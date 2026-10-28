@@ -14,7 +14,7 @@ use crate::keys::url_key;
 use crate::source::SourceError;
 
 const ALGOLIA_BASE: &str = "https://hn.algolia.com";
-/// Item IDs per Algolia `objectID:… OR …` query. The API rejects very long filter
+/// Item IDs per Algolia `objectID:... OR ...` query. The API rejects very long filter
 /// strings (~200+ clauses), so stay well under that.
 pub(super) const ITEM_BATCH: usize = 100;
 /// The pause before each Algolia item chunk after the first.
@@ -102,7 +102,7 @@ impl AlgoliaClient {
     }
 
     /// Batch-fetch item details by ID from the Algolia HN search API, keyed by ID.
-    /// IDs are queried in chunks of [`ITEM_BATCH`] via `objectID:… OR …`; items that
+    /// IDs are queried in chunks of [`ITEM_BATCH`] via `objectID:... OR ...`; items that
     /// no longer exist are simply absent from the map.
     pub(super) async fn fetch_items(
         &self,

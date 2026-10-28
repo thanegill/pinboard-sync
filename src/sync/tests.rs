@@ -143,8 +143,8 @@ async fn filter_new_skips_present_then_write_adds_the_rest() {
 async fn present_bookmark_with_unparseable_time_still_dedups() {
     // A stored bookmark whose Pinboard `time` won't parse must remain in the dedup set.
     // It reaches this path through `Bookmark::try_from` (timestamp becomes None), and
-    // its draft must count as already-present, not new — otherwise sync re-adds the URL
-    // and clobbers its date/title/tags/notes.
+    // its draft must count as already-present, not new -- otherwise sync re-adds the
+    // URL and clobbers its date/title/tags/notes.
     let reddit = FakeReddit {
         saved: vec![post("t3_a", "/r/rust/comments/a/x/")],
         ..Default::default()
@@ -395,7 +395,7 @@ async fn merge_deduped_writes_a_url_shared_across_jobs_once() {
 async fn merge_deduped_collapses_drafts_sharing_a_dedup_key_with_differing_urls() {
     // Two fresh drafts in one batch that share a dedup_key but whose URLs differ
     // byte-for-byte (e.g. two HN favorites of the same article stored as http vs https)
-    // must collapse to one write — matching filter_new's existing-key check, so a
+    // must collapse to one write -- matching filter_new's existing-key check, so a
     // first-time run doesn't create two bookmarks for one item.
     let draft = |url: &str, key: &str| BookmarkDraft {
         bookmark: Bookmark {

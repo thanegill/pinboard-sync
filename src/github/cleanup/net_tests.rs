@@ -70,8 +70,8 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
         .mount(&server)
         .await;
     // The point of the test: this one must never be requested. An unmounted path
-    // would not prove it — wiremock answers those with a 404, which `repo()` reads as
-    // a deleted repo and skips silently — so assert zero calls explicitly. The
+    // would not prove it -- wiremock answers those with a 404, which `repo()` reads as
+    // a deleted repo and skips silently -- so assert zero calls explicitly. The
     // expectation is checked when the server drops.
     Mock::given(method("GET"))
         .and(path("/repos/never/looked"))
@@ -102,7 +102,7 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
         .unwrap_err();
 
     assert!(err.to_string().contains("rate limit"), "{err}");
-    // The repo read before the limit is still rewritten — the work isn't thrown away.
+    // The repo read before the limit is still rewritten -- the work isn't thrown away.
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].url, "https://github.com/new/name");
@@ -193,7 +193,7 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
     assert_eq!(updated[0].description, "new/name");
     // Hand-written notes are kept: only a note in the tool's shape is rebuilt.
     assert_eq!(updated[0].extended, "notes");
-    // Language tag refreshed (python → rust), base + user tags kept.
+    // Language tag refreshed (python -> rust), base + user tags kept.
     assert!(
         updated[0].tags.contains(&"lang:rust".to_string()),
         "{:?}",

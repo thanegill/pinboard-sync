@@ -1,6 +1,6 @@
-//! Secret resolution: the ladder every credential resolves through — CLI flag → `$VAR` →
-//! `$VAR_FILE` → config inline → config `*_file` — and the names messages give each rung,
-//! so an error can point at the setting a credential came from without quoting it.
+//! Secret resolution: the ladder every credential resolves through -- CLI flag -> `$VAR` ->
+//! `$VAR_FILE` -> config inline -> config `*_file` -- and the names messages give each
+//! rung, so an error can point at the setting a credential came from without quoting it.
 
 use log::warn;
 
@@ -144,8 +144,8 @@ impl SecretSpec {
         (self.accepts)(value)
     }
 
-    /// The secret through the ladder — CLI flag → `$VAR` → `$VAR_FILE` → config inline
-    /// value → config file path — with the setting it came from. Every value is trimmed;
+    /// The secret through the ladder -- CLI flag -> `$VAR` -> `$VAR_FILE` -> config inline
+    /// value -> config file path -- with the setting it came from. Every value is trimmed;
     /// the first candidate [`Self::accepts`] takes wins.
     pub fn resolve(
         self,
@@ -302,7 +302,7 @@ fn is_nonblank(value: &str) -> bool {
 
 /// Read a file's trimmed contents, or `None` if missing or empty.
 fn read_file_secret(path: &str) -> Option<String> {
-    // A `*_FILE` path was given but can't be read — surface it rather than
+    // A `*_FILE` path was given but can't be read -- surface it rather than
     // silently falling through to a confusing "missing X" downstream.
     try_read_file_secret(path).unwrap_or_else(|e| {
         warn!("could not read secret file {path}: {e}");

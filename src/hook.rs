@@ -1,6 +1,6 @@
-//! The `--on-auth-failure` hook: which command a run resolves (flag/env → account →
-//! `[defaults.<source>]` → `[hooks]`), and firing it, only when a source says a credential
-//! needs re-authenticating.
+//! The `--on-auth-failure` hook: which command a run resolves (flag/env -> account ->
+//! `[defaults.<source>]` -> `[hooks]`), and firing it, only when a source says a
+//! credential needs re-authenticating.
 
 use std::path::Path;
 
@@ -67,13 +67,13 @@ fn hook_shell(system_shell: &Path) -> &Path {
     }
 }
 
-/// The auth-failure hook for a `cleanup` run: `PINBOARD_SYNC_ON_AUTH_FAILURE` → account →
-/// `[defaults.<source>]` → `[hooks]`. The `cleanup` subcommands take no
-/// `--on-auth-failure` flag, so the env var is the top rung.
+/// The auth-failure hook for a `cleanup` run, resolved through a ladder of
+/// `PINBOARD_SYNC_ON_AUTH_FAILURE` -> account -> `[defaults.<source>]` -> `[hooks]`. The
+/// `cleanup` subcommands take no `--on-auth-failure` flag, so the env var is the top rung.
 ///
 /// Reading the env var here is load-bearing, not a convenience: the NixOS module exports
-/// `onAuthFailure` *only* into the unit environment — it never reaches the generated
-/// TOML — and runs the `cleanup --all` timer with it. Resolving from config alone would
+/// `onAuthFailure` *only* into the unit environment -- it never reaches the generated
+/// TOML -- and runs the `cleanup --all` timer with it. Resolving from config alone would
 /// leave the hook dead for the exact deployment it is meant to serve.
 pub fn cleanup_hook<A: SourceAccount>(account: Option<&A>, config: &Config) -> Option<String> {
     A::hook(account, on_auth_failure_from_env(), config)
@@ -123,8 +123,8 @@ mod tests {
 
     #[test]
     fn cleanup_falls_back_to_on_auth_failure_env() {
-        // The NixOS module exports `onAuthFailure` *only* as this env var — it never
-        // reaches the generated TOML — and it runs the `cleanup --all` timer with that
+        // The NixOS module exports `onAuthFailure` *only* as this env var -- it never
+        // reaches the generated TOML -- and it runs the `cleanup --all` timer with that
         // same environment. Miss this rung and the hook silently never fires for the
         // deployment the whole feature exists for.
         let _env = FakeSecretEnv::set(ENV_HOOK);

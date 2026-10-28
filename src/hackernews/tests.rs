@@ -82,7 +82,7 @@ fn story_with_url_bookmarks_the_article_with_hn_link_in_notes() {
 fn story_whose_article_url_is_an_hn_item_keys_on_the_id() {
     // A meta post whose submitted article URL is itself an HN item permalink. The
     // draft is bookmarked at that URL, so its dedup key must match how the stored
-    // bookmark reads back through `HackerNewsClient::dedup_key` (`hn:<id>`) — a
+    // bookmark reads back through `HackerNewsClient::dedup_key` (`hn:<id>`) -- a
     // generic host+path key drops the `id` query and re-adds it every sync.
     let article = "https://news.ycombinator.com/item?id=999";
     let d = item(json!({
@@ -113,7 +113,7 @@ fn text_post_without_url_bookmarks_the_hn_permalink() {
     // The bookmark URL is already the HN permalink, so the notes carry only the post
     // text (no redundant `HN Link:`), with the inner HTML converted to Markdown.
     assert_eq!(d.bookmark.note, "<blockquote>details</blockquote>");
-    // Ask HN: → special-type tag.
+    // Ask HN: -> special-type tag.
     assert!(
         d.bookmark.tags.contains(&"hackernews:ask-hn".to_string()),
         "{:?}",

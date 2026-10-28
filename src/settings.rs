@@ -102,7 +102,7 @@ impl ResolvedDates {
 }
 
 /// The `use_post_date` trio for an account, each resolved through [`resolve_setting`]
-/// (flag → account → per-source default → `[pinboard]` global, with `max_age_days`
+/// (flag -> account -> per-source default -> `[pinboard]` global, with `max_age_days`
 /// defaulting to [`config::DEFAULT_MAX_AGE_DAYS`]). Shared by every `sync`/`cleanup`
 /// builder.
 pub fn resolve_dates(
@@ -155,7 +155,7 @@ pub fn resolve_cleanup_dates(
 
 /// The per-account settings [`build_job`](crate::jobs::build_job) resolves: the
 /// `limit`/`read_later`/`public` trio through [`resolve_setting`] plus the dates through
-/// [`resolve_dates`], each on the flag → account → per-source default → `[pinboard]`
+/// [`resolve_dates`], each on the flag -> account -> per-source default -> `[pinboard]`
 /// global ladder. The client, its secrets and the hook come from
 /// [`SourceAccount`](crate::jobs::SourceAccount) instead.
 pub fn resolve_job_settings(
@@ -190,8 +190,8 @@ pub fn resolve_job_settings(
     }
 }
 
-/// The auth-failure hook: resolved flag/env (`overrides.on_auth_failure`) → per-account
-/// override → per-source default → `[hooks]` global.
+/// The auth-failure hook: resolved flag/env (`overrides.on_auth_failure`) -> per-account
+/// override -> per-source default -> `[hooks]` global.
 pub fn resolve_hook(
     flag: Option<String>,
     account_override: Option<&str>,
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn resolve_setting_picks_the_highest_present_tier() {
-        // flag → account → source → global, first `Some` wins, and says which it was.
+        // flag -> account -> source -> global, first `Some` wins, and says which it was.
         let resolved = |value, from| Resolved { value, from };
         assert_eq!(
             resolve_setting(Some(1), Some(2), Some(3), 5),
@@ -229,7 +229,7 @@ mod tests {
             resolved(5, Tier::Global)
         );
 
-        // A `Some(false)` flag is a real value, so it forces a `true` lower tier off —
+        // A `Some(false)` flag is a real value, so it forces a `true` lower tier off --
         // the behavior a bare clap flag could not express (this is why `--public[=BOOL]`).
         assert!(!resolve_setting(Some(false), Some(true), Some(true), true).value);
         assert!(resolve_setting(Some(true), None, None, false).value);
@@ -275,11 +275,11 @@ mod tests {
         let d = resolve_dates(&overrides, None::<&RedditAccount>, src, &config).opts();
         assert_eq!(d.max_age_days, 99);
 
-        // no flag → global
+        // no flag -> global
         let d = resolve_dates(&DateFlags::default(), None::<&RedditAccount>, src, &config).opts();
         assert_eq!(d.max_age_days, 10);
 
-        // global unset → built-in default
+        // global unset -> built-in default
         let config = Config::default();
         let src = &config.defaults.reddit;
         let d = resolve_dates(&DateFlags::default(), None::<&RedditAccount>, src, &config).opts();

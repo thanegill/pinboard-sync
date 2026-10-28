@@ -90,7 +90,7 @@ async fn main() -> ExitCode {
 
 /// Initialize logging, written to stderr with a short `LEVEL message` format so stdout
 /// stays clean for generated output (dry-run listings, completions, man, config).
-/// Verbosity escalates with repeated `-v`: info → debug (`-v`) → trace (`-vv`) → trace
+/// Verbosity escalates with repeated `-v`: info -> debug (`-v`) -> trace (`-vv`) -> trace
 /// for every crate, including dependencies (`-vvv`). `RUST_LOG` overrides the filter.
 fn init_logging(verbose: u8) {
     use std::io::Write;
@@ -135,7 +135,7 @@ fn print_man() -> Result<()> {
 }
 
 /// Load the config from `--config` / `$PINBOARD_SYNC_CONFIG` (a direct path to the
-/// TOML file); absent = defaults. Unlike secrets, the config takes no `_FILE` form —
+/// TOML file); absent = defaults. Unlike secrets, the config takes no `_FILE` form --
 /// it is already a file path.
 fn load_config(flag: Option<String>) -> Result<Config> {
     let Some(path) = config_path(flag, std::env::var("PINBOARD_SYNC_CONFIG").ok()) else {

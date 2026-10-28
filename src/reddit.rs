@@ -64,7 +64,7 @@ struct RedditSession {
 impl RedditSession {
     fn new(cookie: Option<ConfiguredSecret>, base: String) -> anyhow::Result<Self> {
         // native-tls is the only TLS backend compiled in (see Cargo.toml), so it's
-        // the default connector — Reddit's edge rejects rustls's TLS fingerprint, and
+        // the default connector -- Reddit's edge rejects rustls's TLS fingerprint, and
         // a ClientHello without ALPN (see `http::client_builder`).
         let http = client_builder()
             .user_agent(USER_AGENT)
@@ -340,7 +340,7 @@ fn not_all_dropped(
 
 impl BackupSource for RedditClient {
     /// The listing is fetched in full before any of it is shaped, so a shape break is
-    /// reported *without* discarding the raw pages — a schema change is exactly when the
+    /// reported *without* discarding the raw pages -- a schema change is exactly when the
     /// verbatim body is worth having. (GitHub and HackerNews shape inline as they
     /// paginate, so a failure there means the capture is incomplete and must not be
     /// written over a good snapshot.)
@@ -583,6 +583,6 @@ impl RedditInfoClient {
 mod tests;
 
 /// Integration tests against a `wiremock` server. These bind a TCP socket, so
-/// they can't run in the Nix build sandbox — the flake skips `net_tests` there.
+/// they can't run in the Nix build sandbox -- the flake skips `net_tests` there.
 #[cfg(test)]
 mod net_tests;

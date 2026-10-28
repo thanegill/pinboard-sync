@@ -48,7 +48,7 @@ pub enum Plan {
     Bookmark(Bookmark),
     /// The source answered, and nothing about this bookmark needs to change.
     Unchanged,
-    /// Not this pass's bookmark — a deep link, a foreign URL, a locally-filtered case.
+    /// Not this pass's bookmark -- a deep link, a foreign URL, a locally-filtered case.
     /// No lookup was made, so this says nothing about whether the source is up.
     Skipped,
 }
@@ -98,7 +98,7 @@ pub struct PassOutcome {
     /// not happen, so it is reported. Counted per *group* for an untouchable target and per
     /// *plan* for one held back, so it counts abandoned writes, not bookmarks.
     pub refused: usize,
-    /// Bookmarks the source gave an answer for — the evidence that it is reachable.
+    /// Bookmarks the source gave an answer for -- the evidence that it is reachable.
     /// Excludes [`Plan::Skipped`], which never asked it anything.
     pub reached: usize,
     /// Bookmarks whose `plan` failed to read the source.
@@ -114,8 +114,8 @@ pub struct PassOutcome {
 /// Why a rewrite was left in place rather than written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refusal {
-    /// The target holds a record this pass could not read — a failed lookup, or one a halt
-    /// stopped it short of — so what is stored there may be stale.
+    /// The target holds a record this pass could not read -- a failed lookup, or one a halt
+    /// stopped it short of -- so what is stored there may be stale.
     Unreadable,
     /// The target holds a bookmark whose own rewrite was refused, so it never moved and its
     /// URL is still occupied. A visibility mismatch reaches the driver this way: the reason
@@ -240,7 +240,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         .copied()
         .collect();
 
-    // A group whose target is occupied won't move, so its *own* URL stays occupied too —
+    // A group whose target is occupied won't move, so its *own* URL stays occupied too --
     // and a second group heading there would replace the record the refusal just saved.
     // Settled before any write so the outcome doesn't depend on group order.
     propagate_refusals(&group_order, &groups, &mut untouchable);
@@ -256,7 +256,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             continue;
         }
         // The target must not be written, so leave the rewriting bookmark(s) at their old
-        // URLs. Separate from the `targets` delete-guard — that protects a URL some *plan*
+        // URLs. Separate from the `targets` delete-guard -- that protects a URL some *plan*
         // writes to, this one a URL no plan may land on.
         if let Some(reason) = untouchable.get(key) {
             refuse_group(key, *reason, dry_run, &mut outcome);
@@ -284,7 +284,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             }
         };
         // A failed write left its bookmarks where they were, so a later group heading for
-        // one of their URLs would overwrite it. Protect them and re-close the refusal set —
+        // one of their URLs would overwrite it. Protect them and re-close the refusal set,
         // over the groups after this one only, which is why a failed write stays a failure
         // rather than becoming a refusal.
         if !stranded.is_empty() {
@@ -443,7 +443,7 @@ fn write_order<'p>(
 
 /// Every group's resident, resolved once, before any write. A resident is a record the live
 /// view holds at a group's target that this pass neither planned (a bookmark is never a
-/// resident of its own plan — merging with itself would resurrect what the plan removed)
+/// resident of its own plan -- merging with itself would resurrect what the plan removed)
 /// nor failed to read. Precomputing is equivalent to looking each up lazily: group keys are
 /// distinct, and every URL a write deletes was planned, so no write can change a record
 /// read here.
@@ -506,10 +506,10 @@ fn hold_back_visibility_mismatches<'p>(
         }
         let members = &groups[key];
         // What the joining plans have to agree with. A record that stays at the target sets
-        // it. With none — a target nothing occupies, or one whose occupant is itself moving
-        // away — there is nothing to defer to, so the plans need only agree with *each
-        // other*; when they don't, no member may write, because merging would then pick a
-        // visibility on the user's behalf with nothing to justify the choice.
+        // it. With none -- a target nothing occupies, or one whose occupant is itself
+        // moving away -- there is nothing to defer to, so the plans need only agree with
+        // *each other*; when they don't, no member may write, because merging would then
+        // pick a visibility on the user's behalf with nothing to justify the choice.
         let staying = residents
             .get(key)
             .map(|resident| resident.public)
@@ -663,7 +663,7 @@ async fn write_single<S: BookmarkStore>(
     }
 }
 
-/// Field-merge a group — with the record staying at its target, if any — into one record,
+/// Field-merge a group -- with the record staying at its target, if any -- into one record,
 /// write it, and delete the absorbed URLs, so a later run sees a single bookmark at the
 /// target and converges. Skipped when the merge reproduces what is stored there and there
 /// is nothing to absorb. Returns the stored URLs a failed write left occupied, for the
@@ -679,11 +679,11 @@ async fn write_merge<S: BookmarkStore>(
 ) -> Vec<Url> {
     // The record that stays at this URL: an unplanned resident, else the member already
     // stored here. Whichever it is leads the merge, so its title and note are the base the
-    // others extend. For an incumbent that is its *plan*, not its stored record — the plan
+    // others extend. For an incumbent that is its *plan*, not its stored record -- the plan
     // is this pass's intended end-state for it, and merging its stored record back in would
     // resurrect exactly what the plan removed.
     // A member is only lifted out of the tail when it is itself the survivor, so the two
-    // can't disagree about which index to drop — the alternative, filtering by `incumbent`
+    // can't disagree about which index to drop -- the alternative, filtering by `incumbent`
     // independently of which branch `survivor` took, would silently lose a member if both
     // were ever `Some`.
     let (survivor, lifted) = match resident {
@@ -707,13 +707,13 @@ async fn write_merge<S: BookmarkStore>(
         // The survivor's own record-level state survives the merge's field rules: it is the
         // bookmark that stays here, and cleanup never re-shapes those (see `write_single`).
         // Its date in particular must not shift to a mover's under `merge_bookmarks`'s
-        // earliest-wins rule, which is meant for two plans — with dating off, nothing may
+        // earliest-wins rule, which is meant for two plans -- with dating off, nothing may
         // re-date a bookmark at all. `public` needs no such restore: a group only reaches
         // this point when every member already matches it, so the all()-rule cannot change
         // it.
         merged.read_later = survivor.read_later;
         // `None` means the stored date was absent or wouldn't parse, and writing it back
-        // omits `dt` entirely — under `replace=yes` Pinboard then re-dates the record to
+        // omits `dt` entirely -- under `replace=yes` Pinboard then re-dates the record to
         // now. Keep the earliest date the merge found instead of losing the record's age.
         merged.timestamp = survivor.timestamp.or(merged.timestamp);
     }
@@ -733,7 +733,7 @@ async fn write_merge<S: BookmarkStore>(
     }
 
     // Nothing to do when the merge reproduces what is already stored at the target and
-    // there is nothing to absorb — otherwise a converged state would rewrite itself every
+    // there is nothing to absorb -- otherwise a converged state would rewrite itself every
     // run. Compared against the *stored* record, which for an incumbent is not the plan
     // that led the merge.
     let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].stored));
@@ -765,7 +765,7 @@ async fn write_merge<S: BookmarkStore>(
         emit_preview(&mut outcome.preview, target, &detail);
     }
 
-    // Always through the store — see `write_single`.
+    // Always through the store -- see `write_single`.
     let write = store.apply_merge(merged, &old_urls).await;
     match write.error {
         None => {
@@ -775,9 +775,9 @@ async fn write_merge<S: BookmarkStore>(
             Vec::new()
         }
         // Half-applied: the merged record landed and an absorbed URL survived. Count the
-        // change, exactly as the rewrite path does — the account did change — and name what
-        // is actually wrong, since "merging into {target} failed" would send the operator
-        // after a record that is fine.
+        // change, exactly as the rewrite path does -- the account did change -- and name
+        // what is actually wrong, since "merging into {target} failed" would send the
+        // operator after a record that is fine.
         Some(e) if write.wrote => {
             outcome.changed += 1;
             outcome.write_failed += 1;
@@ -847,7 +847,7 @@ const PREVIEW_INDENT: &str = "          ";
 /// occupy the URL that refuses the next, which is what makes the result independent of the
 /// order groups are written in.
 ///
-/// Called once before any write, and again after each failed write — a failure strands its
+/// Called once before any write, and again after each failed write -- a failure strands its
 /// group exactly as a refusal does, and leaving that un-propagated is worse than not
 /// protecting the stranded record at all: it refuses a group whose own members are then
 /// left unprotected in turn, trading one lost record for several.

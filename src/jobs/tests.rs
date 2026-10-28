@@ -16,7 +16,7 @@ fn the_pinboard_write_pause_is_rate_limit_secs_else_three_seconds() {
 }
 
 /// Override values chosen so each setting is distinct from the others and from the
-/// `Config::default()` globals — so a builder that wires a flag into the *wrong*
+/// `Config::default()` globals -- so a builder that wires a flag into the *wrong*
 /// `SyncJob` field (e.g. `public` into the `read_later` slot) fails the assertions.
 fn wiring_overrides() -> SyncOverrides {
     SyncOverrides {

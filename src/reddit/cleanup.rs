@@ -1,7 +1,7 @@
 //! `cleanup` subcommand: normalize existing Reddit bookmarks in a Pinboard
 //! account. Rewrites URLs to the account's `reddit_domain` (unwrapping `over18`
 //! redirects) unless they are on another configured account's,
-//! normalizes tags, and — using Reddit's `/api/info` for authoritative data —
+//! normalizes tags, and -- using Reddit's `/api/info` for authoritative data --
 //! marks NSFW posts, replaces generic placeholder titles, and backfills the author,
 //! flair and media-type tags sync writes.
 
@@ -131,11 +131,11 @@ struct RedditPostMeta {
     title: Option<String>,
     /// Post creation time (unix epoch seconds), for `use_post_date`.
     created_utc: Option<f64>,
-    /// The notes rebuilt from authoritative data — the quoted body wrapped in a
+    /// The notes rebuilt from authoritative data -- the quoted body wrapped in a
     /// `<blockquote>` (empty when there's nothing to quote). Used to retrofit existing
     /// bookmarks to the shape `sync` writes.
     note: String,
-    /// The raw `selftext`, i.e. the rebuilt notes before the `<blockquote>` wrapping —
+    /// The raw `selftext`, i.e. the rebuilt notes before the `<blockquote>` wrapping --
     /// the shape an older sync wrote. Lets the retrofit recognize its own past output.
     selftext: String,
 }
@@ -242,9 +242,9 @@ impl CleanupPass for RedditCleanupPass<'_> {
         // those notes alone. When we have authoritative data, retrofit the rebuild (selftext
         // in a <blockquote>, or a link post's external URL) onto the stored notes *only* when
         // those notes are ones the tool itself wrote (empty, the current rebuild, the raw
-        // pre-<blockquote> selftext, or a bare self-link an older sync left) — a hand-written
-        // annotation on a manually-saved bookmark is preserved. Without an entry this run,
-        // only drop a bare self-link; never wipe genuine notes.
+        // pre-<blockquote> selftext, or a bare self-link an older sync left) -- a
+        // hand-written annotation on a manually-saved bookmark is preserved. Without an entry
+        // this run, only drop a bare self-link; never wipe genuine notes.
         let note = if is_comment_url(&new_url) {
             bookmark.note.clone()
         } else if let Some(post) = post {
@@ -450,7 +450,7 @@ fn is_comment_url(url: &Url) -> bool {
         return false;
     };
     // `Url::path` excludes any query/fragment.
-    // post → [id, slug]; comment → [id, slug, comment-id].
+    // post -> [id, slug]; comment -> [id, slug, comment-id].
     rest.split('/').filter(|s| !s.is_empty()).count() >= 3
 }
 
@@ -509,8 +509,8 @@ pub fn normalize_tags(
     set.into_iter().collect()
 }
 
-/// Whether a post bookmark's stored `note` is one the tool itself wrote — so the
-/// authoritative `rebuilt` notes may safely replace it — rather than a hand-written
+/// Whether a post bookmark's stored `note` is one the tool itself wrote -- so the
+/// authoritative `rebuilt` notes may safely replace it -- rather than a hand-written
 /// annotation to preserve. Recognized tool shapes: empty, the current rebuild, the raw
 /// `selftext` from before the `<blockquote>` retrofit, or a bare self-link an older sync
 /// left in an empty self-post.
@@ -528,7 +528,7 @@ fn note_is_tool_generated(
         || is_self_link_notes(note, url, keys)
 }
 
-/// Whether `notes` is nothing but a Reddit link to the same post as `url` — the duplicated
+/// Whether `notes` is nothing but a Reddit link to the same post as `url` -- the duplicated
 /// self-link older syncs wrote into empty self-posts' notes. Compared by `keys` (on every
 /// configured `reddit_domain`), so it matches across hosts/casing; non-Reddit notes (e.g.
 /// a link post's external URL) and free-text notes don't match and are left untouched.

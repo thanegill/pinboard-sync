@@ -32,8 +32,8 @@ async fn repo_lookup_reports_an_exhausted_rate_limit_with_its_reset() {
     assert!(message.contains("2026-08-30"), "{message}");
 }
 
-/// GitHub's docs make both headers optional on a secondary limit — "Otherwise, wait
-/// for at least one minute before retrying" — leaving the body's error message as the
+/// GitHub's docs make both headers optional on a secondary limit -- "Otherwise, wait
+/// for at least one minute before retrying" -- leaving the body's error message as the
 /// only signal. Missing it drops us back to the per-bookmark 403 this exists to fix.
 #[tokio::test]
 async fn a_secondary_rate_limit_is_recognised_by_its_message_alone() {
@@ -55,7 +55,7 @@ async fn a_secondary_rate_limit_is_recognised_by_its_message_alone() {
 }
 
 /// A 403 without the rate-limit signature is a real permission denial and must stay
-/// an ordinary error — mapping it to a rate limit would stop the pass wrongly.
+/// an ordinary error -- mapping it to a rate limit would stop the pass wrongly.
 #[tokio::test]
 async fn a_plain_403_is_not_treated_as_a_rate_limit() {
     let server = MockServer::start().await;
@@ -328,7 +328,7 @@ async fn an_echoed_token_is_redacted_from_the_error_and_the_logged_body() {
     }
 }
 
-/// A repo lookup that can never succeed again reads as "gone", the same as a 404 —
+/// A repo lookup that can never succeed again reads as "gone", the same as a 404 --
 /// no credential and no retry will clear either one.
 #[tokio::test]
 async fn repo_lookup_is_none_for_a_gone_repo() {

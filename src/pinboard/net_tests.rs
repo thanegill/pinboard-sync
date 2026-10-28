@@ -224,7 +224,7 @@ async fn add_retries_after_414_then_succeeds() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use wiremock::{Request, Respond};
 
-    // 414 on the first hit (URL too long), then `done` — the client should shrink
+    // 414 on the first hit (URL too long), then `done` -- the client should shrink
     // the notes and retry rather than failing. A stateful responder makes the
     // sequence deterministic (two ambiguous mocks don't reliably order).
     struct FailFirst(AtomicUsize);
@@ -299,7 +299,7 @@ async fn all_parses_bookmarks() {
     assert_eq!(all[0].tags, vec!["reddit", "subreddit:rust"]);
     // The ISO-8601 `time` is parsed into a timestamp on read.
     assert_eq!(all[0].timestamp, crate::timefmt::from_unix(1_577_836_800)); // 2020-01-01T00:00:00Z
-    assert_eq!(all[1].timestamp, None); // empty time → no timestamp
+    assert_eq!(all[1].timestamp, None); // empty time -> no timestamp
 }
 
 #[tokio::test]
@@ -350,7 +350,7 @@ async fn all_keeps_bookmark_with_unparseable_time() {
 #[tokio::test]
 async fn export_all_returns_body_verbatim() {
     let server = MockServer::start().await;
-    // Raw body carrying `meta`/`hash` and an unparseable `href` — both of which the
+    // Raw body carrying `meta`/`hash` and an unparseable `href` -- both of which the
     // parsed `all()` path drops. `export_all` must return the bytes untouched, so
     // assert against a raw string (not re-serialized JSON).
     let body = r#"[{"href":"not a url","description":"bad","meta":"abc","hash":"def"},
@@ -376,8 +376,8 @@ async fn dump_hits_posts_all_exactly_once() {
     Mock::given(method("GET"))
         .and(path("/posts/all"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
-        // `posts/all` is rate-limited to one call per five minutes — far longer than
-        // the retry budget — so a second call in one run would 429 and fail the target.
+        // `posts/all` is rate-limited to one call per five minutes -- far longer than
+        // the retry budget -- so a second call in one run would 429 and fail the target.
         .expect(1)
         .mount(&server)
         .await;

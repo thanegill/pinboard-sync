@@ -67,8 +67,8 @@ pub async fn run<S: BookmarkStore + AccountState>(
     let items = run_pass(store, &hackernews_bookmarks, "HN", opts.dates, &pass).await;
 
     // Each pass reaches its own verdict. Merging the tallies first would let this
-    // pass's bookmarks — which are planned from prefetched items and so can never
-    // fail — vouch for the discussion lookups, which are the only per-item network
+    // pass's bookmarks -- which are planned from prefetched items and so can never
+    // fail -- vouch for the discussion lookups, which are the only per-item network
     // calls here and can fail on their own.
     // Its candidates come from the view *after* the item pass wrote, so a bookmark that
     // pass merged is re-planned from the merged record rather than from a stale copy.
@@ -213,7 +213,7 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
 
 /// Links one `link_tag`-tagged article bookmark to its HN discussion: look it up by URL,
 /// add an `HN Link:` line to the notes, and swap the marker tag for the base HN tags.
-/// Always in-place — the URL is unchanged and the planned `timestamp` is `None`, so the
+/// Always in-place -- the URL is unchanged and the planned `timestamp` is `None`, so the
 /// driver preserves the stored date regardless of the dating policy.
 struct HackerNewsLinkPass<'a> {
     client: &'a AlgoliaClient,
@@ -222,8 +222,8 @@ struct HackerNewsLinkPass<'a> {
 
 impl CleanupPass for HackerNewsLinkPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
-        // Unlike the other passes' early exits, this one is an *answer* from Algolia —
-        // the search ran and the article simply has no discussion — so it counts as
+        // Unlike the other passes' early exits, this one is an *answer* from Algolia --
+        // the search ran and the article simply has no discussion -- so it counts as
         // having reached the source.
         let Some(id) = self.client.search_by_url(&bookmark.url).await? else {
             return Ok(Plan::Unchanged);
@@ -248,7 +248,7 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
             title,
             note,
             tags,
-            // No candidate source time — the driver preserves the stored time.
+            // No candidate source time -- the driver preserves the stored time.
             timestamp: None,
             public: bookmark.public,
             read_later: bookmark.read_later,

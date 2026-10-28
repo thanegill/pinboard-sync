@@ -4,20 +4,20 @@
 //!
 //! "Every field", not "every byte": merging the pages of one service into a single file
 //! means re-serializing, and `serde_json` here has no `preserve_order`, so object keys
-//! come out sorted. Nothing is dropped — but the file is not the server's bytes, and the
+//! come out sorted. Nothing is dropped -- but the file is not the server's bytes, and the
 //! docs must not claim it is.
 //!
 //! Three stages, deliberately separated so only the last touches the filesystem:
 //! a client [`dump`](BackupSource::dump)s (async), [`layout`] turns that payload into
 //! named files (pure), and [`write_files`] puts them on disk. The clients therefore
-//! know how to produce their data and nothing about where it goes — the same split
+//! know how to produce their data and nothing about where it goes -- the same split
 //! `cleanup_pass::run_pass` makes for `cleanup`.
 //!
 //! Raw fidelity matters because every wire struct in this crate deserializes only the
 //! fields it needs, with no catch-all: `GitHubStarredRepo` keeps a handful of GitHub's
 //! ~80 repo fields, and `HackerNewsItem` is already a normalized view of an Algolia hit.
 //! So `raw/` is captured as response *text*, before any parsing, by a [`RawSink`] the
-//! clients push to as they walk their existing pagination — one traversal feeds both
+//! clients push to as they walk their existing pagination -- one traversal feeds both
 //! halves, and the two can never disagree about a point in time.
 
 use std::collections::HashSet;
@@ -74,7 +74,7 @@ pub struct RawSink {
 }
 
 impl RawSink {
-    /// A sink that discards everything — for the `sync`/`cleanup` read paths.
+    /// A sink that discards everything -- for the `sync`/`cleanup` read paths.
     pub fn disabled() -> Self {
         Self::default()
     }
@@ -164,7 +164,7 @@ impl From<&BookmarkDraft> for ExportBookmark {
 pub struct BackupDump {
     pub raw: Vec<RawPage>,
     /// `Err` when the source's shape broke so no bookmark could be built. The raw half is
-    /// still written — a schema break is exactly when the verbatim body is worth having —
+    /// still written (a schema break is exactly when the verbatim body is worth having),
     /// the normalized half is skipped rather than emptied, and the job is reported failed.
     pub records: Result<Vec<ExportBookmark>>,
     /// Set when pagination stopped at a page cap, so this dump is only part of the
@@ -220,8 +220,8 @@ pub struct BackupFile {
 }
 
 /// A filename-safe slug for an account name: lowercased, with every run of characters
-/// outside `[a-z0-9_-]` — `.` included, so `a.b` and `a/b` slug alike and
-/// [`check_stem_collisions`] has to catch the clash — collapsed to a single `-` and the
+/// outside `[a-z0-9_-]` -- `.` included, so `a.b` and `a/b` slug alike and
+/// [`check_stem_collisions`] has to catch the clash -- collapsed to a single `-` and the
 /// ends trimmed. An unnamed
 /// account (or one that slugs to nothing) becomes `default`, matching `job_label`'s
 /// `source[default]`. Because `/` never survives and a bare `..` cannot be produced, a
@@ -246,7 +246,7 @@ pub fn slug(name: Option<&str>) -> String {
 /// Merge one stream's captured JSON bodies into a single value: a body that is itself a
 /// JSON **array** is flattened into the output (GitHub's `/user/starred`, Pinboard's
 /// `posts/all`), any other body is pushed as one element (Reddit's `{"kind":"Listing"}`
-/// envelope, Algolia's `{"hits":[…]}`).
+/// envelope, Algolia's `{"hits":[...]}`).
 ///
 /// So GitHub and Pinboard produce a flat array of items while Reddit and HackerNews
 /// produce an array of page envelopes. Always pushing envelopes would make GitHub an
@@ -254,11 +254,11 @@ pub fn slug(name: Option<&str>) -> String {
 ///
 /// **Every field survives, but the bytes are not the server's.** Merging means
 /// re-serializing, and `serde_json` is built without `preserve_order`, so object keys come
-/// back out sorted. Two JSON documents with the same fields, not the same file — say
+/// back out sorted. Two JSON documents with the same fields, not the same file -- say
 /// "every field preserved", never "byte-for-byte".
 ///
 /// Returns the [`Count`] alongside, since the classification (were all the bodies arrays?)
-/// falls out of the same walk — recomputing it would mean parsing every body twice, and
+/// falls out of the same walk -- recomputing it would mean parsing every body twice, and
 /// Pinboard's `meta=yes` export is large enough for that to matter.
 pub fn merge_json_pages(bodies: &[&str]) -> Result<(Value, Count)> {
     let mut merged = Vec::new();
@@ -318,7 +318,7 @@ pub fn layout(stem: &str, dump: &BackupDump) -> Result<Vec<BackupFile>> {
     // JSON stream ("") is always emitted, even with no pages: a source that legitimately
     // returns nothing this run (an emptied favorites list makes zero Algolia requests)
     // must still overwrite its file with `[]`, or last run's data would survive next to a
-    // freshly emptied normalized half — the exact disagreement the pairing rules out.
+    // freshly emptied normalized half -- the exact disagreement the pairing rules out.
     let mut streams: Vec<&'static str> = vec![""];
     for page in &dump.raw {
         if !streams.contains(&page.stream) {
@@ -352,7 +352,7 @@ pub fn layout(stem: &str, dump: &BackupDump) -> Result<Vec<BackupFile>> {
         });
     }
 
-    // Skipped, not emptied, when normalization failed — see `BackupDump::records`.
+    // Skipped, not emptied, when normalization failed -- see `BackupDump::records`.
     if let Ok(records) = &dump.records {
         files.push(BackupFile {
             path: normalized_path(stem),
@@ -392,7 +392,7 @@ fn check_writable(file: &BackupFile) -> Result<()> {
     Ok(())
 }
 
-/// Bail if two jobs would write the same files — `a.b` and `a/b` both slug to `a-b`, and
+/// Bail if two jobs would write the same files -- `a.b` and `a/b` both slug to `a-b`, and
 /// the second job would silently overwrite the first. Config validation
 /// (`config::check_distinct_slugs`) already rejects such accounts; this stays as the
 /// guard on the stems actually built. Checked before any write, not during.
@@ -413,7 +413,7 @@ pub fn check_stem_collisions<'a>(stems: impl IntoIterator<Item = &'a str>) -> Re
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct ManifestEntry {
     pub path: String,
-    /// Either `items` or `pages` — see [`Count`]; never both, so a manifest never implies
+    /// Either `items` or `pages` -- see [`Count`]; never both, so a manifest never implies
     /// an item count it doesn't have.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub items: Option<usize>,
@@ -472,7 +472,7 @@ pub fn check_backup_dir(dir: &Path) -> Result<()> {
 /// `DynamicUser`, ACLs and read-only mounts wrong.
 ///
 /// Deliberately creates nothing. A probe that ran `mkdir -p` would report ✓ for a typo'd
-/// path — it would simply create it — and, run as root against the NixOS default, would
+/// path -- it would simply create it -- and, run as root against the NixOS default, would
 /// leave a real root-owned `/var/lib/pinboard-sync` where systemd expects to manage a
 /// symlink into `/var/lib/private`, breaking the very setup the check exists to validate.
 pub fn probe_writable(dir: &Path) -> Result<DirProbe> {
@@ -497,8 +497,8 @@ pub enum DirProbe {
     WillBeCreated,
 }
 
-/// What one target actually did: the files it wrote, the files it deleted, and — when the
-/// target wrote something it can't vouch for — why.
+/// What one target actually did: the files it wrote, the files it deleted, and -- when the
+/// target wrote something it can't vouch for -- why.
 ///
 /// `written`/`removed` are reported even when `unusable` is set, because the manifest
 /// merges over the previous run: leaving them out would let the *old* entry survive and
@@ -515,7 +515,7 @@ pub struct JobOutcome {
 }
 
 impl JobOutcome {
-    /// Add a reason the snapshot can't be trusted, keeping any already recorded — two
+    /// Add a reason the snapshot can't be trusted, keeping any already recorded -- two
     /// problems describe different damage, and dropping one costs the diagnosis.
     fn note_unusable(&mut self, reason: String) {
         self.unusable = Some(match self.unusable.take() {
@@ -545,7 +545,7 @@ pub async fn run_job<S: BackupSource>(
     }
 
     // Decided before the dry-run branch, for the same reason: a dry run that reported a
-    // clean plan for a target the real run flags would be worse than useless — it is what
+    // clean plan for a target the real run flags would be worse than useless -- it is what
     // an operator validates a new config with. A schema break is exactly when the verbatim
     // body is worth keeping, and a truncated snapshot still beats none, so neither is an
     // `Err`; they ride back so the caller records what landed *and* that it isn't good.
@@ -590,7 +590,7 @@ pub async fn run_job<S: BackupSource>(
     }
 
     // A normalized half this run couldn't produce must not be left as last run's file
-    // beside a freshly written raw half — the two would silently disagree. Absent says
+    // beside a freshly written raw half -- the two would silently disagree. Absent says
     // "not established", which a stale file cannot.
     if dump.records.is_err() {
         let relative = normalized_path(stem);
@@ -624,13 +624,13 @@ fn normalized_path(stem: &str) -> String {
 ///
 /// Per-file atomicity can't give run atomicity: a run whose third target fails leaves a
 /// directory mixing this run's files with the last run's. `failed` names those targets and
-/// `complete` is false, so a stale file can't hide behind a fresh `generated_at` — without
-/// them a reader would see today's timestamp over week-old data and believe it.
+/// `complete` is false, so a stale file can't hide behind a fresh `generated_at` --
+/// without them a reader would see today's timestamp over week-old data and believe it.
 ///
 /// This is a read-modify-write with no locking, so two runs writing the *same* directory
-/// concurrently lose each other's entries. That is not new — they would already be racing
-/// on the data files themselves, and a snapshot directory is single-writer by design — but
-/// the merge is what makes `manifest.json` shared state, so it is worth stating.
+/// concurrently lose each other's entries. That is not new -- they would already be racing
+/// on the data files themselves, and a snapshot directory is single-writer by design --
+/// but the merge is what makes `manifest.json` shared state, so it is worth stating.
 pub fn write_manifest(
     dir: &Path,
     entries: &[ManifestEntry],
@@ -643,7 +643,7 @@ pub fn write_manifest(
         generated_at: String,
         version: String,
         /// Whether the run that wrote this manifest finished every target it attempted.
-        /// It says nothing about targets the run didn't attempt — for that, compare each
+        /// It says nothing about targets the run didn't attempt -- for that, compare each
         /// entry's own `generated_at`.
         complete: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -653,7 +653,7 @@ pub fn write_manifest(
 
     // Merge over the previous manifest rather than replacing it. A narrowed run
     // (`backup pinboard`) refreshes part of the directory; replacing the manifest would
-    // leave the other targets' files present but undescribed — the stale-file-behind-a-
+    // leave the other targets' files present but undescribed -- the stale-file-behind-a-
     // fresh-timestamp problem the manifest exists to prevent. Each entry carries its own
     // `generated_at`, so a file older than the run is visible as such.
     let path = dir.join("manifest.json");
@@ -662,7 +662,7 @@ pub fn write_manifest(
             Ok(m) => m.files,
             // Never silent: discarding the previous entries here would quietly undo the
             // merge and let a narrowed run write a manifest describing only its own
-            // target — the very failure merging exists to prevent.
+            // target -- the very failure merging exists to prevent.
             Err(e) => {
                 warn!(
                     "{} exists but could not be parsed ({e}); its entries are being \

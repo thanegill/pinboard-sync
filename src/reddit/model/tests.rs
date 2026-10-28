@@ -120,7 +120,7 @@ fn empty_subreddit_prefix_disables_the_subreddit_tag() {
 
 #[test]
 fn into_draft_skips_item_with_unparseable_url() {
-    // A `domain` that can't form a valid URL (a space in the host) — the item is
+    // A `domain` that can't form a valid URL (a space in the host) -- the item is
     // dropped rather than producing a draft with no URL.
     let cfg = RedditConfig {
         domain: "bad host".into(),
@@ -295,7 +295,7 @@ fn empty_self_post_has_no_duplicated_permalink_in_notes() {
 
 #[test]
 fn empty_link_post_keeps_the_external_url_in_notes() {
-    // A link post with no selftext keeps its external URL in the notes — that's
+    // A link post with no selftext keeps its external URL in the notes -- that's
     // not the bookmark URL (which is the reddit permalink), so it's not a dup.
     let post = item(
         "t3",

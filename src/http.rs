@@ -486,7 +486,7 @@ impl RetryingClient {
     /// [`ConnectBudget`], which also gives up hosts). Other transport errors (a connection
     /// dropped mid-request, or no response headers within [`READ_TIMEOUT`]), HTTP 429, and
     /// 5xx are retried with linear backoff, `base_delay * n` for up to `max_attempts`
-    /// attempts. Responses that are not transient — 2xx and other 4xx (e.g. 401/403/400) —
+    /// attempts. Responses that are not transient -- 2xx and other 4xx (e.g. 401/403/400) --
     /// are returned as-is for the caller to interpret, since retrying them would not help.
     ///
     /// Only sending is retried: a body that stalls after this returns fails the caller's

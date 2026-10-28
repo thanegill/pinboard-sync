@@ -7,6 +7,7 @@
 use url::Url;
 
 use crate::github::gists::{gist_root_id, GIST_HOST};
+use crate::github::repo_name;
 use crate::hackernews::HackerNewsItemId;
 use crate::reddit::model::over18_dest;
 use crate::source::{DedupKey, UrlKey};
@@ -48,14 +49,12 @@ impl UrlKey for GitHubKeys {
             Some(bare) => bare.to_string(),
             None => key,
         };
-        let is_repo_root = key
+        let repo_root = key
             .strip_prefix("github.com/")
-            .is_some_and(|path| path.split('/').count() == 2);
-        let key = match key.strip_suffix(".git") {
-            Some(root) if is_repo_root => root.to_string(),
-            _ => key,
-        };
-        Some(key.into())
+            .and_then(|path| path.split_once('/'))
+            .filter(|(_, name)| !name.contains('/'))
+            .and_then(|(owner, name)| Some(format!("github.com/{owner}/{}", repo_name(name)?)));
+        Some(repo_root.unwrap_or(key).into())
     }
 }
 
@@ -197,6 +196,13 @@ mod tests {
             Some("github.com/o/r.git/tree/main"),
             "only a repo root drops `.git`"
         );
+        for nameless in ["https://github.com/o/.git", "https://github.com/o/..git"] {
+            assert_eq!(
+                key(nameless).as_deref(),
+                Some(&nameless["https://".len()..]),
+                "a name `.git` leaves empty or a dot segment is no repo's, so nothing is dropped"
+            );
+        }
         assert_eq!(key("https://example.com/o/r"), None);
     }
 

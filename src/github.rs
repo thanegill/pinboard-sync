@@ -135,6 +135,19 @@ impl GitHubStarredRepo {
     }
 }
 
+/// The repo name a repo-root URL's last path segment spells: the segment less one `.git`
+/// suffix. `None` when that leaves no name, or a dot segment (`.` or `..`, raw or
+/// percent-encoded), which a URL parser drops, so a URL built from it names the owner or
+/// the site rather than a repo.
+pub(crate) fn repo_name(segment: &str) -> Option<&str> {
+    let name = segment.strip_suffix(".git").unwrap_or(segment);
+    let is_dot_segment = matches!(
+        name.to_ascii_lowercase().as_str(),
+        "." | ".." | "%2e" | ".%2e" | "%2e." | "%2e%2e"
+    );
+    (!name.is_empty() && !is_dot_segment).then_some(name)
+}
+
 /// What sets a repo note's homepage line apart from the rest, which `cleanup` reads back.
 const HOMEPAGE_SEPARATOR: &str = "\n\nProject homepage: ";
 

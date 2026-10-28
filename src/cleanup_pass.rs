@@ -611,7 +611,7 @@ async fn write_single<S: BookmarkStore>(
     dry_run: bool,
     outcome: &mut PassOutcome,
 ) -> Vec<Url> {
-    let fitted = store.fit(planned.clone());
+    let fitted = fit_plan(store, Some(original), planned);
     if stores_nothing_new(store, original, &fitted) {
         return Vec::new();
     }
@@ -665,9 +665,10 @@ async fn write_single<S: BookmarkStore>(
 
 /// Field-merge a group -- with the record staying at its target, if any -- into one record,
 /// write it, and delete the absorbed URLs, so a later run sees a single bookmark at the
-/// target and converges. Skipped when the merge reproduces what is stored there and there
-/// is nothing to absorb. Returns the stored URLs a failed write left occupied, for the
-/// caller to protect: empty unless the write failed.
+/// target and converges. When the merge would store nothing new over the record stored
+/// there ([`stores_nothing_new`]), only the absorbed URLs are deleted, and with none the
+/// group is skipped. Returns the stored URLs a failed write left occupied, for the caller
+/// to protect: empty unless the write failed.
 async fn write_merge<S: BookmarkStore>(
     store: &S,
     key: &Url,
@@ -717,7 +718,10 @@ async fn write_merge<S: BookmarkStore>(
         // now. Keep the earliest date the merge found instead of losing the record's age.
         merged.timestamp = survivor.timestamp.or(merged.timestamp);
     }
-    let fitted = store.fit(merged.clone());
+    // The *stored* record at the target, which for an incumbent is not the plan that led
+    // the merge: the merge is fitted against it, and compared with it.
+    let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].stored));
+    let fitted = fit_plan(store, stored_at_target, &merged);
     let target = &fitted.url;
 
     // Absorbed URLs to delete: an original that is neither the target nor another planned
@@ -733,56 +737,67 @@ async fn write_merge<S: BookmarkStore>(
     }
 
     // Nothing to do when the merge reproduces what is already stored at the target and
-    // there is nothing to absorb -- otherwise a converged state would rewrite itself every
-    // run. Compared against the *stored* record, which for an incumbent is not the plan
-    // that led the merge.
-    let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].stored));
+    // there is nothing to absorb, or a converged state would rewrite itself every run.
     let converged =
         stored_at_target.is_some_and(|stored| stores_nothing_new(store, stored, &fitted));
     if converged && old_urls.is_empty() {
         return Vec::new();
     }
+    // A converged merge with URLs to absorb only deletes them: rewriting the target would
+    // store nothing new, and would cut a whole note there longer than a write allows.
+    let rewrite = !converged;
     warn_if_cut(&merged, &fitted);
     let merged = &fitted;
 
     if dry_run {
-        let note_value = if merged.note.is_empty() {
-            "(removed)".to_string()
-        } else {
-            merged.note.clone()
-        };
-        let mut detail = vec![
-            ("title", merged.title.clone()),
-            ("notes", note_value),
-            ("tags", format!("[{}]", merged.tags.joined())),
-        ];
-        if let Some(date) = merged.timestamp.and_then(crate::timefmt::to_pinboard_dt) {
-            detail.push(("date", date));
+        let mut detail = Vec::new();
+        if rewrite {
+            let note_value = if merged.note.is_empty() {
+                "(removed)".to_string()
+            } else {
+                merged.note.clone()
+            };
+            detail.extend([
+                ("title", merged.title.clone()),
+                ("notes", note_value),
+                ("tags", format!("[{}]", merged.tags.joined())),
+            ]);
+            if let Some(date) = merged.timestamp.and_then(crate::timefmt::to_pinboard_dt) {
+                detail.push(("date", date));
+            }
+            detail.push(("public", merged.public.to_string()));
+            detail.push(("toread", merged.read_later.to_string()));
         }
-        detail.push(("public", merged.public.to_string()));
-        detail.push(("toread", merged.read_later.to_string()));
         detail.extend(old_urls.iter().map(|old| ("", format!("absorb {old}"))));
         emit_preview(&mut outcome.preview, target, &detail);
     }
 
     // Always through the store -- see `write_single`.
-    let write = store.apply_merge(merged, &old_urls).await;
+    let write = if rewrite {
+        store.apply_merge(merged, &old_urls).await
+    } else {
+        store.apply_absorb(target, &old_urls).await
+    };
     match write.error {
         None => {
             outcome.changed += 1;
             let absorbed: Vec<String> = write.deleted.iter().map(|u| u.to_string()).collect();
-            debug!("merged {target} <- [{}]", absorbed.join(" "));
+            let done = if rewrite { "merged" } else { "absorbed into" };
+            debug!("{done} {target} <- [{}]", absorbed.join(" "));
             Vec::new()
         }
-        // Half-applied: the merged record landed and an absorbed URL survived. Count the
-        // change, exactly as the rewrite path does -- the account did change -- and name
-        // what is actually wrong, since "merging into {target} failed" would send the
-        // operator after a record that is fine.
+        // Half-applied: the merged record is at the target, written or already there, and
+        // an absorbed URL survived. Count the change when the account did change, as the
+        // rewrite path does, and name what is actually wrong, since "merging into
+        // {target} failed" would send the operator after a record that is fine.
         Some(e) if write.wrote => {
-            outcome.changed += 1;
+            if rewrite || !write.deleted.is_empty() {
+                outcome.changed += 1;
+            }
             outcome.write_failed += 1;
             let stranded = old_urls.len() - write.deleted.len();
-            error!("merged {target} but {stranded} absorbed URL(s) remain: {e:#}");
+            let done = if rewrite { "merged" } else { "absorbed into" };
+            error!("{done} {target} but {stranded} absorbed URL(s) remain: {e:#}");
             Vec::new()
         }
         // Nothing was written and nothing absorbed, so every member is still at its own
@@ -799,11 +814,42 @@ async fn write_merge<S: BookmarkStore>(
     }
 }
 
-/// Whether writing `fitted`, a plan as the store would keep it, would store nothing that
-/// writing `stored` back wouldn't: both, fitted, differ in nothing a write changes. That
-/// covers a plan identical to the stored record, a note already stored cut (a cut note
-/// fits as it is), and a change that lies wholly past the cut, which a write would lose
-/// while cutting a whole note the user saved, longer than a write allows, for nothing.
+/// `planned` as `store` would keep it, with `stored`'s note in place of its own when the
+/// store would cut the plan's note down to part of the stored one. Writing that cut would
+/// only shorten the stored note and keep none of the plan's text, as when a plan appends to
+/// a whole note just under the limit, so the rest of the plan goes over the stored note,
+/// itself fitted: kept whole when it still fits beside the plan's other fields.
+fn fit_plan<S: BookmarkStore>(
+    store: &S,
+    stored: Option<&Bookmark>,
+    planned: &Bookmark,
+) -> Bookmark {
+    let fitted = store.fit(planned.clone());
+    let Some(stored) = stored else {
+        return fitted;
+    };
+    let only_shortens = fitted.note != planned.note
+        && store
+            .kept_of_cut(&fitted.note)
+            .is_some_and(|kept| stored.note.starts_with(kept));
+    if !only_shortens {
+        return fitted;
+    }
+    debug!(
+        "using the stored note of {} in place of the plan's, which would be cut inside it",
+        stored.url
+    );
+    store.fit(Bookmark {
+        note: stored.note.clone(),
+        ..planned.clone()
+    })
+}
+
+/// Whether writing `fitted`, a plan from [`fit_plan`], would store nothing that writing
+/// `stored` back wouldn't: both, fitted, differ in nothing a write changes. That covers a
+/// plan identical to the stored record, a note already stored cut (a cut note fits as it
+/// is), and a change that lies wholly past the cut, which a write would lose while cutting
+/// a whole note the user saved for nothing.
 fn stores_nothing_new<S: BookmarkStore>(store: &S, stored: &Bookmark, fitted: &Bookmark) -> bool {
     store.fit(stored.clone()).diff(fitted).is_empty()
 }

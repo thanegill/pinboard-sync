@@ -134,6 +134,13 @@ All notable changes to this project are documented here. The format is based on
   Pinboard's request URL, such as a starred gist with hundreds of files. An undated `sync`
   now cuts such a note a few bytes shorter. If `cleanup` rebuilds a note an earlier
   undated `sync` cut, it rewrites it once to match.
+- A `cleanup` merge that adds nothing to the bookmark it lands on now only deletes the one
+  it absorbs, instead of rewriting, and cutting, a long note there.
+- `cleanup` no longer cuts a whole note just under the URL limit when what a plan appends
+  to it would be cut off anyway. The rest of the plan is still written, over the note kept
+  whole if it still fits.
+- A bookmark's tags are sent to Pinboard once each, so a repeated tag no longer shifts
+  where a long note is cut.
 
 ## [0.6.0] - 2026-10-25
 

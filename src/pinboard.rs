@@ -316,6 +316,10 @@ impl BookmarkStore for PinboardClient {
         b.note = self.fitted_note(&b, MAX_URL_BYTES);
         b
     }
+
+    fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str> {
+        note.strip_suffix(TRUNCATION_MARKER)
+    }
 }
 
 impl PinboardClient {
@@ -580,6 +584,20 @@ mod tests {
             c.fit(long_note_bookmark(None)).note,
             c.fit(dated).note,
             "a dated cleanup write must not cut a note an undated sync wrote any further"
+        );
+    }
+
+    #[test]
+    fn a_note_is_cut_the_same_whatever_tags_repeat() {
+        let c = test_client();
+        let tagged = |tags: &[&str]| Bookmark {
+            tags: crate::test_support::tag_list(tags),
+            ..long_note_bookmark(None)
+        };
+        assert_eq!(
+            c.fit(tagged(&["reddit", "rust", "reddit", "rust"])).note,
+            c.fit(tagged(&["reddit", "rust"])).note,
+            "the same tag set must cut the same, as `diff` compares tags as a set"
         );
     }
 

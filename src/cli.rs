@@ -351,6 +351,7 @@ impl DateFlags {
     /// Let a date flag placed before the source subcommand (on `CleanupCmd`) take
     /// effect, falling back to this per-source value. Mirrors sync's
     /// `SyncOverrides::with_top_level_hook`.
+    #[must_use]
     pub fn with_top_level(self, top_overrides: &DateFlags) -> DateFlags {
         DateFlags {
             use_post_date: top_overrides.use_post_date.or(self.use_post_date),

@@ -55,7 +55,7 @@ fn gist_configs_keep_one_config_per_marker_set_the_clients_first() {
     let off = config(&["x"], &[""]);
     let kept: Vec<String> = gist_configs(&own, &[other, off, work])
         .into_iter()
-        .map(|(_, cfg)| cfg.lang_prefix)
+        .map(|marked| marked.config.lang_prefix)
         .collect();
     assert_eq!(kept, ["own:", "lang:"]);
 }
@@ -75,8 +75,8 @@ fn two_default_accounts_each_own_only_their_gists() {
         let tags = strings(tags);
         configs
             .iter()
-            .filter(|(markers, _)| synced_under(markers, &tags))
-            .map(|(_, cfg)| cfg.tags.clone())
+            .filter(|marked| marked.syncs(&tags))
+            .map(|marked| marked.config.tags.clone())
             .collect()
     };
     assert_eq!(

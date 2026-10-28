@@ -6,6 +6,7 @@ pub mod cleanup;
 pub mod gists;
 
 use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -539,7 +540,7 @@ impl GitHubClient {
                     page.into_iter()
                         .map(|gist| (gist.id.to_ascii_lowercase(), gist)),
                 );
-                false
+                ControlFlow::Continue(())
             },
         )
         .await?;
@@ -574,23 +575,27 @@ impl GitHubClient {
             let caught_up =
                 synced_keys.is_some_and(|keys| page_is_caught_up(page_len, &page_drafts, keys));
             drafts.extend(page_drafts);
-            caught_up
+            if caught_up {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
         })
         .await?;
         Ok(drafts)
     }
 
     /// Walk `stream`'s `Link: rel="next"` pages, handing each page's elements to `on_page`,
-    /// which says whether the walk is caught up and should stop there. An element that
-    /// fails to deserialize is skipped with a warning rather than discarding its page (and
-    /// every earlier one); a body that isn't a JSON array still fails the walk, and so does
-    /// a non-empty page where every element fails, a schema break (see
+    /// which breaks when the walk is caught up and should stop there. An element that fails
+    /// to deserialize is skipped with a warning rather than discarding its page (and every
+    /// earlier one); a body that isn't a JSON array still fails the walk, and so does a
+    /// non-empty page where every element fails, a schema break (see
     /// [`deserialize_lenient`]).
     async fn walk<T: serde::de::DeserializeOwned>(
         &self,
         stream: &PagedStream,
         sink: &mut RawSink,
-        mut on_page: impl FnMut(Vec<T>) -> bool,
+        mut on_page: impl FnMut(Vec<T>) -> ControlFlow<()>,
     ) -> Result<(), SourceError> {
         let PagedStream {
             label,
@@ -651,7 +656,7 @@ impl GitHubClient {
                          deserialize — the API response shape may have changed"
                     ))
                 })?;
-            if on_page(items) {
+            if on_page(items).is_break() {
                 debug!("{label}: page {page} has nothing new; stopping");
                 break;
             }

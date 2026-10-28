@@ -11,6 +11,7 @@ pub mod cookie;
 pub mod model;
 
 use std::collections::HashSet;
+use std::ops::ControlFlow;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -32,6 +33,10 @@ use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKe
 /// matches the bookmark URLs.
 const REDDIT_BASE: &str = "https://old.reddit.com";
 
+/// Saved items per listing page: the most Reddit returns.
+const SAVED_PAGE_SIZE: &str = "100";
+/// Fullnames per `/api/info` request: the most Reddit accepts.
+const INFO_BATCH: usize = 100;
 /// Retry budget for transient failures on Reddit requests.
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -112,6 +117,7 @@ impl RedditClient {
     }
 
     /// Key bookmarks on any of `domains` as Reddit too, besides this account's own.
+    #[must_use]
     pub fn with_reddit_domains(self, domains: Vec<String>) -> Self {
         Self {
             reddit_domains: domains,
@@ -144,19 +150,19 @@ impl RedditClient {
         let mut out: Vec<RedditListingEntry> = Vec::new();
         self.walk_saved(sink, |page| {
             out.extend(page);
-            false
+            ControlFlow::Continue(())
         })
         .await?;
         Ok(out)
     }
 
     /// Follow the saved listing's `after` cursor, handing each page's entries to
-    /// `on_page`, until the listing ends, `on_page` returns true (caught up), the cursor
-    /// loops back, or [`MAX_SAVED_PAGES`] is reached.
+    /// `on_page`, until the listing ends, `on_page` breaks (caught up), the cursor loops
+    /// back, or [`MAX_SAVED_PAGES`] is reached.
     async fn walk_saved(
         &self,
         sink: &mut RawSink,
-        mut on_page: impl FnMut(Vec<RedditListingEntry>) -> bool,
+        mut on_page: impl FnMut(Vec<RedditListingEntry>) -> ControlFlow<()>,
     ) -> Result<(), SourceError> {
         let username = self
             .username
@@ -189,7 +195,7 @@ impl RedditClient {
                     let mut req = self
                         .http
                         .get(&endpoint)
-                        .query(&[("limit", "100"), ("raw_json", "1")]);
+                        .query(&[("limit", SAVED_PAGE_SIZE), ("raw_json", "1")]);
                     if let Some(a) = after_ref {
                         req = req.query(&[("after", a)]);
                     }
@@ -201,7 +207,7 @@ impl RedditClient {
             let listing: RedditListing =
                 serde_json::from_str(&body).context("parsing saved listing response")?;
             let got = listing.data.children.len();
-            if on_page(listing.data.children) {
+            if on_page(listing.data.children).is_break() {
                 debug!("reddit saved for '{username}': page {page} has nothing new; stopping");
                 break;
             }
@@ -226,12 +232,12 @@ impl RedditClient {
 }
 
 impl PostInfo for RedditClient {
-    /// Batch-fetch Thing data by fullname via `/api/info.json` (100 per request).
-    /// Returns the entries that exist.
+    /// Batch-fetch Thing data by fullname via `/api/info.json`, [`INFO_BATCH`] per
+    /// request. Returns the entries that exist.
     async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError> {
         let mut out: Vec<RedditListingEntry> = Vec::new();
         let endpoint = format!("{}/api/info.json", self.base);
-        for (i, chunk) in fullnames.chunks(100).enumerate() {
+        for (i, chunk) in fullnames.chunks(INFO_BATCH).enumerate() {
             if i > 0 {
                 crate::http::sleep(REQUEST_PAUSE).await;
             }
@@ -278,7 +284,11 @@ impl Source for RedditClient {
             let page_drafts = self.shape(page);
             let caught_up = page_is_caught_up(page_len, &page_drafts, &synced_keys);
             drafts.extend(page_drafts);
-            caught_up
+            if caught_up {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
         })
         .await?;
         not_all_dropped(entry_count, drafts)

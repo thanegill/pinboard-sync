@@ -70,22 +70,30 @@ fn markers(cfg: &GitHubConfig) -> BTreeSet<String> {
     first.into_iter().chain(own).cloned().collect()
 }
 
-/// Whether a bookmark tagged `tags` is synced under a config marked by `markers`.
-fn synced_under(markers: &BTreeSet<String>, tags: &[String]) -> bool {
-    markers.iter().all(|marker| tags.contains(marker))
+/// One account's gist config, with the [`markers`] of the gists it synced.
+struct MarkedGistConfig {
+    markers: BTreeSet<String>,
+    config: GistConfig,
+}
+
+impl MarkedGistConfig {
+    /// Whether a bookmark tagged `tags` is synced under this config.
+    fn syncs(&self, tags: &[String]) -> bool {
+        self.markers.iter().all(|marker| tags.contains(marker))
+    }
 }
 
 /// The gist configs of `own` followed by each of `configured`, keeping one per set of
 /// [`markers`] (the client's own where they share it) and none with no marker at all.
-fn gist_configs(
-    own: &GitHubConfig,
-    configured: &[GitHubConfig],
-) -> Vec<(BTreeSet<String>, GistConfig)> {
-    let mut configs: Vec<(BTreeSet<String>, GistConfig)> = Vec::new();
+fn gist_configs(own: &GitHubConfig, configured: &[GitHubConfig]) -> Vec<MarkedGistConfig> {
+    let mut configs: Vec<MarkedGistConfig> = Vec::new();
     for cfg in own_then_configured(own, configured) {
         let markers = markers(cfg);
-        if !markers.is_empty() && !configs.iter().any(|(seen, _)| *seen == markers) {
-            configs.push((markers, cfg.gists.clone()));
+        if !markers.is_empty() && !configs.iter().any(|seen| seen.markers == markers) {
+            configs.push(MarkedGistConfig {
+                markers,
+                config: cfg.gists.clone(),
+            });
         }
     }
     configs
@@ -99,7 +107,7 @@ struct GistCleanupPass<'a> {
     /// The starred gists, keyed by id, from [`GitHubClient::starred_gists`].
     starred: HashMap<String, GitHubGist>,
     /// One per distinct set of marker tags, from [`gist_configs`].
-    configs: Vec<(BTreeSet<String>, GistConfig)>,
+    configs: Vec<MarkedGistConfig>,
 }
 
 impl CleanupPass for GistCleanupPass<'_> {
@@ -121,8 +129,8 @@ impl CleanupPass for GistCleanupPass<'_> {
         let syncing: Vec<&GistConfig> = self
             .configs
             .iter()
-            .filter(|(markers, _)| synced_under(markers, &bookmark.tags))
-            .map(|(_, cfg)| cfg)
+            .filter(|marked| marked.syncs(&bookmark.tags))
+            .map(|marked| &marked.config)
             .collect();
         let synced = !syncing.is_empty();
 

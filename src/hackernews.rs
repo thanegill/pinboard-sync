@@ -242,6 +242,7 @@ impl HackerNewsClient {
 
     /// The client keying an article on any of `domains` as Reddit's own dedup key does,
     /// so it still matches once `cleanup reddit` has moved it onto that domain.
+    #[must_use]
     pub fn with_reddit_domains(self, domains: Vec<String>) -> Self {
         Self {
             keys: HackerNewsKeys::new(RedditKeys::new(domains)),
@@ -391,7 +392,8 @@ impl From<&HackerNewsItemId> for Url {
 }
 
 /// The URL isn't an HN `item?id=<n>` permalink (so it has no [`HackerNewsItemId`]).
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("not a HackerNews item URL")]
 pub struct NotHnItemUrl;
 
 /// The slug for a `Show/Ask/Tell/Launch HN:` title prefix (e.g. `Show HN:` →

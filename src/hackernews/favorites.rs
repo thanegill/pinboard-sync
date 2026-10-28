@@ -2,6 +2,7 @@
 //! `&comments=t` stream of them.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -196,20 +197,25 @@ pub(super) enum FavoritesPage {
 /// marker; otherwise it is [`FavoritesPage::Unrecognized`]. Pure, so it's unit-tested
 /// on sample HTML.
 pub(super) fn parse_favorite_ids(html: &str) -> FavoritesPage {
+    static ROW: LazyLock<Selector> = LazyLock::new(|| selector("tr.athing"));
+    static MARKER: LazyLock<Selector> = LazyLock::new(|| selector(r#"html[op="favorites"]"#));
+    static MORE: LazyLock<Selector> = LazyLock::new(|| selector("a.morelink"));
+
     let doc = Html::parse_document(html);
-    let row = Selector::parse("tr.athing").unwrap();
     let ids: Vec<String> = doc
-        .select(&row)
+        .select(&ROW)
         .filter_map(|e| e.value().attr("id").map(str::to_string))
         .collect();
-    let marker = Selector::parse(r#"html[op="favorites"]"#).unwrap();
-    if ids.is_empty() && doc.select(&marker).next().is_none() {
+    if ids.is_empty() && doc.select(&MARKER).next().is_none() {
         return FavoritesPage::Unrecognized;
     }
-    let more = Selector::parse("a.morelink").unwrap();
     let next = doc
-        .select(&more)
+        .select(&MORE)
         .next()
         .and_then(|e| e.value().attr("href").map(str::to_string));
     FavoritesPage::Recognized { ids, more: next }
+}
+
+fn selector(css: &str) -> Selector {
+    Selector::parse(css).unwrap_or_else(|e| panic!("invalid selector {css:?}: {e}"))
 }

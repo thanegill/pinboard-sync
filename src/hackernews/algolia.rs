@@ -47,8 +47,10 @@ struct AlgoliaHit {
     created_at_i: Option<i64>,
 }
 
-impl From<AlgoliaHit> for HackerNewsItem {
-    fn from(h: AlgoliaHit) -> Self {
+/// The item a hit describes; fails when its `objectID` is not an item number.
+impl TryFrom<AlgoliaHit> for HackerNewsItem {
+    type Error = std::num::ParseIntError;
+    fn try_from(h: AlgoliaHit) -> Result<Self, Self::Error> {
         // The item type is carried in `_tags` (e.g. "story"/"comment"/"poll"/"job").
         let kind = [
             HackerNewsItemKind::Comment,
@@ -59,15 +61,15 @@ impl From<AlgoliaHit> for HackerNewsItem {
         .into_iter()
         .find(|kind| h.tags.iter().any(|tag| tag == kind.as_str()))
         .unwrap_or_default();
-        HackerNewsItem {
-            id: h.object_id.parse().unwrap_or(0),
+        Ok(HackerNewsItem {
+            id: h.object_id.parse()?,
             kind,
             by: h.author.unwrap_or_default(),
             url: h.url,
             title: h.title,
             text: h.comment_text.or(h.story_text),
             created_at: h.created_at_i,
-        }
+        })
     }
 }
 
@@ -106,10 +108,11 @@ impl HackerNewsClient {
             sink.push("", RawKind::Json, &body);
             let search: AlgoliaSearchResponse =
                 serde_json::from_str(&body).context("parsing hn algolia response")?;
-            for hit in search.hits {
-                let item = HackerNewsItem::from(hit);
-                out.insert(HackerNewsItemId::from(item.id), item);
-            }
+            let items = search
+                .hits
+                .into_iter()
+                .filter_map(|hit| HackerNewsItem::try_from(hit).ok());
+            out.extend(items.map(|item| (HackerNewsItemId::from(item.id), item)));
         }
         Ok(out)
     }
@@ -158,4 +161,21 @@ async fn algolia_success(
     }
     let body = resp.text().await.unwrap_or_default();
     Err(crate::http::error_with_body(&format!("{what} returned {status}"), &body, &[]).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit(object_id: &str) -> AlgoliaHit {
+        serde_json::from_value(serde_json::json!({ "objectID": object_id, "_tags": ["story"] }))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_hit_is_an_item_only_when_its_object_id_is_a_number() {
+        let item = HackerNewsItem::try_from(hit("42")).expect("a numeric objectID");
+        assert_eq!(item.id, 42);
+        assert!(HackerNewsItem::try_from(hit("story-42")).is_err());
+    }
 }

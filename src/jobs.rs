@@ -154,6 +154,7 @@ impl SyncOverrides {
     /// Let a `--on-auth-failure` placed before the source subcommand (on
     /// `SyncCmd`) take effect, falling back to the per-source value. Mirrors the
     /// `--dry-run` merge in `run_sync`, which honors either placement too.
+    #[must_use]
     pub fn with_top_level_hook(mut self, on_auth_failure: Option<String>) -> Self {
         self.on_auth_failure = on_auth_failure.or(self.on_auth_failure);
         self

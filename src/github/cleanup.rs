@@ -10,7 +10,7 @@ use anyhow::Context;
 use time::OffsetDateTime;
 use url::Url;
 
-use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo};
+use super::{github_note, GitHubClient, GitHubConfig, GitHubRepo, HOMEPAGE_SEPARATOR};
 use crate::backup::RawSink;
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
@@ -254,7 +254,7 @@ fn base_tag(cfg: &GitHubConfig) -> Option<&str> {
 /// `synced` star any lone `<blockquote>` counts, so an upstream description edit still
 /// refreshes; elsewhere it may be a passage the user quoted when saving the page.
 fn note_is_tool_generated(note: &str, repo: &GitHubRepo, names: &[RepoName], synced: bool) -> bool {
-    let body = match note.rsplit_once("\n\nProject homepage: ") {
+    let body = match note.rsplit_once(HOMEPAGE_SEPARATOR) {
         Some((body, homepage)) if !homepage.contains('\n') => body,
         _ => note,
     }

@@ -20,6 +20,8 @@ const ALGOLIA_BASE: &str = "https://hn.algolia.com";
 pub(super) const ITEM_BATCH: usize = 100;
 /// The pause before each Algolia item chunk after the first.
 pub(super) const ALGOLIA_CHUNK_PAUSE: Duration = Duration::from_millis(300);
+/// Hits a URL search asks for, each checked for a URL that matches the bookmark's.
+const URL_SEARCH_HITS: &str = "5";
 
 /// An Algolia HN search response.
 #[derive(Debug, Deserialize)]
@@ -158,7 +160,7 @@ impl AlgoliaClient {
                 self.http.get(&endpoint).query(&[
                     ("restrictSearchableAttributes", "url"),
                     ("query", url.as_str()),
-                    ("hitsPerPage", "5"),
+                    ("hitsPerPage", URL_SEARCH_HITS),
                 ])
             })
             .await?;

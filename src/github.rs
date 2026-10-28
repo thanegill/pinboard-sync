@@ -28,6 +28,8 @@ use gists::{GistConfig, GitHubGist};
 use url::Url;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
+/// The REST API version every request pins (`X-GitHub-Api-Version`).
+const GITHUB_API_VERSION: &str = "2022-11-28";
 /// The most items a GitHub listing returns per page; GitHub's default is 30.
 const PER_PAGE: &str = "100";
 /// Backstop against a malformed `Link: rel="next"` chain that never terminates.
@@ -133,6 +135,9 @@ impl GitHubStarredRepo {
     }
 }
 
+/// What sets a repo note's homepage line apart from the rest, which `cleanup` reads back.
+const HOMEPAGE_SEPARATOR: &str = "\n\nProject homepage: ";
+
 /// Build the Pinboard notes for a repo: the `description` wrapped in a `<blockquote>`
 /// (Pinboard renders HTML in the notes), with the project homepage appended outside the
 /// quote. Falls back to the repo URL when there's no description. Shared by sync and
@@ -143,7 +148,7 @@ fn github_note(description: Option<&str>, homepage: Option<&str>, html_url: &str
         None => html_url.to_string(),
     };
     if let Some(home) = homepage.filter(|s| !s.is_empty()) {
-        note = format!("{note}\n\nProject homepage: {home}");
+        note = format!("{note}{HOMEPAGE_SEPARATOR}{home}");
     }
     note
 }
@@ -357,7 +362,7 @@ impl GitHubClient {
         );
         headers.insert(
             "X-GitHub-Api-Version",
-            HeaderValue::from_static("2022-11-28"),
+            HeaderValue::from_static(GITHUB_API_VERSION),
         );
 
         let http = client_builder()

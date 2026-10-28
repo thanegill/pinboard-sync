@@ -366,6 +366,24 @@ impl FakePinboard {
         }
     }
 
+    /// The URL of each `add` that succeeded, in call order.
+    pub fn added_urls(&self) -> Vec<String> {
+        self.added
+            .borrow()
+            .iter()
+            .map(|add| add.url.clone())
+            .collect()
+    }
+
+    /// The URL of each `update` that succeeded, in call order.
+    pub fn updated_urls(&self) -> Vec<String> {
+        self.updated
+            .borrow()
+            .iter()
+            .map(|update| update.url.clone())
+            .collect()
+    }
+
     /// The production cleanup store over this fake, its view seeded with `all`.
     pub fn cleanup_store(&self) -> CleanupStore<'_, Self> {
         CleanupStore::new(self, AccountView::new(self.all.clone()), WriteMode::Live)

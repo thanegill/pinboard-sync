@@ -546,8 +546,7 @@ async fn chained_rewrite_does_not_delete_another_writes_target() {
         let outcome = run(&pinboard, &books, &pass).await;
         assert_eq!(outcome.plan_failed + outcome.write_failed, 0);
 
-        let updated = pinboard.updated.borrow();
-        let mut written: Vec<&str> = updated.iter().map(|c| c.url.as_str()).collect();
+        let mut written = pinboard.updated_urls();
         written.sort_unstable();
         assert_eq!(written, vec!["https://collide-b/", "https://new-z/"]);
 
@@ -1242,12 +1241,7 @@ async fn a_chain_is_written_from_its_far_end() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.changed, 3);
-    let written: Vec<String> = pinboard
-        .updated
-        .borrow()
-        .iter()
-        .map(|call| call.url.clone())
-        .collect();
+    let written = pinboard.updated_urls();
     assert_eq!(
         written,
         strings(&["https://elsewhere/", "https://a/", "https://b/"]),
@@ -1315,12 +1309,7 @@ async fn a_swap_still_writes_both_bookmarks() {
 
     let outcome = run(&pinboard, &books, &pass).await;
     assert_eq!(outcome.changed, 2);
-    let mut written: Vec<String> = pinboard
-        .updated
-        .borrow()
-        .iter()
-        .map(|call| call.url.clone())
-        .collect();
+    let mut written = pinboard.updated_urls();
     written.sort_unstable();
     assert_eq!(written, strings(&["https://x/", "https://y/"]));
     assert!(
@@ -1596,10 +1585,9 @@ async fn a_converged_merge_is_not_rewritten_every_run() {
         &pass,
     )
     .await;
-    let updated = pinboard.updated.borrow();
-    let written: Vec<&str> = updated.iter().map(|c| c.url.as_str()).collect();
+    let written = pinboard.updated_urls();
     assert!(
-        !written.contains(&"https://collide/"),
+        !written.iter().any(|url| url == "https://collide/"),
         "the settled record must not be rewritten: {written:?}"
     );
     assert_eq!(outcome.refused, 0);
@@ -2368,10 +2356,9 @@ async fn a_merge_onto_a_trimmed_note_is_not_rewritten_every_run() {
         &pass,
     )
     .await;
-    let updated = pinboard.updated.borrow();
-    let written: Vec<&str> = updated.iter().map(|c| c.url.as_str()).collect();
+    let written = pinboard.updated_urls();
     assert!(
-        !written.contains(&"https://collide/"),
+        !written.iter().any(|url| url == "https://collide/"),
         "the trimmed record must not be rewritten: {written:?}"
     );
     assert_eq!(outcome.write_failed, 0);
@@ -2419,8 +2406,7 @@ async fn a_whole_note_too_long_to_write_is_not_cut_when_nothing_changed() {
         &pass,
     )
     .await;
-    let updated = pinboard.updated.borrow();
-    let written: Vec<&str> = updated.iter().map(|c| c.url.as_str()).collect();
+    let written = pinboard.updated_urls();
     assert_eq!(
         written,
         ["https://x/incoming"],

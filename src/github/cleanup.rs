@@ -342,7 +342,7 @@ fn retag(mut tags: Tags, prefixes: &[&str], additions: impl IntoIterator<Item = 
             .any(|prefix| !prefix.is_empty() && tag.starts_with(prefix))
     });
     for tag in additions {
-        tags.push_unique(&tag);
+        tags.push(&tag);
     }
     tags
 }

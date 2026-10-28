@@ -736,7 +736,7 @@ async fn run_and_store(
     for bookmark in &mut stored {
         bookmark.tags = bookmark
             .tags
-            .join(" ")
+            .joined()
             .split_whitespace()
             .map(String::from)
             .collect();

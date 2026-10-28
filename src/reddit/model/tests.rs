@@ -147,15 +147,9 @@ fn post_tags_include_author_flair_and_type() {
         }),
     );
     let tags = it.tags(&RedditConfig::default());
-    assert!(
-        tags.contains(&"author:reddit:alice".to_string()),
-        "{tags:?}"
-    );
-    assert!(
-        tags.contains(&"reddit-flair:help-wanted".to_string()),
-        "{tags:?}"
-    );
-    assert!(tags.contains(&"type:image".to_string()), "{tags:?}");
+    assert!(tags.has("author:reddit:alice"), "{tags:?}");
+    assert!(tags.has("reddit-flair:help-wanted"), "{tags:?}");
+    assert!(tags.has("type:image"), "{tags:?}");
 }
 
 #[test]
@@ -238,7 +232,7 @@ fn media_type_tag_is_gated_by_the_media_types_allowlist() {
     let tags = img.tags(&only_video);
     assert!(!tags.iter().any(|t| t.starts_with("type:")), "{tags:?}");
     let tags = img.tags(&RedditConfig::default());
-    assert!(tags.contains(&"type:image".to_string()), "{tags:?}");
+    assert!(tags.has("type:image"), "{tags:?}");
 
     // An empty media_prefix disables the tag even when the type is allowed.
     let no_prefix = RedditConfig {
@@ -394,7 +388,7 @@ fn over_18_adds_nsfw_tag() {
         }),
     );
     let tags = it.tags(&RedditConfig::default());
-    assert!(tags.contains(&"nsfw".to_string()), "{tags:?}");
+    assert!(tags.has("nsfw"), "{tags:?}");
 }
 
 #[test]

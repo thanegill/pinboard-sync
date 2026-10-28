@@ -2,14 +2,15 @@
 //! where an empty tag means "disabled" and whitespace and commas can't survive (Pinboard
 //! splits the tag string on whitespace and forbids commas).
 
-use std::collections::BTreeSet;
-use std::ops::Deref;
+use indexmap::set::Iter;
+use indexmap::IndexSet;
 
-/// A bookmark's tags, in order. Pinboard keeps them case-sensitively and stores them as
-/// one space-separated string. Read like a slice; every method that adds a tag skips an
-/// empty one (a disabled tag).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Tags(Vec<String>);
+/// A bookmark's tags, each once, in the order first added. Pinboard keeps them
+/// case-sensitively and stores them as one space-separated string. Every method that adds
+/// a tag skips an empty one (a disabled tag) and one already here. Equality sees order;
+/// [`Tags::differs_from`] compares as sets.
+#[derive(Debug, Clone, Default)]
+pub struct Tags(IndexSet<String>);
 
 impl Tags {
     /// The tags in Pinboard's space-separated tag string.
@@ -17,29 +18,26 @@ impl Tags {
         Self(stored.split_whitespace().map(String::from).collect())
     }
 
-    /// Pinboard's space-separated form, the inverse of [`Tags::parse`], with each tag once
-    /// in first-seen order: the set [`Tags::differs_from`] compares, so a repeat can't make
-    /// a write, or the URL budget it is measured against, differ from that set.
+    /// Pinboard's space-separated form, the inverse of [`Tags::parse`].
     pub fn joined(&self) -> String {
-        let mut seen = BTreeSet::new();
         self.0
             .iter()
-            .filter(|tag| seen.insert(tag.as_str()))
             .map(String::as_str)
             .collect::<Vec<_>>()
             .join(" ")
     }
 
-    /// Append `tag` unless it is empty (empty = the tag is disabled).
+    /// Append `tag` unless it is empty (empty = the tag is disabled) or already here.
+    /// Stored tags derive via `split_whitespace` and so can never contain `""`, so adding
+    /// one would make a cleanup plan diff against storage on every run.
     pub fn push(&mut self, tag: &str) {
         if !tag.is_empty() {
-            self.0.push(tag.to_string());
+            self.0.insert(tag.to_string());
         }
     }
 
-    /// [`Tags::push`] every tag in `tags`. Used to seed a draft's tags from a source's
-    /// configurable base `tags` list.
-    pub fn push_all(&mut self, tags: &[String]) {
+    /// [`Tags::push`] each of `tags`, in order.
+    pub fn push_all<'t>(&mut self, tags: impl IntoIterator<Item = &'t String>) {
         for tag in tags {
             self.push(tag);
         }
@@ -50,56 +48,58 @@ impl Tags {
         self.0.extend(prefixed(prefix, value));
     }
 
-    /// Append `tag` unless it is empty or already here. Empty tags are skipped for
-    /// parity with [`Tags::push`]: stored tags derive via `split_whitespace` and so can
-    /// never contain `""`, so emitting one would make a cleanup plan diff against
-    /// storage on every run and never converge.
-    pub fn push_unique(&mut self, tag: &str) {
-        if !tag.is_empty() && !self.has(tag) {
-            self.0.push(tag.to_string());
-        }
-    }
-
-    /// [`Tags::push_unique`] each tag in `add`, in order.
-    pub fn extend_unique(&mut self, add: &[String]) {
-        for tag in add {
-            self.push_unique(tag);
-        }
-    }
-
-    /// Keep only the tags `keep` accepts.
+    /// Keep only the tags `keep` accepts, in order.
     pub fn retain(&mut self, keep: impl FnMut(&String) -> bool) {
         self.0.retain(keep);
     }
 
     /// Sort the tags, for a plan whose order is canonical.
     pub fn sort(&mut self) {
-        self.0.sort();
+        self.0.sort_unstable();
+    }
+
+    /// The tags, in order.
+    pub fn iter(&self) -> Iter<'_, String> {
+        self.0.iter()
+    }
+
+    /// The tags, in order, as a `Vec`.
+    pub fn to_vec(&self) -> Vec<String> {
+        self.0.iter().cloned().collect()
     }
 
     /// Whether `tag` is one of the tags.
     pub fn has(&self, tag: &str) -> bool {
-        self.0.iter().any(|held| held == tag)
+        self.0.contains(tag)
     }
 
-    /// Whether the two lists differ as sets (order- and duplicate-insensitive).
+    /// Whether the two hold different tags, whatever their order.
     pub fn differs_from(&self, other: &Tags) -> bool {
-        self.0.iter().collect::<BTreeSet<_>>() != other.0.iter().collect::<BTreeSet<_>>()
+        self.0 != other.0
     }
 }
 
-impl Deref for Tags {
-    type Target = [String];
+impl PartialEq for Tags {
+    fn eq(&self, other: &Tags) -> bool {
+        self.0.iter().eq(&other.0)
+    }
+}
 
-    fn deref(&self) -> &[String] {
-        &self.0
+impl Eq for Tags {}
+
+impl<'t> IntoIterator for &'t Tags {
+    type Item = &'t String;
+    type IntoIter = Iter<'t, String>;
+
+    fn into_iter(self) -> Iter<'t, String> {
+        self.0.iter()
     }
 }
 
 #[cfg(test)]
 impl From<Vec<String>> for Tags {
     fn from(tags: Vec<String>) -> Self {
-        Self(tags)
+        Self(tags.into_iter().collect())
     }
 }
 
@@ -115,7 +115,7 @@ where
     String: PartialEq<T>,
 {
     fn eq(&self, other: &Vec<T>) -> bool {
-        self.0 == *other
+        self.0.iter().eq(other)
     }
 }
 
@@ -125,7 +125,7 @@ where
     String: PartialEq<T>,
 {
     fn eq(&self, other: &[T; N]) -> bool {
-        self.0 == *other
+        self.0.iter().eq(other)
     }
 }
 
@@ -181,11 +181,11 @@ mod tests {
     }
 
     #[test]
-    fn extend_unique_skips_empty_and_duplicate_tags() {
+    fn push_all_skips_empty_and_duplicate_tags() {
         let mut acc = tags(&["reddit"]);
         // An empty base tag (config `tags = [""]`) must not add a literal "" -- stored
         // tags can never contain one, so it would diff against storage forever.
-        acc.extend_unique(&strings(&["", "reddit", "rust"]));
+        acc.push_all(&strings(&["", "reddit", "rust"]));
         assert_eq!(acc, ["reddit", "rust"]);
     }
 
@@ -220,6 +220,11 @@ mod tests {
         held.push("b");
         held.push_all(&strings(&["c", "a"]));
         assert_eq!(held.joined(), "b a c");
+    }
+
+    #[test]
+    fn parse_holds_a_repeated_tag_once() {
+        assert_eq!(Tags::parse("a b a"), ["a", "b"]);
     }
 
     #[test]

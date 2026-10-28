@@ -190,7 +190,7 @@ impl GitHubGist {
             .filter(|language| !language.is_empty());
         for language in languages {
             if let Some(tag) = prefixed(&cfg.lang_prefix, &language.to_lowercase()) {
-                tags.push_unique(&tag);
+                tags.push(&tag);
             }
         }
         if let Some(owner) = self.owner() {
@@ -220,7 +220,7 @@ impl GitHubGist {
             .unwrap_or_else(|| url.as_str().into());
         let mut tags = Tags::default();
         tags.push_all(&cfg.tags);
-        tags.extend_unique(&self.derived_tags(cfg));
+        tags.push_all(&self.derived_tags(cfg));
         Some(BookmarkDraft {
             bookmark: Bookmark {
                 url,

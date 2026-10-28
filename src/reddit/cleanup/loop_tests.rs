@@ -929,12 +929,15 @@ async fn a_comment_tag_named_like_the_subreddit_settles_between_accounts_on_one_
         ),
     ];
     let account = settled_by_turns(&accounts, &FakeReddit::default(), &seed).await;
-    let tags: Vec<&[String]> = account.iter().map(|bookmark| &bookmark.tags[..]).collect();
+    let tags: Vec<String> = account
+        .iter()
+        .map(|bookmark| bookmark.tags.joined())
+        .collect();
     assert_eq!(
         tags,
         [
-            &["reddit", "reddit-comment", "rust", "subreddit:rust"].map(String::from)[..],
-            &["reddit", "subreddit:rust"].map(String::from)[..],
+            "reddit reddit-comment rust subreddit:rust",
+            "reddit subreddit:rust"
         ]
     );
 }
@@ -1314,7 +1317,7 @@ async fn run_and_store(
     for bookmark in &mut stored {
         bookmark.tags = bookmark
             .tags
-            .join(" ")
+            .joined()
             .split_whitespace()
             .map(String::from)
             .collect();

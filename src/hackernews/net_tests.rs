@@ -66,7 +66,7 @@ async fn fetch_scrapes_favorites_then_reads_items() {
         "https://news.ycombinator.com/item?id=9"
     );
     let tags = &drafts[1].bookmark.tags;
-    assert!(tags.contains(&"hackernews-comment".to_string()), "{tags:?}");
+    assert!(tags.has("hackernews-comment"), "{tags:?}");
 }
 
 #[tokio::test]

@@ -46,6 +46,8 @@ time = { version = "0.3", default-features = false, features = ["std", "formatti
 # HN note bodies are raw HTML (Algolia story_text/comment_text); htmd converts them to
 # Markdown. Pure-Rust, depends only on html5ever (already pulled in by scraper).
 htmd = "0.5"
+# An insertion-ordered set for a bookmark's tags; already in the build through h2.
+indexmap = "2"
 
 [dev-dependencies]
 h2 = "0.4"

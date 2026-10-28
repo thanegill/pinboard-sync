@@ -1,0 +1,22 @@
+[advisories]
+# RUSTSEC-2025-0057 (fxhash, unmaintained) fails this check until scraper, whose
+# selectors 0.25 pulls it in, is replaced with html5ever (refactor/drop-scraper).
+ignore = []
+
+[licenses]
+# cssparser, cssparser-macros, dtoa-short and selectors (MPL-2.0) fail this check until
+# scraper is replaced too. ISC is only for scraper and ego-tree, so it leaves with them.
+allow = [
+    "Apache-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

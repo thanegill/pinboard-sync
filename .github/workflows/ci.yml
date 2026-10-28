@@ -4,8 +4,9 @@ name: CI
 # three parallel jobs: `gate` runs fmt + clippy + the full test suite (incl. net_tests),
 # `flake` runs `nix flake check` (the sandboxed package build and its tests, the Nix
 # lint, and the NixOS module evaluated with `config check` run on its rendered TOML),
-# and `lint` runs cargo-machete for unused dependencies. A push to a PR's branch runs
-# once, as the PR; a branch with no PR doesn't run.
+# and `lint` runs cargo-machete for unused dependencies and cargo-deny (deny.toml:
+# RustSec advisories, licenses, duplicate versions, sources). A push to a PR's branch
+# runs once, as the PR; a branch with no PR doesn't run.
 
 on:
   push:
@@ -60,3 +61,7 @@ jobs:
 
       - name: cargo machete
         run: nix develop --command cargo machete
+
+      - name: cargo deny check
+        if: ${{ !cancelled() }}
+        run: nix develop --command cargo deny --locked check

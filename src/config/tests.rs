@@ -115,6 +115,11 @@ fn validation_error_names_the_field_not_the_value() {
         "`github[0].tag_lang_prefix` must not contain whitespace",
     );
     assert_error_hides(
+        "[[github]]\ntag_author_prefix = \"ghp SECRET12\"\n",
+        "SECRET12",
+        "`github[0].tag_author_prefix` must not contain whitespace",
+    );
+    assert_error_hides(
         "[[hackernews]]\ntag_link = \"x SECRET3\"\n",
         "SECRET3",
         "`hackernews[0].tag_link` must not contain whitespace",
@@ -610,6 +615,7 @@ fn example_config_documents_every_field() {
         post_date_max_age_days,
         cleanup_stale_to_now,
         tag_lang_prefix,
+        tag_author_prefix,
         tags,
     });
     let hackernews = documented_fields!(HackerNewsAccount {

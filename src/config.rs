@@ -295,6 +295,7 @@ impl Config {
             let at = |field: &str| format!("github[{index}].{field}");
             check_tags(&at("tags"), &account.tags)?;
             check_tag(&at("tag_lang_prefix"), &account.tag_lang_prefix)?;
+            check_tag(&at("tag_author_prefix"), &account.tag_author_prefix)?;
         }
         for (index, account) in self.hackernews.iter().enumerate() {
             let at = |field: &str| format!("hackernews[{index}].{field}");
@@ -532,6 +533,7 @@ pub struct GitHubAccount {
     /// Override `cleanup_stale_to_now` for this account.
     pub cleanup_stale_to_now: Option<bool>,
     pub tag_lang_prefix: Option<String>,
+    pub tag_author_prefix: Option<String>,
     /// Tags applied to every bookmark (default `["github-star"]`); a full override.
     pub tags: Option<Vec<String>>,
 }
@@ -544,6 +546,7 @@ impl From<&GitHubAccount> for GitHubConfig {
         GitHubConfig {
             tags: account.tags.clone().unwrap_or(d.tags),
             lang_prefix: account.tag_lang_prefix.clone().unwrap_or(d.lang_prefix),
+            author_prefix: account.tag_author_prefix.clone().unwrap_or(d.author_prefix),
         }
     }
 }
@@ -694,6 +697,7 @@ impl fmt::Debug for GitHubAccount {
             post_date_max_age_days,
             cleanup_stale_to_now,
             tag_lang_prefix,
+            tag_author_prefix,
             tags,
         } = self;
         f.debug_struct("GitHubAccount")
@@ -708,6 +712,7 @@ impl fmt::Debug for GitHubAccount {
             .field("post_date_max_age_days", post_date_max_age_days)
             .field("cleanup_stale_to_now", cleanup_stale_to_now)
             .field("tag_lang_prefix", tag_lang_prefix)
+            .field("tag_author_prefix", tag_author_prefix)
             .field("tags", tags)
             .finish()
     }

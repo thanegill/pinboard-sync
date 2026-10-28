@@ -230,11 +230,11 @@ source when one would apply to several accounts, using the resolver's own accept
 else the first, else an implicit CLI/env account). `--all` runs every configured account,
 exiting non-zero if any fail (`AllRun`); `cleanup --all` runs once per source, since it
 normalizes the shared bookmark set. `cleanup github` (see its module doc) refreshes only
-what the tool wrote: notes in `github_note`'s shape, the base/language tags of bookmarks
-carrying any configured account's base tag (with that account's tag config), their title
-only while it is still `owner/repo`, and their star date only while the notes are the tool's
-too. A repo root is often another source's bookmark (an HN story linking it, or one a rename
-merged a star into), so never widen that.
+what the tool wrote: notes in `github_note`'s shape, the base/language/owner tags of
+bookmarks carrying any configured account's base tag (with that account's tag config), their
+title only while it is still `owner/repo`, and their star date only while the notes are the
+tool's too. A repo root is often another source's bookmark (an HN story linking it, or one a
+rename merged a star into), so never widen that.
 
 **`sync` builds `SyncJob`s and fetches concurrently.** Each account becomes a
 `SyncJob { client: SourceClient, hook, settings }` (`SourceClient` an enum over the three

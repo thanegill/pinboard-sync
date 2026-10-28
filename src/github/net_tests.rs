@@ -173,7 +173,10 @@ async fn fetch_paginates_via_link_header_and_sends_token() {
     let drafts = client.fetch().await.unwrap();
     assert_eq!(drafts.len(), 2);
     assert_eq!(drafts[0].bookmark.title, "a/one");
-    assert_eq!(drafts[0].bookmark.tags, vec!["github-star", "lang:rust"]);
+    assert_eq!(
+        drafts[0].bookmark.tags,
+        vec!["github-star", "lang:rust", "author:github:a"]
+    );
     // The star time becomes the draft bookmark's timestamp.
     assert_eq!(
         drafts[0].bookmark.timestamp,

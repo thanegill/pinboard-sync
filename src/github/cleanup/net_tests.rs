@@ -418,6 +418,7 @@ async fn cleanup_refreshes_the_stars_of_every_configured_account_by_their_own_ta
     let work = GitHubConfig {
         tags: vec!["work-star".into()],
         lang_prefix: "language:".into(),
+        author_prefix: "owner:".into(),
     };
     let client = github_client(&server);
 
@@ -437,11 +438,17 @@ async fn cleanup_refreshes_the_stars_of_every_configured_account_by_their_own_ta
     };
     assert_eq!(
         written("https://github.com/o/work"),
-        ("o/work", vec!["work-star".into(), "language:rust".into()])
+        (
+            "o/work",
+            strings(&["work-star", "language:rust", "owner:o"])
+        )
     );
     assert_eq!(
         written("https://github.com/o/home"),
-        ("o/home", vec!["github-star".into(), "lang:rust".into()])
+        (
+            "o/home",
+            strings(&["github-star", "lang:rust", "author:github:o"])
+        )
     );
 }
 

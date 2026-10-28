@@ -20,7 +20,7 @@ sensible, fully-configurable tags:
 | Source | URL | Title | Tags (defaults) |
 | --- | --- | --- | --- |
 | Reddit | the `old.reddit.com` permalink | post/comment title | `reddit`, `subreddit:<sub>`, `reddit-comment`, `nsfw`, `author:reddit:<u>`, `reddit-flair:<f>`, `type:image`/`type:video` |
-| GitHub | the repo URL | `owner/repo` | `github-star`, `lang:<language>` |
+| GitHub | the repo URL | `owner/repo` | `github-star`, `lang:<language>`, `author:github:<owner>` |
 | HackerNews | the article (or HN permalink) | story title | `hackernews`, `hackernews-comment`, `author:hackernews:<u>`, `hackernews:show-hn` (and `ask-hn`/`tell-hn`/`launch-hn`) |
 
 A favorited HN *story* is bookmarked as the linked article with the discussion in
@@ -257,20 +257,20 @@ grows. Rare, but if you see a note accumulating `… [truncated]` markers, short
 
 - **GitHub** (`cleanup github`) — canonicalizes repo bookmark URLs to
   `https://github.com/<owner>/<repo>` (forcing https, lowercasing the host, dropping a
-  `.git` suffix, trailing slash, and any query/fragment); deeper links like
-  `/tree/...` or `/issues` are left alone. It then looks each repo up via the GitHub
-  API, which follows **renames and transfers**, and rewrites a moved repo's URL to its
-  current location. It refreshes only what `sync github` wrote. Notes are rebuilt from
-  the repo's description only when they are empty or in the shape sync writes; any
-  other notes are kept. The base tags and the `lang:` tag are refreshed only on
+  `.git` suffix, trailing slash, and any query/fragment); deeper links like `/tree/...`
+  or `/issues` are left alone. It then looks each repo up via the GitHub API, which
+  follows **renames and transfers**, and rewrites a moved repo's URL to its current
+  location. It refreshes only what `sync github` wrote. Notes are rebuilt from the
+  repo's description only when they are empty or in the shape sync writes; any other
+  notes are kept. The base tags, the `lang:` tag and the owner tag are refreshed only on
   bookmarks carrying the first non-empty entry of some `[[github]]` account's `tags`
   (`github-star` by default), with that account's tag settings (the running account's
   where two share a base tag), and their title only while it is still `owner/repo`.
   Under `use_post_date` they are re-dated to the star time only while both title and
-  notes are still the tool's, and only from the running account's stars. So a
-  repo saved by hand or bookmarked by `sync hackernews` keeps its title, tags and date.
-  A repo that no longer exists (404), is blocked (a DMCA 451 or a Terms of Service 403),
-  or sits behind organization SSO the token isn't authorized for keeps just the URL
+  notes are still the tool's, and only from the running account's stars. So a repo saved
+  by hand or bookmarked by `sync hackernews` keeps its title, tags and date. A repo that
+  no longer exists (404), is blocked (a DMCA 451 or a Terms of Service 403), or sits
+  behind organization SSO the token isn't authorized for keeps just the URL
   canonicalization, with a warning for the last two. Needs the GitHub token; without
   `use_post_date` the bookmark's creation time is preserved.
 
@@ -472,6 +472,7 @@ or a comma is rejected at parse time; values interpolated into a prefix are slug
 | `tag_media_types` | reddit | `["image", "video"]` | Which media types get a `type:` tag; `[]` disables. |
 | `tags` | github | `["github-star"]` | On every bookmark. |
 | `tag_lang_prefix` | github | `"lang:"` | `lang:<language>` |
+| `tag_author_prefix` | github | `"author:github:"` | `author:github:<owner>` |
 | `tags` | hackernews | `["hackernews"]` | On every bookmark. |
 | `tag_comment` | hackernews | `"hackernews-comment"` | On favorited comments. |
 | `tag_author_prefix` | hackernews | `"author:hackernews:"` | `author:hackernews:<name>` |

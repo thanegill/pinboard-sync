@@ -24,13 +24,13 @@ use crate::urls::UrlExt;
 /// `github.com` host (`owner/repo`) are touched; deep links (issues/PRs/blob/tree) and
 /// gist or other subdomains are left alone. For each repo root, look it up via the API
 /// (which follows renames/transfers) and rewrite a moved repo's URL to the current one.
-/// Notes are rebuilt only when the tool wrote them ([`note_is_tool_generated`]); the base
-/// and `lang:` tags only on a bookmark `sync github` wrote ([`is_synced_star`]), its title
-/// only while it is still `owner/repo`, and (under `use_post_date`) its star date only
-/// while its notes are the tool's too. Any other bookmark of a repo -- an HN story linking
-/// it, one saved by hand -- keeps its title, notes, tags and date. A URL change updates
-/// and deletes the old, preserving the creation time. A repo that no longer exists (404)
-/// keeps just the URL canonicalization.
+/// Notes are rebuilt only when the tool wrote them ([`note_is_tool_generated`]); the base,
+/// `lang:` and owner tags only on a bookmark `sync github` wrote ([`is_synced_star`]), its
+/// title only while it is still `owner/repo`, and (under `use_post_date`) its star date
+/// only while its notes are the tool's too. Any other bookmark of a repo -- an HN story
+/// linking it, one saved by hand -- keeps its title, notes, tags and date. A URL change
+/// updates and deletes the old, preserving the creation time. A repo that no longer
+/// exists (404) keeps just the URL canonicalization.
 ///
 /// `configured` holds the tag config of every configured GitHub account. A star carrying
 /// any of their base tags counts as synced, and its tags are refreshed by the config of
@@ -281,32 +281,33 @@ fn links_to_repo(text: &str, names: &[(String, String)]) -> bool {
         .is_some_and(|(owner, name)| is_one_of(&owner, &name, names))
 }
 
-/// Refresh the language tags from the current repo under each of `configs`, keeping other
-/// existing tags and ensuring the base tags: drop every old tag under any of their
-/// `lang_prefix`es, then re-add each config's base tags and current `lang:` tag. Dropping
-/// all before adding any keeps the result the same whatever order `configs` come in, even
-/// when one prefix starts another (`lang:` and `lang:work:`).
+/// Refresh the language and owner tags from the current repo under each of `configs`,
+/// keeping other existing tags and ensuring the base tags: drop every old tag under any of
+/// their `lang_prefix`es and `author_prefix`es, then re-add each config's base tags,
+/// current `lang:` tag and owner tag. Dropping all before adding any makes the order of
+/// `configs` irrelevant, even when one prefix starts another (`lang:`, `lang:work:`).
 fn refresh_tags(
     existing: Vec<String>,
     repo: &GitHubRepo,
     configs: &[&GitHubConfig],
 ) -> Vec<String> {
-    let under_a_lang_prefix = |tag: &str| {
+    let is_derived = |tag: &str| {
         configs
             .iter()
-            .any(|cfg| !cfg.lang_prefix.is_empty() && tag.starts_with(&cfg.lang_prefix))
+            .flat_map(|cfg| [&cfg.lang_prefix, &cfg.author_prefix])
+            .any(|prefix| !prefix.is_empty() && tag.starts_with(prefix.as_str()))
     };
     let mut tags: Vec<String> = existing
         .into_iter()
-        .filter(|tag| !under_a_lang_prefix(tag))
+        .filter(|tag| !is_derived(tag))
         .collect();
     let lang = repo.language.as_deref().filter(|lang| !lang.is_empty());
     for cfg in configs {
         extend_unique(&mut tags, &cfg.tags);
-        if let Some(lang_tag) =
-            lang.and_then(|lang| prefixed(&cfg.lang_prefix, &lang.to_lowercase()))
-        {
-            push_unique(&mut tags, &lang_tag);
+        let lang_tag = lang.and_then(|lang| prefixed(&cfg.lang_prefix, &lang.to_lowercase()));
+        let owner_tag = prefixed(&cfg.author_prefix, repo.owner());
+        for tag in lang_tag.iter().chain(&owner_tag) {
+            push_unique(&mut tags, tag);
         }
     }
     tags
@@ -484,24 +485,38 @@ mod tests {
 
     #[test]
     fn refreshed_tags_are_the_same_whichever_account_runs() {
-        let cfg = |base: &str, lang_prefix: &str| GitHubConfig {
+        let cfg = |base: &str, lang_prefix: &str, author_prefix: &str| GitHubConfig {
             tags: vec![base.into()],
             lang_prefix: lang_prefix.into(),
+            author_prefix: author_prefix.into(),
         };
-        let (home, work) = (cfg("github-star", "lang:"), cfg("work-star", "lang:work:"));
+        let (home, work) = (
+            cfg("github-star", "lang:", "author:github:"),
+            cfg("work-star", "lang:work:", "author:github:work:"),
+        );
         let rust = GitHubRepo {
             language: Some("Rust".into()),
             ..repo(None)
         };
-        let existing: Vec<String> = ["github-star", "work-star", "lang:go", "lang:work:go", "x"]
-            .map(String::from)
-            .to_vec();
+        let existing: Vec<String> = [
+            "github-star",
+            "work-star",
+            "lang:go",
+            "lang:work:go",
+            "author:github:old",
+            "author:github:work:old",
+            "x",
+        ]
+        .map(String::from)
+        .to_vec();
         let refreshed = |configs: &[&GitHubConfig]| {
             let mut tags = refresh_tags(existing.clone(), &rust, configs);
             tags.sort();
             tags
         };
         let expected = [
+            "author:github:new",
+            "author:github:work:new",
             "github-star",
             "lang:rust",
             "lang:work:rust",
@@ -517,6 +532,7 @@ mod tests {
         let cfg = |tags: &[&str], lang_prefix: &str| GitHubConfig {
             tags: tags.iter().map(|tag| tag.to_string()).collect(),
             lang_prefix: lang_prefix.into(),
+            ..GitHubConfig::default()
         };
         let own = cfg(&["github-star"], "own:");
         let configs = star_configs(

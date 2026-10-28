@@ -34,12 +34,14 @@ const STARRED_PER_PAGE: &str = "100";
 const MAX_STARRED_PAGES: u32 = 10_000;
 
 /// Tag vocabulary for GitHub stars. `tags` are applied to every bookmark
-/// (defaulting to `["github-star"]`); `lang_prefix` defaults to its built-in value,
-/// and an empty string disables that tag.
+/// (defaulting to `["github-star"]`); the prefixes default to their built-in values, and
+/// an empty string disables that tag.
 #[derive(Debug, Clone)]
 pub struct GitHubConfig {
     pub tags: Vec<String>,
     pub lang_prefix: String,
+    /// Prefix for the tag naming the repo's owner.
+    pub author_prefix: String,
 }
 
 impl Default for GitHubConfig {
@@ -47,6 +49,7 @@ impl Default for GitHubConfig {
         Self {
             tags: vec!["github-star".into()],
             lang_prefix: "lang:".into(),
+            author_prefix: "author:github:".into(),
         }
     }
 }
@@ -97,6 +100,11 @@ fn github_note(description: Option<&str>, homepage: Option<&str>, html_url: &str
 }
 
 impl GitHubRepo {
+    /// The repo's owner: the part of `full_name` before the `/`.
+    fn owner(&self) -> &str {
+        self.full_name.split('/').next().unwrap_or_default()
+    }
+
     /// Shape the repo into a Pinboard draft (no source date). Test-only convenience;
     /// the production path dates each draft via [`GitHubStarredRepo::into_draft`].
     #[cfg(test)]
@@ -131,9 +139,10 @@ impl GitHubRepo {
 
         let mut tags = Vec::new();
         push_tags(&mut tags, &cfg.tags);
-        if let Some(lang) = self.language.filter(|s| !s.is_empty()) {
+        if let Some(lang) = self.language.as_deref().filter(|s| !s.is_empty()) {
             push_prefixed(&mut tags, &cfg.lang_prefix, &lang.to_lowercase());
         }
+        push_prefixed(&mut tags, &cfg.author_prefix, self.owner());
 
         Some(BookmarkDraft {
             bookmark: Bookmark {

@@ -619,7 +619,7 @@ mod net_tests {
         let config = Config::parse(
             "[[github]]\nname = \"home\"\n\
              [[github]]\nname = \"work\"\ntags = [\"work-star\"]\n\
-             tag_lang_prefix = \"language:\"\n",
+             tag_lang_prefix = \"language:\"\ntag_author_prefix = \"owner:\"\n",
         )
         .unwrap();
         let pinboard = FakePinboard {
@@ -646,6 +646,6 @@ mod net_tests {
         let updated = pinboard.updated.borrow();
         assert_eq!(updated.len(), 1, "{updated:?}");
         assert_eq!(updated[0].description, "o/r");
-        assert_eq!(updated[0].tags, ["work-star", "language:rust"]);
+        assert_eq!(updated[0].tags, ["work-star", "language:rust", "owner:o"]);
     }
 }

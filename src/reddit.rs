@@ -33,6 +33,10 @@ use crate::source::{page_is_caught_up, BookmarkDraft, Source, SourceError, UrlKe
 /// matches the bookmark URLs.
 const REDDIT_BASE: &str = "https://old.reddit.com";
 
+/// Saved items per listing page: the most Reddit returns.
+const SAVED_PAGE_SIZE: &str = "100";
+/// Fullnames per `/api/info` request: the most Reddit accepts.
+const INFO_BATCH: usize = 100;
 /// Retry budget for transient failures on Reddit requests.
 const MAX_RETRIES: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -190,7 +194,7 @@ impl RedditClient {
                     let mut req = self
                         .http
                         .get(&endpoint)
-                        .query(&[("limit", "100"), ("raw_json", "1")]);
+                        .query(&[("limit", SAVED_PAGE_SIZE), ("raw_json", "1")]);
                     if let Some(a) = after_ref {
                         req = req.query(&[("after", a)]);
                     }
@@ -227,12 +231,12 @@ impl RedditClient {
 }
 
 impl PostInfo for RedditClient {
-    /// Batch-fetch Thing data by fullname via `/api/info.json` (100 per request).
-    /// Returns the entries that exist.
+    /// Batch-fetch Thing data by fullname via `/api/info.json`, [`INFO_BATCH`] per
+    /// request. Returns the entries that exist.
     async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError> {
         let mut out: Vec<RedditListingEntry> = Vec::new();
         let endpoint = format!("{}/api/info.json", self.base);
-        for (i, chunk) in fullnames.chunks(100).enumerate() {
+        for (i, chunk) in fullnames.chunks(INFO_BATCH).enumerate() {
             if i > 0 {
                 crate::http::sleep(REQUEST_PAUSE).await;
             }

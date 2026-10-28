@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+/// Candidate names [`create_new_temp`] tries before giving up.
+const TEMP_FILE_ATTEMPTS: usize = 100;
+
 /// Create `dir` (and its parents) mode 0700. A snapshot holds every private bookmark, so
 /// the directory is no more readable than the files in it.
 pub(super) fn create_private_dir(dir: &Path) -> Result<()> {
@@ -85,7 +88,7 @@ fn create_new_temp(
     mut next_name: impl FnMut() -> String,
 ) -> Result<(PathBuf, std::fs::File)> {
     let mut last_err = None;
-    for _ in 0..100 {
+    for _ in 0..TEMP_FILE_ATTEMPTS {
         let tmp = dir.join(next_name());
         match open_new_private(&tmp) {
             Ok(file) => return Ok((tmp, file)),

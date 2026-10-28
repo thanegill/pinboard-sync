@@ -23,15 +23,18 @@ nix fmt                                      # formats the Nix files (nixfmt, vi
 ```
 
 `nix flake check` runs the flake's `checks` for the host system only: `checks.package`
-is the package build, whose `doCheck` runs the hermetic tests, and `checks.nixos-module`
-instantiates an x86_64-linux system with the module and all three timers enabled, which
-fails on a module assertion or an undefined option without building anything for Linux.
-It also runs the host's `pinboard-sync config check` on the module's rendered settings,
-re-rendered from the internal `services.pinboard-sync.renderedSettings` option with the
-host's `pkgs.formats.toml`, because the module's own config file is an x86_64-linux
-derivation. So a key the binary would reject fails the check too. `checks.nix-lint`
-runs `nixfmt --check`, statix and deadnix over every `.nix` file. CI runs
-`nix flake check` on x86_64-linux, in its `flake` job.
+is the package build, whose `doCheck` runs the hermetic tests and whose install check
+runs `pinboard-sync --version`, and `checks.nixos-module` instantiates an x86_64-linux
+system with the module and all three timers enabled, which fails on a module assertion
+or an undefined option without building anything for Linux. It also runs the host's
+`pinboard-sync config check` on the module's rendered settings, re-rendered from the
+internal `services.pinboard-sync.renderedSettings` option with the host's
+`pkgs.formats.toml`, because the module's own config file is an x86_64-linux derivation.
+So a key the binary would reject fails the check too, as does an `on_auth_failure` in the
+rendered TOML. It greps the rendered units for the hook's `Environment=` on sync and
+cleanup, the cleanup unit's `cleanup --all`, and every user value's `%` escaped.
+`checks.nix-lint` runs `nixfmt --check`, statix and deadnix over every `.nix` file. CI
+runs `nix flake check` on x86_64-linux, in its `flake` job.
 
 `cargo clippy -D warnings` and `cargo fmt --check` are the gate — keep both clean.
 Commit often: each working feature or structural piece, with its tests, keeping the

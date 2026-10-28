@@ -126,8 +126,16 @@
                 summary=$(pinboard-sync config check ${renderedConfig})
                 echo "$summary"
                 [[ $summary == *" 1 hackernews account(s)"* ]]
+                if grep -F on_auth_failure ${renderedConfig}; then
+                  echo "onAuthFailure leaked into the rendered config" >&2
+                  exit 1
+                fi
                 grep -Fx 'Environment="PINBOARD_SYNC_ON_AUTH_FAILURE=printf %%s-alert"' \
                   ${unitFile "pinboard-sync.service"}
+                grep -Fx 'Environment="PINBOARD_SYNC_ON_AUTH_FAILURE=printf %%s-alert"' \
+                  ${unitFile "pinboard-sync-cleanup.service"}
+                grep -E '^ExecStart=".*/bin/pinboard-sync" "cleanup" "--all"$' \
+                  ${unitFile "pinboard-sync-cleanup.service"}
                 grep -F '"--out" "/var/lib/pinboard-sync/100%%"' \
                   ${unitFile "pinboard-sync-backup.service"}
                 grep -Fx 'EnvironmentFile=/run/secrets/pinboard%%-env' ${unitFile "pinboard-sync.service"}

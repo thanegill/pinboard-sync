@@ -50,15 +50,15 @@ let
   escapeSpecifiers = lib.replaceStrings [ "%" ] [ "%%" ];
 
   # Honor a per-account `enable` (default true) in each source's account array: drop
-  # the disabled accounts and strip the `enable` key — the binary's config rejects
-  # unknown fields — so the plain `sync --all` / `cleanup --all` run covers exactly the
+  # the disabled accounts and strip the `enable` key (the binary's config rejects
+  # unknown fields), so the plain `sync --all` / `cleanup --all` run covers exactly the
   # enabled accounts.
   pruneAccounts =
     accounts: map (a: removeAttrs a [ "enable" ]) (lib.filter (a: a.enable or true) accounts);
 
   tomlFormat = pkgs.formats.toml { };
   # Non-secret settings rendered to the store and passed via --config. Secrets are
-  # NOT placed here (it lands in the world-readable nix store) — they come from the
+  # NOT placed here (it lands in the world-readable nix store): they come from the
   # `environmentFile` (a sops-nix rendered template) or the per-credential `*File`
   # options (systemd `LoadCredential`).
   configSettings =
@@ -66,17 +66,10 @@ let
     // lib.mapAttrs (_: pruneAccounts) (lib.filterAttrs (name: _: lib.elem name sources) cfg.settings);
   configFile = tomlFormat.generate "pinboard-sync.toml" cfg.renderedSettings;
 
-  # Credential file paths the rendered config table supplies itself: the `[pinboard]`
-  # destination `token_file`, a reddit account `cookie_file`, or a github account
-  # `token_file` (HackerNews is public). These satisfy the binary's secret ladder without
-  # `environmentFile` or a `*File` option, so they count toward the credentials assertion.
-  # Only the enabled/rendered accounts (post-`pruneAccounts`).
-  #
-  # Unlike the `*File` options (systemd LoadCredential) and `environmentFile`, which
-  # systemd reads as root before dropping privileges, these paths are opened by the
-  # binary itself as the transient DynamicUser, so the secret they point at must be
-  # readable by that user (e.g. sops mode 0444) — a root-owned 0400 secret passes the
-  # assertion but fails to read at runtime. See the `settings` option description.
+  # The credential paths the rendered config supplies itself (`[pinboard]` `token_file`,
+  # an enabled reddit `cookie_file` or github `token_file`), which count toward the
+  # credentials assertion. The binary opens them as the DynamicUser, so the assertion
+  # can't tell whether they are readable (see the `settings` description).
   settingsCredentialFiles =
     lib.optional (
       (configSettings.pinboard.token_file or null) != null
@@ -98,21 +91,13 @@ let
   # retrievable by root (the state dir sits under the 0700 `/var/lib/private`).
   stateDir = "/var/lib/pinboard-sync";
 
-  # Build a oneshot service + timer running `pinboard-sync <args>` on `schedule`. The
-  # generated config path and the optional hook are the only things in the unit
-  # environment; credentials (incl. usernames) come from `environmentFile` (a sops-nix
-  # rendered template, read by systemd as root) and/or the per-credential `*File`
-  # options loaded through systemd `LoadCredential`, never the nix store. The service
-  # is hardened under a transient `DynamicUser`.
-  #
-  # `%d` in the `<VAR>_FILE` values expands to the unit's credentials directory
-  # ($CREDENTIALS_DIRECTORY), a private tmpfs the DynamicUser can read even though it
-  # can't read the root-owned source path directly. systemd expands specifiers in
-  # `EnvironmentFile=` and `LoadCredential=` too, so every user-supplied value doubles its
-  # `%` to reach the service literally.
-  #
-  # `extraServiceConfig` is merged over the hardening last, so a unit that needs more
-  # (the backup timer's `StateDirectory`) adds it without reaching around the factory.
+  # A hardened oneshot service + timer running `pinboard-sync <args>` on `schedule`. The
+  # unit environment holds only the config path, the hook and `<VAR>_FILE` paths under
+  # `%d` (the unit's credentials directory); credential values come from
+  # `environmentFile`, `LoadCredential` or a `settings` `*_file` path, never the nix
+  # store. systemd also expands specifiers in `EnvironmentFile=` and `LoadCredential=`,
+  # so every user-supplied value doubles its `%`. `extraServiceConfig` is merged last,
+  # over the hardening.
   mkService =
     {
       description,
@@ -383,7 +368,7 @@ in
     assertions = [
       {
         # sync/cleanup always write to the Pinboard destination, so a resolvable Pinboard
-        # token is required regardless of which source credentials are set — otherwise the
+        # token is required regardless of which source credentials are set; otherwise the
         # service enables and then fails on every timer fire with a missing-token error.
         assertion =
           pinboardTokenConfigured
@@ -441,7 +426,7 @@ in
       };
 
       # Fire a missed run on next boot (the machine may be asleep/off at the scheduled
-      # instant — especially for the weekly cleanup).
+      # instant, especially for the weekly cleanup).
       timers = {
         pinboard-sync = lib.mkIf cfg.sync.enable {
           timerConfig.Persistent = true;

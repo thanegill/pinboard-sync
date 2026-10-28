@@ -32,6 +32,7 @@ use crate::secrets::{
 };
 use crate::settings::resolve_cleanup_dates;
 use crate::source::{BookmarkDraft, SourceError};
+use crate::stdout::outln;
 use crate::timefmt::DateOpts;
 use crate::{backup, config, github, hackernews, reddit, sync, timefmt};
 
@@ -220,7 +221,7 @@ async fn back_up(
     }
 
     if mode.is_dry_run() {
-        println!("[dry-run] {} file(s) would be written.", entries.len());
+        outln!("[dry-run] {} file(s) would be written.", entries.len());
     } else {
         // Written even on a partial run, carrying `complete: false` and the failed
         // targets -- a target that failed left its previous files in place, and the

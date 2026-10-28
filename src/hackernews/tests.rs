@@ -289,6 +289,30 @@ fn hn_item_id_extracts_only_from_hn_item_urls() {
 }
 
 #[test]
+fn hn_item_id_parses_only_digits() {
+    let parse = |text: &str| text.parse::<HackerNewsItemId>().map(|id| id.to_string());
+    assert_eq!(parse("42").unwrap(), "42");
+    assert_eq!(
+        parse("007").unwrap(),
+        "7",
+        "the same id as `From<u64>` makes"
+    );
+    for refused in [
+        "",
+        "+7",
+        "-7",
+        " 7",
+        "7a",
+        "99<script>",
+        "1 OR author:x",
+        "1e3",
+    ] {
+        parse(refused).expect_err(refused);
+    }
+    parse("99999999999999999999999").expect_err("past u64");
+}
+
+#[test]
 fn dedup_key_distinguishes_hn_items_from_articles() {
     let c = HackerNewsClient::new("u".into(), HackerNewsConfig::default()).unwrap();
     assert_eq!(

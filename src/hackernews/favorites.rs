@@ -138,7 +138,7 @@ impl HackerNewsClient {
                 .map_err(reqwest::Error::without_url)
                 .with_context(|| format!("reading {label} page {page}"))?;
             sink.push(stream, RawKind::Html, &body);
-            let (ids, more) = match parse_favorite_ids(&body) {
+            let (scraped, more) = match parse_favorite_ids(&body) {
                 FavoritesPage::Recognized { ids, more } => (ids, more),
                 FavoritesPage::Unrecognized => {
                     return Err(anyhow::anyhow!(
@@ -149,7 +149,28 @@ impl HackerNewsClient {
                     .into());
                 }
             };
-            let ids: Vec<HackerNewsItemId> = ids.into_iter().map(HackerNewsItemId::from).collect();
+            let ids: Vec<HackerNewsItemId> = scraped
+                .iter()
+                .filter_map(|id| {
+                    id.parse()
+                        .map_err(|_| {
+                            warn!(
+                                "hn {stream} for '{}': skipping a row with the non-numeric \
+                                 id {id:?}",
+                                self.username
+                            );
+                        })
+                        .ok()
+                })
+                .collect();
+            if ids.is_empty() && !scraped.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "hn {stream} for '{}' had no numeric item ids (page {page}); HN's markup \
+                     may have changed",
+                    self.username
+                )
+                .into());
+            }
             let caught_up = match synced_keys {
                 Some(synced_keys) => {
                     let page_drafts =

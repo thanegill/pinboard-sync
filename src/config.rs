@@ -314,14 +314,19 @@ impl Config {
         Ok(config)
     }
 
-    /// Reject what parses but can't be used: an empty `backup.directory`, two accounts of a
-    /// source sharing a name or a backup file slug, an account (or, with none configured,
-    /// the source's implicit CLI/env account) whose dating settings would re-date its
-    /// bookmarks on every cleanup, a malformed `reddit_domain`, and tag values containing
-    /// whitespace or commas, which Pinboard tags can't hold (its API splits the tag string
-    /// on spaces), so one would silently corrupt every bookmark it tags.
+    /// Reject what parses but can't be used: an empty or blank `backup.directory`, two
+    /// accounts of a source sharing a name or a backup file slug, an account (or, with none
+    /// configured, the source's implicit CLI/env account) whose dating settings would
+    /// re-date its bookmarks on every cleanup, a malformed `reddit_domain`, and tag values
+    /// containing whitespace or commas, which Pinboard tags can't hold (its API splits the
+    /// tag string on spaces), so one would silently corrupt every bookmark it tags.
     fn validate(&self) -> Result<()> {
-        if self.backup.directory.as_deref().is_some_and(str::is_empty) {
+        if self
+            .backup
+            .directory
+            .as_deref()
+            .is_some_and(|dir| dir.trim().is_empty())
+        {
             bail!("backup.directory must not be empty");
         }
         const NAME_OR_USERNAME: &str = "`name` (or, with no `name`, `username`)";

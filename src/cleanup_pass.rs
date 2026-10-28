@@ -31,6 +31,7 @@ use url::Url;
 
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::source::{Halt, SourceError};
+use crate::stdout::outln;
 use crate::timefmt::DateOpts;
 
 mod merge;
@@ -296,7 +297,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     }
 
     if dry_run {
-        println!("{dry_prefix}{} bookmark(s) would change.", outcome.changed);
+        outln!("{dry_prefix}{} bookmark(s) would change.", outcome.changed);
     } else {
         info!("done: updated {} bookmark(s)", outcome.changed);
     }
@@ -872,7 +873,7 @@ fn warn_if_cut(planned: &Bookmark, fitted: &Bookmark) {
 /// lines that are not field changes (`absorb <url>`, `(refused: ...)`).
 fn emit_preview(preview: &mut Vec<String>, url: &Url, detail: &[(&str, String)]) {
     let mut push = |line: String| {
-        println!("{line}");
+        outln!("{line}");
         preview.push(line);
     };
     push(format!("[dry-run] {url}"));

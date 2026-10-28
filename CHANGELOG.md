@@ -141,6 +141,14 @@ All notable changes to this project are documented here. The format is based on
   whole if it still fits.
 - A bookmark's tags are sent to Pinboard once each, so a repeated tag no longer shifts
   where a long note is cut.
+- Output piped to a reader that exits early, such as `config example | head` or a dry-run
+  piped to `less`, no longer panics. The command finishes as it otherwise would.
+- A `[backup].directory` of only whitespace is rejected when the config is read, so
+  `config check` no longer passes a config that `backup` then refuses.
+- `cleanup hackernews --link-discussions` no longer writes an `HN Link:` for a search hit
+  whose id isn't a number, and `sync` and `backup` skip such a HackerNews favorites row.
+  Each warns, and a favorites page none of whose rows has a numeric id fails as changed
+  markup does.
 
 ## [0.6.0] - 2026-10-25
 

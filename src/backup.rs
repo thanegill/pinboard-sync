@@ -28,6 +28,7 @@ use serde_json::Value;
 
 use crate::bookmark::{Bookmark, WriteMode};
 use crate::source::{BookmarkDraft, SourceError};
+use crate::stdout::outln;
 
 mod fs;
 
@@ -566,10 +567,10 @@ pub async fn run_job<S: BackupSource>(
 
     if mode.is_dry_run() {
         for file in &files {
-            println!("[dry-run] {}", file_path(dir, file).display());
+            outln!("[dry-run] {}", file_path(dir, file).display());
             let (label, value) = file.count.parts();
-            println!("          {label:<6}-> {value}");
-            println!("          {:<6}-> {}", "bytes", file.body.len());
+            outln!("          {label:<6}-> {value}");
+            outln!("          {:<6}-> {}", "bytes", file.body.len());
         }
         return Ok(outcome);
     }

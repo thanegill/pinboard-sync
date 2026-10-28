@@ -11,6 +11,7 @@ use crate::jobs::{
     build_job, open_pinboard, warn_shared_env_secrets, SourceAccount, SyncOverrides,
 };
 use crate::source::{Source, SourceError};
+use crate::stdout::outln;
 
 /// Validate the Pinboard token and every configured account's credentials by
 /// fetching each source. Prints a ✓/✗ line per check; exits non-zero if any failed.
@@ -18,9 +19,9 @@ pub async fn run_doctor(config: &Config) -> Result<()> {
     let mut failed = 0usize;
 
     match open_pinboard(None, config).await {
-        Ok((_, bms)) => println!("✓ pinboard — {} bookmark(s)", bms.len()),
+        Ok((_, bms)) => outln!("✓ pinboard — {} bookmark(s)", bms.len()),
         Err(e) => {
-            println!("✗ pinboard — {e:#}");
+            outln!("✗ pinboard — {e:#}");
             failed += 1;
         }
     }
@@ -30,15 +31,15 @@ pub async fn run_doctor(config: &Config) -> Result<()> {
     // rather than as a quiet failure in the journal at the next timer firing.
     if let Some(dir) = &config.backup.directory {
         match backup::probe_writable(Path::new(dir)) {
-            Ok(backup::DirProbe::Writable) => println!("✓ backup — {dir} is writable"),
+            Ok(backup::DirProbe::Writable) => outln!("✓ backup — {dir} is writable"),
             // Not yet created is healthy: `backup` makes it on its first run, and only a
             // typo'd or unwritable *parent* is a real problem. Failing here would red-flag
             // a correct config that simply hasn't run yet.
             Ok(backup::DirProbe::WillBeCreated) => {
-                println!("✓ backup — {dir} will be created on the first run");
+                outln!("✓ backup — {dir} will be created on the first run");
             }
             Err(e) => {
-                println!("✗ backup — {dir}: {e:#}");
+                outln!("✗ backup — {dir}: {e:#}");
                 failed += 1;
             }
         }
@@ -52,7 +53,7 @@ pub async fn run_doctor(config: &Config) -> Result<()> {
     if failed > 0 {
         bail!("{failed} check(s) failed");
     }
-    println!("All checks passed.");
+    outln!("All checks passed.");
     Ok(())
 }
 
@@ -62,7 +63,7 @@ async fn check_accounts<A: SourceAccount>(overrides: &SyncOverrides, config: &Co
     let source = A::SOURCE;
     let accounts = A::configured(config);
     if accounts.is_empty() {
-        println!("- {source} — no accounts configured");
+        outln!("- {source} — no accounts configured");
         return 0;
     }
     warn_shared_env_secrets::<A>(overrides, config);
@@ -74,9 +75,9 @@ async fn check_accounts<A: SourceAccount>(overrides: &SyncOverrides, config: &Co
             Err(e) => Err(e),
         };
         match result {
-            Ok(items) => println!("✓ {source} [{name}] — {} item(s)", items.len()),
+            Ok(items) => outln!("✓ {source} [{name}] — {} item(s)", items.len()),
             Err(e) => {
-                println!("✗ {source} [{name}] — {e:#}");
+                outln!("✗ {source} [{name}] — {e:#}");
                 failed += 1;
             }
         }

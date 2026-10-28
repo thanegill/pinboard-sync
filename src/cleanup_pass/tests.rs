@@ -804,7 +804,7 @@ async fn the_view_never_drifts_from_the_account() {
     let first_outcome = run_pass(&store, &first, "test", NO_DATING, &first_pass).await;
     // The second pass plans against whatever the first left behind -- which is the whole
     // reason the view has to be right.
-    let second = store.snapshot();
+    let second = store.snapshot(|_| true);
     let second_outcome = run_pass(&store, &second, "test", NO_DATING, &second_pass).await;
 
     // Pin the workload: an invariant test that silently stopped exercising these would
@@ -830,7 +830,7 @@ async fn the_view_never_drifts_from_the_account() {
         "and deletes have to reach the store, or the replay side is trivial: {ops:?}"
     );
     assert_eq!(
-        store.snapshot(),
+        store.snapshot(|_| true),
         crate::test_support::replay(&seed, &ops),
         "the view diverged from the account the writes actually produced"
     );

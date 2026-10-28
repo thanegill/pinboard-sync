@@ -44,13 +44,8 @@ pub async fn run<S: BookmarkStore + AccountState>(
     client: &AlgoliaClient,
     opts: &HackerNewsCleanupOpts,
 ) -> Result<(), SourceError> {
-    // Taken from the run's live view, so an earlier source's writes are already
-    // reflected.
-    let hackernews_bookmarks: Vec<Bookmark> = store
-        .snapshot()
-        .into_iter()
-        .filter(|bookmark| HackerNewsItemId::try_from(&bookmark.url).is_ok())
-        .collect();
+    let hackernews_bookmarks =
+        store.snapshot(|bookmark| HackerNewsItemId::try_from(&bookmark.url).is_ok());
 
     // Batch-fetch every referenced item once.
     let ids: Vec<HackerNewsItemId> = hackernews_bookmarks
@@ -104,14 +99,10 @@ async fn link_discussions<S: BookmarkStore + AccountState>(
     // Read after the item pass, so a bookmark it merged into is seen as it now stands.
     // A story merged onto a `link_tag`-tagged article carries that tag into the merged
     // record, so this pass picks it up in the same run and the account settles in one.
-    let candidates: Vec<Bookmark> = store
-        .snapshot()
-        .into_iter()
-        .filter(|bookmark| {
-            HackerNewsItemId::try_from(&bookmark.url).is_err()
-                && bookmark.tags.contains(&opts.config.link_tag)
-        })
-        .collect();
+    let candidates = store.snapshot(|bookmark| {
+        HackerNewsItemId::try_from(&bookmark.url).is_err()
+            && bookmark.tags.contains(&opts.config.link_tag)
+    });
     let pass = HackerNewsLinkPass {
         client,
         config: &opts.config,

@@ -309,8 +309,9 @@ impl WriteMode {
 pub trait AccountState {
     /// The bookmark stored at `url` right now, if any.
     fn resident(&self, url: &Url) -> Option<Bookmark>;
-    /// Every bookmark, in `posts/all` order.
-    fn snapshot(&self) -> Vec<Bookmark>;
+    /// Every bookmark `keep` accepts, in `posts/all` order, as the run's live view holds it
+    /// now: what an earlier pass of the run wrote is already reflected.
+    fn snapshot(&self, keep: impl Fn(&Bookmark) -> bool) -> Vec<Bookmark>;
     /// Whether writes are simulated rather than sent.
     fn dry_run(&self) -> bool;
 }
@@ -346,8 +347,13 @@ impl<P> AccountState for CleanupStore<'_, P> {
         self.view.borrow().get(url).cloned()
     }
 
-    fn snapshot(&self) -> Vec<Bookmark> {
-        self.view.borrow().iter().cloned().collect()
+    fn snapshot(&self, keep: impl Fn(&Bookmark) -> bool) -> Vec<Bookmark> {
+        self.view
+            .borrow()
+            .iter()
+            .filter(|bookmark| keep(bookmark))
+            .cloned()
+            .collect()
     }
 
     fn dry_run(&self) -> bool {

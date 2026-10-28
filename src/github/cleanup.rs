@@ -46,12 +46,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
     dates: DateOpts,
     configured: &[GitHubConfig],
 ) -> Result<(), SourceError> {
-    // Taken from the run's live view, so an earlier source's writes are already reflected.
-    let gh_bms: Vec<Bookmark> = store
-        .snapshot()
-        .into_iter()
-        .filter(|bookmark| bookmark.url.host_is("github.com"))
-        .collect();
+    let gh_bms = store.snapshot(|bookmark| bookmark.url.host_is("github.com"));
 
     // `starred_at` isn't on the per-repo lookup, so for use_post_date fetch the star
     // list once and map url_key -> star time. A repo no longer starred won't be here

@@ -32,11 +32,7 @@ pub(super) async fn run<S: BookmarkStore + AccountState>(
     if !client.config.gists.enabled {
         return Ok(());
     }
-    let gist_bookmarks: Vec<Bookmark> = store
-        .snapshot()
-        .into_iter()
-        .filter(|bookmark| bookmark.url.host_str() == Some(GIST_HOST))
-        .collect();
+    let gist_bookmarks = store.snapshot(|bookmark| bookmark.url.host_str() == Some(GIST_HOST));
     let starred = if gist_bookmarks
         .iter()
         .any(|bookmark| gist_root(&bookmark.url).is_some())

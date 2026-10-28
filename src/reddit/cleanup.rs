@@ -155,14 +155,9 @@ pub async fn run<S: BookmarkStore + AccountState, R: PostInfo>(
     reddit: Option<&R>,
     opts: &RedditCleanupOpts,
 ) -> Result<(), SourceError> {
-    // Taken from the run's live view, so an earlier source's writes are already reflected.
-    let reddit_bms: Vec<Bookmark> = store
-        .snapshot()
-        .into_iter()
-        .filter(|bookmark| {
-            bookmark.url.host_is("reddit.com") || opts.is_configured_host(&bookmark.url)
-        })
-        .collect();
+    let reddit_bms = store.snapshot(|bookmark| {
+        bookmark.url.host_is("reddit.com") || opts.is_configured_host(&bookmark.url)
+    });
 
     let info = fetch_post_info(reddit, opts, &reddit_bms).await?;
     let keys = opts.reddit_keys();

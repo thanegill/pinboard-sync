@@ -243,16 +243,18 @@ bookmark that would be removed; it is worth reading before the first real run.
 Some rewrites are **refused** and reported instead: cleanup will not write over a
 bookmark it could not read this run, and it will not merge bookmarks that disagree about
 being public or private, since that would either publish a private note or unshare
-something you chose to share. A refusal leaves both records untouched, so the duplicate
-stays until you resolve it yourself.
+something you chose to share. Nor will it merge a bookmark whose notes the merged record
+has no room to hold (see below), since deleting it would lose the rest, or whose tags
+would leave too little room for the note already there. A refused bookmark is left
+untouched, so the duplicate stays until you resolve it yourself.
 
 A note too long for a Pinboard API request URL is cut short when written, with a marker
 appended (logged when it happens). `cleanup` compares what a write would store with what
 writing the bookmark back unchanged would store, so it doesn't rewrite a cut note every
 run, or cut a long note when the only change would be cut off anyway. A merge that adds
-nothing to the bookmark it lands on just deletes the one it absorbs. The one exception is
-a note Pinboard rejects even once cut: the client cuts it further on retry, and `cleanup`
-then rewrites it on every run.
+nothing to the bookmark it lands on just deletes the one it absorbs, provided the notes
+it could keep are already there. The one exception is a note Pinboard rejects even once
+cut: the client cuts it further on retry, and `cleanup` then rewrites it on every run.
 
 - **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your configured
   `reddit_domain` (default `old.reddit.com`), unwrapping `over18` interstitial redirects

@@ -68,8 +68,8 @@ the sync write loop in [`src/sync.rs`](src/sync.rs).
 whose module doc gives the loop. A source implements `CleanupPass::plan` (one bookmark's
 end-state as a `Plan`, or `Err` for a per-item failure) and `run_pass` does the rest,
 sequencing phases, each its own function: `plan_all`, `group_by_target`, `write_order`,
-`residents_of`, `hold_back_visibility_mismatches`, then per group `refuse_group`,
-`write_single` or `write_merge`, tallying into a `PassOutcome`.
+`residents_of`, `hold_back_visibility_mismatches`, `hold_back_cut_notes`, then per group
+`refuse_group`, `write_single` or `write_merge`, tallying into a `PassOutcome`.
 [`src/cleanup_pass/merge.rs`](src/cleanup_pass/merge.rs) holds the merge rules
 (`merge_bookmarks`, `incumbent_of`).
 
@@ -168,11 +168,21 @@ kept part with `BookmarkStore::kept_of_cut`). Together they keep a note stored c
 being rewritten every run, and a whole note, even one just under the limit, from being cut
 when the plan changes only text past the cut. A merge that passes `stores_nothing_new` but
 has URLs to absorb only deletes them (`BookmarkStore::apply_absorb`), and a failed delete
-there is half-applied like any merge's. `PinboardClient` implements `fit` with
-`fitted_note`, which `post_add` uses too, so the two can't drift. It measures as if a `dt`
-were sent, so a note `sync` wrote undated cuts the same once `cleanup` writes it back dated.
-A test models the cut with `FakePinboard`'s `trims_notes`, which applies the real
-`fitted_note` to the fit and to each write it records.
+there is half-applied like any merge's. **A merge never deletes text the cut lost**: a
+member leaving its URL joins only when, with it, every member keeps in what the target will
+hold (the stored note on an absorb, the fitted one on a rewrite) all of the note a lone
+rewrite of it would keep, short of text it doesn't store that the leading plan carries too
+(`Merge::would_lose`), and the leading note (the resident's, the incumbent's plan or the
+base mover's) keeps all of what it keeps on its own, since other members' tags take room
+from the note too. Before any write, `hold_back_cut_notes` builds each merge up from its
+lead, adding members in merge order and holding back each one that would break either rule;
+each is refused like a visibility mismatch, its URL marked `OccupiedByRefused` ahead of the
+fixpoint, so not even a cycle of moves loses it. A merge with no record staying is fitted
+against the base's stored record, so its cut is the one a lone rewrite makes.
+`PinboardClient` implements `fit` with `fitted_note`, which `post_add` uses too, so the two
+can't drift. It measures as if a `dt` were sent, so a note `sync` wrote undated cuts the
+same once `cleanup` writes it back dated. A test models the cut with `FakePinboard`'s
+`trims_notes`, which applies the real `fitted_note` to the fit and writes.
 
 **Every source is a `Source`, and one sync loop drives them all.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `BookmarkDraft`s (a `Bookmark`

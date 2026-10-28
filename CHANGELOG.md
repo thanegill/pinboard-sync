@@ -164,6 +164,11 @@ All notable changes to this project are documented here. The format is based on
   undated `sync` cut, it rewrites it once to match.
 - A `cleanup` merge that adds nothing to the bookmark it lands on now only deletes the one
   it absorbs, instead of rewriting, and cutting, a long note there.
+- A `cleanup` merge no longer deletes a bookmark whose notes the merged record has no
+  room to hold, as far as a write of that bookmark alone would keep them, such as an
+  `HN Link:` past a long note's cut, nor cuts the note already there to make room for a
+  bookmark's tags. That bookmark stays where it is and is reported as refused, and the
+  rest of the merge goes ahead without it.
 - `cleanup` no longer cuts a whole note just under the URL limit when what a plan appends
   to it would be cut off anyway. The rest of the plan is still written, over the note kept
   whole if it still fits.

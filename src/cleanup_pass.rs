@@ -8,10 +8,12 @@
 //! rewrite. Plans landing on one URL, with any record already stored there, are
 //! field-merged ([`merge_bookmarks`]) into one record, checked and written the same way via
 //! [`BookmarkStore::apply_merge`], which deletes the absorbed URLs: Pinboard holds one
-//! record per URL. A plan that disagrees about visibility with the record staying at its
-//! target is refused and left where it is; with no record staying, plans that disagree with
-//! each other about `public` are all refused, since a merge never picks a visibility. A
-//! bookmark planned to move *away* from a target neither leads that merge nor blocks it.
+//! record per URL. A plan whose note the merged record can't hold whole, or whose tags
+//! would cut the note there, is held back and left where it is. A plan that disagrees about
+//! visibility with the record staying at its target is refused and left where it is; with
+//! no record staying, plans that disagree with each other about `public` are all refused,
+//! since a merge never picks a visibility. A bookmark planned to move *away* from a target
+//! neither leads that merge nor blocks it.
 //!
 //! A rewrite never deletes an old URL that another plan targets, so chained rewrites can't
 //! clobber each other. Every refusal decided before the first write is closed under
@@ -37,7 +39,7 @@ use crate::timefmt::DateOpts;
 
 mod merge;
 
-use merge::{incumbent_of, merge_bookmarks};
+use merge::{holds_block, incumbent_of, merge_bookmarks};
 
 /// What a pass decided about one bookmark. [`Plan::Unchanged`] and [`Plan::Skipped`]
 /// both mean "write nothing", but they say opposite things about the *source*: the
@@ -100,9 +102,10 @@ pub struct PassOutcome {
     /// kept so tests can assert on what an operator reads before a real run.
     pub preview: Vec<String>,
     /// Rewrites this pass declined to make: a target that must not be written at all (see
-    /// [`Refusal`]), or a plan held back over visibility. Not a failure, but work that did
-    /// not happen, so it is reported. Counted per *group* for an untouchable target and per
-    /// *plan* for one held back, so it counts abandoned writes, not bookmarks.
+    /// [`Refusal`]), or a plan held back over visibility or over a note its merge would cut
+    /// off. Not a failure, but work that did not happen, so it is reported. Counted per
+    /// *group* for an untouchable target and per *plan* for one held back, so it counts
+    /// abandoned writes, not bookmarks.
     pub refused: usize,
     /// Bookmarks the source gave an answer for -- the evidence that it is reachable.
     /// Excludes [`Plan::Skipped`], which never asked it anything.
@@ -124,9 +127,10 @@ enum Refusal {
     /// stopped it short of -- so what is stored there may be stale.
     Unreadable,
     /// The target holds a bookmark whose own rewrite was refused, so it never moved and its
-    /// URL is still occupied. A visibility mismatch reaches the driver this way: the reason
-    /// the mover stayed is logged where it is actionable, at the point of refusal, and what
-    /// the *next* group needs to know is only that the URL is still taken.
+    /// URL is still occupied. A visibility mismatch or a note a merge would cut off reaches
+    /// the driver this way: the reason the mover stayed is logged where it is actionable,
+    /// at the point of refusal, and what the *next* group needs to know is only that the
+    /// URL is still taken.
     OccupiedByRefused,
     /// The target holds a bookmark whose own rewrite was attempted and *failed*, so it is
     /// still there. Distinct from [`Refusal::OccupiedByRefused`] because the operator's
@@ -267,12 +271,21 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         dry_run,
         &mut outcome,
     );
+    hold_back_cut_notes(
+        store,
+        &group_order,
+        &mut groups,
+        &residents,
+        &mut untouchable,
+        dry_run,
+        &mut outcome,
+    );
 
     // The URLs a planned write still owns. A rewrite's old URL is never deleted when it is
     // one of these, because that write's record will live there and deleting it would
-    // clobber it. Settled *after* the visibility partition: a group every member was held
-    // back from owns nothing, and leaving its key here would strand a bookmark moving away
-    // from that URL at both its old and new URL, silently and for good.
+    // clobber it. Settled *after* the hold-backs: a group every member was held back from
+    // owns nothing, and leaving its key here would strand a bookmark moving away from that
+    // URL at both its old and new URL, silently and for good.
     let targets: HashSet<&Url> = group_order
         .iter()
         .filter(|key| !groups[*key].is_empty())
@@ -286,10 +299,10 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
 
     for key in &group_order {
         let group = groups.remove(*key).expect("key came from group_order");
-        // The visibility partition can empty a group outright, when every plan heading here
-        // was held back. There is nothing left to refuse *or* write, so this comes before
-        // the untouchable check: those plans were already counted as they were held back,
-        // and reporting the group again would inflate `refused` past the number of writes
+        // The hold-backs can empty a group outright, when every plan heading here was held
+        // back. There is nothing left to refuse *or* write, so this comes before the
+        // untouchable check: those plans were already counted as they were held back, and
+        // reporting the group again would inflate `refused` past the number of writes
         // actually abandoned. It is also what guarantees `write_merge` a member to lead.
         if group.is_empty() {
             continue;
@@ -341,7 +354,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     }
     if outcome.refused > 0 {
         warn!(
-            "{} rewrite(s) not made: their target holds a bookmark this pass must not overwrite",
+            "{} rewrite(s) not made, each logged above with why",
             outcome.refused
         );
     }
@@ -623,6 +636,100 @@ fn hold_back_visibility_mismatches<'p>(
     }
 }
 
+/// Drop from each merging group the members that would make the merge lose text, counting
+/// each as refused and marking its own URL occupied. The merge is built up from the record
+/// that leads it, adding the others in merge order and keeping each only when, with it,
+/// what the target will hold still has all of the note a lone rewrite of each member would
+/// keep, short of plan text the member doesn't store that the leading plan has too
+/// ([`Merge::would_lose`]), and the leading note keeps all it would keep on its own: other
+/// members' tags take room from the note too.
+///
+/// Absorbing a member deletes it, and leaving its URL to another group writes over it, so
+/// either way the text the cut lost would be gone; a cut leading note loses its tail for
+/// good. Built up one member at a time so that a member adding nothing is never held back
+/// for another's sake. Settled before any write, like the visibility hold-backs, so that
+/// the fixpoint closes over it and the outcome doesn't depend on write order, a cycle of
+/// moves included.
+fn hold_back_cut_notes<'p, S: BookmarkStore>(
+    store: &S,
+    group_order: &[&'p Url],
+    groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
+    residents: &HashMap<&'p Url, Bookmark>,
+    untouchable: &mut HashMap<Url, Refusal>,
+    dry_run: bool,
+    outcome: &mut PassOutcome,
+) {
+    for key in group_order {
+        if untouchable.contains_key(*key) {
+            continue;
+        }
+        let resident = residents.get(key);
+        let members = groups.get_mut(key).expect("key came from group_order");
+        // A lone plan with nothing stored at its target is a rewrite, which loses nothing
+        // a rewrite of it alone wouldn't.
+        if members.is_empty() || (resident.is_none() && members.len() == 1) {
+            continue;
+        }
+        let lead = lead_of(members, key, resident.is_some());
+        let mut merging: Vec<Member<'p>> = lead.map(|at| vec![members[at]]).unwrap_or_default();
+        let lead_note = kept_text(store, merge_members(store, key, &merging, resident).kept());
+        let mut held: Vec<Url> = Vec::new();
+        for (at, member) in members.iter().enumerate() {
+            if Some(at) == lead {
+                continue;
+            }
+            merging.push(*member);
+            let merge = merge_members(store, key, &merging, resident);
+            let (why, preview) = if merge.would_lose(store, member) {
+                (
+                    "its note would not all fit there, and merging it would lose the rest",
+                    "which has no room for its note",
+                )
+            } else if merging.iter().any(|other| merge.would_lose(store, other))
+                || !kept_text(store, merge.kept()).starts_with(&lead_note)
+            {
+                (
+                    "merging it would cut the note of a bookmark merging there",
+                    "cutting a note there",
+                )
+            } else {
+                continue;
+            };
+            merging.pop();
+            outcome.refused += 1;
+            warn!("not merging {} into {key}: {why}", member.stored.url);
+            if dry_run {
+                emit_preview(
+                    &mut outcome.preview,
+                    &member.stored.url,
+                    [preview::detail(format!(
+                        "(refused: would merge into {key}, {preview})"
+                    ))],
+                );
+            }
+            untouchable
+                .entry(member.stored.url.clone())
+                .or_insert(Refusal::OccupiedByRefused);
+            held.push(member.stored.url.clone());
+        }
+        members.retain(|member| !held.contains(&member.stored.url));
+    }
+}
+
+/// The index among `members` of the one that leads their merge at `key`: none when a
+/// resident leads, else the incumbent, else the first.
+fn lead_of(members: &[Member<'_>], key: &Url, resident: bool) -> Option<usize> {
+    if resident {
+        return None;
+    }
+    incumbent_of(members, key).or(Some(0))
+}
+
+/// What of `note` a store keeps: all of it, or the part before the cut.
+fn kept_text<S: BookmarkStore>(store: &S, note: &str) -> String {
+    store.kept_of_cut(note).unwrap_or(note).to_string()
+}
+
 /// Count, log and preview a group whose target must not be written at all.
 fn refuse_group(key: &Url, reason: Refusal, dry_run: bool, outcome: &mut PassOutcome) {
     outcome.refused += 1;
@@ -720,50 +827,12 @@ async fn write_merge<S: BookmarkStore>(
     dry_run: bool,
     outcome: &mut PassOutcome,
 ) -> Vec<Url> {
-    // The record that stays at this URL: an unplanned resident, else the member already
-    // stored here. Whichever it is leads the merge, so its title and note are the base the
-    // others extend. For an incumbent that is its *plan*, not its stored record -- the plan
-    // is this pass's intended end-state for it, and merging its stored record back in would
-    // resurrect exactly what the plan removed.
-    // A member is only lifted out of the tail when it is itself the survivor, so the two
-    // can't disagree about which index to drop -- the alternative, filtering by `incumbent`
-    // independently of which branch `survivor` took, would silently lose a member if both
-    // were ever `Some`.
-    let (survivor, lifted) = match resident {
-        Some(resident) => (Some(resident), None),
-        None => match incumbent_of(group, key) {
-            Some(at) => (Some(group[at].planned), Some(at)),
-            None => (None, None),
-        },
-    };
-    let mut movers = group
-        .iter()
-        .enumerate()
-        .filter(|(at, _)| Some(*at) != lifted)
-        .map(|(_, member)| member.planned);
-    let lead = survivor
-        .or_else(|| movers.next())
-        .expect("run_pass skips an empty group");
-    let rest: Vec<&Bookmark> = movers.collect();
-    let mut merged = merge_bookmarks(lead, &rest);
-    if let Some(survivor) = survivor {
-        // The survivor's own record-level state survives the merge's field rules: it is the
-        // bookmark that stays here, and cleanup never re-shapes those (see `write_single`).
-        // Its date in particular must not shift to a mover's under `merge_bookmarks`'s
-        // earliest-wins rule, which is meant for two plans -- with dating off, nothing may
-        // re-date a bookmark at all. `public` needs no such restore: a group only reaches
-        // this point when every member already matches it, so the all()-rule cannot change
-        // it.
-        merged.read_later = survivor.read_later;
-        // `None` means the stored date was absent or wouldn't parse, and writing it back
-        // omits `dt` entirely -- under `replace=yes` Pinboard then re-dates the record to
-        // now. Keep the earliest date the merge found instead of losing the record's age.
-        merged.timestamp = survivor.timestamp.or(merged.timestamp);
-    }
-    // The *stored* record at the target, which for an incumbent is not the plan that led
-    // the merge: the merge is fitted against it, and compared with it.
-    let stored_at_target = resident.or_else(|| lifted.map(|at| group[at].stored));
-    let fitted = fit_plan(store, stored_at_target, &merged);
+    let Merge {
+        merged,
+        fitted,
+        rewrite,
+        ..
+    } = merge_members(store, key, group, resident);
     let target = &fitted.url;
 
     // Absorbed URLs to delete: an original that is neither the target nor another planned
@@ -780,15 +849,12 @@ async fn write_merge<S: BookmarkStore>(
 
     // Nothing to do when the merge reproduces what is already stored at the target and
     // there is nothing to absorb, or a converged state would rewrite itself every run.
-    let converged =
-        stored_at_target.is_some_and(|stored| stores_nothing_new(store, stored, &fitted));
-    if converged && old_urls.is_empty() {
+    if !rewrite && old_urls.is_empty() {
         return Vec::new();
     }
-    // A converged merge with URLs to absorb only deletes them: rewriting the target would
-    // store nothing new, and would cut a whole note there longer than a write allows.
-    let rewrite = !converged;
-    warn_if_cut(&merged, &fitted);
+    if rewrite {
+        warn_if_cut(&merged, &fitted);
+    }
     let merged = &fitted;
 
     if dry_run {
@@ -852,6 +918,177 @@ async fn write_merge<S: BookmarkStore>(
                 .map(|member| member.stored.url.clone())
                 .collect()
         }
+    }
+}
+
+/// A collision group merged into the one record its target would hold.
+struct Merge<'p> {
+    /// The field-merge, before the store's fit.
+    merged: Bookmark,
+    /// `merged` as the store would keep it: what a rewrite writes.
+    fitted: Bookmark,
+    /// Whether writing `fitted` would store anything new. When it wouldn't, the record
+    /// stored at the target stays as it is.
+    rewrite: bool,
+    /// The record stored at the target: the resident, or the incumbent's stored record.
+    stored_at_target: Option<&'p Bookmark>,
+    /// The stored URL of the member whose note the merge starts from when no record stays
+    /// at the target. The merge is fitted against its stored record, as a lone rewrite of
+    /// it is.
+    base: Option<&'p Url>,
+    /// The note of the record that leads the merge: the resident's stored note, or the
+    /// incumbent's or base's plan.
+    lead_note: String,
+}
+
+impl Merge<'_> {
+    /// The note the target will hold: the stored one when the merge only absorbs.
+    fn kept(&self) -> &str {
+        match self.stored_at_target {
+            Some(stored) if !self.rewrite => &stored.note,
+            _ => &self.fitted.note,
+        }
+    }
+
+    /// Whether merging `member` would lose text: it leaves its URL, and the target will not
+    /// hold all of the note it would keep on its own, as a lone rewrite of it fits it. A
+    /// plan longer than any write can store loses only what it could keep.
+    fn would_lose<S: BookmarkStore>(&self, store: &S, member: &Member<'_>) -> bool {
+        if member.stored.url == self.fitted.url || self.base == Some(&member.stored.url) {
+            return false;
+        }
+        let alone = fit_plan(store, Some(member.stored), member.planned);
+        !holds_what_it_keeps(
+            store,
+            &kept_text(store, self.kept()),
+            &self.lead_note,
+            &member.stored.note,
+            &alone.note,
+        )
+    }
+}
+
+/// Whether `held`, the text a target keeps, holds `note`, a member's note as a lone rewrite
+/// of it would keep it: each of its blocks, and for a cut note the start of the block the
+/// cut fell in, which `held` may keep more of. A cut's fragment is matched as the start of
+/// any block, so which block it came from is not checked.
+///
+/// A block or fragment the note of the record leading the merge, `carried`, also has is
+/// excused when the member does not store it itself (`stored`): what a plan adds and the
+/// lead's plan adds too is the lead's to keep, while what the member stores is lost with it.
+fn holds_what_it_keeps<S: BookmarkStore>(
+    store: &S,
+    held: &str,
+    carried: &str,
+    stored: &str,
+    note: &str,
+) -> bool {
+    let begins = |text: &str, fragment: &str| {
+        fragment.is_empty()
+            || text
+                .split("\n\n")
+                .any(|block| block.trim().starts_with(fragment))
+    };
+    let (stored_whole, stored_cut) = whole_and_cut(store, stored);
+    let stored_cut_lost = !stored_cut.is_empty() && !begins(held, stored_cut);
+    let stores_block = |block: &str| {
+        holds_block(stored_whole, block)
+            || (stored_cut_lost && block.trim().starts_with(stored_cut))
+    };
+    let stores_fragment = |fragment: &str| {
+        begins(stored_whole, fragment)
+            || (stored_cut_lost
+                && (fragment.starts_with(stored_cut) || stored_cut.starts_with(fragment)))
+    };
+    let (whole, cut) = whole_and_cut(store, note);
+    whole.split("\n\n").all(|block| {
+        holds_block(held, block) || (!stores_block(block) && holds_block(carried, block))
+    }) && (begins(held, cut) || (!stores_fragment(cut) && begins(carried, cut)))
+}
+
+/// `note` as a store keeps it, split into its whole blocks and, for a cut note, the start
+/// of the block the cut fell in (trimmed; empty when the cut fell between blocks).
+fn whole_and_cut<'n, S: BookmarkStore>(store: &S, note: &'n str) -> (&'n str, &'n str) {
+    let Some(kept) = store.kept_of_cut(note) else {
+        return (note, "");
+    };
+    let (whole, cut) = kept.rsplit_once("\n\n").unwrap_or(("", kept));
+    (whole, cut.trim())
+}
+
+/// Merge `members` heading for `key`, with `resident` if one is stored there, and fit the
+/// result to what `store` would keep.
+fn merge_members<'p, S: BookmarkStore>(
+    store: &S,
+    key: &Url,
+    members: &[Member<'p>],
+    resident: Option<&'p Bookmark>,
+) -> Merge<'p> {
+    // The record that stays at this URL: an unplanned resident, else the member already
+    // stored here. Whichever it is leads the merge, so its title and note are the base the
+    // others extend. For an incumbent that is its *plan*, not its stored record -- the plan
+    // is this pass's intended end-state for it, and merging its stored record back in would
+    // resurrect exactly what the plan removed.
+    // A member is only lifted out of the tail when it is itself the survivor, so the two
+    // can't disagree about which index to drop -- the alternative, filtering by `incumbent`
+    // independently of which branch `survivor` took, would silently lose a member if both
+    // were ever `Some`.
+    let (survivor, lifted) = match resident {
+        Some(resident) => (Some(resident), None),
+        None => match incumbent_of(members, key) {
+            Some(at) => (Some(members[at].planned), Some(at)),
+            None => (None, None),
+        },
+    };
+    let mut movers = members
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| Some(*at) != lifted)
+        .map(|(_, member)| member);
+    let base = if survivor.is_none() {
+        movers.next()
+    } else {
+        None
+    };
+    let lead = survivor
+        .or(base.map(|member| member.planned))
+        .expect("run_pass skips an empty group");
+    let lead_note = lead.note.clone();
+    let rest: Vec<&Bookmark> = movers.map(|member| member.planned).collect();
+    let mut merged = merge_bookmarks(lead, &rest);
+    if let Some(survivor) = survivor {
+        // The survivor's own record-level state survives the merge's field rules: it is the
+        // bookmark that stays here, and cleanup never re-shapes those (see `write_single`).
+        // Its date in particular must not shift to a mover's under `merge_bookmarks`'s
+        // earliest-wins rule, which is meant for two plans -- with dating off, nothing may
+        // re-date a bookmark at all. `public` needs no such restore: a group only reaches
+        // this point when every member already matches it, so the all()-rule cannot change
+        // it.
+        merged.read_later = survivor.read_later;
+        // `None` means the stored date was absent or wouldn't parse, and writing it back
+        // omits `dt` entirely -- under `replace=yes` Pinboard then re-dates the record to
+        // now. Keep the earliest date the merge found instead of losing the record's age.
+        merged.timestamp = survivor.timestamp.or(merged.timestamp);
+    }
+    // The *stored* record at the target, which for an incumbent is not the plan that led
+    // the merge: the merge is fitted against it, and compared with it.
+    let stored_at_target = resident.or_else(|| lifted.map(|at| members[at].stored));
+    let fitted = fit_plan(
+        store,
+        stored_at_target.or(base.map(|member| member.stored)),
+        &merged,
+    );
+    // A merge that stores nothing new only absorbs: rewriting the target would store
+    // nothing, and would cut a whole note there longer than a write allows.
+    let rewrite =
+        !stored_at_target.is_some_and(|stored| stores_nothing_new(store, stored, &fitted));
+    Merge {
+        merged,
+        fitted,
+        rewrite,
+        stored_at_target,
+        base: base.map(|member| &member.stored.url),
+        lead_note,
     }
 }
 

@@ -193,6 +193,28 @@ async fn a_majority_of_lookups_failing_fails_the_run() {
     assert!(err.to_string().contains("3 of 4"), "{err}");
 }
 
+#[test]
+fn a_halt_reports_the_lookups_and_writes_that_failed_before_it() {
+    let message = |plan_failed, write_failed| {
+        let outcome = PassOutcome {
+            halted: Some(Halt::Reauth("cookie expired".into())),
+            plan_failed,
+            write_failed,
+            ..PassOutcome::default()
+        };
+        outcome.into_result().unwrap_err().to_string()
+    };
+    assert_eq!(message(0, 0), "re-authentication required: cookie expired");
+    assert_eq!(
+        message(2, 1),
+        "re-authentication required: cookie expired (also failed: 2 lookup(s), 1 write(s))"
+    );
+    assert_eq!(
+        message(0, 3),
+        "re-authentication required: cookie expired (also failed: 3 write(s))"
+    );
+}
+
 #[tokio::test]
 async fn a_rate_limit_stops_the_pass_like_a_dead_credential() {
     // Being rate limited fails every remaining lookup just as a dead credential does,

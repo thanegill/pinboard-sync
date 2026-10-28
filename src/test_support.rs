@@ -20,7 +20,7 @@ use crate::keys::RedditKeys;
 use crate::pinboard::{PinboardBookmark, PinboardClient};
 use crate::reddit::model::{RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
-use crate::source::{BookmarkDraft, Source, SourceError, UrlKey};
+use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
 use crate::sync::{prepare_new_drafts, write_drafts, JobSettings};
 use crate::timefmt::DateOpts;
 
@@ -233,7 +233,7 @@ impl Source for FakeReddit {
 }
 
 impl UrlKey for FakeReddit {
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         RedditKeys::new([RedditConfig::default().domain]).dedup_key(url)
     }
 }

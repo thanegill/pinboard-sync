@@ -214,7 +214,7 @@ impl GitHubGist {
         let url = self.canonical_url()?;
         let dedup_key = GitHubKeys
             .dedup_key(&url)
-            .unwrap_or_else(|| url.to_string());
+            .unwrap_or_else(|| url.as_str().into());
         let mut tags = Vec::new();
         push_tags(&mut tags, &cfg.tags);
         extend_unique(&mut tags, &self.derived_tags(cfg));

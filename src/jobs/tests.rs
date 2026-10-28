@@ -101,12 +101,10 @@ fn a_hackernews_job_keys_articles_on_a_configured_reddit_domain_as_reddit() {
     };
     let job = build_job::<HackerNewsAccount>(None, &overrides, &config).expect("builds");
     assert_eq!(
-        job.client
-            .dedup_key(&crate::test_support::url(
-                "https://reddit.mirror.example/r/rust/comments/abc/title/"
-            ))
-            .as_deref(),
-        Some("/r/rust/comments/abc/title")
+        job.client.dedup_key(&crate::test_support::url(
+            "https://reddit.mirror.example/r/rust/comments/abc/title/"
+        )),
+        Some("/r/rust/comments/abc/title".into())
     );
 }
 

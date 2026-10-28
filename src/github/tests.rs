@@ -331,20 +331,19 @@ fn dedup_key_only_matches_github() {
     let c =
         GitHubClient::with_base_url("t".into(), GitHubConfig::default(), GITHUB_API_BASE.into());
     assert_eq!(
-        c.dedup_key(&url("https://github.com/o/r")).as_deref(),
-        Some("github.com/o/r")
+        c.dedup_key(&url("https://github.com/o/r")),
+        Some("github.com/o/r".into())
     );
     assert_eq!(c.dedup_key(&url("https://example.com/o/r")), None);
     // The www. alias folds onto the bare host so it dedups against a github.com
     // star with the same owner/repo.
     assert_eq!(
-        c.dedup_key(&url("https://www.github.com/o/r")).as_deref(),
-        Some("github.com/o/r")
+        c.dedup_key(&url("https://www.github.com/o/r")),
+        Some("github.com/o/r".into())
     );
     // Other subdomains keep their own host in the key (they are not repo stars).
     assert_eq!(
-        c.dedup_key(&url("https://gist.github.com/user/abcd1234"))
-            .as_deref(),
-        Some("gist.github.com/user/abcd1234")
+        c.dedup_key(&url("https://gist.github.com/user/abcd1234")),
+        Some("gist.github.com/user/abcd1234".into())
     );
 }

@@ -18,7 +18,7 @@ use crate::reddit::model::{
     cased_subreddit, created_at, over18_dest, RedditConfig, RedditKind, RedditSavedItem,
 };
 use crate::reddit::PostInfo;
-use crate::source::{SourceError, UrlKey};
+use crate::source::{DedupKey, SourceError, UrlKey};
 use crate::tags::{push_prefixed, push_tags, push_unique};
 use crate::timefmt::DateOpts;
 use crate::urls::{host_matches, UrlExt};
@@ -186,7 +186,7 @@ struct RedditCleanupPass<'a> {
     /// From [`RedditCleanupOpts::reddit_keys`].
     keys: RedditKeys,
     /// From [`collapse_hosts`].
-    collapse_hosts: HashMap<String, String>,
+    collapse_hosts: HashMap<DedupKey, String>,
 }
 
 impl CleanupPass for RedditCleanupPass<'_> {
@@ -356,8 +356,8 @@ fn collapse_hosts(
     bookmarks: &[Bookmark],
     opts: &RedditCleanupOpts,
     keys: &RedditKeys,
-) -> HashMap<String, String> {
-    let mut hosts_by_key: HashMap<String, BTreeSet<String>> = HashMap::new();
+) -> HashMap<DedupKey, String> {
+    let mut hosts_by_key: HashMap<DedupKey, BTreeSet<String>> = HashMap::new();
     for bookmark in bookmarks {
         let url = opts.natural_url(&bookmark.url);
         let (Some(key), Some(host)) = (keys.dedup_key(&url), url.host_str()) else {

@@ -26,7 +26,9 @@ use crate::keys::RedditKeys;
 use crate::reddit::cookie::{refused_cookie_advice, SessionCookie};
 use crate::reddit::model::{RedditConfig, RedditListing, RedditListingEntry};
 use crate::secrets::ConfiguredSecret;
-use crate::source::{page_is_caught_up, BookmarkDraft, Halt, Source, SourceError, UrlKey};
+use crate::source::{
+    page_is_caught_up, BookmarkDraft, DedupKey, Halt, Source, SourceError, UrlKey,
+};
 
 /// Host serving both the saved listing and `/api/info.json`; old.reddit.com
 /// matches the bookmark URLs.
@@ -363,11 +365,11 @@ impl BackupSource for RedditClient {
 impl UrlKey for RedditClient {
     /// Reddit's dedup key is the host-agnostic permalink path, so the same post matches
     /// across `old.`/`www.`/`m.` subdomains and every configured `reddit_domain`.
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         self.keys().dedup_key(url)
     }
 
-    fn synced_keys(&self, existing: &[Bookmark]) -> HashSet<String> {
+    fn synced_keys(&self, existing: &[Bookmark]) -> HashSet<DedupKey> {
         self.keys().synced_keys(existing)
     }
 }

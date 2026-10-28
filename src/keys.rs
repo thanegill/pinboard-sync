@@ -9,7 +9,7 @@ use url::Url;
 use crate::github::gists::{gist_root, GIST_HOST};
 use crate::hackernews::HackerNewsItemId;
 use crate::reddit::model::over18_dest;
-use crate::source::UrlKey;
+use crate::source::{DedupKey, UrlKey};
 use crate::urls::{host_matches, UrlExt};
 
 /// A host+path dedup key for a URL: scheme and query/fragment dropped, host lowercased
@@ -39,9 +39,9 @@ pub fn url_key(url: &Url) -> Option<String> {
 pub struct GitHubKeys;
 
 impl UrlKey for GitHubKeys {
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         if let Some((_, id)) = gist_root(url) {
-            return Some(format!("{GIST_HOST}/{id}"));
+            return Some(format!("{GIST_HOST}/{id}").into());
         }
         let key = url_key(url).filter(|_| url.host_is("github.com"))?;
         let key = match key.strip_prefix("www.") {
@@ -51,10 +51,11 @@ impl UrlKey for GitHubKeys {
         let is_repo_root = key
             .strip_prefix("github.com/")
             .is_some_and(|path| path.split('/').count() == 2);
-        Some(match key.strip_suffix(".git") {
+        let key = match key.strip_suffix(".git") {
             Some(root) if is_repo_root => root.to_string(),
             _ => key,
-        })
+        };
+        Some(key.into())
     }
 }
 
@@ -88,12 +89,12 @@ impl RedditKeys {
 }
 
 impl UrlKey for RedditKeys {
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         if !self.is_reddit_host(url) {
             return None;
         }
         let key = url.path().trim_end_matches('/').to_ascii_lowercase();
-        (!key.is_empty()).then_some(key)
+        (!key.is_empty()).then(|| key.into())
     }
 }
 
@@ -124,7 +125,7 @@ impl HackerNewsKeys {
 }
 
 impl UrlKey for HackerNewsKeys {
-    fn dedup_key(&self, url: &Url) -> Option<String> {
+    fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         if let Some(dest) = over18_dest(url) {
             return self.dedup_key(&dest);
         }
@@ -133,9 +134,11 @@ impl UrlKey for HackerNewsKeys {
         }
         if self.reddit.is_reddit_host(url) {
             let key = self.reddit.dedup_key(url);
-            return Some(key.unwrap_or_else(|| "/".to_string()));
+            return Some(key.unwrap_or_else(|| "/".into()));
         }
-        self.github.dedup_key(url).or_else(|| url_key(url))
+        self.github
+            .dedup_key(url)
+            .or_else(|| url_key(url).map(DedupKey::from))
     }
 }
 
@@ -172,7 +175,11 @@ mod tests {
 
     #[test]
     fn github_keys_fold_the_forms_cleanup_canonicalizes() {
-        let key = |s: &str| GitHubKeys.dedup_key(&url(s));
+        let key = |s: &str| {
+            GitHubKeys
+                .dedup_key(&url(s))
+                .map(|key| key.as_str().to_string())
+        };
         for alias in [
             "https://github.com/Owner/Repo",
             "https://www.github.com/Owner/Repo",
@@ -195,7 +202,11 @@ mod tests {
 
     #[test]
     fn github_keys_key_a_gist_root_by_its_id() {
-        let key = |s: &str| GitHubKeys.dedup_key(&url(s));
+        let key = |s: &str| {
+            GitHubKeys
+                .dedup_key(&url(s))
+                .map(|key| key.as_str().to_string())
+        };
         let id = "aa5a315d61ae9438b18d";
         for alias in [
             format!("https://gist.github.com/{id}"),
@@ -242,13 +253,15 @@ mod tests {
     }
 
     fn key(raw: &str) -> Option<String> {
-        RedditKeys::new(["old.reddit.com"]).dedup_key(&url(raw))
+        RedditKeys::new(["old.reddit.com"])
+            .dedup_key(&url(raw))
+            .map(|key| key.as_str().to_string())
     }
 
     #[test]
     fn reddit_keys_treat_the_configured_domain_as_reddit() {
         let mirror = |raw: &str| RedditKeys::new(["redlib.example.org"]).dedup_key(&url(raw));
-        let want = Some("/r/rust/comments/abc/title".to_string());
+        let want = Some(DedupKey::from("/r/rust/comments/abc/title"));
         assert_eq!(
             mirror("https://redlib.example.org/r/rust/comments/abc/title/"),
             want

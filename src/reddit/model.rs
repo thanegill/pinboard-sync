@@ -366,7 +366,7 @@ impl RedditSavedItem {
         // The host-agnostic dedup key, derived from the same URL.
         let dedup_key = RedditKeys::new([cfg.domain.as_str()])
             .dedup_key(&url)
-            .unwrap_or_else(|| url.to_string());
+            .unwrap_or_else(|| url.as_str().into());
         let timestamp = created_at(self.created_utc);
         let tags = self.tags(cfg);
         Some(BookmarkDraft {

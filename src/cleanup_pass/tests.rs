@@ -2332,10 +2332,7 @@ async fn a_merge_onto_a_trimmed_note_is_not_rewritten_every_run() {
     // The resident holds the trimmed form of the note the mover plans onto it, and the
     // mover's old URL is another plan's target, so it is never absorbed. Merging appends
     // the blocks the trim cut off; fitted, the merge is the stored record again.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let resident = pinboard.fit(Bookmark {
         note: note_pinboard_trims(),
         ..bookmark("https://collide/")
@@ -2384,10 +2381,7 @@ async fn a_merge_onto_a_trimmed_note_is_not_rewritten_every_run() {
 async fn a_whole_note_too_long_to_write_is_not_cut_when_nothing_changed() {
     // Saved through Pinboard's web form, which has no URL limit. Cleanup has nothing to
     // change, so it must not write the bookmark back, cut.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let mut stored = bookmark("https://long/");
     stored.note = note_pinboard_trims();
     let mut resident = bookmark("https://collide/");
@@ -2437,10 +2431,7 @@ async fn a_whole_note_too_long_to_write_is_not_cut_when_nothing_changed() {
 
 #[tokio::test]
 async fn a_dry_run_previews_the_note_as_pinboard_will_store_it() {
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let mut resident = bookmark("https://target/");
     resident.note = "resident".into();
     let books = vec![bookmark("https://single/"), bookmark("https://mover/")];
@@ -2485,10 +2476,7 @@ async fn a_dry_run_previews_the_note_as_pinboard_will_store_it() {
 #[tokio::test]
 async fn a_change_wholly_past_the_cut_is_not_written() {
     // Writing it would only cut the stored note: the appended line is cut off again.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let mut stored = bookmark("https://long/");
     stored.note = note_pinboard_trims();
     let books = vec![stored];
@@ -2789,10 +2777,7 @@ fn onto_target() -> FakePass<impl Fn(&Bookmark) -> Result<Plan, SourceError>> {
 async fn a_merge_that_stores_nothing_new_only_absorbs() {
     // Writing the merge would cut the resident's whole note and keep nothing of the
     // mover's, so the mover is absorbed by deleting it and the resident is not written.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let (resident, mover) = long_resident_and_short_mover();
     let all = vec![mover.clone(), resident.clone()];
 
@@ -2819,9 +2804,8 @@ async fn a_merge_that_stores_nothing_new_only_absorbs() {
 #[tokio::test]
 async fn an_absorb_whose_delete_fails_is_half_applied() {
     let pinboard = FakePinboard {
-        trims_notes: true,
         fail_delete_urls: ["https://mover/".to_string()].into(),
-        ..Default::default()
+        ..FakePinboard::trimming()
     };
     let (resident, mover) = long_resident_and_short_mover();
     let all = vec![mover.clone(), resident];
@@ -2841,10 +2825,7 @@ async fn an_absorb_whose_delete_fails_is_half_applied() {
 
 #[tokio::test]
 async fn an_absorb_warns_that_the_movers_note_does_not_fit() {
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let (resident, mover) = long_resident_and_short_mover();
     let all = vec![mover.clone(), resident];
 
@@ -2904,10 +2885,7 @@ fn appending_a_link(
 async fn an_append_to_a_note_just_under_the_budget_is_not_written() {
     // The stored note fits whole, but with the line appended the fit cuts it short of its
     // own end, so the write would only lose the stored note's tail.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let stored = with_note_just_under_the_budget(&pinboard, bookmark("https://near/"));
     let books = vec![stored];
 
@@ -2924,10 +2902,7 @@ async fn an_append_to_a_note_just_under_the_budget_is_not_written() {
 async fn an_append_beside_a_tag_change_keeps_the_whole_stored_note() {
     // As the discussion-link pass plans: the link line goes past the cut, so only the tag
     // swap is written, over the stored note as it is.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let stored = with_note_just_under_the_budget(
         &pinboard,
         Bookmark {
@@ -2951,10 +2926,7 @@ async fn an_append_beside_a_tag_change_keeps_the_whole_stored_note() {
 async fn an_append_beside_a_longer_tag_cuts_the_stored_note_once() {
     // The longer tag leaves the stored note no room to stay whole, so the write cuts it,
     // and the next run, with the plan unchanged, settles on that.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let stored = with_note_just_under_the_budget(
         &pinboard,
         Bookmark {
@@ -2982,10 +2954,7 @@ async fn an_append_beside_a_longer_tag_cuts_the_stored_note_once() {
         "{}",
         after[0].note
     );
-    let again = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let again = FakePinboard::trimming();
     assert_eq!(run(&again, &after, &pass).await.changed, 0);
 }
 
@@ -2993,10 +2962,7 @@ async fn an_append_beside_a_longer_tag_cuts_the_stored_note_once() {
 async fn a_merge_appending_to_a_note_just_under_the_budget_only_absorbs() {
     // The mover's note would be cut off past the resident's whole note, so the merge adds
     // nothing, keeps the resident as it is and only deletes the mover.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let resident = with_note_just_under_the_budget(&pinboard, bookmark("https://target/"));
     let mut mover = bookmark("https://mover/");
     mover.note = "HN Link: https://news.ycombinator.com/item?id=1".into();
@@ -3023,10 +2989,7 @@ async fn a_merge_appending_to_a_note_just_under_the_budget_only_absorbs() {
 #[tokio::test]
 async fn a_whole_note_ending_like_a_cut_is_still_written() {
     // The planned note fits whole; ending in the marker text says nothing about a cut.
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let kept = format!("abc{TRUNCATION_MARKER}");
     let mut stored = bookmark("https://short/");
     stored.note = format!("{kept}\n\nHN Link: https://news.ycombinator.com/item?id=1");
@@ -3046,10 +3009,7 @@ async fn a_whole_note_ending_like_a_cut_is_still_written() {
 
 #[tokio::test]
 async fn a_dry_run_previews_an_absorb_without_fields() {
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let (resident, mover) = long_resident_and_short_mover();
     let all = vec![mover.clone(), resident];
 

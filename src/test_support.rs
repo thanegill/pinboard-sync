@@ -358,6 +358,14 @@ pub struct FakePinboard {
 }
 
 impl FakePinboard {
+    /// An empty fake that trims notes as the Pinboard client does (`trims_notes`).
+    pub fn trimming() -> Self {
+        FakePinboard {
+            trims_notes: true,
+            ..Default::default()
+        }
+    }
+
     /// The production cleanup store over this fake, its view seeded with `all`.
     pub fn cleanup_store(&self) -> CleanupStore<'_, Self> {
         CleanupStore::new(self, AccountView::new(self.all.clone()), WriteMode::Live)
@@ -476,10 +484,7 @@ pub async fn synced_account<S: Source>(source: &S, dates: DateOpts) -> Vec<Bookm
         dates,
     };
     let new = prepare_new_drafts(source, drafts, &[], &settings, now);
-    let pinboard = FakePinboard {
-        trims_notes: true,
-        ..Default::default()
-    };
+    let pinboard = FakePinboard::trimming();
     let tally = write_drafts(&pinboard, &new, WriteMode::Live).await;
     assert_eq!(tally.failed, 0);
     replay(&[], &pinboard.ops.take())
@@ -513,8 +518,7 @@ pub async fn assert_cleanup_changes_nothing(
 ) {
     let pinboard = FakePinboard {
         all: account,
-        trims_notes: true,
-        ..Default::default()
+        ..FakePinboard::trimming()
     };
     let (result, logs) = capturing_logs(cleanup(&pinboard.cleanup_store())).await;
     result.unwrap();

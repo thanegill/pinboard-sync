@@ -385,6 +385,25 @@ fn each_skipped_target_counts_as_a_failed_account() {
     assert_eq!(error.to_string(), "2 account(s) failed");
 }
 
+/// Failed writes after a failed account are reported beside it, not instead of it or
+/// dropped behind it.
+#[test]
+fn all_run_reports_failed_accounts_and_failed_writes() {
+    let mut run = AllRun::default();
+    run.record(Err(anyhow::anyhow!("fetching reddit[a]")));
+    run.record_write_failures(3);
+    let error = run.finish().expect_err("both fail the run");
+    assert_eq!(
+        error.to_string(),
+        "1 account(s) failed; 3 bookmark(s) failed to write"
+    );
+
+    let mut run = AllRun::default();
+    run.record_write_failures(2);
+    let error = run.finish().expect_err("failed writes alone fail the run");
+    assert_eq!(error.to_string(), "2 bookmark(s) failed to write");
+}
+
 /// An `--all` run reports each account's failure through the logger, as a single-account
 /// run reports its one failure, so both read the same on stderr.
 #[tokio::test]

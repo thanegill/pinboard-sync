@@ -155,11 +155,8 @@ async fn run_sync_jobs(
     }
     // Non-zero exit if any source failed to fetch or any bookmark failed to write,
     // but only after attempting every source and every bookmark we could.
-    run.finish()?;
-    if outcome.failed > 0 {
-        bail!("{} bookmark(s) failed to write", outcome.failed);
-    }
-    Ok(())
+    run.record_write_failures(outcome.failed);
+    run.finish()
 }
 
 // --- backup ------------------------------------------------------------------

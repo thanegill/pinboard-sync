@@ -153,6 +153,8 @@ All notable changes to this project are documented here. The format is based on
   whose id isn't a number, and `sync` and `backup` skip such a HackerNews favorites row.
   Each warns, and a favorites page none of whose rows has a numeric id fails as changed
   markup does.
+- A `sync --all` run where an account fails and bookmarks fail to write reports both, as
+  `1 account(s) failed; 3 bookmark(s) failed to write`, instead of only the first.
 
 ## [0.6.0] - 2026-10-25
 

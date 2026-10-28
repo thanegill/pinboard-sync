@@ -126,7 +126,10 @@ async fn run_sync_jobs_fails_the_run_for_accounts_it_could_not_build() {
     let pinboard = PinboardClient::new("user:token".into(), std::time::Duration::ZERO).unwrap();
     let error = run_sync_jobs(
         Vec::new(),
-        AllRun { failed: 1 },
+        AllRun {
+            failed: 1,
+            ..AllRun::default()
+        },
         &pinboard,
         &[],
         WriteMode::Live,

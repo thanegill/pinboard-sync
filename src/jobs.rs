@@ -425,10 +425,12 @@ pub async fn open_pinboard(
 }
 
 /// Accumulates failures across an `--all` run: each account is attempted, errors
-/// are reported and counted, and the run errors at the end if any account failed.
+/// are reported and counted, and the run errors at the end if any account failed or any
+/// bookmark failed to write.
 #[derive(Default)]
 pub struct AllRun {
     pub failed: usize,
+    pub write_failed: usize,
 }
 
 impl AllRun {
@@ -453,11 +455,24 @@ impl AllRun {
             .collect()
     }
 
+    /// Count `count` bookmarks that failed to write, already logged one by one.
+    pub fn record_write_failures(&mut self, count: usize) {
+        self.write_failed += count;
+    }
+
+    /// The run's verdict, naming every kind of failure it had.
     pub fn finish(self) -> Result<()> {
+        let mut failures = Vec::new();
         if self.failed > 0 {
-            bail!("{} account(s) failed", self.failed);
+            failures.push(format!("{} account(s) failed", self.failed));
         }
-        Ok(())
+        if self.write_failed > 0 {
+            failures.push(format!("{} bookmark(s) failed to write", self.write_failed));
+        }
+        if failures.is_empty() {
+            return Ok(());
+        }
+        bail!("{}", failures.join("; "))
     }
 }
 

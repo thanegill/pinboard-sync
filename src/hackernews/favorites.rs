@@ -2,11 +2,12 @@
 //! `&comments=t` stream of them.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
 use std::time::Duration;
 
+use html5ever::tendril::TendrilSink;
+use html5ever::{ns, Attribute, LocalName, ParseOpts};
 use log::{debug, warn};
-use scraper::{Html, Selector};
+use markup5ever_rcdom::{NodeData, RcDom};
 use url::Url;
 
 use super::{HackerNewsClient, HackerNewsItemId};
@@ -252,25 +253,74 @@ pub(super) enum FavoritesPage {
 /// marker; otherwise it is [`FavoritesPage::Unrecognized`]. Pure, so it's unit-tested
 /// on sample HTML.
 pub(super) fn parse_favorite_ids(html: &str) -> FavoritesPage {
-    static ROW: LazyLock<Selector> = LazyLock::new(|| selector("tr.athing"));
-    static MARKER: LazyLock<Selector> = LazyLock::new(|| selector(r#"html[op="favorites"]"#));
-    static MORE: LazyLock<Selector> = LazyLock::new(|| selector("a.morelink"));
-
-    let doc = Html::parse_document(html);
-    let ids: Vec<String> = doc
-        .select(&ROW)
-        .filter_map(|e| e.value().attr("id").map(str::to_string))
+    let elements = document_elements(html);
+    let ids: Vec<String> = elements
+        .iter()
+        .filter(|e| e.is("tr") && e.has_class("athing"))
+        .filter_map(|e| e.attr("id").map(str::to_owned))
         .collect();
-    if ids.is_empty() && doc.select(&MARKER).next().is_none() {
+    let has_marker = elements
+        .iter()
+        .any(|e| e.is("html") && e.attr("op") == Some("favorites"));
+    if ids.is_empty() && !has_marker {
         return FavoritesPage::Unrecognized;
     }
-    let next = doc
-        .select(&MORE)
-        .next()
-        .and_then(|e| e.value().attr("href").map(str::to_string));
-    FavoritesPage::Recognized { ids, more: next }
+    let more = elements
+        .iter()
+        .find(|e| e.is("a") && e.has_class("morelink"))
+        .and_then(|e| e.attr("href"))
+        .map(str::to_owned);
+    FavoritesPage::Recognized { ids, more }
 }
 
-fn selector(css: &str) -> Selector {
-    Selector::parse(css).unwrap_or_else(|e| panic!("invalid selector {css:?}: {e}"))
+/// A parsed favorites-page element: its tag name, in any namespace, and its attributes.
+struct Element {
+    tag: LocalName,
+    attrs: Vec<Attribute>,
+}
+
+impl Element {
+    fn is(&self, tag: &str) -> bool {
+        &*self.tag == tag
+    }
+
+    /// The value of the un-namespaced attribute `name`, its character references decoded.
+    fn attr(&self, name: &str) -> Option<&str> {
+        self.attrs
+            .iter()
+            .find(|attr| attr.name.ns == ns!() && &*attr.name.local == name)
+            .map(|attr| &*attr.value)
+    }
+
+    /// Whether `class` is one of the whitespace-separated tokens of the `class`
+    /// attribute, compared case-sensitively.
+    fn has_class(&self, class: &str) -> bool {
+        self.attr("class")
+            .is_some_and(|classes| classes.split_whitespace().any(|token| token == class))
+    }
+}
+
+/// Every element of `html` parsed as a whole document, in document order. A
+/// `<template>`'s contents follow it, as though they were its children.
+fn document_elements(html: &str) -> Vec<Element> {
+    let dom = html5ever::parse_document(RcDom::default(), ParseOpts::default()).one(html);
+    let mut elements = Vec::new();
+    let mut pending = vec![dom.document.clone()];
+    while let Some(node) = pending.pop() {
+        if let NodeData::Element {
+            name,
+            attrs,
+            template_contents,
+            ..
+        } = &node.data
+        {
+            pending.extend(template_contents.borrow().clone());
+            elements.push(Element {
+                tag: name.local.clone(),
+                attrs: attrs.borrow().clone(),
+            });
+        }
+        pending.extend(node.children.borrow().iter().rev().cloned());
+    }
+    elements
 }

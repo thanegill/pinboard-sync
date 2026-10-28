@@ -9,7 +9,7 @@ use serde::Deserialize;
 use url::Url;
 
 use super::{HackerNewsItem, HackerNewsItemId, HackerNewsItemKind};
-use crate::backup::{RawKind, RawSink};
+use crate::backup::{RawKind, RawSink, PRIMARY_STREAM};
 use crate::http::RetryingClient;
 use crate::keys::url_key;
 use crate::source::SourceError;
@@ -133,7 +133,7 @@ impl AlgoliaClient {
                 .await?;
             let resp = algolia_success(resp, "hn algolia").await?;
             let body = resp.text().await.context("reading hn algolia response")?;
-            sink.push("", RawKind::Json, &body);
+            sink.push(PRIMARY_STREAM, RawKind::Json, &body);
             let search: AlgoliaSearchResponse =
                 serde_json::from_str(&body).context("parsing hn algolia response")?;
             let items = search

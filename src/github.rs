@@ -13,7 +13,7 @@ use log::{debug, warn};
 use serde::Deserialize;
 use time::OffsetDateTime;
 
-use crate::backup::{BackupDump, BackupSource, RawKind, RawSink};
+use crate::backup::{BackupDump, BackupSource, RawKind, RawSink, PRIMARY_STREAM};
 use crate::bookmark::Bookmark;
 use crate::htmltext::{blockquote, html_to_plain};
 use crate::http::{client_builder, read_body, RetryingClient, DEFAULT_BACKOFF, USER_AGENT};
@@ -55,7 +55,7 @@ struct PagedStream {
 /// newest-starred-first.
 const STARS: PagedStream = PagedStream {
     label: "github starred",
-    raw_stream: "",
+    raw_stream: PRIMARY_STREAM,
     path: "/user/starred",
     accept: "application/vnd.github.star+json",
     query: &[

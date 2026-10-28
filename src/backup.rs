@@ -51,6 +51,9 @@ impl RawKind {
     }
 }
 
+/// The stream of an account's primary JSON payload, whose file takes the bare stem.
+pub const PRIMARY_STREAM: &str = "";
+
 /// One verbatim response body, tagged with the stream it belongs to (which becomes part
 /// of the filename, so a service with two streams gets two files) and its media kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -312,11 +315,11 @@ pub fn layout(stem: &str, dump: &BackupDump) -> Result<Vec<BackupFile>> {
     let mut files = Vec::new();
 
     // Group by stream, preserving the order each stream was first pushed in. The primary
-    // JSON stream ("") is always emitted, even with no pages: a source that legitimately
-    // returns nothing this run (an emptied favorites list makes zero Algolia requests)
-    // must still overwrite its file with `[]`, or last run's data would survive next to a
-    // freshly emptied normalized half -- the exact disagreement the pairing rules out.
-    let mut streams: Vec<&'static str> = vec![""];
+    // JSON stream is always emitted, even with no pages: a source that legitimately returns
+    // nothing this run (an emptied favorites list makes zero Algolia requests) must still
+    // overwrite its file with `[]`, or last run's data would survive next to a freshly
+    // emptied normalized half -- the exact disagreement the pairing rules out.
+    let mut streams: Vec<&'static str> = vec![PRIMARY_STREAM];
     for page in &dump.raw {
         if !streams.contains(&page.stream) {
             streams.push(page.stream);
@@ -327,8 +330,7 @@ pub fn layout(stem: &str, dump: &BackupDump) -> Result<Vec<BackupFile>> {
         let pages: Vec<&RawPage> = dump.raw.iter().filter(|p| p.stream == stream).collect();
         let kind = pages.first().map_or(RawKind::Json, |p| p.kind);
         let bodies: Vec<&str> = pages.iter().map(|p| p.body.as_str()).collect();
-        // The primary stream carries the bare stem; a second stream is suffixed.
-        let name = if stream.is_empty() {
+        let name = if stream == PRIMARY_STREAM {
             stem.to_string()
         } else {
             format!("{stem}-{stream}")

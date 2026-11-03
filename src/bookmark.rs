@@ -84,16 +84,12 @@ pub trait BookmarkStore {
     /// `b` as a write would store it: the Pinboard client trims a note too long for the
     /// request URL. The cleanup driver diffs in this form, so a note already stored trimmed
     /// reads as unchanged rather than rewritten, and trimmed again, every run.
-    fn fit(&self, b: Bookmark) -> Bookmark {
-        b
-    }
+    fn fit(&self, b: Bookmark) -> Bookmark;
 
     /// The part [`Self::fit`] kept of `note`, a note it returned cut; `None` from a store
     /// that never cuts. Asked only of a note `fit` just shortened, since a whole note may
     /// end in the same text as the store's cut marker.
-    fn kept_of_cut<'n>(&self, _note: &'n str) -> Option<&'n str> {
-        None
-    }
+    fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str>;
 
     /// The cleanup re-write step: `update` the bookmark, then `delete` the old URL when it
     /// changed (`old_url`). Any inter-write pacing is the store's own concern (the Pinboard

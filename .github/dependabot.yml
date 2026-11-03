@@ -3,9 +3,10 @@
 # updates each flake.lock input in its own PR. Semver-compatible crate updates (by
 # Cargo's rule: 0.4.1 -> 0.4.2 is compatible, 0.4 -> 0.5 is not) arrive as one grouped
 # PR, and each breaking bump as its own. Each update takes a release (for a flake input,
-# a commit) at least a week old, so one pulled within days never lands. htmd,
-# html5ever and markup5ever_rcdom move as one group, since the last two must stay on the
-# versions htmd itself uses, or a second html5ever enters the build.
+# a commit) at least a week old, so one pulled within days never lands. html5ever and
+# markup5ever_rcdom are ignored and bumped by hand: they must stay on the versions htmd
+# uses, and an htmd update that moves to a newer one, even a compatible update, fails
+# cargo-deny's duplicate ban (deny.toml) until they are bumped in its PR.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -26,12 +27,10 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    ignore:
+      - dependency-name: html5ever
+      - dependency-name: markup5ever_rcdom
     groups:
-      html-parsing:
-        patterns:
-          - htmd
-          - html5ever
-          - markup5ever_rcdom
       cargo-compatible:
         update-types:
           - minor

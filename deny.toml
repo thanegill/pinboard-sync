@@ -11,6 +11,12 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Kept on htmd's versions (Cargo.toml). A second copy still compiles, so only
+# this ban catches it.
+deny = [
+    { crate = "html5ever", deny-multiple-versions = true },
+    { crate = "markup5ever_rcdom", deny-multiple-versions = true },
+]
 
 [sources]
 unknown-registry = "deny"

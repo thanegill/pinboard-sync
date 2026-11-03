@@ -1033,6 +1033,26 @@ async fn cleanup_leaves_a_hand_saved_gist_tagged_like_a_star_as_it_was() {
     assert_eq!(tags, strings(&["github-star", "hackernews", "lang:go"]));
 }
 
+#[tokio::test]
+async fn cleanup_moves_a_www_gist_to_the_gist_url() {
+    let server = MockServer::start().await;
+    mount_gist(&server, "2020-01-02T03:04:05Z").await;
+    let seed = vec![Bookmark {
+        title: "my gist".into(),
+        ..stored_at(&format!(
+            "https://www.gist.github.com/someone/{GIST_ID}.git"
+        ))
+    }];
+
+    let (writes, stored) = run_and_store(seed, &github_client(&server), NO_DATING).await;
+    assert_eq!(writes, 1);
+    let [gist] = &stored[..] else {
+        panic!("one bookmark, moved: {stored:?}");
+    };
+    assert_eq!(gist.url.as_str(), gist_url(Some("someone")));
+    assert_eq!(gist.title, "my gist");
+}
+
 /// Two accounts with default gist tags both tag their gists `github-gist`; running as one
 /// must not add its star tag to the other's gist.
 #[tokio::test]

@@ -8,7 +8,7 @@ use super::{is_lone_blockquote, retag};
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
 use crate::config::own_then_configured;
-use crate::github::gists::{gist_root_id, GistConfig, GitHubGist, GIST_HOST};
+use crate::github::gists::{gist_root_id, is_gist_host, GistConfig, GitHubGist};
 use crate::github::{GitHubClient, GitHubConfig};
 use crate::htmltext::{blockquote, collapse_whitespace};
 use crate::source::SourceError;
@@ -32,7 +32,7 @@ pub(super) async fn run<S: BookmarkStore + AccountState>(
     if !client.config.gists.enabled {
         return Ok(());
     }
-    let gist_bookmarks = store.snapshot(|bookmark| bookmark.url.host_str() == Some(GIST_HOST));
+    let gist_bookmarks = store.snapshot(|bookmark| is_gist_host(&bookmark.url));
     let starred = if gist_bookmarks
         .iter()
         .any(|bookmark| gist_root_id(&bookmark.url).is_some())

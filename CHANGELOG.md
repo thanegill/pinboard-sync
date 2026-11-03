@@ -80,6 +80,12 @@ All notable changes to this project are documented here. The format is based on
   two runs, and its key no longer changes between them.
 - `sync` keys a GitHub repo URL with a doubled slash (`owner//repo`) as the `owner/repo`
   that `cleanup github` rewrites it to, so it no longer adds the repo again.
+- A gist URL ending in `.GIT` or `.git.git` counts as the gist, as a repo URL does:
+  `cleanup github` moves it to the gist's URL and `sync` no longer adds the gist again.
+- `sync hackernews` no longer adds a story whose GitHub link differs from a bookmark only by
+  a doubled slash, such as `owner//repo/issues/5`.
+- A gist URL on `www.gist.github.com` counts as the gist, as one on `gist.github.com` does:
+  `cleanup github` moves it to the gist's URL and `sync` no longer adds the gist again.
 - A missing Reddit or HackerNews username or Pinboard token names every setting it can come
   from, `$REDDIT_USERNAME_FILE`, `$HN_USERNAME_FILE` and `$PINBOARD_TOKEN_FILE` included,
   as the cookie and GitHub token messages already did.

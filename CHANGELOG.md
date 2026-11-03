@@ -66,6 +66,10 @@ All notable changes to this project are documented here. The format is based on
   gist's note that `sync` stored cut, once, with the longer text, and the next `cleanup
   reddit` does the same for a self-post's note while the post still starts with the text
   that was kept. HackerNews notes stored cut stay as they are.
+- A release is now a bump PR (`scripts/prepare-release.sh X.Y.Z`), then a `vX.Y.Z` tag on
+  its merged commit. The release workflow no longer pushes a commit to master. It refuses
+  a tag off master, one whose version Cargo.toml or Cargo.lock doesn't carry, or one whose
+  changelog section is missing or empty, and moves `latest` only forward.
 
 ### Deprecated
 

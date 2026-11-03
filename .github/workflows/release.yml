@@ -1,23 +1,35 @@
 name: Release
 
-# Cutting a release is a single action: push a semver tag from master.
+# Cutting a release is two steps, and nothing here ever pushes to master:
 #
-#   git tag v0.3.0 && git push origin v0.3.0
+#   1. Bump the version in a PR: `scripts/prepare-release.sh 0.7.0` stamps 0.7.0 into
+#      Cargo.toml and Cargo.lock, moves the changelog's [Unreleased] items under a new
+#      `## [0.7.0] - <date>` heading, updates the links at the bottom, and opens the PR.
+#   2. Once it has merged, tag the merge commit on master and push the tag:
 #
-# This workflow then does the bookkeeping a release needs: it stamps the tag's
-# version into Cargo.toml / Cargo.lock (the Nix package reads it from Cargo.toml),
-# rolls the changelog's [Unreleased] section over to that version, commits the
-# result back to master, builds the binary through the flake (which also runs the
-# test suite), and publishes a GitHub release with the changelog section as its
-# notes. You never hand-edit a version number.
+#        git switch master && git pull --ff-only
+#        git tag v0.7.0 && git push origin v0.7.0
 #
-# A manual run (`gh workflow run release.yml -f rehearse=true`, or "Run workflow"
-# in the Actions tab) rehearses all of that against throwaway refs instead: the
-# bump goes to a `release-rehearsal/<run-id>` branch and the tags to
-# `rehearsal-<run-id>` and `rehearsal-<run-id>-latest`, all deleted again at the
-# end, and the GitHub release is skipped. It never touches master, a `v*` tag or
-# `latest`. Every push goes through one helper that sends the job token in a
-# per-command header, and the checkout keeps none.
+# The tag starts this workflow. Its `build` job checks that the tagged commit is on
+# master and that Cargo.toml and Cargo.lock at it carry the tag's version, and fails
+# before anything is published otherwise. It then takes the release notes from the
+# changelog's [0.7.0] section, failing if it is missing or empty, and builds the binary
+# through the flake (which also runs the test suite), all with a read-only token. The
+# `publish` job, the only one that can write, creates the GitHub release with that
+# binary and notes and then moves the rolling `latest` tag forward to the tagged commit.
+# It never moves the version tag itself.
+#
+# A manual run (`gh workflow run release.yml -f rehearse=true`, or "Run workflow" in the
+# Actions tab) rehearses all of that against throwaway refs instead. It checks out
+# master, stands a local `rehearsal-<run-id>` tag in for the version tag, and verifies
+# it against Cargo.toml's own version, so its version and master checks pass by
+# construction but the Cargo.lock and changelog checks are real. The notes come from
+# that version's section, so a rehearsal right after the bump PR merges previews the
+# real release. It pushes `rehearsal-<run-id>` and `rehearsal-<run-id>-latest` in place
+# of the version tag and `latest`, deletes both again at the end, and skips the GitHub
+# release. Every push goes through one helper that sends the job token in a per-command
+# header and accepts only `latest` (in a rehearsal, only the run's two rehearsal tags),
+# and the checkout keeps no credential.
 
 on:
   push:
@@ -37,14 +49,19 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  REHEARSE: ${{ github.event_name == 'workflow_dispatch' }}
+
 jobs:
-  release:
-    name: Release
+  build:
+    name: Verify and build
     runs-on: ubuntu-latest
     permissions:
-      contents: write # push the bump and the tags, and create the release
-    env:
-      REHEARSE: ${{ github.event_name == 'workflow_dispatch' }}
+      contents: read
+    outputs:
+      commit: ${{ steps.verify.outputs.commit }}
+      tag: ${{ steps.refs.outputs.tag }}
+      latest_tag: ${{ steps.refs.outputs.latest_tag }}
     steps:
       - name: Refuse a manual run that is not a rehearsal
         if: github.event_name == 'workflow_dispatch' && !inputs.rehearse
@@ -52,19 +69,135 @@ jobs:
           echo "A release is cut by pushing a v* tag; a manual run can only rehearse." >&2
           exit 1
 
-      # Check out the branch, not the detached tag, so we can commit the bump back.
-      - name: Check out master
+      # The full history, so the verify step can see whether the tag is on master.
+      - name: Check out the tag (in a rehearsal, master)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: master
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'master' || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Name the tags
+        id: refs
+        run: |
+          if [[ $REHEARSE == true ]]; then
+            tag="rehearsal-$GITHUB_RUN_ID"
+            latest_tag="rehearsal-$GITHUB_RUN_ID-latest"
+            git tag -f "$tag"
+          else
+            tag="$GITHUB_REF_NAME"
+            latest_tag=latest
+          fi
+          {
+            echo "tag=$tag"
+            echo "latest_tag=$latest_tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify the tag against master and the manifests
+        id: verify
+        env:
+          TAG: ${{ steps.refs.outputs.tag }}
+        run: |
+          fail() {
+            echo "::error::$*"
+            exit 1
+          }
+          manifest_version=$(awk -F'"' '
+            /^\[/ { in_package = ($0 == "[package]") }
+            in_package && /^version = "/ { print $2; exit }
+          ' Cargo.toml)
+          lock_version=$(awk -F'"' '
+            $0 == "name = \"pinboard-sync\"" { getline; if (/^version = "/) print $2; exit }
+          ' Cargo.lock)
+          if [[ $REHEARSE == true ]]; then
+            version=$manifest_version
+          else
+            version=${TAG#v}
+          fi
+
+          commit=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
+          git rev-parse --verify --quiet refs/remotes/origin/master > /dev/null ||
+            fail "the checkout has no origin/master to check $TAG against"
+          git merge-base --is-ancestor "$commit" refs/remotes/origin/master ||
+            fail "$TAG ($commit) is not on master: tag the merged bump PR's commit on master"
+          [[ $manifest_version == "$version" ]] ||
+            fail "Cargo.toml at $TAG has version '$manifest_version', not $version: merge the bump PR (scripts/prepare-release.sh $version) and tag its commit"
+          [[ $lock_version == "$version" ]] ||
+            fail "Cargo.lock at $TAG has pinboard-sync '$lock_version', not $version"
+
+          echo "Verified $TAG: $commit on master, version $version"
+          {
+            echo "commit=$commit"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes for this version
+        env:
+          VERSION: ${{ steps.verify.outputs.version }}
+        run: |
+          # Everything between this version's heading and the next section: either
+          # the following `## [` heading or the link-reference block at the bottom
+          # (`[Unreleased]: ...`), whichever comes first.
+          awk -v heading="## [$VERSION]" '
+            index($0, heading) == 1 { grab = 1; next }
+            grab && (/^## \[/ || /^\[[^][]+\]: /) { exit }
+            grab { print }
+          ' CHANGELOG.md | sed -e '1{/^$/d}' -e ':a' -e '/^\n*$/{$d;N;ba}' > RELEASE_NOTES.md
+          if [[ ! -s RELEASE_NOTES.md ]]; then
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section, or it is empty"
+            exit 1
+          fi
+          echo "----- release notes -----"
+          cat RELEASE_NOTES.md
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      # Builds the binary and runs the (sandbox-safe) test suite via doCheck.
+      - name: Build the release binary
+        run: nix build .#default --print-build-logs
+
+      - name: Stage the binary artifact
+        env:
+          VERSION: ${{ steps.verify.outputs.version }}
+        run: |
+          mkdir -p dist
+          cp result/bin/pinboard-sync "dist/pinboard-sync-v$VERSION-x86_64-linux"
+
+      - name: Upload the binary and notes for the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: |
+            dist/
+            RELEASE_NOTES.md
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and move `latest`
+    env:
+      COMMIT: ${{ needs.build.outputs.commit }}
+      TAG: ${{ needs.build.outputs.tag }}
+      LATEST_TAG: ${{ needs.build.outputs.latest_tag }}
+    steps:
+      - name: Check out the release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.build.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
 
       # `git-with-token push ...` and `git-with-token ls-remote ...` send the job token in
-      # a header for that one command, so it is never written to .git/config. In a
-      # rehearsal it runs only those two commands, with no option but --force and
-      # --delete, and accepts only this run's three rehearsal refs. The header's base64
-      # form is masked here in full, once for the job.
+      # a header for that one command, so it is never written to .git/config. It runs only
+      # those two commands, with at most one `origin`, no option but --delete and a
+      # --force-with-lease on an allowed ref whose expected value is a full sha or empty,
+      # and accepts only `latest`, or in a rehearsal only this run's two rehearsal tags,
+      # each named in full (`refs/tags/...`), so not even a `src:dst` refspec reaches
+      # master or a `v*` tag. The header's base64 form is masked here in full, once.
       - name: Set up token-authenticated pushes
         id: token-helper
         env:
@@ -76,33 +209,57 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
           : "${GH_TOKEN:?git-with-token needs GH_TOKEN}"
-          if [[ $REHEARSE == true ]]; then
-            case $1 in
-              push | ls-remote) ;;
-              *)
-                echo "refusing git $1 in a rehearsal" >&2
-                exit 1
+          case $REHEARSE in
+            true) allowed_refs=("refs/tags/rehearsal-$GITHUB_RUN_ID" "refs/tags/rehearsal-$GITHUB_RUN_ID-latest") ;;
+            false) allowed_refs=(refs/tags/latest) ;;
+            *)
+              echo "REHEARSE must be true or false, not '$REHEARSE'" >&2
+              exit 1
+              ;;
+          esac
+          case $1 in
+            push | ls-remote) ;;
+            *)
+              echo "refusing git $1" >&2
+              exit 1
+              ;;
+          esac
+          is_allowed_ref() {
+            local ref
+            for ref in "${allowed_refs[@]}"; do
+              if [[ $1 == "$ref" ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+          named_refs=0
+          remotes=0
+          for arg in "${@:2}"; do
+            case $arg in
+              --delete) continue ;;
+              origin)
+                remotes=$((remotes + 1))
+                if ((remotes == 1)); then
+                  continue
+                fi
+                ;;
+              --force-with-lease=*:*)
+                lease=${arg#--force-with-lease=}
+                if is_allowed_ref "${lease%%:*}" && [[ ${lease#*:} =~ ^([0-9a-f]{40})?$ ]]; then
+                  continue
+                fi
                 ;;
             esac
-            branch="refs/heads/release-rehearsal/$GITHUB_RUN_ID"
-            tag="refs/tags/rehearsal-$GITHUB_RUN_ID"
-            named_refs=0
-            for arg in "${@:2}"; do
-              case $arg in
-                --force | --delete | origin) continue ;;
-              esac
-              case ${arg#HEAD:} in
-                "$branch" | "$tag" | "$tag-latest") named_refs=$((named_refs + 1)) ;;
-                *)
-                  echo "refusing to touch $arg in a rehearsal" >&2
-                  exit 1
-                  ;;
-              esac
-            done
-            if ((named_refs == 0)); then
-              echo "refusing a rehearsal $1 that names no rehearsal ref" >&2
+            if ! is_allowed_ref "$arg"; then
+              echo "refusing $arg" >&2
               exit 1
             fi
+            named_refs=$((named_refs + 1))
+          done
+          if ((named_refs == 0)); then
+            echo "refusing a $1 that names no allowed ref" >&2
+            exit 1
           fi
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           exec git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" "$@"
@@ -110,131 +267,72 @@ jobs:
           chmod +x "$RUNNER_TEMP/bin/git-with-token"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
-      # A rehearsal stands in a throwaway version, branch and tags for the real ones.
-      - name: Compute version, date and refs
-        id: meta
-        run: |
-          if [[ $REHEARSE == true ]]; then
-            version="0.0.0-rehearsal.$GITHUB_RUN_ID"
-            bump_ref="refs/heads/release-rehearsal/$GITHUB_RUN_ID"
-            tag="rehearsal-$GITHUB_RUN_ID"
-            latest_tag="rehearsal-$GITHUB_RUN_ID-latest"
-          else
-            version="${GITHUB_REF_NAME#v}"
-            bump_ref=master
-            tag="$GITHUB_REF_NAME"
-            latest_tag=latest
-          fi
-          {
-            echo "version=$version"
-            echo "date=$(date -u +%Y-%m-%d)"
-            echo "bump_ref=$bump_ref"
-            echo "tag=$tag"
-            echo "latest_tag=$latest_tag"
-          } >> "$GITHUB_OUTPUT"
+      - name: Download the binary and notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
 
-      - name: Stamp the version into every manifest
-        env:
-          VERSION: ${{ steps.meta.outputs.version }}
-        run: |
-          # Cargo.toml: the package version is the first `version = "..."` line.
-          sed -i -E "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
-          # Cargo.lock: the version line directly under this crate's package entry.
-          sed -i "/^name = \"pinboard-sync\"/{n;s/^version = .*/version = \"$VERSION\"/}" Cargo.lock
-
-      - name: Roll over the changelog
-        env:
-          VERSION: ${{ steps.meta.outputs.version }}
-          DATE: ${{ steps.meta.outputs.date }}
-        run: |
-          # Promote [Unreleased] to the new version and open a fresh, empty one.
-          sed -i "s/^## \[Unreleased\]$/## [Unreleased]\n\n## [$VERSION] - $DATE/" CHANGELOG.md
-          # Point the Unreleased compare link at the new tag, and add the release link.
-          sed -i -E "s|^\[Unreleased\]: .*|[Unreleased]: https://github.com/${GITHUB_REPOSITORY}/compare/v$VERSION...HEAD|" CHANGELOG.md
-          sed -i "/^\[Unreleased\]: /a [$VERSION]: https://github.com/${GITHUB_REPOSITORY}/releases/tag/v$VERSION" CHANGELOG.md
-
-      - name: Extract release notes for this version
-        env:
-          VERSION: ${{ steps.meta.outputs.version }}
-        run: |
-          # Everything between this version's heading and the next section: either
-          # the following `## [` heading or the link-reference block at the bottom
-          # (`[Unreleased]: ...`), whichever comes first.
-          awk -v v="$VERSION" '
-            $0 ~ "^## \\[" v "\\]" { grab = 1; next }
-            grab && (/^## \[/ || /^\[[^][]+\]: /) { exit }
-            grab { print }
-          ' CHANGELOG.md | sed -e '1{/^$/d}' -e ':a' -e '/^\n*$/{$d;N;ba}' > RELEASE_NOTES.md
-          echo "----- release notes -----"
-          cat RELEASE_NOTES.md
-
-      # Commit before building, so the released binary is built from exactly the
-      # commit pushed to master.
-      - name: Commit the version bump and changelog
-        env:
-          VERSION: ${{ steps.meta.outputs.version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock CHANGELOG.md
-          git commit -m "chore: release v$VERSION"
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-
-      # Builds the binary and runs the (sandbox-safe) test suite via doCheck.
-      - name: Build the release binary
-        run: nix build .#default --print-build-logs
-
-      - name: Stage the binary artifact
-        env:
-          VERSION: ${{ steps.meta.outputs.version }}
-        run: |
-          mkdir -p dist
-          cp result/bin/pinboard-sync "dist/pinboard-sync-v$VERSION-x86_64-linux"
-
-      # Only after a green build do we publish anything externally.
-      - name: Push the bump to master (in a rehearsal, its own branch)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUMP_REF: ${{ steps.meta.outputs.bump_ref }}
-        run: git-with-token push origin "HEAD:$BUMP_REF"
-
-      # Point both the version tag and the rolling `latest` tag at the stamped release
-      # commit (the bump pushed above), so a consumer tracking `latest` resolves to a
-      # commit that also carries its `vX.Y.Z` tag. Force-pushed with GITHUB_TOKEN, which
-      # can't trigger another workflow run, so re-pointing the `vX.Y.Z` tag here
-      # (it does match the release trigger) does not re-run this workflow.
-      - name: Point the version tag and `latest` at this release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.meta.outputs.tag }}
-          LATEST_TAG: ${{ steps.meta.outputs.latest_tag }}
-        run: |
-          git tag -f "$TAG"
-          git tag -f "$LATEST_TAG"
-          git-with-token push --force origin "refs/tags/$TAG" "refs/tags/$LATEST_TAG"
-
+      # --verify-tag refuses to create the tag, so the release can only attach to the one
+      # the build job verified. A re-run after a later step failed finds the release
+      # already there and only re-uploads the binary.
       - name: Create the GitHub release
         if: env.REHEARSE != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --notes-file RELEASE_NOTES.md \
-            dist/*
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG exists; re-uploading its binary"
+            gh release upload "$TAG" --clobber dist/*
+          else
+            gh release create "$TAG" \
+              --verify-tag \
+              --title "$TAG" \
+              --notes-file RELEASE_NOTES.md \
+              dist/*
+          fi
 
-      # Named from the run id rather than the meta step's outputs, so a run that failed
-      # before (or in) that step still cleans up. Every push needs the helper, so with no
-      # helper there is nothing to delete.
+      # Moved only after the release exists, so a consumer tracking `latest` never
+      # resolves to an unreleased commit, and only forward, so releasing an older commit
+      # (or re-running an older release) leaves it alone. The lease holds each tag to
+      # what the checkout fetched, so a concurrent release that moved `latest` since
+      # makes this push fail rather than move it back. A rehearsal checks against the
+      # real `latest` too, failing rather than skipping so it never passes untested, and
+      # pushes its stand-in version tag here, in place of the one a release starts from.
+      - name: Point `latest` at this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git rev-parse --quiet --verify refs/tags/latest > /dev/null &&
+            ! git merge-base --is-ancestor refs/tags/latest "$COMMIT"; then
+            if [[ $REHEARSE != true ]] && git merge-base --is-ancestor "$COMMIT" refs/tags/latest; then
+              echo "::warning::latest is already ahead of $TAG ($COMMIT); leaving it there"
+              exit 0
+            fi
+            echo "::error::latest is not an ancestor of $TAG ($COMMIT); move it by hand"
+            exit 1
+          fi
+          tags=("$LATEST_TAG")
+          if [[ $REHEARSE == true ]]; then
+            tags+=("$TAG")
+          fi
+          leases=()
+          refs=()
+          for tag in "${tags[@]}"; do
+            old=$(git rev-parse --quiet --verify "refs/tags/$tag" || true)
+            git tag -f "$tag" "$COMMIT"
+            leases+=("--force-with-lease=refs/tags/$tag:$old")
+            refs+=("refs/tags/$tag")
+          done
+          git-with-token push "${leases[@]}" origin "${refs[@]}"
+
+      # Named from the run id, as the helper's own allowlist is, rather than from the
+      # build job's outputs. Every push needs the helper, so without one nothing was sent.
       - name: Delete the rehearsal refs
         if: always() && env.REHEARSE == 'true' && steps.token-helper.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           refs=(
-            "refs/heads/release-rehearsal/$GITHUB_RUN_ID"
             "refs/tags/rehearsal-$GITHUB_RUN_ID"
             "refs/tags/rehearsal-$GITHUB_RUN_ID-latest"
           )

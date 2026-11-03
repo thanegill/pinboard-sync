@@ -37,7 +37,7 @@ tower = { version = "0.5", default-features = false, features = ["retry", "util"
 toml = "1.1"
 url = "2"
 dotenvy = "0.15"
-clap_mangen = "0.2"
+clap_mangen = "0.3"
 log = "0.4"
 env_logger = { version = "0.11", default-features = false }
 # Source post date -> Pinboard `dt`: epoch <-> RFC3339 conversion + `now`.

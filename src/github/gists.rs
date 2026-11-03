@@ -255,12 +255,18 @@ pub(crate) fn gist_note<'a>(
     parts.into_iter().flatten().collect::<Vec<_>>().join("\n\n")
 }
 
-/// The id of a gist-root URL: `gist.github.com/<id>` or `gist.github.com/<owner>/<id>`,
-/// ignoring empty segments and every trailing `.git` in any case, as for a repo name.
-/// `None` for anything else: a deep link (a revision, `/raw`), an owner's gist list
-/// (`gist.github.com/<owner>`), or another host.
+/// Whether `url` is on the gist host, bare or with the `www.` alias that `github.com` has.
+pub(crate) fn is_gist_host(url: &Url) -> bool {
+    url.host_str()
+        .is_some_and(|host| host.strip_prefix("www.").unwrap_or(host) == GIST_HOST)
+}
+
+/// The id of a gist-root URL: `gist.github.com/<id>` or `gist.github.com/<owner>/<id>`, on
+/// either [`is_gist_host`] host, ignoring empty segments and every trailing `.git` in any
+/// case, as for a repo name. `None` for anything else: a deep link (a revision, `/raw`),
+/// an owner's gist list (`gist.github.com/<owner>`), or another host.
 pub(crate) fn gist_root_id(url: &Url) -> Option<String> {
-    if url.host_str() != Some(GIST_HOST) {
+    if !is_gist_host(url) {
         return None;
     }
     let segments: Vec<&str> = url.path_segments()?.filter(|s| !s.is_empty()).collect();

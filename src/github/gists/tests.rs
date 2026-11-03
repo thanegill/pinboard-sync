@@ -186,6 +186,12 @@ fn gist_root_id_finds_the_id_with_or_without_an_owner() {
         Some("0123456789abcdef0123456789abcdef".into())
     );
     assert_eq!(root("https://gist.github.com/42"), Some("42".into()));
+    for www in [
+        format!("https://www.gist.github.com/{ID}.git"),
+        format!("https://WWW.Gist.GitHub.com/Someone/{ID}"),
+    ] {
+        assert_eq!(root(&www), Some(ID.into()), "{www}");
+    }
     for not_a_root in [
         "https://gist.github.com/someone".to_string(),
         "https://gist.github.com/deadbeef".to_string(),
@@ -194,6 +200,8 @@ fn gist_root_id_finds_the_id_with_or_without_an_owner() {
         format!("https://gist.githubusercontent.com/someone/{ID}/raw"),
         format!("https://github.com/someone/{ID}"),
         "https://gist.github.com/".to_string(),
+        format!("https://www.www.gist.github.com/{ID}"),
+        format!("https://api.gist.github.com/{ID}"),
     ] {
         assert_eq!(root(&not_a_root), None, "{not_a_root}");
     }
@@ -221,14 +229,19 @@ const LOGIN: &str = "[A-Za-z0-9]([A-Za-z0-9-]{0,10}[A-Za-z0-9])?";
 proptest! {
     #![proptest_config(crate::test_support::proptest_config())]
 
-    /// The stored owner may differ from the API's, as after a rename, and the id may carry
-    /// `.git` suffixes in any case: the key ignores both.
+    /// The stored owner may differ from the API's, as after a rename, the host may carry
+    /// `www.`, and the id `.git` suffixes in any case: the key ignores all three.
     #[test]
     fn a_gist_root_keys_the_same_once_canonicalized(
         id in gist_id(),
         owner in proptest::option::of(LOGIN),
         stored_owner in proptest::option::of(LOGIN),
         scheme in prop::sample::select(vec!["http", "https"]),
+        host in prop::sample::select(vec![
+            GIST_HOST,
+            "www.gist.github.com",
+            "WWW.Gist.GitHub.com",
+        ]),
         git_suffix in "(\\.[gG][iI][tT]){0,2}",
         suffix in prop::sample::select(vec!["", "/", "?file=a.rs", "#file-a-rs"]),
     ) {
@@ -236,7 +249,7 @@ proptest! {
             Some(stored_owner) => format!("{stored_owner}/{id}"),
             None => id.clone(),
         };
-        let stored = url(&format!("{scheme}://{GIST_HOST}/{path}{git_suffix}{suffix}"));
+        let stored = url(&format!("{scheme}://{host}/{path}{git_suffix}{suffix}"));
         let id = id.to_ascii_lowercase();
         prop_assert_eq!(gist_root_id(&stored), Some(id.clone()), "{}", stored);
         let canonical = gist(json!({

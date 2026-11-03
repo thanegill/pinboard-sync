@@ -300,9 +300,6 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         outcome,
     };
 
-    // A group whose target is occupied won't move, so its *own* URL stays occupied too --
-    // and a second group heading there would replace the record the refusal just saved.
-    // Settled before any write so the outcome doesn't depend on group order.
     propagate_refusals(&group_order, &groups, &mut untouchable);
 
     for key in &group_order {
@@ -310,10 +307,9 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // Each plan held back from this group is one write abandoned, unless the group is
         // refused whole: then they are part of the one write the refusal abandons.
         let held_here = held_back.get(*key).copied().unwrap_or(0);
-        // The hold-backs can empty a group outright, when every plan heading here was held
-        // back. There is nothing left to refuse *or* write, so this comes before the
-        // untouchable check, and reporting the group too would count those plans twice.
-        // It is also what guarantees `write_merge` a member to lead.
+        // A group every plan was held back from has nothing left to refuse or write, and
+        // refusing it too would count those plans twice. This is also what guarantees
+        // `write_merge` a member to lead.
         if group.is_empty() {
             writer.outcome.refused += held_here;
             continue;
@@ -326,9 +322,8 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             continue;
         }
         writer.outcome.refused += held_here;
-        // Pinboard keys on URL, so the end state at this target has to be one record.
-        // Anything already stored there joins the group rather than being replaced by it;
-        // which member leads that merge is settled in `write_merge`.
+        // Pinboard keys on URL, so anything already stored at the target joins the group
+        // rather than being replaced by it.
         let resident = residents.get(key);
         let stranded = match (resident, &group[..]) {
             (None, [Member { stored, planned }]) => writer.write_single(stored, planned).await,
@@ -431,9 +426,6 @@ async fn plan_all<'b, C: CleanupPass>(
             }
         };
 
-        // Resolve the final creation time here, at the write boundary: the candidate
-        // source time when dating is on and within the cap, else "now"/preserve per the
-        // policy. Comparable by instant to the stored `timestamp`.
         planned.timestamp = dates.cleanup_date(planned.timestamp, now, bookmark.timestamp);
 
         // Privacy flags are never re-shaped by cleanup: take them from the stored
@@ -514,10 +506,6 @@ fn residents_of<'p, S: AccountState>(
     group_order: &[&'p Url],
     untouchable: &HashMap<Url, Refusal>,
 ) -> HashMap<&'p Url, Bookmark> {
-    // The stored URLs of the bookmarks this pass actually planned. They are excluded from
-    // residency: a bookmark that plans to stay at (or move within) its own URL would
-    // otherwise find itself sitting there and merge its stored record back into its own
-    // plan, undoing the very changes the plan computed.
     let planned_originals: HashSet<&Url> = pairs.iter().map(|pair| &pair.stored.url).collect();
     group_order
         .iter()
@@ -1159,11 +1147,7 @@ fn merge_members<'p, S: BookmarkStore>(
     // stored here. Whichever it is leads the merge, so its title and note are the base the
     // others extend. For an incumbent that is its *plan*, not its stored record -- the plan
     // is this pass's intended end-state for it, and merging its stored record back in would
-    // resurrect exactly what the plan removed.
-    // A member is only lifted out of the tail when it is itself the survivor, so the two
-    // can't disagree about which index to drop -- the alternative, filtering by `incumbent`
-    // independently of which branch `survivor` took, would silently lose a member if both
-    // were ever `Some`.
+    // resurrect exactly what the plan removed. Only the survivor is lifted out of the rest.
     let (survivor, lifted) = match resident {
         Some(resident) => (Some(resident), None),
         None => match incumbent_of(members, key) {
@@ -1189,12 +1173,11 @@ fn merge_members<'p, S: BookmarkStore>(
     let mut merged = merge_bookmarks(lead, &rest);
     if let Some(survivor) = survivor {
         // The survivor's own record-level state survives the merge's field rules: it is the
-        // bookmark that stays here, and cleanup never re-shapes those (see `write_single`).
-        // Its date in particular must not shift to a mover's under `merge_bookmarks`'s
+        // bookmark that stays here, and cleanup never re-shapes those (see `plan_all`). Its
+        // date in particular must not shift to a mover's under `merge_bookmarks`'s
         // earliest-wins rule, which is meant for two plans -- with dating off, nothing may
         // re-date a bookmark at all. `public` needs no such restore: a group only reaches
-        // this point when every member already matches it, so the all()-rule cannot change
-        // it.
+        // this point when every member matches it, so the all()-rule can't change it.
         merged.read_later = survivor.read_later;
         // `None` means the stored date was absent or wouldn't parse, and writing it back
         // omits `dt` entirely -- under `replace=yes` Pinboard then re-dates the record to
@@ -1221,11 +1204,11 @@ fn merge_members<'p, S: BookmarkStore>(
     }
 }
 
-/// `planned` as `store` would keep it, with `stored`'s note in place of its own when the
-/// store would cut the plan's note down to part of the stored one. Writing that cut would
-/// only shorten the stored note and keep none of the plan's text, as when a plan appends to
-/// a whole note just under the limit, so the rest of the plan goes over the stored note,
-/// itself fitted: kept whole when it still fits beside the plan's other fields.
+/// `planned` as `store` would keep it. When the store would cut the plan's note down to
+/// part of the stored one, as when a plan appends to a whole note just under the limit,
+/// writing it would only shorten the stored note and keep none of the plan's text. Then the
+/// rest of the plan goes over the stored note instead, itself fitted, so it stays whole
+/// when it still fits beside the plan's other fields.
 fn fit_plan<S: BookmarkStore>(
     store: &S,
     stored: Option<&Bookmark>,

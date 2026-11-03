@@ -60,6 +60,10 @@ All notable changes to this project are documented here. The format is based on
   `; and for gists: ...`, as `cleanup hackernews` reports its two. A pass that halted, such
   as one with a dead token, leads instead.
 - `--help` puts every environment variable it names in backticks, as it did `RUST_LOG`.
+- A release is now a bump PR (`scripts/prepare-release.sh X.Y.Z`), then a `vX.Y.Z` tag on
+  its merged commit. The release workflow no longer pushes a commit to master. It refuses
+  a tag off master, one whose version Cargo.toml or Cargo.lock doesn't carry, or one whose
+  changelog section is missing or empty, and moves `latest` only forward.
 
 ### Deprecated
 

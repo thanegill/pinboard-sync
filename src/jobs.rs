@@ -14,7 +14,7 @@ use log::{debug, error, info};
 use url::Url;
 
 use crate::backup::{self, BackupSource};
-use crate::bookmark::Bookmark;
+use crate::bookmark::{Bookmark, WriteMode};
 use crate::cli::SyncFlags;
 use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccount, SyncLimit};
 use crate::github::{GitHubClient, GitHubConfig};
@@ -181,7 +181,8 @@ pub struct SyncOverrides {
     pub hackernews_username: Option<String>,
     pub on_auth_failure: Option<String>,
     pub flags: SyncFlags,
-    pub dry_run: bool,
+    /// `--dry-run` after the source subcommand.
+    pub mode: WriteMode,
 }
 
 impl SyncOverrides {

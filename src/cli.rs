@@ -602,7 +602,7 @@ impl From<RedditSyncArgs> for SyncOverrides {
             reddit_cookie: args.reddit_cookie,
             on_auth_failure: args.on_auth_failure,
             flags: args.flags,
-            dry_run: args.dry_run,
+            mode: args.dry_run.into(),
             ..SyncOverrides::default()
         }
     }
@@ -615,7 +615,7 @@ impl From<GitHubSyncArgs> for SyncOverrides {
             github_token: args.github_token,
             on_auth_failure: args.on_auth_failure,
             flags: args.flags,
-            dry_run: args.dry_run,
+            mode: args.dry_run.into(),
             ..SyncOverrides::default()
         }
     }
@@ -627,7 +627,7 @@ impl From<HackerNewsSyncArgs> for SyncOverrides {
         SyncOverrides {
             hackernews_username: args.username,
             flags: args.flags,
-            dry_run: args.dry_run,
+            mode: args.dry_run.into(),
             ..SyncOverrides::default()
         }
     }

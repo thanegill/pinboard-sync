@@ -31,7 +31,7 @@ use log::{debug, error, info, warn};
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
+use crate::bookmark::{warn_note_cut, AccountState, Bookmark, BookmarkStore, WriteMode};
 use crate::preview;
 use crate::source::{Halt, SourceError};
 use crate::stdout::outln;
@@ -96,9 +96,9 @@ pub trait CleanupPass {
 #[must_use]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PassOutcome {
-    /// Bookmarks written, or under `dry_run` that would be.
+    /// Bookmarks written, or in a dry run that would be.
     pub changed: usize,
-    /// Under `dry_run`, the per-bookmark preview lines as printed (not the closing tally),
+    /// In a dry run, the per-bookmark preview lines as printed (not the closing tally),
     /// kept so tests can assert on what an operator reads before a real run.
     pub preview: Vec<String>,
     /// Rewrites this pass declined to make: a target that must not be written at all (see
@@ -232,10 +232,11 @@ pub fn two_pass_verdict(
     })
 }
 
-/// Run `pass` over `bookmarks` (already filtered to the source), as the module doc
-/// describes; under the store's dry-run, print what would change instead. `noun` names the
-/// source in the scan log. Never fails outright: every failure, a dead credential included,
-/// is tallied into the returned [`PassOutcome`].
+/// Run `pass` over `bookmarks` as the module doc describes; under the store's dry-run,
+/// print what would change instead. `bookmarks` is already filtered to the source and holds
+/// each URL once, as [`AccountState::snapshot`] returns them. `noun` names the source in
+/// the scan log. Never fails outright: every failure, a dead credential included, is
+/// tallied into the returned [`PassOutcome`].
 ///
 /// Residency is asked of `store`, whose view covers the *whole* account and reflects what
 /// earlier passes of this run wrote: a plan can target a URL outside its own filter (an HN
@@ -247,9 +248,8 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     dates: DateOpts,
     pass: &C,
 ) -> PassOutcome {
-    let dry_run = store.dry_run();
-    // Dry-run output is consistently prefixed with `[dry-run]`.
-    let dry_prefix = if dry_run { "[dry-run] " } else { "" };
+    let mode = store.write_mode();
+    let dry_prefix = if mode.is_dry_run() { "[dry-run] " } else { "" };
     info!(
         "{dry_prefix}scanning {} {noun} bookmark(s)",
         bookmarks.len()
@@ -268,7 +268,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         &mut groups,
         &residents,
         &mut untouchable,
-        dry_run,
+        mode,
         &mut outcome,
     );
     for (key, count) in hold_back_cut_notes(
@@ -277,7 +277,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         &mut groups,
         &residents,
         &mut untouchable,
-        dry_run,
+        mode,
         &mut outcome,
     ) {
         *held_back.entry(key).or_default() += count;
@@ -293,10 +293,13 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         .filter(|key| !groups[*key].is_empty())
         .copied()
         .collect();
+    let mut writer = GroupWriter {
+        store,
+        targets,
+        mode,
+        outcome,
+    };
 
-    // A group whose target is occupied won't move, so its *own* URL stays occupied too --
-    // and a second group heading there would replace the record the refusal just saved.
-    // Settled before any write so the outcome doesn't depend on group order.
     propagate_refusals(&group_order, &groups, &mut untouchable);
 
     for key in &group_order {
@@ -304,42 +307,27 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // Each plan held back from this group is one write abandoned, unless the group is
         // refused whole: then they are part of the one write the refusal abandons.
         let held_here = held_back.get(*key).copied().unwrap_or(0);
-        // The hold-backs can empty a group outright, when every plan heading here was held
-        // back. There is nothing left to refuse *or* write, so this comes before the
-        // untouchable check, and reporting the group too would count those plans twice.
-        // It is also what guarantees `write_merge` a member to lead.
+        // A group every plan was held back from has nothing left to refuse or write, and
+        // refusing it too would count those plans twice. This is also what guarantees
+        // `write_merge` a member to lead.
         if group.is_empty() {
-            outcome.refused += held_here;
+            writer.outcome.refused += held_here;
             continue;
         }
         // The target must not be written, so leave the rewriting bookmark(s) at their old
         // URLs. Separate from the `targets` delete-guard -- that protects a URL some *plan*
         // writes to, this one a URL no plan may land on.
         if let Some(reason) = untouchable.get(key) {
-            refuse_group(key, *reason, dry_run, &mut outcome);
+            writer.refuse_group(key, *reason);
             continue;
         }
-        outcome.refused += held_here;
-        // Pinboard keys on URL, so the end state at this target has to be one record.
-        // Anything already stored there joins the group rather than being replaced by it;
-        // which member leads that merge is settled in `write_merge`.
+        writer.outcome.refused += held_here;
+        // Pinboard keys on URL, so anything already stored at the target joins the group
+        // rather than being replaced by it.
         let resident = residents.get(key);
         let stranded = match (resident, &group[..]) {
-            (None, [Member { stored, planned }]) => {
-                write_single(store, stored, planned, &targets, dry_run, &mut outcome).await
-            }
-            _ => {
-                write_merge(
-                    store,
-                    key,
-                    &group,
-                    resident,
-                    &targets,
-                    dry_run,
-                    &mut outcome,
-                )
-                .await
-            }
+            (None, [Member { stored, planned }]) => writer.write_single(stored, planned).await,
+            _ => writer.write_merge(key, &group, resident).await,
         };
         // A failed write left its bookmarks where they were, so a later group heading for
         // one of their URLs would overwrite it. Protect them and re-close the refusal set,
@@ -353,7 +341,8 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         }
     }
 
-    if dry_run {
+    let outcome = writer.outcome;
+    if mode.is_dry_run() {
         outln!("{dry_prefix}{} bookmark(s) would change.", outcome.changed);
     } else {
         info!("done: updated {} bookmark(s)", outcome.changed);
@@ -375,10 +364,16 @@ struct Member<'p> {
     planned: &'p Bookmark,
 }
 
+/// A bookmark this pass planned: its stored record, and the end-state planned for it.
+struct PlannedPair<'b> {
+    stored: &'b Bookmark,
+    planned: Bookmark,
+}
+
 /// Phase 1's result: each planned bookmark beside its stored record, and the URLs whose
 /// record this pass could not establish.
 struct Planned<'b> {
-    pairs: Vec<(&'b Bookmark, Bookmark)>,
+    pairs: Vec<PlannedPair<'b>>,
     /// A lookup failed there, or a halt stopped the pass short of it. Nothing may be
     /// written there at all. Owned rather than borrowed because the fixpoint grows it from
     /// the group keys.
@@ -394,7 +389,7 @@ async fn plan_all<'b, C: CleanupPass>(
     outcome: &mut PassOutcome,
 ) -> Planned<'b> {
     let now = OffsetDateTime::now_utc().truncate_to_second();
-    let mut pairs: Vec<(&Bookmark, Bookmark)> = Vec::new();
+    let mut pairs: Vec<PlannedPair<'_>> = Vec::new();
     let mut untouchable: HashMap<Url, Refusal> = HashMap::new();
     for (index, bookmark) in bookmarks.iter().enumerate() {
         let mut planned = match pass.plan(bookmark).await {
@@ -431,9 +426,6 @@ async fn plan_all<'b, C: CleanupPass>(
             }
         };
 
-        // Resolve the final creation time here, at the write boundary: the candidate
-        // source time when dating is on and within the cap, else "now"/preserve per the
-        // policy. Comparable by instant to the stored `timestamp`.
         planned.timestamp = dates.cleanup_date(planned.timestamp, now, bookmark.timestamp);
 
         // Privacy flags are never re-shaped by cleanup: take them from the stored
@@ -441,7 +433,10 @@ async fn plan_all<'b, C: CleanupPass>(
         planned.public = bookmark.public;
         planned.read_later = bookmark.read_later;
 
-        pairs.push((bookmark, planned));
+        pairs.push(PlannedPair {
+            stored: bookmark,
+            planned,
+        });
     }
     Planned { pairs, untouchable }
 }
@@ -449,11 +444,11 @@ async fn plan_all<'b, C: CleanupPass>(
 /// The plans grouped by target URL, with the groups' first-appearance order (and snapshot
 /// order within each group).
 fn group_by_target<'p>(
-    pairs: &'p [(&'p Bookmark, Bookmark)],
+    pairs: &'p [PlannedPair<'p>],
 ) -> (Vec<&'p Url>, HashMap<&'p Url, Vec<Member<'p>>>) {
     let mut group_order: Vec<&Url> = Vec::new();
     let mut groups: HashMap<&Url, Vec<Member<'_>>> = HashMap::new();
-    for (stored, planned) in pairs {
+    for PlannedPair { stored, planned } in pairs {
         let key = &planned.url;
         groups
             .entry(key)
@@ -507,16 +502,11 @@ fn write_order<'p>(
 /// read here.
 fn residents_of<'p, S: AccountState>(
     store: &S,
-    pairs: &[(&Bookmark, Bookmark)],
+    pairs: &[PlannedPair<'_>],
     group_order: &[&'p Url],
     untouchable: &HashMap<Url, Refusal>,
 ) -> HashMap<&'p Url, Bookmark> {
-    // The stored URLs of the bookmarks this pass actually planned. They are excluded from
-    // residency: a bookmark that plans to stay at (or move within) its own URL would
-    // otherwise find itself sitting there and merge its stored record back into its own
-    // plan, undoing the very changes the plan computed.
-    let planned_originals: HashSet<&Url> =
-        pairs.iter().map(|(original, _)| &original.url).collect();
+    let planned_originals: HashSet<&Url> = pairs.iter().map(|pair| &pair.stored.url).collect();
     group_order
         .iter()
         .filter(|key| !untouchable.contains_key(**key) && !planned_originals.contains(*key))
@@ -554,7 +544,7 @@ fn hold_back_visibility_mismatches<'p>(
     groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
     residents: &HashMap<&'p Url, Bookmark>,
     untouchable: &mut HashMap<Url, Refusal>,
-    dry_run: bool,
+    mode: WriteMode,
     outcome: &mut PassOutcome,
 ) -> HashMap<Url, usize> {
     let mut held_from: HashMap<Url, usize> = HashMap::new();
@@ -620,7 +610,7 @@ fn hold_back_visibility_mismatches<'p>(
                  settle it"
             ),
         }
-        if dry_run {
+        if mode.is_dry_run() {
             let reason = match staying {
                 Some(staying) => {
                     format!("would merge into {target}, which is {}", describe(staying))
@@ -664,7 +654,7 @@ fn hold_back_cut_notes<'p, S: BookmarkStore>(
     groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
     residents: &HashMap<&'p Url, Bookmark>,
     untouchable: &mut HashMap<Url, Refusal>,
-    dry_run: bool,
+    mode: WriteMode,
     outcome: &mut PassOutcome,
 ) -> HashMap<Url, usize> {
     let mut held_from: HashMap<Url, usize> = HashMap::new();
@@ -707,7 +697,7 @@ fn hold_back_cut_notes<'p, S: BookmarkStore>(
             merging.pop();
             *held_from.entry((*key).clone()).or_default() += 1;
             warn!("not merging {} into {key}: {why}", member.stored.url);
-            if dry_run {
+            if mode.is_dry_run() {
                 emit_preview(
                     &mut outcome.preview,
                     &member.stored.url,
@@ -740,193 +730,192 @@ fn kept_text<S: BookmarkStore>(store: &S, note: &str) -> String {
     store.kept_of_cut(note).unwrap_or(note).to_string()
 }
 
-/// Count, log and preview a group whose target must not be written at all.
-fn refuse_group(key: &Url, reason: Refusal, dry_run: bool, outcome: &mut PassOutcome) {
-    outcome.refused += 1;
-    warn!("skipping cleanup write to {key}: {reason}");
-    // Also on stdout: a dry run is a preview, and work the real run would refuse is part
-    // of what the operator is previewing.
-    if dry_run {
-        emit_preview(
-            &mut outcome.preview,
-            key,
-            [preview::detail(format!("(refused: {reason})"))],
-        );
-    }
+/// The writing phase's shared state: the store, the URLs planned writes still own, the
+/// write mode and the tally the writes go into.
+struct GroupWriter<'s, 'p, S> {
+    store: &'s S,
+    /// A rewrite's old URL is never deleted when it is one of these, because that write's
+    /// record will live there.
+    targets: HashSet<&'p Url>,
+    mode: WriteMode,
+    outcome: PassOutcome,
 }
 
-/// Write a lone plan with nothing stored at its target: skip it when it would store nothing
-/// new ([`stores_nothing_new`]), else rewrite it (deleting the old URL when it moved and no
-/// other plan targets it) and tally the result. Returns the stored URLs a failed write left
-/// occupied, for the caller to protect: empty unless the write failed.
-async fn write_single<S: BookmarkStore>(
-    store: &S,
-    original: &Bookmark,
-    planned: &Bookmark,
-    targets: &HashSet<&Url>,
-    dry_run: bool,
-    outcome: &mut PassOutcome,
-) -> Vec<Url> {
-    let fitted = fit_plan(store, Some(original), planned);
-    if stores_nothing_new(store, original, &fitted) {
-        return Vec::new();
-    }
-    let changes = original.diff(&fitted);
-    warn_if_cut(planned, &fitted);
-    let planned = &fitted;
-    // Delete the old URL only when it changed and no other planned write targets it;
-    // otherwise that write's record lives there and must not be removed.
-    let delete_old = planned.url != original.url && !targets.contains(&original.url);
-
-    if dry_run {
-        let lines = changes
-            .iter()
-            .map(|(label, value)| preview::field(label, value));
-        emit_preview(&mut outcome.preview, &original.url, lines);
-    }
-
-    // Always through the store, dry run included: it is what withholds the network, and it
-    // is also what advances the view a later pass previews from. `planned` carries the
-    // stored `public`/`read_later` and the driver-resolved `timestamp`, so it's the
-    // complete write model.
-    // Log and skip a single failed update so the rest of the pass still runs.
-    let write = store
-        .apply_update(planned, delete_old.then_some(&original.url))
-        .await;
-    match write.error {
-        None => {
-            outcome.changed += 1;
-            debug!(
-                "updated {} -> {} [{}]",
-                original.url,
-                planned.url,
-                planned.tags.joined()
+impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
+    /// Count, log and preview a group whose target must not be written at all.
+    fn refuse_group(&mut self, key: &Url, reason: Refusal) {
+        self.outcome.refused += 1;
+        warn!("skipping cleanup write to {key}: {reason}");
+        // Also on stdout: a dry run is a preview, and work the real run would refuse is
+        // part of what the operator is previewing.
+        if self.mode.is_dry_run() {
+            emit_preview(
+                &mut self.outcome.preview,
+                key,
+                [preview::detail(format!("(refused: {reason})"))],
             );
-            Vec::new()
-        }
-        // The rewrite can half-apply just as a merge can: the record landed at the new URL
-        // and only the old-URL delete failed. Count the change that really happened, and
-        // don't name the old URL as the thing that went wrong.
-        Some(e) if write.wrote => {
-            outcome.changed += 1;
-            outcome.write_failed += 1;
-            error!("rewrote {} to {} but: {e:#}", original.url, planned.url);
-            Vec::new()
-        }
-        // The move didn't happen, so the record is still at its old URL.
-        Some(e) => {
-            outcome.write_failed += 1;
-            error!("rewriting bookmark {}: {e:#}", original.url);
-            vec![original.url.clone()]
-        }
-    }
-}
-
-/// Field-merge a group -- with the record staying at its target, if any -- into one record,
-/// write it, and delete the absorbed URLs, so a later run sees a single bookmark at the
-/// target and converges. When the merge would store nothing new over the record stored
-/// there ([`stores_nothing_new`]), only the absorbed URLs are deleted, and with none the
-/// group is skipped. Returns the stored URLs a failed write left occupied, for the caller
-/// to protect: empty unless the write failed.
-async fn write_merge<S: BookmarkStore>(
-    store: &S,
-    key: &Url,
-    group: &[Member<'_>],
-    resident: Option<&Bookmark>,
-    targets: &HashSet<&Url>,
-    dry_run: bool,
-    outcome: &mut PassOutcome,
-) -> Vec<Url> {
-    let Merge {
-        merged,
-        fitted,
-        rewrite,
-        ..
-    } = merge_members(store, key, group, resident);
-    let target = &fitted.url;
-
-    // Absorbed URLs to delete: an original that is neither the target nor another planned
-    // write's target (deleting the latter would clobber that write's record).
-    let mut old_urls: Vec<&Url> = Vec::new();
-    for Member { stored, .. } in group {
-        if stored.url != *target
-            && !targets.contains(&stored.url)
-            && !old_urls.contains(&&stored.url)
-        {
-            old_urls.push(&stored.url);
         }
     }
 
-    // Nothing to do when the merge reproduces what is already stored at the target and
-    // there is nothing to absorb, or a converged state would rewrite itself every run.
-    if !rewrite && old_urls.is_empty() {
-        return Vec::new();
-    }
-    if rewrite {
-        warn_if_cut(&merged, &fitted);
-    }
-    let merged = &fitted;
+    /// Write a lone plan with nothing stored at its target: skip it when it would store
+    /// nothing new ([`stores_nothing_new`]), else rewrite it (deleting the old URL when it
+    /// moved and no other plan targets it) and tally the result. Returns the stored URLs a
+    /// failed write left occupied, for the caller to protect: empty unless it failed.
+    async fn write_single(&mut self, original: &Bookmark, planned: &Bookmark) -> Vec<Url> {
+        let fitted = fit_plan(self.store, Some(original), planned);
+        if stores_nothing_new(self.store, original, &fitted) {
+            return Vec::new();
+        }
+        let changes = original.diff(&fitted);
+        warn_if_cut(planned, &fitted);
+        let planned = &fitted;
+        // Delete the old URL only when it changed and no other planned write targets it;
+        // otherwise that write's record lives there and must not be removed.
+        let delete_old = planned.url != original.url && !self.targets.contains(&original.url);
 
-    if dry_run {
-        let mut lines = Vec::new();
+        if self.mode.is_dry_run() {
+            let lines = changes
+                .iter()
+                .map(|(label, value)| preview::field(label, value));
+            emit_preview(&mut self.outcome.preview, &original.url, lines);
+        }
+
+        // Always through the store, dry run included: it is what withholds the network, and
+        // it is also what advances the view a later pass previews from. `planned` carries
+        // the stored `public`/`read_later` and the driver-resolved `timestamp`, so it's the
+        // complete write model.
+        let write = self
+            .store
+            .apply_update(planned, delete_old.then_some(&original.url))
+            .await;
+        match write.error {
+            None => {
+                self.outcome.changed += 1;
+                debug!(
+                    "updated {} -> {} [{}]",
+                    original.url,
+                    planned.url,
+                    planned.tags.joined()
+                );
+                Vec::new()
+            }
+            // The rewrite can half-apply just as a merge can: the record landed at the new
+            // URL and only the old-URL delete failed. Count the change that really
+            // happened, and don't name the old URL as the thing that went wrong.
+            Some(e) if write.wrote => {
+                self.outcome.changed += 1;
+                self.outcome.write_failed += 1;
+                error!("rewrote {} to {} but: {e:#}", original.url, planned.url);
+                Vec::new()
+            }
+            // The move didn't happen, so the record is still at its old URL.
+            Some(e) => {
+                self.outcome.write_failed += 1;
+                error!("rewriting bookmark {}: {e:#}", original.url);
+                vec![original.url.clone()]
+            }
+        }
+    }
+
+    /// Field-merge a group -- with the record staying at its target, if any -- into one
+    /// record, write it, and delete the absorbed URLs, so a later run sees a single
+    /// bookmark at the target and converges. When the merge would store nothing new over
+    /// the record stored there ([`stores_nothing_new`]), only the absorbed URLs are
+    /// deleted, and with none the group is skipped. Returns the stored URLs a failed write
+    /// left occupied, for the caller to protect: empty unless the write failed.
+    async fn write_merge(
+        &mut self,
+        key: &Url,
+        group: &[Member<'_>],
+        resident: Option<&Bookmark>,
+    ) -> Vec<Url> {
+        let Merge {
+            merged,
+            fitted,
+            rewrite,
+            ..
+        } = merge_members(self.store, key, group, resident);
+        let target = &fitted.url;
+
+        // Absorbed URLs to delete: an original that is neither the target nor another
+        // planned write's target (deleting the latter would clobber that write's record).
+        let mut old_urls: Vec<&Url> = Vec::new();
+        for Member { stored, .. } in group {
+            if stored.url != *target && !self.targets.contains(&stored.url) {
+                old_urls.push(&stored.url);
+            }
+        }
+
+        // Nothing to do when the merge reproduces what is already stored at the target and
+        // there is nothing to absorb, or a converged state would rewrite itself every run.
+        if !rewrite && old_urls.is_empty() {
+            return Vec::new();
+        }
         if rewrite {
-            lines.extend([
-                preview::field("title", &merged.title),
-                preview::field("notes", preview::note(&merged.note)),
-                preview::field("tags", preview::tags(&merged.tags)),
-            ]);
-            if let Some(date) = merged.timestamp.and_then(crate::timefmt::to_pinboard_dt) {
-                lines.push(preview::field("date", date));
-            }
-            lines.push(preview::field("public", merged.public));
-            lines.push(preview::field("toread", merged.read_later));
+            warn_if_cut(&merged, &fitted);
         }
-        lines.extend(
-            old_urls
-                .iter()
-                .map(|old| preview::detail(format!("absorb {old}"))),
-        );
-        emit_preview(&mut outcome.preview, target, lines);
-    }
+        let merged = &fitted;
 
-    // Always through the store -- see `write_single`.
-    let write = if rewrite {
-        store.apply_merge(merged, &old_urls).await
-    } else {
-        store.apply_absorb(target, &old_urls).await
-    };
-    match write.error {
-        None => {
-            outcome.changed += 1;
-            let absorbed: Vec<String> = write.deleted.iter().map(|u| u.to_string()).collect();
-            let done = if rewrite { "merged" } else { "absorbed into" };
-            debug!("{done} {target} <- [{}]", absorbed.join(" "));
-            Vec::new()
-        }
-        // Half-applied: the merged record is at the target, written or already there, and
-        // an absorbed URL survived. Count the change when the account did change, as the
-        // rewrite path does, and name what is actually wrong, since "merging into
-        // {target} failed" would send the operator after a record that is fine.
-        Some(e) if write.wrote => {
-            if rewrite || !write.deleted.is_empty() {
-                outcome.changed += 1;
+        if self.mode.is_dry_run() {
+            let mut lines = Vec::new();
+            if rewrite {
+                lines.extend([
+                    preview::field("title", &merged.title),
+                    preview::field("notes", preview::note(&merged.note)),
+                    preview::field("tags", preview::tags(&merged.tags)),
+                ]);
+                if let Some(date) = merged.timestamp.and_then(crate::timefmt::to_pinboard_dt) {
+                    lines.push(preview::field("date", date));
+                }
+                lines.push(preview::field("public", merged.public));
+                lines.push(preview::field("toread", merged.read_later));
             }
-            outcome.write_failed += 1;
-            let stranded = old_urls.len() - write.deleted.len();
-            let done = if rewrite { "merged" } else { "absorbed into" };
-            error!("{done} {target} but {stranded} absorbed URL(s) remain: {e:#}");
-            Vec::new()
+            lines.extend(
+                old_urls
+                    .iter()
+                    .map(|old| preview::detail(format!("absorb {old}"))),
+            );
+            emit_preview(&mut self.outcome.preview, target, lines);
         }
-        // Nothing was written and nothing absorbed, so every member is still at its own
-        // URL. Every member, not `old_urls`: that list deliberately excludes URLs another
-        // group targets, which are precisely the ones in danger here.
-        Some(e) => {
-            outcome.write_failed += 1;
-            error!("merging into {target}: {e:#}");
-            group
-                .iter()
-                .map(|member| member.stored.url.clone())
-                .collect()
+
+        let done = if rewrite { "merged" } else { "absorbed into" };
+        // Always through the store -- see `write_single`.
+        let write = if rewrite {
+            self.store.apply_merge(merged, &old_urls).await
+        } else {
+            self.store.apply_absorb(target, &old_urls).await
+        };
+        match write.error {
+            None => {
+                self.outcome.changed += 1;
+                let absorbed: Vec<&str> = write.deleted.iter().map(Url::as_str).collect();
+                debug!("{done} {target} <- [{}]", absorbed.join(" "));
+                Vec::new()
+            }
+            // Half-applied: the merged record is at the target, written or already there,
+            // and an absorbed URL survived. Count the change when the account did change,
+            // as the rewrite path does, and name what is actually wrong, since "merging
+            // into {target} failed" would send the operator after a record that is fine.
+            Some(e) if write.wrote => {
+                if rewrite || !write.deleted.is_empty() {
+                    self.outcome.changed += 1;
+                }
+                self.outcome.write_failed += 1;
+                let stranded = old_urls.len() - write.deleted.len();
+                error!("{done} {target} but {stranded} absorbed URL(s) remain: {e:#}");
+                Vec::new()
+            }
+            // Nothing was written and nothing absorbed, so every member is still at its own
+            // URL. Every member, not `old_urls`: that list deliberately excludes URLs
+            // another group targets, which are precisely the ones in danger here.
+            Some(e) => {
+                self.outcome.write_failed += 1;
+                error!("merging into {target}: {e:#}");
+                group
+                    .iter()
+                    .map(|member| member.stored.url.clone())
+                    .collect()
+            }
         }
     }
 }
@@ -1158,11 +1147,7 @@ fn merge_members<'p, S: BookmarkStore>(
     // stored here. Whichever it is leads the merge, so its title and note are the base the
     // others extend. For an incumbent that is its *plan*, not its stored record -- the plan
     // is this pass's intended end-state for it, and merging its stored record back in would
-    // resurrect exactly what the plan removed.
-    // A member is only lifted out of the tail when it is itself the survivor, so the two
-    // can't disagree about which index to drop -- the alternative, filtering by `incumbent`
-    // independently of which branch `survivor` took, would silently lose a member if both
-    // were ever `Some`.
+    // resurrect exactly what the plan removed. Only the survivor is lifted out of the rest.
     let (survivor, lifted) = match resident {
         Some(resident) => (Some(resident), None),
         None => match incumbent_of(members, key) {
@@ -1188,12 +1173,11 @@ fn merge_members<'p, S: BookmarkStore>(
     let mut merged = merge_bookmarks(lead, &rest);
     if let Some(survivor) = survivor {
         // The survivor's own record-level state survives the merge's field rules: it is the
-        // bookmark that stays here, and cleanup never re-shapes those (see `write_single`).
-        // Its date in particular must not shift to a mover's under `merge_bookmarks`'s
+        // bookmark that stays here, and cleanup never re-shapes those (see `plan_all`). Its
+        // date in particular must not shift to a mover's under `merge_bookmarks`'s
         // earliest-wins rule, which is meant for two plans -- with dating off, nothing may
         // re-date a bookmark at all. `public` needs no such restore: a group only reaches
-        // this point when every member already matches it, so the all()-rule cannot change
-        // it.
+        // this point when every member matches it, so the all()-rule can't change it.
         merged.read_later = survivor.read_later;
         // `None` means the stored date was absent or wouldn't parse, and writing it back
         // omits `dt` entirely -- under `replace=yes` Pinboard then re-dates the record to
@@ -1220,11 +1204,11 @@ fn merge_members<'p, S: BookmarkStore>(
     }
 }
 
-/// `planned` as `store` would keep it, with `stored`'s note in place of its own when the
-/// store would cut the plan's note down to part of the stored one. Writing that cut would
-/// only shorten the stored note and keep none of the plan's text, as when a plan appends to
-/// a whole note just under the limit, so the rest of the plan goes over the stored note,
-/// itself fitted: kept whole when it still fits beside the plan's other fields.
+/// `planned` as `store` would keep it. When the store would cut the plan's note down to
+/// part of the stored one, as when a plan appends to a whole note just under the limit,
+/// writing it would only shorten the stored note and keep none of the plan's text. Then the
+/// rest of the plan goes over the stored note instead, itself fitted, so it stays whole
+/// when it still fits beside the plan's other fields.
 fn fit_plan<S: BookmarkStore>(
     store: &S,
     stored: Option<&Bookmark>,
@@ -1264,12 +1248,7 @@ fn stores_nothing_new<S: BookmarkStore>(store: &S, stored: &Bookmark, fitted: &B
 /// The store's own warning can't see it, since it is handed the note already cut.
 fn warn_if_cut(planned: &Bookmark, fitted: &Bookmark) {
     if fitted.note != planned.note {
-        warn!(
-            "note trimmed to fit the request URL for {}: {} bytes -> {}",
-            planned.url,
-            planned.note.len(),
-            fitted.note.len()
-        );
+        warn_note_cut(&planned.url, planned.note.len(), fitted.note.len());
     }
 }
 

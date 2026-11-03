@@ -211,6 +211,20 @@ async fn a_dry_run_updates_the_view_but_writes_nothing() {
     assert!(fake.deleted.borrow().is_empty(), "dry run must not delete");
 }
 
+/// An add goes through the view like an update: sent only in a live run, seen in both.
+#[tokio::test]
+async fn an_add_is_sent_only_live_and_seen_either_way() {
+    for (mode, sent) in [(WriteMode::Live, 1), (WriteMode::DryRun, 0)] {
+        let fake = FakePinboard::default();
+        let store = CleanupStore::new(&fake, AccountView::new(Vec::new()), mode);
+
+        store.add(&at("https://new/", "note")).await.expect("adds");
+
+        assert_eq!(fake.added.borrow().len(), sent, "{mode:?}");
+        assert!(store.resident(&url("https://new/")).is_some(), "{mode:?}");
+    }
+}
+
 #[tokio::test]
 async fn a_failed_write_leaves_the_view_alone() {
     let fake = FakePinboard {

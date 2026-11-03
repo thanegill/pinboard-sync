@@ -4294,3 +4294,178 @@ async fn a_stored_block_the_plan_drops_does_not_make_a_carried_block_the_members
         pinboard.ops.borrow()
     );
 }
+
+/// A planned bookmark is an answer from the source: two of them outweigh two failed
+/// lookups, so the run is no outage.
+#[tokio::test]
+async fn planned_bookmarks_count_as_reaching_the_source() {
+    let books = vec![
+        bookmark("https://x/bad-1"),
+        bookmark("https://x/good-1"),
+        bookmark("https://x/bad-2"),
+        bookmark("https://x/good-2"),
+    ];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        if bookmark.url.as_str().contains("bad") {
+            Err(item_error())
+        } else {
+            Ok(Plan::Bookmark(unchanged_plan(bookmark)))
+        }
+    });
+
+    let outcome = run(&FakePinboard::default(), &books, &pass).await;
+
+    assert_eq!(
+        (outcome.reached, outcome.plan_failed),
+        (2, 2),
+        "{outcome:?}"
+    );
+    outcome.into_result().expect("a minority of failed lookups");
+}
+
+/// A run that rides out a few failed lookups still says how many it skipped.
+#[tokio::test]
+async fn a_few_failed_lookups_are_reported_as_skipped() {
+    let books = vec![bookmark("https://x/bad"), bookmark("https://x/good")];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        if bookmark.url.as_str().contains("bad") {
+            Err(item_error())
+        } else {
+            Ok(Plan::Unchanged)
+        }
+    });
+    let outcome = run(&FakePinboard::default(), &books, &pass).await;
+
+    let (result, logs) = crate::test_support::capturing_logs(async { outcome.into_result() }).await;
+
+    result.expect("one failed lookup is survivable");
+    assert_eq!(
+        crate::test_support::warnings(&logs),
+        ["WARN 1 bookmark(s) skipped after a failed lookup; the rest were cleaned up"]
+    );
+}
+
+/// The closing tally names how many rewrites a pass declined to make.
+#[tokio::test]
+async fn a_refused_rewrite_is_counted_in_the_closing_warning() {
+    let books = vec![bookmark("https://x/bad"), bookmark("https://x/mover")];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        if bookmark.url.as_str().contains("bad") {
+            Err(item_error())
+        } else {
+            Ok(Plan::Bookmark(Bookmark {
+                url: u("https://x/bad"),
+                ..unchanged_plan(bookmark)
+            }))
+        }
+    });
+    let pinboard = FakePinboard::default();
+
+    let (outcome, logs) = crate::test_support::capturing_logs(run(&pinboard, &books, &pass)).await;
+
+    assert_eq!(outcome.refused, 1, "{outcome:?}");
+    assert_eq!(
+        crate::test_support::warnings(&logs).last().copied(),
+        Some("WARN 1 rewrite(s) not made, each logged above with why")
+    );
+}
+
+/// A merge whose record landed but left some absorbed URLs undeleted says how many remain.
+#[tokio::test]
+async fn a_half_applied_merge_names_how_many_absorbed_urls_remain() {
+    let mut resident = bookmark("https://target/");
+    resident.note = "resident".into();
+    let movers: Vec<Bookmark> = ["https://mover-1/", "https://mover-2/"]
+        .into_iter()
+        .map(|url| Bookmark {
+            note: format!("from {url}"),
+            ..bookmark(url)
+        })
+        .collect();
+    let all: Vec<Bookmark> = movers.iter().cloned().chain([resident]).collect();
+    let pass = FakePass(|bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            url: u("https://target/"),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let pinboard = FakePinboard {
+        fail_delete_urls: ["https://mover-2/".to_string()].into(),
+        ..FakePinboard::default()
+    };
+
+    let (outcome, logs) = crate::test_support::capturing_logs(run_over(
+        &pinboard,
+        &all,
+        &movers,
+        WriteMode::Live,
+        &pass,
+    ))
+    .await;
+
+    assert_eq!(outcome.write_failed, 1, "{outcome:?}");
+    let errors: Vec<&str> = crate::test_support::complaints(&logs)
+        .into_iter()
+        .filter(|line| line.starts_with("ERROR"))
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].starts_with("ERROR merged https://target/ but 1 absorbed URL(s) remain: "),
+        "{errors:?}"
+    );
+}
+
+/// Only a dry run previews: a live run that writes prints nothing and keeps no preview.
+#[tokio::test]
+async fn a_live_run_prints_no_preview() {
+    let books = vec![bookmark("https://x/a")];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            title: "New".into(),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let pinboard = FakePinboard::default();
+
+    let (outcome, out) = crate::test_support::capturing_stdout(run(&pinboard, &books, &pass)).await;
+
+    assert_eq!(outcome.changed, 1, "{outcome:?}");
+    assert!(outcome.preview.is_empty(), "{:?}", outcome.preview);
+    assert_eq!(out, "");
+}
+
+/// In a cycle of moves no write order is safe, but a merge still never deletes a URL
+/// another group writes to: here the move onto `x` is written first, and the merge at `y`
+/// absorbing `x`'s old record must leave the record that just landed there alone.
+#[tokio::test]
+async fn a_merge_in_a_cycle_never_deletes_a_url_another_group_writes() {
+    let moves = [
+        ("https://x/", "https://y/"),
+        ("https://y/", "https://x/"),
+        ("https://z/", "https://y/"),
+    ];
+    let books: Vec<Bookmark> = moves
+        .iter()
+        .map(|(from, _)| Bookmark {
+            note: format!("from {from}"),
+            ..bookmark(from)
+        })
+        .collect();
+    let pass = FakePass(move |bookmark: &Bookmark| {
+        let to = moves
+            .iter()
+            .find(|(from, _)| bookmark.url.as_str() == *from)
+            .map(|(_, to)| *to)
+            .expect("a planned move");
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(to),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let pinboard = FakePinboard::default();
+
+    let outcome = run(&pinboard, &books, &pass).await;
+
+    assert_eq!(outcome.write_failed, 0, "{outcome:?}");
+    assert_eq!(*pinboard.deleted.borrow(), ["https://z/"]);
+}

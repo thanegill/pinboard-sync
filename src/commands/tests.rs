@@ -274,7 +274,7 @@ fn top_level_dry_run_reaches_single_source_cleanup() {
             "per-source dry_run defaults off for {name}"
         );
         assert_eq!(
-            WriteMode::from_flags(cmd.dry_run, source_dry_run(&source)),
+            WriteMode::from(cmd.dry_run).or(source_dry_run(&source).into()),
             WriteMode::DryRun,
             "`cleanup --dry-run {name}`"
         );
@@ -289,7 +289,7 @@ fn per_source_dry_run_still_applies_without_top_level() {
     let source = cmd.source.expect("a source subcommand");
     assert!(source_dry_run(&source));
     assert_eq!(
-        WriteMode::from_flags(cmd.dry_run, source_dry_run(&source)),
+        WriteMode::from(cmd.dry_run).or(source_dry_run(&source).into()),
         WriteMode::DryRun
     );
 }
@@ -709,6 +709,44 @@ async fn a_reddit_cleanup_without_post_info_still_normalizes_urls() {
         pinboard.updated_urls(),
         ["https://old.reddit.com/r/rust/comments/abc123/a_post/"]
     );
+}
+
+/// Each `sync <source>`'s own flags, the write and dating flags and `--dry-run` included,
+/// reach the overrides its jobs are built from.
+#[test]
+fn sync_source_flags_reach_the_overrides() {
+    let overrides = |source: &str, credential: &[&str]| {
+        let argv: Vec<&str> = [source, "--dry-run", "--limit", "3"]
+            .into_iter()
+            .chain(credential.iter().copied())
+            .collect();
+        match parse_sync(&argv).source.expect("a source") {
+            SyncSource::Reddit(args) => SyncOverrides::from(args),
+            SyncSource::Github(args) => SyncOverrides::from(args),
+            SyncSource::Hackernews(args) => SyncOverrides::from(args),
+        }
+    };
+    let reddit = overrides("reddit", &["--reddit-username", "alice"]);
+    let github = overrides("github", &["--github-token", "tok"]);
+    let hackernews = overrides("hackernews", &["--hn-username", "bob"]);
+
+    assert_eq!(reddit.reddit_username.as_deref(), Some("alice"));
+    assert_eq!(github.github_token.as_deref(), Some("tok"));
+    assert_eq!(hackernews.hackernews_username.as_deref(), Some("bob"));
+    for (source, overrides) in [
+        ("reddit", reddit),
+        ("github", github),
+        ("hackernews", hackernews),
+    ] {
+        assert_eq!(overrides.mode, WriteMode::DryRun, "{source}");
+        assert_eq!(
+            overrides.flags.limit,
+            Some(crate::config::SyncLimit::Max(
+                std::num::NonZeroUsize::new(3).unwrap()
+            )),
+            "{source}"
+        );
+    }
 }
 
 mod net_tests {

@@ -10,7 +10,7 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage, PRIMARY_STREAM};
-use crate::bookmark::{Bookmark, BookmarkStore};
+use crate::bookmark::{warn_note_cut, Bookmark, BookmarkStore};
 use crate::http::{
     answered_a_retry, client_builder, error_with_body, redact, LinearBackoff, RetryingClient,
     REDACTED, USER_AGENT,
@@ -236,12 +236,7 @@ impl PinboardClient {
             // note is now shorter than the one the caller wrote. `cleanup` hands over notes
             // `fit` already cut and says so itself, so this fires for them only on a 414.
             if extended.len() < b.note.len() {
-                warn!(
-                    "note trimmed to fit the request URL for {}: {} bytes -> {}",
-                    b.url,
-                    b.note.len(),
-                    extended.len()
-                );
+                warn_note_cut(&b.url, b.note.len(), extended.len());
             }
             return Ok(());
         }

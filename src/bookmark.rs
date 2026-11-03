@@ -42,7 +42,7 @@ impl Bookmark {
     /// change nothing, so `cleanup` skips the bookmark. `timestamp` compares by instant.
     /// `public` and `read_later` are not compared: the cleanup driver makes them match
     /// before it diffs (see `cleanup_pass::hold_back_visibility_mismatches` and
-    /// `cleanup_pass::write_merge`).
+    /// `cleanup_pass::merge_members`).
     pub fn diff(&self, new: &Bookmark) -> Vec<(&'static str, String)> {
         let mut changes = Vec::new();
         if new.url != self.url {
@@ -84,16 +84,12 @@ pub trait BookmarkStore {
     /// `b` as a write would store it: the Pinboard client trims a note too long for the
     /// request URL. The cleanup driver diffs in this form, so a note already stored trimmed
     /// reads as unchanged rather than rewritten, and trimmed again, every run.
-    fn fit(&self, b: Bookmark) -> Bookmark {
-        b
-    }
+    fn fit(&self, b: Bookmark) -> Bookmark;
 
     /// The part [`Self::fit`] kept of `note`, a note it returned cut; `None` from a store
     /// that never cuts. Asked only of a note `fit` just shortened, since a whole note may
     /// end in the same text as the store's cut marker.
-    fn kept_of_cut<'n>(&self, _note: &'n str) -> Option<&'n str> {
-        None
-    }
+    fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str>;
 
     /// The cleanup re-write step: `update` the bookmark, then `delete` the old URL when it
     /// changed (`old_url`). Any inter-write pacing is the store's own concern (the Pinboard
@@ -154,6 +150,12 @@ pub trait BookmarkStore {
         }
         outcome
     }
+}
+
+/// Say that `url`'s note was cut from `from` bytes to `to` to fit a write: the stored note
+/// is shorter than the one the caller planned.
+pub fn warn_note_cut(url: &Url, from: usize, to: usize) {
+    warn!("note trimmed to fit the request URL for {url}: {from} bytes -> {to}");
 }
 
 /// What a write actually accomplished. Not a `Result<()>`, because a merge whose
@@ -268,19 +270,32 @@ impl AccountView {
 }
 
 /// Whether a run writes, or only previews what it would write (`--dry-run`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum WriteMode {
+    #[default]
     Live,
     DryRun,
 }
 
-impl WriteMode {
-    /// The mode set by `--dry-run`, given before the subcommand or after it.
-    pub fn from_flags(before: bool, after: bool) -> Self {
-        if before || after {
+/// The mode a `--dry-run` flag sets: a dry run when it was given.
+impl From<bool> for WriteMode {
+    fn from(dry_run: bool) -> Self {
+        if dry_run {
             WriteMode::DryRun
         } else {
             WriteMode::Live
+        }
+    }
+}
+
+impl WriteMode {
+    /// A dry run when either one is: `--dry-run` may come before or after the subcommand.
+    #[must_use]
+    pub fn or(self, other: WriteMode) -> Self {
+        if self.is_dry_run() {
+            self
+        } else {
+            other
         }
     }
 
@@ -291,16 +306,16 @@ impl WriteMode {
 
 /// The cleanup driver's read side of the account. Separate from [`BookmarkStore`] because
 /// only the driver needs it, and it must answer from the run's live view rather than a
-/// fetch. `dry_run` lives here rather than being passed alongside so the driver's preview
-/// cannot disagree with what the store actually does.
+/// fetch. The write mode lives here rather than being passed alongside so the driver's
+/// preview cannot disagree with what the store actually does.
 pub trait AccountState {
     /// The bookmark stored at `url` right now, if any.
     fn resident(&self, url: &Url) -> Option<Bookmark>;
     /// Every bookmark `keep` accepts, in `posts/all` order, as the run's live view holds it
     /// now: what an earlier pass of the run wrote is already reflected.
     fn snapshot(&self, keep: impl Fn(&Bookmark) -> bool) -> Vec<Bookmark>;
-    /// Whether writes are simulated rather than sent.
-    fn dry_run(&self) -> bool;
+    /// Whether writes are sent, or only previewed.
+    fn write_mode(&self) -> WriteMode;
 }
 
 /// A [`BookmarkStore`] that keeps an [`AccountView`] in step with what it writes.
@@ -310,13 +325,13 @@ pub trait AccountState {
 /// and [`BookmarkStore::apply_absorb`] are default methods built from `update` and
 /// `delete`, intercepting just those two covers all three.
 ///
-/// Under `dry_run` the view is still updated but nothing reaches the network: a preview
-/// has to show the same set of changes a real run would make, including the ones a later
-/// pass only makes because an earlier one already wrote.
+/// In a dry run the view is still updated but nothing reaches the network: a preview has to
+/// show the same set of changes a real run would make, including the ones a later pass only
+/// makes because an earlier one already wrote.
 pub struct CleanupStore<'a, P> {
     inner: &'a P,
     view: std::cell::RefCell<AccountView>,
-    dry_run: bool,
+    mode: WriteMode,
 }
 
 impl<'a, P: BookmarkStore> CleanupStore<'a, P> {
@@ -324,7 +339,7 @@ impl<'a, P: BookmarkStore> CleanupStore<'a, P> {
         Self {
             inner,
             view: std::cell::RefCell::new(view),
-            dry_run: mode.is_dry_run(),
+            mode,
         }
     }
 }
@@ -343,14 +358,14 @@ impl<P> AccountState for CleanupStore<'_, P> {
             .collect()
     }
 
-    fn dry_run(&self) -> bool {
-        self.dry_run
+    fn write_mode(&self) -> WriteMode {
+        self.mode
     }
 }
 
 impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
     async fn add(&self, b: &Bookmark) -> Result<()> {
-        if !self.dry_run {
+        if !self.mode.is_dry_run() {
             self.inner.add(b).await?;
         }
         self.view.borrow_mut().insert(b);
@@ -358,7 +373,7 @@ impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
     }
 
     async fn update(&self, b: &Bookmark) -> Result<()> {
-        if !self.dry_run {
+        if !self.mode.is_dry_run() {
             self.inner.update(b).await?;
         }
         self.view.borrow_mut().insert(b);
@@ -366,7 +381,7 @@ impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
     }
 
     async fn delete(&self, url: &Url) -> Result<()> {
-        if !self.dry_run {
+        if !self.mode.is_dry_run() {
             self.inner.delete(url).await?;
         }
         self.view.borrow_mut().remove(url);

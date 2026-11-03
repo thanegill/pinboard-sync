@@ -9,10 +9,10 @@ use crate::tags::Tags;
 
 /// The index within `members` of the group's *incumbent*: the member whose stored URL is
 /// already the group's target. It is the record that stays at that URL, so it plays the
-/// same role a resident does -- its plan leads the merge, and its own reading state and date
-/// survive the merge's field rules. A resident is by definition unplanned, so a group has
-/// at most one of the two, and being inside the pass's slice is an implementation detail
-/// that must not decide whether a bookmark is protected.
+/// same role a resident does -- its plan leads the merge, and its own reading state and
+/// date survive the merge's field rules. A resident is by definition unplanned, so a group
+/// has at most one of the two, and being inside the pass's slice is an implementation
+/// detail that must not decide whether a bookmark is protected.
 pub(super) fn incumbent_of(members: &[Member<'_>], target: &Url) -> Option<usize> {
     members
         .iter()
@@ -256,7 +256,7 @@ mod tests {
         assert_eq!(merged.title, "Title B");
         // Earliest present timestamp.
         assert_eq!(merged.timestamp, ts_early);
-        // Privacy never widens: A is private, so the merge is private even though B is public.
+        // Privacy never widens: A is private, so the merge is private though B is public.
         assert!(!merged.public);
         // read_later is the OR across the group: A wants it, so the merge does too.
         assert!(merged.read_later);

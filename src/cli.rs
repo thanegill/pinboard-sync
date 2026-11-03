@@ -1,5 +1,9 @@
 //! The command line: clap's `Cli` and every subcommand's arguments, and the conversions
 //! from them into the overrides the job builders and cleanup passes resolve settings from.
+#![expect(
+    clippy::doc_markdown,
+    reason = "clap prints these doc comments as --help, where backticks would show verbatim"
+)]
 
 use std::collections::HashMap;
 use std::ffi::OsString;

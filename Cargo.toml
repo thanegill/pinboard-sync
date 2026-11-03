@@ -9,9 +9,6 @@ license = "MIT"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
-# Product names (HackerNews, YouTube) are prose, and backticking the env var names in
-# cli.rs's doc comments would change --help.
-doc_markdown = "allow"
 # Durations stay in the unit the docs give them in, seconds. Nothing hits it yet; it keeps a
 # later wait of over ten minutes, written in seconds, from being converted.
 duration_suboptimal_units = "allow"

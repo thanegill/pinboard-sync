@@ -31,7 +31,7 @@ use log::{debug, error, info, warn};
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::bookmark::{AccountState, Bookmark, BookmarkStore, WriteMode};
+use crate::bookmark::{warn_note_cut, AccountState, Bookmark, BookmarkStore, WriteMode};
 use crate::preview;
 use crate::source::{Halt, SourceError};
 use crate::stdout::outln;
@@ -1257,12 +1257,7 @@ fn stores_nothing_new<S: BookmarkStore>(store: &S, stored: &Bookmark, fitted: &B
 /// The store's own warning can't see it, since it is handed the note already cut.
 fn warn_if_cut(planned: &Bookmark, fitted: &Bookmark) {
     if fitted.note != planned.note {
-        warn!(
-            "note trimmed to fit the request URL for {}: {} bytes -> {}",
-            planned.url,
-            planned.note.len(),
-            fitted.note.len()
-        );
+        warn_note_cut(&planned.url, planned.note.len(), fitted.note.len());
     }
 }
 

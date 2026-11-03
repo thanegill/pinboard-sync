@@ -152,6 +152,12 @@ pub trait BookmarkStore {
     }
 }
 
+/// Say that `url`'s note was cut from `from` bytes to `to` to fit a write: the stored note
+/// is shorter than the one the caller planned.
+pub fn warn_note_cut(url: &Url, from: usize, to: usize) {
+    warn!("note trimmed to fit the request URL for {url}: {from} bytes -> {to}");
+}
+
 /// What a write actually accomplished. Not a `Result<()>`, because a merge whose
 /// `posts/add` landed but whose delete failed has changed the account, and a caller that
 /// tracks the account's state has to be able to tell that apart from "nothing happened".

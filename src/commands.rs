@@ -39,13 +39,13 @@ use crate::{backup, config, github, hackernews, reddit, sync, timefmt};
 // --- sync --------------------------------------------------------------------
 
 pub async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
-    let top_dry_run = cmd.dry_run;
+    let top_mode = WriteMode::from(cmd.dry_run);
     let mut plan = build_sync_plan(cmd, config)?;
     let mut run = AllRun::default();
     run.record_skipped(plan.skipped, "could not be built");
     let (pinboard, bookmarks) =
         open_pinboard(plan.overrides.flags.pinboard_token.take(), config).await?;
-    let mode = WriteMode::from_flags(top_dry_run, plan.overrides.dry_run);
+    let mode = top_mode.or(plan.overrides.mode);
     run_sync_jobs(plan.jobs, run, &pinboard, &bookmarks, mode).await
 }
 
@@ -169,10 +169,10 @@ async fn run_sync_jobs(
 /// and the same items as domain bookmarks under `normalized/`, plus a `manifest.json`.
 /// Each run replaces the previous snapshot in place.
 pub async fn run_backup(mut cmd: BackupCmd, config: &Config) -> Result<()> {
-    let (top_out, top_dry_run) = (cmd.out.out.take(), cmd.dry_run);
+    let (top_out, top_mode) = (cmd.out.out.take(), WriteMode::from(cmd.dry_run));
     let plan = build_backup_plan(cmd, config)?;
     let dir = resolve_backup_dir([plan.out, top_out], config)?;
-    let mode = WriteMode::from_flags(top_dry_run, plan.dry_run);
+    let mode = top_mode.or(plan.mode);
     back_up(plan.jobs, plan.skipped, &dir, mode).await
 }
 
@@ -271,7 +271,7 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             let (pinboard, bookmarks) = open_pinboard(None, config).await?;
             // One view across all three sources: each writes, and the next must plan
             // against what it left rather than the pre-run snapshot.
-            let mode = WriteMode::from_flags(cmd.dry_run, false);
+            let mode = WriteMode::from(cmd.dry_run);
             let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), mode);
             let mut run = AllRun::default();
             if let Some(CleanupTarget { account, dates }) = github {
@@ -303,13 +303,13 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             run.finish()
         }
         (false, Some(CleanupSource::Reddit(args))) => {
-            run_cleanup_reddit(args, cmd.dry_run, &overrides, config).await
+            run_cleanup_reddit(args, cmd.dry_run.into(), &overrides, config).await
         }
         (false, Some(CleanupSource::Github(args))) => {
-            run_cleanup_github(args, cmd.dry_run, &overrides, config).await
+            run_cleanup_github(args, cmd.dry_run.into(), &overrides, config).await
         }
         (false, Some(CleanupSource::Hackernews(args))) => {
-            run_cleanup_hackernews(args, cmd.dry_run, &overrides, config).await
+            run_cleanup_hackernews(args, cmd.dry_run.into(), &overrides, config).await
         }
         (false, None) => bail!("specify a source (e.g. `cleanup reddit`) or pass --all"),
     }
@@ -365,7 +365,7 @@ fn cleanup_all_target<'a, A: SourceAccount>(
 
 async fn run_cleanup_github(
     args: GitHubCleanupArgs,
-    top_dry_run: bool,
+    top_mode: WriteMode,
     top_overrides: &DateFlags,
     config: &Config,
 ) -> Result<()> {
@@ -376,7 +376,7 @@ async fn run_cleanup_github(
     )?;
     let github = GitHubCleanup::build(account, args.github_token, dates, config)?;
     let (pinboard, bookmarks) = open_pinboard(args.pinboard_token, config).await?;
-    let mode = WriteMode::from_flags(top_dry_run, args.dry_run);
+    let mode = top_mode.or(args.dry_run.into());
     let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), mode);
     github.run(&store).await
 }
@@ -434,11 +434,11 @@ impl GitHubCleanup {
 
 async fn run_cleanup_reddit(
     mut args: RedditCleanupArgs,
-    top_dry_run: bool,
+    top_mode: WriteMode,
     top_overrides: &DateFlags,
     config: &Config,
 ) -> Result<()> {
-    let mode = WriteMode::from_flags(top_dry_run, args.dry_run);
+    let mode = top_mode.or(args.dry_run.into());
     let CleanupTarget { account, dates } = source_cleanup_target::<RedditAccount>(
         args.account.as_deref(),
         &args.dates.with_top_level(top_overrides),
@@ -497,7 +497,7 @@ impl RedditCleanup {
 
 async fn run_cleanup_hackernews(
     mut args: HackerNewsCleanupArgs,
-    top_dry_run: bool,
+    top_mode: WriteMode,
     top_overrides: &DateFlags,
     config: &Config,
 ) -> Result<()> {
@@ -506,7 +506,7 @@ async fn run_cleanup_hackernews(
         &args.dates.with_top_level(top_overrides),
         config,
     )?;
-    let mode = WriteMode::from_flags(top_dry_run, args.dry_run);
+    let mode = top_mode.or(args.dry_run.into());
     let pinboard_token = args.pinboard_token.take();
     let hackernews =
         HackerNewsCleanup::build(account, HackerNewsCleanupOverrides::from(args), dates)?;

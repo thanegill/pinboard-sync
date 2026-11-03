@@ -274,7 +274,7 @@ fn top_level_dry_run_reaches_single_source_cleanup() {
             "per-source dry_run defaults off for {name}"
         );
         assert_eq!(
-            WriteMode::from_flags(cmd.dry_run, source_dry_run(&source)),
+            WriteMode::from(cmd.dry_run).or(source_dry_run(&source).into()),
             WriteMode::DryRun,
             "`cleanup --dry-run {name}`"
         );
@@ -289,7 +289,7 @@ fn per_source_dry_run_still_applies_without_top_level() {
     let source = cmd.source.expect("a source subcommand");
     assert!(source_dry_run(&source));
     assert_eq!(
-        WriteMode::from_flags(cmd.dry_run, source_dry_run(&source)),
+        WriteMode::from(cmd.dry_run).or(source_dry_run(&source).into()),
         WriteMode::DryRun
     );
 }

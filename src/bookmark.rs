@@ -264,19 +264,32 @@ impl AccountView {
 }
 
 /// Whether a run writes, or only previews what it would write (`--dry-run`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum WriteMode {
+    #[default]
     Live,
     DryRun,
 }
 
-impl WriteMode {
-    /// The mode set by `--dry-run`, given before the subcommand or after it.
-    pub fn from_flags(before: bool, after: bool) -> Self {
-        if before || after {
+/// The mode a `--dry-run` flag sets: a dry run when it was given.
+impl From<bool> for WriteMode {
+    fn from(dry_run: bool) -> Self {
+        if dry_run {
             WriteMode::DryRun
         } else {
             WriteMode::Live
+        }
+    }
+}
+
+impl WriteMode {
+    /// A dry run when either one is: `--dry-run` may come before or after the subcommand.
+    #[must_use]
+    pub fn or(self, other: WriteMode) -> Self {
+        if self.is_dry_run() {
+            self
+        } else {
+            other
         }
     }
 

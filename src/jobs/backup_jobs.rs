@@ -11,6 +11,7 @@ use super::{
     SkippedTarget, SourceAccount, SourceClient, SyncJob, SyncOverrides,
 };
 use crate::backup::{self, BackupSource};
+use crate::bookmark::WriteMode;
 use crate::cli::{BackupCmd, BackupTarget};
 use crate::config::{self, Config, GitHubAccount, HackerNewsAccount, RedditAccount};
 use crate::hook::on_auth_failure_from_env;
@@ -54,7 +55,7 @@ pub struct BackupPlan {
     /// failures, so a run that quietly missed one can't report itself complete.
     pub skipped: Vec<SkippedTarget>,
     pub out: Option<String>,
-    pub dry_run: bool,
+    pub mode: WriteMode,
 }
 
 pub fn build_backup_plan(cmd: BackupCmd, config: &Config) -> Result<BackupPlan> {
@@ -80,7 +81,7 @@ pub fn build_backup_plan(cmd: BackupCmd, config: &Config) -> Result<BackupPlan> 
                 jobs: sources.targets,
                 skipped: sources.skipped,
                 out: None,
-                dry_run: false,
+                mode: WriteMode::Live,
             };
             let has_source_targets = !plan.jobs.is_empty() || !plan.skipped.is_empty();
             match build_pinboard_backup_job(None, config)? {
@@ -110,32 +111,44 @@ pub fn build_backup_plan(cmd: BackupCmd, config: &Config) -> Result<BackupPlan> 
             Ok(plan)
         }
         (false, Some(BackupTarget::Reddit(mut args))) => {
-            let (account, out, dry_run) = (args.account.take(), args.out.out.take(), args.dry_run);
+            let (account, out, mode) = (
+                args.account.take(),
+                args.out.out.take(),
+                args.dry_run.into(),
+            );
             build_source_backup_plan::<RedditAccount>(
                 Selection::new(account.as_deref(), args.all)?,
                 &SyncOverrides::from(args),
                 out,
-                dry_run,
+                mode,
                 config,
             )
         }
         (false, Some(BackupTarget::Github(mut args))) => {
-            let (account, out, dry_run) = (args.account.take(), args.out.out.take(), args.dry_run);
+            let (account, out, mode) = (
+                args.account.take(),
+                args.out.out.take(),
+                args.dry_run.into(),
+            );
             build_source_backup_plan::<GitHubAccount>(
                 Selection::new(account.as_deref(), args.all)?,
                 &SyncOverrides::from(args),
                 out,
-                dry_run,
+                mode,
                 config,
             )
         }
         (false, Some(BackupTarget::Hackernews(mut args))) => {
-            let (account, out, dry_run) = (args.account.take(), args.out.out.take(), args.dry_run);
+            let (account, out, mode) = (
+                args.account.take(),
+                args.out.out.take(),
+                args.dry_run.into(),
+            );
             build_source_backup_plan::<HackerNewsAccount>(
                 Selection::new(account.as_deref(), args.all)?,
                 &SyncOverrides::from(args),
                 out,
-                dry_run,
+                mode,
                 config,
             )
         }
@@ -146,7 +159,7 @@ pub fn build_backup_plan(cmd: BackupCmd, config: &Config) -> Result<BackupPlan> 
                 jobs: vec![job],
                 skipped: Vec::new(),
                 out: args.out.out,
-                dry_run: args.dry_run,
+                mode: args.dry_run.into(),
             })
         }
         (false, None) => bail!("specify a target (e.g. `backup pinboard`) or pass --all"),
@@ -159,7 +172,7 @@ fn build_source_backup_plan<A: SourceAccount>(
     selection: Selection,
     overrides: &SyncOverrides,
     out: Option<String>,
-    dry_run: bool,
+    mode: WriteMode,
     config: &Config,
 ) -> Result<BackupPlan> {
     let Built { targets, skipped } =
@@ -168,7 +181,7 @@ fn build_source_backup_plan<A: SourceAccount>(
         jobs: targets,
         skipped,
         out,
-        dry_run,
+        mode,
     })
 }
 

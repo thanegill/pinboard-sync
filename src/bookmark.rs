@@ -42,7 +42,7 @@ impl Bookmark {
     /// change nothing, so `cleanup` skips the bookmark. `timestamp` compares by instant.
     /// `public` and `read_later` are not compared: the cleanup driver makes them match
     /// before it diffs (see `cleanup_pass::hold_back_visibility_mismatches` and
-    /// `cleanup_pass::write_merge`).
+    /// `cleanup_pass::merge_members`).
     pub fn diff(&self, new: &Bookmark) -> Vec<(&'static str, String)> {
         let mut changes = Vec::new();
         if new.url != self.url {

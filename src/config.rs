@@ -321,6 +321,7 @@ impl Config {
     /// containing whitespace or commas, which Pinboard tags can't hold (its API splits the
     /// tag string on spaces), so one would silently corrupt every bookmark it tags.
     fn validate(&self) -> Result<()> {
+        const NAME_OR_USERNAME: &str = "`name` (or, with no `name`, `username`)";
         if self
             .backup
             .directory
@@ -329,7 +330,6 @@ impl Config {
         {
             bail!("backup.directory must not be empty");
         }
-        const NAME_OR_USERNAME: &str = "`name` (or, with no `name`, `username`)";
         check_unique_names(&self.reddit)?;
         check_distinct_slugs(&self.reddit, NAME_OR_USERNAME)?;
         check_unique_names(&self.github)?;

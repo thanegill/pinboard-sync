@@ -222,7 +222,7 @@ impl GitHubRepo {
                 warn!(
                     "skipping github repo with unparseable URL {}: {e}",
                     self.html_url
-                )
+                );
             })
             .ok()?;
         let dedup_key = GitHubKeys
@@ -342,13 +342,11 @@ fn permanent_refusal(
             "is behind an organization's SAML SSO, which the token isn't authorized for (403)",
         );
     }
-    let blocked = serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .is_some_and(|refusal| {
-            refusal
-                .get("block")
-                .is_some_and(serde_json::Value::is_object)
-        });
+    let blocked = serde_json::from_str::<serde_json::Value>(body).is_ok_and(|refusal| {
+        refusal
+            .get("block")
+            .is_some_and(serde_json::Value::is_object)
+    });
     blocked.then_some("is blocked (403)")
 }
 

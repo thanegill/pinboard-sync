@@ -204,7 +204,7 @@ async fn back_up(
                 // because a later clean run of a *different* target rewrites `failed` and
                 // would otherwise leave these files looking healthy.
                 entries.extend(outcome.written.into_iter().map(|mut e| {
-                    e.unusable = outcome.unusable.clone();
+                    e.unusable.clone_from(&outcome.unusable);
                     e
                 }));
                 removed.extend(outcome.removed);

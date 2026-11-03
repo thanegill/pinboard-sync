@@ -232,10 +232,11 @@ pub fn two_pass_verdict(
     })
 }
 
-/// Run `pass` over `bookmarks` (already filtered to the source), as the module doc
-/// describes; under the store's dry-run, print what would change instead. `noun` names the
-/// source in the scan log. Never fails outright: every failure, a dead credential included,
-/// is tallied into the returned [`PassOutcome`].
+/// Run `pass` over `bookmarks` as the module doc describes; under the store's dry-run,
+/// print what would change instead. `bookmarks` is already filtered to the source and holds
+/// each URL once, as [`AccountState::snapshot`] returns them. `noun` names the source in
+/// the scan log. Never fails outright: every failure, a dead credential included, is
+/// tallied into the returned [`PassOutcome`].
 ///
 /// Residency is asked of `store`, whose view covers the *whole* account and reflects what
 /// earlier passes of this run wrote: a plan can target a URL outside its own filter (an HN
@@ -845,10 +846,7 @@ async fn write_merge<S: BookmarkStore>(
     // write's target (deleting the latter would clobber that write's record).
     let mut old_urls: Vec<&Url> = Vec::new();
     for Member { stored, .. } in group {
-        if stored.url != *target
-            && !targets.contains(&stored.url)
-            && !old_urls.contains(&&stored.url)
-        {
+        if stored.url != *target && !targets.contains(&stored.url) {
             old_urls.push(&stored.url);
         }
     }

@@ -86,6 +86,8 @@ All notable changes to this project are documented here. The format is based on
   a doubled slash, such as `owner//repo/issues/5`.
 - A gist URL on `www.gist.github.com` counts as the gist, as one on `gist.github.com` does:
   `cleanup github` moves it to the gist's URL and `sync` no longer adds the gist again.
+- `cleanup github` leaves a gist revision without its owner (`gist.github.com/<id>/<sha>`)
+  alone, instead of looking the revision's SHA up as a gist.
 - A missing Reddit or HackerNews username or Pinboard token names every setting it can come
   from, `$REDDIT_USERNAME_FILE`, `$HN_USERNAME_FILE` and `$PINBOARD_TOKEN_FILE` included,
   as the cookie and GitHub token messages already did.

@@ -1053,6 +1053,33 @@ async fn cleanup_moves_a_www_gist_to_the_gist_url() {
     assert_eq!(gist.title, "my gist");
 }
 
+/// An owner-less gist revision, `gist.github.com/<id>/<sha>`, is a deep link: no lookup,
+/// not even of the starred gists, and nothing written.
+#[tokio::test]
+async fn cleanup_skips_an_owner_less_gist_revision() {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(404))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let revision = "0123456789abcdef0123456789abcdef01234567";
+    let seed = vec![
+        Bookmark {
+            tags: tag_list(&["github-star", "github-gist"]),
+            ..stored_at(&format!("https://gist.github.com/{GIST_ID}/{revision}"))
+        },
+        stored_at(&format!(
+            "https://www.gist.github.com/{GIST_ID}/{}",
+            revision.to_uppercase()
+        )),
+    ];
+
+    let (writes, stored) = run_and_store(seed.clone(), &github_client(&server), NO_DATING).await;
+    assert_eq!(writes, 0);
+    assert_eq!(stored, seed);
+}
+
 /// Two accounts with default gist tags both tag their gists `github-gist`; running as one
 /// must not add its star tag to the other's gist.
 #[tokio::test]

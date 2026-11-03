@@ -261,10 +261,10 @@ pub(crate) fn is_gist_host(url: &Url) -> bool {
         .is_some_and(|host| host.strip_prefix("www.").unwrap_or(host) == GIST_HOST)
 }
 
-/// The id of a gist-root URL: `gist.github.com/<id>` or `gist.github.com/<owner>/<id>`, on
-/// either [`is_gist_host`] host, ignoring empty segments and every trailing `.git` in any
-/// case, as for a repo name. `None` for anything else: a deep link (a revision, `/raw`),
-/// an owner's gist list (`gist.github.com/<owner>`), or another host.
+/// The id of a gist-root URL: `gist.github.com/<id>` or `gist.github.com/<owner>/<id>`,
+/// on either [`is_gist_host`] host, ignoring empty segments and every trailing `.git` in
+/// any case, as for a repo name. `None` for anything else: a deep link (a revision, owner
+/// or not, or `/raw`), an owner's gist list (`gist.github.com/<owner>`), or another host.
 pub(crate) fn gist_root_id(url: &Url) -> Option<String> {
     if !is_gist_host(url) {
         return None;
@@ -274,7 +274,13 @@ pub(crate) fn gist_root_id(url: &Url) -> Option<String> {
         return None;
     };
     let id = without_git_suffixes(id);
-    is_gist_id(id).then(|| id.to_ascii_lowercase())
+    (is_gist_id(id) && !is_commit_sha(id)).then(|| id.to_ascii_lowercase())
+}
+
+/// Whether `segment` is a revision's commit SHA: 40 hex characters, in either case. No
+/// gist id is that long, so neither `gist.github.com/<id>/<sha>` nor a lone SHA is a root.
+fn is_commit_sha(segment: &str) -> bool {
+    segment.len() == 40 && segment.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Whether `segment` is a gist id rather than a username: hex, and either all digits (the

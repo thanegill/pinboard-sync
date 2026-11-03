@@ -208,6 +208,33 @@ fn gist_root_id_finds_the_id_with_or_without_an_owner() {
 }
 
 #[test]
+fn gist_root_id_reads_an_owner_less_revision_as_a_deep_link() {
+    let root = |s: &str| gist_root_id(&url(s));
+    let revision = "0123456789abcdef0123456789abcdef01234567";
+    for deep_link in [
+        format!("https://gist.github.com/{ID}/{revision}"),
+        format!("https://gist.github.com/{ID}/{}/", revision.to_uppercase()),
+        format!("https://www.gist.github.com/{ID}/{revision}"),
+        format!("https://gist.github.com/42/{revision}"),
+        format!("https://gist.github.com/{ID}/{revision}.git"),
+        format!("https://gist.github.com/{revision}"),
+    ] {
+        assert_eq!(root(&deep_link), None, "{deep_link}");
+    }
+    assert_eq!(
+        root(&format!("https://gist.github.com/someone/{ID}")),
+        Some(ID.into()),
+        "a 20-character id is no revision"
+    );
+    let hex32 = "0123456789abcdef0123456789abcdef";
+    assert_eq!(
+        root(&format!("https://gist.github.com/{hex32}/{hex32}")),
+        Some(hex32.into()),
+        "nor a 32-character one, after an all-hex owner"
+    );
+}
+
+#[test]
 fn gist_post_date_parses_its_three_values_and_never_quotes_a_bad_one() {
     let parse = |text: &str| text.parse::<GistPostDate>();
     assert_eq!(parse("now"), Ok(GistPostDate::Now));
@@ -275,6 +302,38 @@ proptest! {
             "{} -> {}",
             stored,
             canonical
+        );
+    }
+
+    /// A revision, with or without its owner, is a deep link `cleanup github` never moves,
+    /// so it keys on its own URL.
+    #[test]
+    fn a_gist_revision_keys_on_its_own_url(
+        id in gist_id(),
+        revision in "[0-9a-fA-F]{40}",
+        owner in proptest::option::of(LOGIN),
+        host in prop::sample::select(vec![GIST_HOST, "www.gist.github.com"]),
+        git_suffix in "(\\.[gG][iI][tT]){0,2}",
+        suffix in prop::sample::select(vec!["", "/", "?file=a.rs", "#file-a-rs"]),
+    ) {
+        let path = match &owner {
+            Some(owner) => format!("{owner}/{id}/{revision}{git_suffix}"),
+            None => format!("{id}/{revision}{git_suffix}"),
+        };
+        let stored = url(&format!("https://{host}/{path}{suffix}"));
+        prop_assert_eq!(gist_root_id(&stored), None, "{}", stored);
+        let own_url = format!("{GIST_HOST}/{}", path.to_ascii_lowercase());
+        prop_assert_eq!(
+            GitHubKeys.dedup_key(&stored),
+            Some(own_url.clone().into()),
+            "{}",
+            stored
+        );
+        prop_assert_eq!(
+            HackerNewsKeys::default().dedup_key(&stored),
+            Some(own_url.into()),
+            "{}",
+            stored
         );
     }
 }

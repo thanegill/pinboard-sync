@@ -287,16 +287,16 @@ impl WriteMode {
 
 /// The cleanup driver's read side of the account. Separate from [`BookmarkStore`] because
 /// only the driver needs it, and it must answer from the run's live view rather than a
-/// fetch. `dry_run` lives here rather than being passed alongside so the driver's preview
-/// cannot disagree with what the store actually does.
+/// fetch. The write mode lives here rather than being passed alongside so the driver's
+/// preview cannot disagree with what the store actually does.
 pub trait AccountState {
     /// The bookmark stored at `url` right now, if any.
     fn resident(&self, url: &Url) -> Option<Bookmark>;
     /// Every bookmark `keep` accepts, in `posts/all` order, as the run's live view holds it
     /// now: what an earlier pass of the run wrote is already reflected.
     fn snapshot(&self, keep: impl Fn(&Bookmark) -> bool) -> Vec<Bookmark>;
-    /// Whether writes are simulated rather than sent.
-    fn dry_run(&self) -> bool;
+    /// Whether writes are sent, or only previewed.
+    fn write_mode(&self) -> WriteMode;
 }
 
 /// A [`BookmarkStore`] that keeps an [`AccountView`] in step with what it writes.
@@ -306,13 +306,13 @@ pub trait AccountState {
 /// and [`BookmarkStore::apply_absorb`] are default methods built from `update` and
 /// `delete`, intercepting just those two covers all three.
 ///
-/// Under `dry_run` the view is still updated but nothing reaches the network: a preview
-/// has to show the same set of changes a real run would make, including the ones a later
-/// pass only makes because an earlier one already wrote.
+/// In a dry run the view is still updated but nothing reaches the network: a preview has to
+/// show the same set of changes a real run would make, including the ones a later pass only
+/// makes because an earlier one already wrote.
 pub struct CleanupStore<'a, P> {
     inner: &'a P,
     view: std::cell::RefCell<AccountView>,
-    dry_run: bool,
+    mode: WriteMode,
 }
 
 impl<'a, P: BookmarkStore> CleanupStore<'a, P> {
@@ -320,7 +320,7 @@ impl<'a, P: BookmarkStore> CleanupStore<'a, P> {
         Self {
             inner,
             view: std::cell::RefCell::new(view),
-            dry_run: mode.is_dry_run(),
+            mode,
         }
     }
 }
@@ -339,14 +339,14 @@ impl<P> AccountState for CleanupStore<'_, P> {
             .collect()
     }
 
-    fn dry_run(&self) -> bool {
-        self.dry_run
+    fn write_mode(&self) -> WriteMode {
+        self.mode
     }
 }
 
 impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
     async fn add(&self, b: &Bookmark) -> Result<()> {
-        if !self.dry_run {
+        if !self.mode.is_dry_run() {
             self.inner.add(b).await?;
         }
         self.view.borrow_mut().insert(b);
@@ -354,7 +354,7 @@ impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
     }
 
     async fn update(&self, b: &Bookmark) -> Result<()> {
-        if !self.dry_run {
+        if !self.mode.is_dry_run() {
             self.inner.update(b).await?;
         }
         self.view.borrow_mut().insert(b);
@@ -362,7 +362,7 @@ impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
     }
 
     async fn delete(&self, url: &Url) -> Result<()> {
-        if !self.dry_run {
+        if !self.mode.is_dry_run() {
             self.inner.delete(url).await?;
         }
         self.view.borrow_mut().remove(url);

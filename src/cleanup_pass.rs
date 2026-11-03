@@ -31,7 +31,7 @@ use log::{debug, error, info, warn};
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
+use crate::bookmark::{AccountState, Bookmark, BookmarkStore, WriteMode};
 use crate::preview;
 use crate::source::{Halt, SourceError};
 use crate::stdout::outln;
@@ -96,9 +96,9 @@ pub trait CleanupPass {
 #[must_use]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PassOutcome {
-    /// Bookmarks written, or under `dry_run` that would be.
+    /// Bookmarks written, or in a dry run that would be.
     pub changed: usize,
-    /// Under `dry_run`, the per-bookmark preview lines as printed (not the closing tally),
+    /// In a dry run, the per-bookmark preview lines as printed (not the closing tally),
     /// kept so tests can assert on what an operator reads before a real run.
     pub preview: Vec<String>,
     /// Rewrites this pass declined to make: a target that must not be written at all (see
@@ -247,9 +247,8 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     dates: DateOpts,
     pass: &C,
 ) -> PassOutcome {
-    let dry_run = store.dry_run();
-    // Dry-run output is consistently prefixed with `[dry-run]`.
-    let dry_prefix = if dry_run { "[dry-run] " } else { "" };
+    let mode = store.write_mode();
+    let dry_prefix = if mode.is_dry_run() { "[dry-run] " } else { "" };
     info!(
         "{dry_prefix}scanning {} {noun} bookmark(s)",
         bookmarks.len()
@@ -268,7 +267,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         &mut groups,
         &residents,
         &mut untouchable,
-        dry_run,
+        mode,
         &mut outcome,
     );
     for (key, count) in hold_back_cut_notes(
@@ -277,7 +276,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         &mut groups,
         &residents,
         &mut untouchable,
-        dry_run,
+        mode,
         &mut outcome,
     ) {
         *held_back.entry(key).or_default() += count;
@@ -316,7 +315,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // URLs. Separate from the `targets` delete-guard -- that protects a URL some *plan*
         // writes to, this one a URL no plan may land on.
         if let Some(reason) = untouchable.get(key) {
-            refuse_group(key, *reason, dry_run, &mut outcome);
+            refuse_group(key, *reason, mode, &mut outcome);
             continue;
         }
         outcome.refused += held_here;
@@ -326,20 +325,9 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         let resident = residents.get(key);
         let stranded = match (resident, &group[..]) {
             (None, [Member { stored, planned }]) => {
-                write_single(store, stored, planned, &targets, dry_run, &mut outcome).await
+                write_single(store, stored, planned, &targets, mode, &mut outcome).await
             }
-            _ => {
-                write_merge(
-                    store,
-                    key,
-                    &group,
-                    resident,
-                    &targets,
-                    dry_run,
-                    &mut outcome,
-                )
-                .await
-            }
+            _ => write_merge(store, key, &group, resident, &targets, mode, &mut outcome).await,
         };
         // A failed write left its bookmarks where they were, so a later group heading for
         // one of their URLs would overwrite it. Protect them and re-close the refusal set,
@@ -353,7 +341,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         }
     }
 
-    if dry_run {
+    if mode.is_dry_run() {
         outln!("{dry_prefix}{} bookmark(s) would change.", outcome.changed);
     } else {
         info!("done: updated {} bookmark(s)", outcome.changed);
@@ -554,7 +542,7 @@ fn hold_back_visibility_mismatches<'p>(
     groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
     residents: &HashMap<&'p Url, Bookmark>,
     untouchable: &mut HashMap<Url, Refusal>,
-    dry_run: bool,
+    mode: WriteMode,
     outcome: &mut PassOutcome,
 ) -> HashMap<Url, usize> {
     let mut held_from: HashMap<Url, usize> = HashMap::new();
@@ -620,7 +608,7 @@ fn hold_back_visibility_mismatches<'p>(
                  settle it"
             ),
         }
-        if dry_run {
+        if mode.is_dry_run() {
             let reason = match staying {
                 Some(staying) => {
                     format!("would merge into {target}, which is {}", describe(staying))
@@ -664,7 +652,7 @@ fn hold_back_cut_notes<'p, S: BookmarkStore>(
     groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
     residents: &HashMap<&'p Url, Bookmark>,
     untouchable: &mut HashMap<Url, Refusal>,
-    dry_run: bool,
+    mode: WriteMode,
     outcome: &mut PassOutcome,
 ) -> HashMap<Url, usize> {
     let mut held_from: HashMap<Url, usize> = HashMap::new();
@@ -707,7 +695,7 @@ fn hold_back_cut_notes<'p, S: BookmarkStore>(
             merging.pop();
             *held_from.entry((*key).clone()).or_default() += 1;
             warn!("not merging {} into {key}: {why}", member.stored.url);
-            if dry_run {
+            if mode.is_dry_run() {
                 emit_preview(
                     &mut outcome.preview,
                     &member.stored.url,
@@ -741,12 +729,12 @@ fn kept_text<S: BookmarkStore>(store: &S, note: &str) -> String {
 }
 
 /// Count, log and preview a group whose target must not be written at all.
-fn refuse_group(key: &Url, reason: Refusal, dry_run: bool, outcome: &mut PassOutcome) {
+fn refuse_group(key: &Url, reason: Refusal, mode: WriteMode, outcome: &mut PassOutcome) {
     outcome.refused += 1;
     warn!("skipping cleanup write to {key}: {reason}");
     // Also on stdout: a dry run is a preview, and work the real run would refuse is part
     // of what the operator is previewing.
-    if dry_run {
+    if mode.is_dry_run() {
         emit_preview(
             &mut outcome.preview,
             key,
@@ -764,7 +752,7 @@ async fn write_single<S: BookmarkStore>(
     original: &Bookmark,
     planned: &Bookmark,
     targets: &HashSet<&Url>,
-    dry_run: bool,
+    mode: WriteMode,
     outcome: &mut PassOutcome,
 ) -> Vec<Url> {
     let fitted = fit_plan(store, Some(original), planned);
@@ -778,7 +766,7 @@ async fn write_single<S: BookmarkStore>(
     // otherwise that write's record lives there and must not be removed.
     let delete_old = planned.url != original.url && !targets.contains(&original.url);
 
-    if dry_run {
+    if mode.is_dry_run() {
         let lines = changes
             .iter()
             .map(|(label, value)| preview::field(label, value));
@@ -834,7 +822,7 @@ async fn write_merge<S: BookmarkStore>(
     group: &[Member<'_>],
     resident: Option<&Bookmark>,
     targets: &HashSet<&Url>,
-    dry_run: bool,
+    mode: WriteMode,
     outcome: &mut PassOutcome,
 ) -> Vec<Url> {
     let Merge {
@@ -867,7 +855,7 @@ async fn write_merge<S: BookmarkStore>(
     }
     let merged = &fitted;
 
-    if dry_run {
+    if mode.is_dry_run() {
         let mut lines = Vec::new();
         if rewrite {
             lines.extend([

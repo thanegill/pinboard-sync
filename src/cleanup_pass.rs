@@ -363,10 +363,16 @@ struct Member<'p> {
     planned: &'p Bookmark,
 }
 
+/// A bookmark this pass planned: its stored record, and the end-state planned for it.
+struct PlannedPair<'b> {
+    stored: &'b Bookmark,
+    planned: Bookmark,
+}
+
 /// Phase 1's result: each planned bookmark beside its stored record, and the URLs whose
 /// record this pass could not establish.
 struct Planned<'b> {
-    pairs: Vec<(&'b Bookmark, Bookmark)>,
+    pairs: Vec<PlannedPair<'b>>,
     /// A lookup failed there, or a halt stopped the pass short of it. Nothing may be
     /// written there at all. Owned rather than borrowed because the fixpoint grows it from
     /// the group keys.
@@ -382,7 +388,7 @@ async fn plan_all<'b, C: CleanupPass>(
     outcome: &mut PassOutcome,
 ) -> Planned<'b> {
     let now = OffsetDateTime::now_utc().truncate_to_second();
-    let mut pairs: Vec<(&Bookmark, Bookmark)> = Vec::new();
+    let mut pairs: Vec<PlannedPair<'_>> = Vec::new();
     let mut untouchable: HashMap<Url, Refusal> = HashMap::new();
     for (index, bookmark) in bookmarks.iter().enumerate() {
         let mut planned = match pass.plan(bookmark).await {
@@ -429,7 +435,10 @@ async fn plan_all<'b, C: CleanupPass>(
         planned.public = bookmark.public;
         planned.read_later = bookmark.read_later;
 
-        pairs.push((bookmark, planned));
+        pairs.push(PlannedPair {
+            stored: bookmark,
+            planned,
+        });
     }
     Planned { pairs, untouchable }
 }
@@ -437,11 +446,11 @@ async fn plan_all<'b, C: CleanupPass>(
 /// The plans grouped by target URL, with the groups' first-appearance order (and snapshot
 /// order within each group).
 fn group_by_target<'p>(
-    pairs: &'p [(&'p Bookmark, Bookmark)],
+    pairs: &'p [PlannedPair<'p>],
 ) -> (Vec<&'p Url>, HashMap<&'p Url, Vec<Member<'p>>>) {
     let mut group_order: Vec<&Url> = Vec::new();
     let mut groups: HashMap<&Url, Vec<Member<'_>>> = HashMap::new();
-    for (stored, planned) in pairs {
+    for PlannedPair { stored, planned } in pairs {
         let key = &planned.url;
         groups
             .entry(key)
@@ -495,7 +504,7 @@ fn write_order<'p>(
 /// read here.
 fn residents_of<'p, S: AccountState>(
     store: &S,
-    pairs: &[(&Bookmark, Bookmark)],
+    pairs: &[PlannedPair<'_>],
     group_order: &[&'p Url],
     untouchable: &HashMap<Url, Refusal>,
 ) -> HashMap<&'p Url, Bookmark> {
@@ -503,8 +512,7 @@ fn residents_of<'p, S: AccountState>(
     // residency: a bookmark that plans to stay at (or move within) its own URL would
     // otherwise find itself sitting there and merge its stored record back into its own
     // plan, undoing the very changes the plan computed.
-    let planned_originals: HashSet<&Url> =
-        pairs.iter().map(|(original, _)| &original.url).collect();
+    let planned_originals: HashSet<&Url> = pairs.iter().map(|pair| &pair.stored.url).collect();
     group_order
         .iter()
         .filter(|key| !untouchable.contains_key(**key) && !planned_originals.contains(*key))

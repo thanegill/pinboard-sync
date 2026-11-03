@@ -46,7 +46,7 @@ time = { version = "0.3", default-features = false, features = ["std", "formatti
 # Markdown. Pure-Rust, built on html5ever and markup5ever_rcdom.
 htmd = "0.5"
 # Favorites pages and titles. Keep on htmd's versions, or a second html5ever returns.
-html5ever = "0.38"
+html5ever = "0.40"
 markup5ever_rcdom = "0.38"
 # An insertion-ordered set for a bookmark's tags; already in the build through h2.
 indexmap = "2"

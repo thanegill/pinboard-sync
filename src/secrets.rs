@@ -525,7 +525,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (_, logs) = crate::test_support::capturing_logs(async {
+        let ((), logs) = crate::test_support::capturing_logs(async {
             warn_if_env_shared("github", &[SecretSpec::GITHUB_TOKEN], 2);
             for _ in 0..2 {
                 assert!(require_github_token(None, Some(&account)).is_ok());

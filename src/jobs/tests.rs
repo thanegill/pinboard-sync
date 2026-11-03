@@ -316,7 +316,7 @@ async fn an_env_secret_is_not_warned_about_for_one_account_or_under_its_flag() {
         ..Default::default()
     };
 
-    let (_, logs) = crate::test_support::capturing_logs(async {
+    let ((), logs) = crate::test_support::capturing_logs(async {
         build_all_jobs(&one, &SyncOverrides::default());
         build_all_jobs(&two, &flagged);
     })

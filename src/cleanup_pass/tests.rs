@@ -2896,7 +2896,7 @@ async fn a_held_mover_in_a_cycle_of_moves_loses_no_bookmark() {
     // the merge there too. With `m` first, `n` is held instead and the swap goes ahead. In
     // no order may a write lose any of the three.
     let p = bookmark("https://target/");
-    let m = with_note_just_under_the_budget(&FakePinboard::trimming(), bookmark("https://u/"));
+    let m = with_note_just_under_the_budget(&FakePinboard::trimming(), &bookmark("https://u/"));
     let mut n = bookmark("https://n/");
     n.note = "n".into();
     let pass = FakePass(|bookmark: &Bookmark| {
@@ -2957,7 +2957,7 @@ async fn a_merge_never_cuts_the_note_of_the_bookmark_that_stays() {
     // room, so merging it would cut that note. The mover is held back and the resident
     // left as it is.
     let pinboard = FakePinboard::trimming();
-    let resident = with_note_just_under_the_budget(&pinboard, bookmark("https://target/"));
+    let resident = with_note_just_under_the_budget(&pinboard, &bookmark("https://target/"));
     let mut mover = bookmark("https://mover/");
     mover.note = String::new();
     mover.tags = tag_list(&["a", "b", "a-rather-long-extra-tag-from-the-mover"]);
@@ -2995,7 +2995,7 @@ async fn a_merge_never_cuts_its_leading_note_further_than_a_lone_rewrite() {
     let pinboard = FakePinboard::trimming();
     let first = Bookmark {
         url: u("https://first/"),
-        ..with_note_just_under_the_budget(&pinboard, bookmark("https://target/"))
+        ..with_note_just_under_the_budget(&pinboard, &bookmark("https://target/"))
     };
     let mut second = bookmark("https://second/");
     second.note = String::new();
@@ -3025,7 +3025,7 @@ async fn a_merge_keeps_a_whole_leading_note_a_lone_rewrite_would_keep() {
     let pinboard = FakePinboard::trimming();
     let first = Bookmark {
         url: u("https://first/"),
-        ..with_note_just_under_the_budget(&pinboard, bookmark("https://target/"))
+        ..with_note_just_under_the_budget(&pinboard, &bookmark("https://target/"))
     };
     let mut second = bookmark("https://second/");
     second.note = String::new();
@@ -3091,7 +3091,7 @@ async fn a_mover_adding_nothing_merges_whatever_the_order() {
     // Only the first is held back, in either snapshot order, and the other is absorbed.
     for reversed in [false, true] {
         let pinboard = FakePinboard::trimming();
-        let resident = with_note_just_under_the_budget(&pinboard, bookmark("https://target/"));
+        let resident = with_note_just_under_the_budget(&pinboard, &bookmark("https://target/"));
         let mut tagging = bookmark("https://tagging/");
         tagging.note = String::new();
         tagging.tags = tag_list(&["a", "b", "a-rather-long-extra-tag-from-the-mover"]);
@@ -3121,7 +3121,7 @@ async fn a_member_is_checked_beside_every_member_merged_before_it() {
     // `second` fits with neither. `first` merges, and `third` is checked beside it, not
     // beside the resident alone, so it is held back with `second`.
     let pinboard = FakePinboard::trimming();
-    let budget = with_note_just_under_the_budget(&pinboard, bookmark("https://target/"))
+    let budget = with_note_just_under_the_budget(&pinboard, &bookmark("https://target/"))
         .note
         .len();
     let mut resident = bookmark("https://target/");
@@ -3254,7 +3254,7 @@ async fn a_member_keeps_what_a_lone_rewrite_of_it_would_keep() {
     let pinboard = FakePinboard::trimming();
     let mover = Bookmark {
         url: u("https://mover/"),
-        ..with_note_just_under_the_budget(&pinboard, bookmark("https://target/"))
+        ..with_note_just_under_the_budget(&pinboard, &bookmark("https://target/"))
     };
     let blocks: Vec<&str> = mover.note.split("\n\n").collect();
     let mut incumbent = bookmark("https://target/");
@@ -3324,7 +3324,7 @@ async fn a_lead_plan_cannot_vouch_for_text_a_member_stores() {
     // The incumbent's plan appends the very link the mover stores, but past its own cut,
     // so the target never holds it: the mover's copy is the only one, and it stays.
     let pinboard = FakePinboard::trimming();
-    let incumbent = with_note_just_under_the_budget(&pinboard, bookmark("https://target/"));
+    let incumbent = with_note_just_under_the_budget(&pinboard, &bookmark("https://target/"));
     let mut mover = bookmark("https://mover/");
     mover.note = "HN Link: https://news.ycombinator.com/item?id=1".into();
     let pass = onto_target_appending(
@@ -3438,7 +3438,7 @@ async fn a_lead_plan_cannot_vouch_for_a_fragment_a_member_stores_whole() {
     // The mover stores the text whole, but its long title makes a lone rewrite cut inside
     // it. The incumbent's plan carries the text past its own cut, so only the mover has it.
     let pinboard = FakePinboard::trimming();
-    let incumbent = with_note_just_under_the_budget(&pinboard, bookmark("https://target/"));
+    let incumbent = with_note_just_under_the_budget(&pinboard, &bookmark("https://target/"));
     let mut mover = bookmark("https://mover/");
     mover.note = LONG_USER_TEXT.into();
     mover.title = title_cutting_inside(&pinboard, &mover, "https://target/");
@@ -3454,7 +3454,7 @@ async fn a_lead_plan_cannot_vouch_for_a_fragment_a_member_stores_whole() {
 /// past its own cut, so only the mover stores what its fragment holds, and it stays.
 async fn assert_a_stored_cut_is_kept(stored_extra: usize, plan_extra: usize) {
     let pinboard = FakePinboard::trimming();
-    let incumbent = with_note_just_under_the_budget(&pinboard, bookmark("https://target/"));
+    let incumbent = with_note_just_under_the_budget(&pinboard, &bookmark("https://target/"));
     let mut template = bookmark("https://mover/");
     template.note = LONG_USER_TEXT.into();
     let base = title_cutting_inside(&pinboard, &template, "https://mover/");
@@ -3516,7 +3516,7 @@ async fn a_lead_plan_cannot_vouch_for_a_fragment_a_member_stores_cut() {
     // a short title. The incumbent's plan carries the text past its own cut, so the
     // mover's fragment is the only copy of what it stores.
     let pinboard = FakePinboard::trimming();
-    let incumbent = with_note_just_under_the_budget(&pinboard, bookmark("https://target/"));
+    let incumbent = with_note_just_under_the_budget(&pinboard, &bookmark("https://target/"));
     let mut template = bookmark("https://mover/");
     template.note = LONG_USER_TEXT.into();
     let mover = pinboard.fit(Bookmark {
@@ -3558,7 +3558,7 @@ async fn a_member_adding_only_tags_never_cuts_one_merged_before_it() {
     // `first` fits beside the resident; `second` brings no note, only a tag long enough
     // to push the cut back into `first`'s note, so `second` is held back.
     let pinboard = FakePinboard::trimming();
-    let full = with_note_just_under_the_budget(&pinboard, bookmark("https://target/")).note;
+    let full = with_note_just_under_the_budget(&pinboard, &bookmark("https://target/")).note;
     let blocks: Vec<&str> = full.split("\n\n").collect();
     let mut resident = bookmark("https://target/");
     resident.note = "resident".into();
@@ -3628,7 +3628,7 @@ async fn a_dry_run_previews_a_kept_mover_as_refused() {
 
 /// `template` with the longest note of short blocks that `pinboard` still keeps whole: just
 /// under the limit, so a few appended bytes push it over.
-fn with_note_just_under_the_budget(pinboard: &FakePinboard, template: Bookmark) -> Bookmark {
+fn with_note_just_under_the_budget(pinboard: &FakePinboard, template: &Bookmark) -> Bookmark {
     let with_blocks = |count: usize| Bookmark {
         note: (0..count)
             .map(|n| format!("block {n:03}"))
@@ -3667,7 +3667,7 @@ async fn an_append_to_a_note_just_under_the_budget_is_not_written() {
     // The stored note fits whole, but with the line appended the fit cuts it short of its
     // own end, so the write would only lose the stored note's tail.
     let pinboard = FakePinboard::trimming();
-    let stored = with_note_just_under_the_budget(&pinboard, bookmark("https://near/"));
+    let stored = with_note_just_under_the_budget(&pinboard, &bookmark("https://near/"));
     let books = vec![stored];
 
     let outcome = run(&pinboard, &books, &appending_a_link(&["a", "b"])).await;
@@ -3686,7 +3686,7 @@ async fn an_append_beside_a_tag_change_keeps_the_whole_stored_note() {
     let pinboard = FakePinboard::trimming();
     let stored = with_note_just_under_the_budget(
         &pinboard,
-        Bookmark {
+        &Bookmark {
             tags: tag_list(&["find-hn"]),
             ..bookmark("https://near/")
         },
@@ -3710,7 +3710,7 @@ async fn an_append_beside_a_longer_tag_cuts_the_stored_note_once() {
     let pinboard = FakePinboard::trimming();
     let stored = with_note_just_under_the_budget(
         &pinboard,
-        Bookmark {
+        &Bookmark {
             tags: tag_list(&["find-hn"]),
             ..bookmark("https://near/")
         },
@@ -3744,7 +3744,7 @@ async fn a_merge_appending_past_a_note_just_under_the_budget_keeps_the_mover() {
     // The mover's link would be cut off past the resident's whole note, so merging it would
     // add nothing and deleting the mover would lose the link. Both stay as they are.
     let pinboard = FakePinboard::trimming();
-    let resident = with_note_just_under_the_budget(&pinboard, bookmark("https://target/"));
+    let resident = with_note_just_under_the_budget(&pinboard, &bookmark("https://target/"));
     let mut mover = bookmark("https://mover/");
     mover.note = "HN Link: https://news.ycombinator.com/item?id=1".into();
     let all = vec![mover.clone(), resident];
@@ -3874,7 +3874,7 @@ async fn a_member_held_back_from_a_refused_group_is_not_counted_twice() {
     let first = bookmark("https://first/");
     let second = Bookmark {
         url: u("https://second/"),
-        ..with_note_just_under_the_budget(&pinboard, bookmark("https://target/"))
+        ..with_note_just_under_the_budget(&pinboard, &bookmark("https://target/"))
     };
     let books = vec![unread, m, first, second];
     let pass = FakePass(|bookmark: &Bookmark| {
@@ -4269,7 +4269,7 @@ async fn a_block_the_plan_extends_is_the_members_own_wherever_the_plan_moves_it(
 #[tokio::test]
 async fn a_stored_block_the_plan_drops_does_not_make_a_carried_block_the_members() {
     let pinboard = FakePinboard::trimming();
-    let incumbent = with_note_just_under_the_budget(&pinboard, bookmark("https://target/"));
+    let incumbent = with_note_just_under_the_budget(&pinboard, &bookmark("https://target/"));
     let mut mover = bookmark("https://mover/");
     mover.note = "old user text".into();
     let pass = FakePass(|bookmark: &Bookmark| {

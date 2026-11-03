@@ -619,8 +619,8 @@ mod tests {
             prop::sample::select(vec!["/", "//"]),
             "([A-Za-z0-9._-]{1,12})(\\.[gG][iI][tT]){0,2}".prop_filter("a repo name", |name| {
                 let mut bare = name.to_ascii_lowercase();
-                while bare.ends_with(".git") {
-                    bare.truncate(bare.len() - ".git".len());
+                while let Some(len) = bare.strip_suffix(".git").map(str::len) {
+                    bare.truncate(len);
                 }
                 !matches!(bare.as_str(), "" | "." | "..")
             }),

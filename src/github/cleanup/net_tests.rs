@@ -950,7 +950,7 @@ async fn a_failed_starred_gist_read_fails_the_gist_pass() {
         let variant = match err {
             SourceError::Halted(Halt::RateLimited(_)) => "rate limited",
             SourceError::Other(_) => "other",
-            _ => "unexpected",
+            SourceError::Halted(Halt::Reauth(_) | Halt::Blocked(_)) => "unexpected",
         };
         assert_eq!(variant, expected, "{err:?}");
         assert!(

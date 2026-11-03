@@ -254,7 +254,9 @@ pub fn titles(drafts: &[BookmarkDraft]) -> Vec<&str> {
 
 /// Build a `RedditListingEntry` from `kind` (`t3`/`t1`) and a `data` JSON object.
 pub fn listing_entry(kind: &str, data: Value) -> RedditListingEntry {
-    serde_json::from_value(serde_json::json!({ "kind": kind, "data": data })).unwrap()
+    let mut wire = serde_json::json!({ "kind": kind });
+    wire["data"] = data;
+    serde_json::from_value(wire).unwrap()
 }
 
 #[derive(Default)]

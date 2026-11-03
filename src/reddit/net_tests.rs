@@ -107,8 +107,8 @@ async fn mount_login_page(server: &MockServer) {
 
 /// Following the redirect would also end in `Halt::Reauth` (the login page's 403), so
 /// the message is what tells the two apart.
-fn assert_refused_at_login(err: SourceError) {
-    let SourceError::Halted(Halt::Reauth(message)) = &err else {
+fn assert_refused_at_login(err: &SourceError) {
+    let SourceError::Halted(Halt::Reauth(message)) = err else {
         panic!("a login redirect must ask for a new cookie: {err:?}");
     };
     assert!(message.contains("login page"), "{message}");
@@ -130,7 +130,7 @@ async fn fetch_saved_maps_a_login_redirect_to_reauth_without_following_it() {
     let client =
         RedditClient::with_base_url(Some("reddit_session=stale".into()), "psophis", server.uri());
     let err = client.fetch_saved().await.unwrap_err();
-    assert_refused_at_login(err);
+    assert_refused_at_login(&err);
 }
 
 #[tokio::test]
@@ -146,7 +146,7 @@ async fn info_maps_a_login_redirect_to_reauth_without_following_it() {
 
     let client = info_client(&server, "reddit_session=stale");
     let err = client.info(&strings(&["t3_a"])).await.unwrap_err();
-    assert_refused_at_login(err);
+    assert_refused_at_login(&err);
 }
 
 #[tokio::test]

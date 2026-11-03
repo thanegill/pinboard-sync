@@ -18,8 +18,9 @@ fn casing_lowercases_single_word_and_all_caps() {
 }
 
 fn item(kind: &str, fields: serde_json::Value) -> RedditSavedItem {
-    let entry: RedditListingEntry =
-        serde_json::from_value(serde_json::json!({ "kind": kind, "data": fields })).unwrap();
+    let mut wire = serde_json::json!({ "kind": kind });
+    wire["data"] = fields;
+    let entry: RedditListingEntry = serde_json::from_value(wire).unwrap();
     entry.into_saved_item("old.reddit.com").unwrap()
 }
 

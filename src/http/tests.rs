@@ -835,7 +835,7 @@ async fn error_with_body_redacts_the_logged_body_and_the_excerpt() {
 #[tokio::test]
 async fn log_body_at_debug_redacts_the_body() {
     let ((), logs) = crate::test_support::capturing_logs(async {
-        log_body_at_debug("req returned 403", "cookie abc echoed", &["abc"])
+        log_body_at_debug("req returned 403", "cookie abc echoed", &["abc"]);
     })
     .await;
     assert_eq!(

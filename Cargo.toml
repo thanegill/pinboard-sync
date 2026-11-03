@@ -8,10 +8,24 @@ description = "Sync saved/favorited items from multiple services to a Pinboard a
 license = "MIT"
 
 [lints.clippy]
-cast_lossless = "warn"
-manual_let_else = "warn"
-ref_option = "warn"
-single_match_else = "warn"
+pedantic = { level = "warn", priority = -1 }
+# Durations stay in the unit the docs give them in, seconds. Nothing hits it yet; it keeps a
+# later wait of over ten minutes, written in seconds, from being converted.
+duration_suboptimal_units = "allow"
+# `|a| a.limit()` reads better than the `config::Account::limit` path it would become.
+redundant_closure_for_method_calls = "allow"
+# Pairs such as `stored` and `stores` name related things on purpose.
+similar_names = "allow"
+# An impl of an async port is an `async fn` like its trait, whether or not it awaits.
+unused_async_trait_impl = "allow"
+# `format!` then `collect` reads better than `fold` and `write!`, and no such build is hot.
+format_collect = "allow"
+# Restriction picks: `#[expect]` rather than `#[allow]`, so a suppression that stops firing
+# is noticed; no `dbg!` or `todo!` left in; no `unwrap` outside tests (see clippy.toml).
+allow_attributes = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
 
 [[bin]]
 name = "pinboard-sync"

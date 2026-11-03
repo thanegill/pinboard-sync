@@ -41,7 +41,7 @@ fn the_markers_are_the_first_gist_tag_and_the_first_the_stars_lack() {
         strings(&["gist"])
     );
     assert_eq!(markers(config(&["star"], &["star"])), strings(&["star"]));
-    assert!(markers(config(&["star"], &["", ""])).is_empty());
+    assert_eq!(markers(config(&["star"], &["", ""])), Vec::<String>::new());
 }
 
 #[test]
@@ -64,12 +64,15 @@ fn gist_configs_keep_one_config_per_marker_set_the_clients_first() {
 /// one whose whole set it carries, and only that one refreshes it.
 #[test]
 fn two_default_accounts_each_own_only_their_gists() {
-    let home = GitHubConfig::resolve(None, &Default::default());
+    let home = GitHubConfig::resolve(None, &crate::config::GitHubDefaults::default());
     let work_account = crate::config::GitHubAccount {
         tags: Some(strings(&["work-star"])),
         ..Default::default()
     };
-    let work = GitHubConfig::resolve(Some(&work_account), &Default::default());
+    let work = GitHubConfig::resolve(
+        Some(&work_account),
+        &crate::config::GitHubDefaults::default(),
+    );
     let configs = gist_configs(&home, &[home.clone(), work]);
     let owners = |tags: &[&str]| -> Vec<Vec<String>> {
         let tags = Tags::from(strings(tags));

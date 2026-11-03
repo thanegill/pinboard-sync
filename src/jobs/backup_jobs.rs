@@ -61,55 +61,7 @@ pub struct BackupPlan {
 pub fn build_backup_plan(cmd: BackupCmd, config: &Config) -> Result<BackupPlan> {
     match (cmd.all, cmd.target) {
         (true, Some(_)) => bail!("--all cannot be combined with a target subcommand"),
-        (true, None) => {
-            let overrides = SyncOverrides {
-                on_auth_failure: on_auth_failure_from_env(),
-                ..SyncOverrides::default()
-            };
-            let sources = build_every::<RedditAccount, _>(&overrides, config, build_backup_job)
-                .and(build_every::<GitHubAccount, _>(
-                    &overrides,
-                    config,
-                    build_backup_job,
-                ))
-                .and(build_every::<HackerNewsAccount, _>(
-                    &overrides,
-                    config,
-                    build_backup_job,
-                ));
-            let mut plan = BackupPlan {
-                jobs: sources.targets,
-                skipped: sources.skipped,
-                out: None,
-                mode: WriteMode::Live,
-            };
-            let has_source_targets = !plan.jobs.is_empty() || !plan.skipped.is_empty();
-            match build_pinboard_backup_job(None, config)? {
-                Some(job) => plan.jobs.push(job),
-                // Silence here would be the worst outcome: a nightly `--all` that quietly
-                // stops covering Pinboard (an unprovisioned sops secret makes the ladder
-                // warn and yield `None`) while still exiting 0. Recorded as a failed
-                // target so the manifest says `complete: false`.
-                None if has_source_targets => {
-                    warn!(
-                        "backup --all: no Pinboard token resolved — the Pinboard account \
-                         is NOT in this snapshot"
-                    );
-                    plan.skipped.push(SkippedTarget {
-                        label: "pinboard".to_string(),
-                        reason: anyhow!("no credential resolved"),
-                    });
-                }
-                None => {}
-            }
-            if plan.jobs.is_empty() && plan.skipped.is_empty() {
-                bail!(
-                    "backup --all found nothing to back up: configure an account with \
-                     --config, or set a Pinboard token"
-                );
-            }
-            Ok(plan)
-        }
+        (true, None) => build_all_backup_plan(config),
         (false, Some(BackupTarget::Reddit(mut args))) => {
             let (account, out, mode) = (
                 args.account.take(),
@@ -164,6 +116,58 @@ pub fn build_backup_plan(cmd: BackupCmd, config: &Config) -> Result<BackupPlan> 
         }
         (false, None) => bail!("specify a target (e.g. `backup pinboard`) or pass --all"),
     }
+}
+
+/// The plan of `backup --all`: every configured account of every source, then the Pinboard
+/// account, with whatever could not be built recorded as skipped.
+fn build_all_backup_plan(config: &Config) -> Result<BackupPlan> {
+    let overrides = SyncOverrides {
+        on_auth_failure: on_auth_failure_from_env(),
+        ..SyncOverrides::default()
+    };
+    let sources = build_every::<RedditAccount, _>(&overrides, config, build_backup_job)
+        .and(build_every::<GitHubAccount, _>(
+            &overrides,
+            config,
+            build_backup_job,
+        ))
+        .and(build_every::<HackerNewsAccount, _>(
+            &overrides,
+            config,
+            build_backup_job,
+        ));
+    let mut plan = BackupPlan {
+        jobs: sources.targets,
+        skipped: sources.skipped,
+        out: None,
+        mode: WriteMode::Live,
+    };
+    let has_source_targets = !plan.jobs.is_empty() || !plan.skipped.is_empty();
+    match build_pinboard_backup_job(None, config)? {
+        Some(job) => plan.jobs.push(job),
+        // Silence here would be the worst outcome: a nightly `--all` that quietly stops
+        // covering Pinboard (an unprovisioned sops secret makes the ladder warn and yield
+        // `None`) while still exiting 0. Recorded as a failed target so the manifest says
+        // `complete: false`.
+        None if has_source_targets => {
+            warn!(
+                "backup --all: no Pinboard token resolved — the Pinboard account \
+                 is NOT in this snapshot"
+            );
+            plan.skipped.push(SkippedTarget {
+                label: "pinboard".to_string(),
+                reason: anyhow!("no credential resolved"),
+            });
+        }
+        None => {}
+    }
+    if plan.jobs.is_empty() && plan.skipped.is_empty() {
+        bail!(
+            "backup --all found nothing to back up: configure an account with \
+             --config, or set a Pinboard token"
+        );
+    }
+    Ok(plan)
 }
 
 /// The backup plan for one source, selecting by name / first / every account. Reuses

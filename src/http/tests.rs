@@ -22,6 +22,10 @@ impl Failure {
     }
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "a classifier takes the response it judges by reference"
+)]
 fn backoff_on_429_and_5xx(status: &u16) -> Verdict {
     if *status == 429 || (500..600).contains(status) {
         Verdict::Backoff
@@ -31,6 +35,10 @@ fn backoff_on_429_and_5xx(status: &u16) -> Verdict {
 }
 
 /// The [`retry_after_up_to`] shape, with every 429 carrying a short wait.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "a classifier takes the response it judges by reference"
+)]
 fn retry_429_once(status: &u16) -> Verdict {
     match *status {
         429 => Verdict::RetryOnceAfter(NO_DELAY),
@@ -835,7 +843,7 @@ async fn error_with_body_redacts_the_logged_body_and_the_excerpt() {
 #[tokio::test]
 async fn log_body_at_debug_redacts_the_body() {
     let ((), logs) = crate::test_support::capturing_logs(async {
-        log_body_at_debug("req returned 403", "cookie abc echoed", &["abc"])
+        log_body_at_debug("req returned 403", "cookie abc echoed", &["abc"]);
     })
     .await;
     assert_eq!(

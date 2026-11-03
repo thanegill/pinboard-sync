@@ -17,6 +17,10 @@ pub fn write(text: impl AsRef<[u8]>) -> io::Result<()> {
 /// Tests write into [`crate::test_support::capturing_stdout`] when inside one, else through
 /// `print!`, the only output libtest captures.
 #[cfg(test)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "keeps the signature of the non-test write it stands in for"
+)]
 pub fn write(text: impl AsRef<[u8]>) -> io::Result<()> {
     let text = String::from_utf8_lossy(text.as_ref());
     if !crate::test_support::capture_stdout(&text) {

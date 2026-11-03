@@ -47,7 +47,7 @@ const MAX_SAVED_PAGES: u32 = 100;
 /// with Reddit's rate limit.
 const REQUEST_PAUSE: Duration = Duration::from_millis(1000);
 
-/// Reddit `/api/info` lookups by fullname (used by `cleanup` for over_18/title).
+/// Reddit `/api/info` lookups by fullname (used by `cleanup` for `over_18` and the title).
 pub trait PostInfo {
     async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError>;
 }

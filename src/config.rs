@@ -140,6 +140,10 @@ pub struct Hooks {
 /// The shared Pinboard destination.
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is a key of the [pinboard] table"
+)]
 pub struct PinboardConfig {
     pub token: Option<String>,
     pub token_file: Option<String>,
@@ -321,6 +325,7 @@ impl Config {
     /// containing whitespace or commas, which Pinboard tags can't hold (its API splits the
     /// tag string on spaces), so one would silently corrupt every bookmark it tags.
     fn validate(&self) -> Result<()> {
+        const NAME_OR_USERNAME: &str = "`name` (or, with no `name`, `username`)";
         if self
             .backup
             .directory
@@ -329,7 +334,6 @@ impl Config {
         {
             bail!("backup.directory must not be empty");
         }
-        const NAME_OR_USERNAME: &str = "`name` (or, with no `name`, `username`)";
         check_unique_names(&self.reddit)?;
         check_distinct_slugs(&self.reddit, NAME_OR_USERNAME)?;
         check_unique_names(&self.github)?;

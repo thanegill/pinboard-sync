@@ -59,6 +59,7 @@ All notable changes to this project are documented here. The format is based on
 - When both of `cleanup github`'s passes fail, the error reports the repo pass first, then
   `; and for gists: ...`, as `cleanup hackernews` reports its two. A pass that halted, such
   as one with a dead token, leads instead.
+- `--help` puts every environment variable it names in backticks, as it did `RUST_LOG`.
 
 ### Deprecated
 

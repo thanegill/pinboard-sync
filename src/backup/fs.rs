@@ -49,9 +49,9 @@ pub(super) fn write_atomically(path: &Path, body: &str) -> Result<()> {
         })
 }
 
-/// Open `tmp` as a brand-new mode-0600 regular file. `create_new` (O_EXCL) never follows a
-/// pre-existing symlink and never reuses an existing file's contents or permissions, so the
-/// 0600 promise holds; a path that already exists errors with `AlreadyExists` instead.
+/// Open `tmp` as a brand-new mode-0600 regular file. `create_new` (`O_EXCL`) never follows
+/// a pre-existing symlink and never reuses an existing file's contents or permissions, so
+/// the 0600 promise holds; a path that already exists errors with `AlreadyExists` instead.
 fn open_new_private(tmp: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
 

@@ -166,7 +166,8 @@ async fn fetch_drops_a_non_numeric_favorite_id() {
 
     let client = hackernews_client(hn.uri(), algolia.uri());
     let ((drafts, _), logs) =
-        crate::test_support::capturing_logs(crate::http::recording_waits(client.fetch())).await;
+        crate::test_support::capturing_logs(Box::pin(crate::http::recording_waits(client.fetch())))
+            .await;
     let drafts = drafts.unwrap();
     assert_eq!(drafts.len(), 1, "{drafts:?}");
     assert_eq!(drafts[0].bookmark.url.as_str(), "https://example.com/x");

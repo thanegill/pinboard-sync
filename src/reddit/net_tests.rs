@@ -729,6 +729,10 @@ fn round_trip_configs() -> [RedditConfig; 2] {
 async fn cleanup_leaves_what_sync_wrote_as_it_is() {
     use crate::reddit::cleanup::{run, RedditCleanupOpts};
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a timestamp is far below where f64 loses whole seconds"
+    )]
     let now = time::OffsetDateTime::now_utc().unix_timestamp() as f64;
     let (recent, stale) = (now - 2.0 * 86_400.0, 1_600_000_000.0);
     let saves = round_trip_saves(recent, stale);

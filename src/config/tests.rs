@@ -613,6 +613,10 @@ fn documents_key(example: &str, key: &str) -> bool {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one destructure per config struct, so a new field fails to compile here"
+)]
 fn example_config_documents_every_field() {
     // The macro destructures each struct with no `..`, so adding a field is a
     // *compile* error until it's listed here -- and `stringify!` then derives the

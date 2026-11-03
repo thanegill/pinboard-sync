@@ -389,6 +389,10 @@ impl RedditSavedItem {
 
 /// The instant a Reddit `created_utc` (epoch seconds, as a float) names, at whole
 /// seconds, as both sync and cleanup date a post by it.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "whole seconds are the point, and `as` saturates a value out of range"
+)]
 pub(crate) fn created_at(created_utc: Option<f64>) -> Option<OffsetDateTime> {
     created_utc.and_then(|secs| crate::timefmt::from_unix(secs as i64))
 }

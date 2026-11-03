@@ -140,6 +140,10 @@ pub struct Hooks {
 /// The shared Pinboard destination.
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is a key of the [pinboard] table"
+)]
 pub struct PinboardConfig {
     pub token: Option<String>,
     pub token_file: Option<String>,

@@ -43,9 +43,12 @@ cleanup, the cleanup unit's `cleanup --all`, and every user value's `%` escaped.
 `checks.nix-lint` runs `nixfmt --check`, statix and deadnix over every `.nix` file. CI
 runs `nix flake check` on x86_64-linux, in its `flake` job.
 
-`cargo clippy -D warnings` and `cargo fmt --check` are the gate — keep both clean.
-Commit often: each working feature or structural piece, with its tests, keeping the
-gate green.
+`cargo clippy -D warnings` and `cargo fmt --check` are the gate — keep both clean. Commit
+often: each working feature or structural piece, with its tests, keeping the gate green.
+Clippy runs `pedantic`, less the lints `Cargo.toml`'s `[lints.clippy]` allows with a reason,
+plus `unwrap_used` outside tests, `dbg_macro`, `todo` and `allow_attributes`. A deliberate
+exception on one item is `#[expect(clippy::..., reason = "...")]`, never `#[allow]`, so it
+is flagged once the lint stops firing.
 
 CI's `lint` job is part of the gate too: it runs typos, actionlint, zizmor, cargo-machete
 and `cargo deny --locked check`, and builds the docs with rustdoc warnings as errors, so

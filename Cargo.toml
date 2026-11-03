@@ -34,7 +34,7 @@ reqwest = { version = "0.12", default-features = false, features = ["http2", "js
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower = { version = "0.5", default-features = false, features = ["retry", "util"] }
-toml = "0.8"
+toml = "1.1"
 url = "2"
 dotenvy = "0.15"
 clap_mangen = "0.2"

@@ -884,6 +884,7 @@ async fn write_merge<S: BookmarkStore>(
     }
 
     // Always through the store -- see `write_single`.
+    let done = if rewrite { "merged" } else { "absorbed into" };
     let write = if rewrite {
         store.apply_merge(merged, &old_urls).await
     } else {
@@ -892,8 +893,7 @@ async fn write_merge<S: BookmarkStore>(
     match write.error {
         None => {
             outcome.changed += 1;
-            let absorbed: Vec<String> = write.deleted.iter().map(|u| u.to_string()).collect();
-            let done = if rewrite { "merged" } else { "absorbed into" };
+            let absorbed: Vec<&str> = write.deleted.iter().map(Url::as_str).collect();
             debug!("{done} {target} <- [{}]", absorbed.join(" "));
             Vec::new()
         }
@@ -907,7 +907,6 @@ async fn write_merge<S: BookmarkStore>(
             }
             outcome.write_failed += 1;
             let stranded = old_urls.len() - write.deleted.len();
-            let done = if rewrite { "merged" } else { "absorbed into" };
             error!("{done} {target} but {stranded} absorbed URL(s) remain: {e:#}");
             Vec::new()
         }

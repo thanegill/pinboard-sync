@@ -1,9 +1,5 @@
 //! The command line: clap's `Cli` and every subcommand's arguments, and the conversions
 //! from them into the overrides the job builders and cleanup passes resolve settings from.
-#![expect(
-    clippy::doc_markdown,
-    reason = "clap prints these doc comments as --help, where backticks would show verbatim"
-)]
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -24,7 +20,7 @@ use crate::reddit::cleanup::RedditCleanupOverrides;
 #[derive(Parser)]
 #[command(name = "pinboard-sync", version, about, arg_required_else_help = true)]
 pub struct Cli {
-    /// Path to the TOML config file (env PINBOARD_SYNC_CONFIG).
+    /// Path to the TOML config file (env `PINBOARD_SYNC_CONFIG`).
     #[arg(long, global = true)]
     pub config: Option<String>,
     /// Increase log verbosity: `-v` for debug, `-vv` for trace, `-vvv` to also include
@@ -236,11 +232,11 @@ pub struct RedditBackupArgs {
     /// Back up every reddit account in the config.
     #[arg(long, conflicts_with = "account")]
     pub all: bool,
-    /// Reddit username whose saved items to back up (env REDDIT_USERNAME, or *_FILE).
+    /// Reddit username whose saved items to back up (env `REDDIT_USERNAME`, or `*_FILE`).
     #[arg(long)]
     pub reddit_username: Option<String>,
-    /// Reddit session cookie, `reddit_session=…` or its bare value (env REDDIT_COOKIE,
-    /// or *_FILE).
+    /// Reddit session cookie, `reddit_session=…` or its bare value (env `REDDIT_COOKIE`,
+    /// or `*_FILE`).
     #[arg(long)]
     pub reddit_cookie: Option<String>,
     /// Shell command run when the Reddit cookie needs refreshing (a 401/403, or a
@@ -261,7 +257,7 @@ pub struct GitHubBackupArgs {
     /// Back up every github account in the config.
     #[arg(long, conflicts_with = "account")]
     pub all: bool,
-    /// GitHub personal access token (env GITHUB_TOKEN, or *_FILE).
+    /// GitHub personal access token (env `GITHUB_TOKEN`, or `*_FILE`).
     #[arg(long)]
     pub github_token: Option<String>,
     /// Shell command run when the GitHub token needs refreshing (a 401).
@@ -281,7 +277,7 @@ pub struct HackerNewsBackupArgs {
     /// Back up every hackernews account in the config.
     #[arg(long, conflicts_with = "account")]
     pub all: bool,
-    /// HackerNews username whose favorites to back up (env HN_USERNAME, or *_FILE).
+    /// HackerNews username whose favorites to back up (env `HN_USERNAME`, or `*_FILE`).
     #[arg(long = "hn-username", alias = "username", value_name = "HN_USERNAME")]
     pub username: Option<String>,
     #[command(flatten)]
@@ -295,7 +291,7 @@ pub struct HackerNewsBackupArgs {
 /// array of accounts like the sources.
 #[derive(Args)]
 pub struct PinboardBackupArgs {
-    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
+    /// Pinboard API token, "user:TOKEN" (env `PINBOARD_TOKEN`, or `*_FILE`).
     #[arg(long)]
     pub pinboard_token: Option<String>,
     #[command(flatten)]
@@ -314,7 +310,7 @@ pub struct SyncCmd {
     #[arg(long)]
     pub dry_run: bool,
     /// Shell command run when a source's credential needs refreshing (a 401/403; env
-    /// PINBOARD_SYNC_ON_AUTH_FAILURE).
+    /// `PINBOARD_SYNC_ON_AUTH_FAILURE`).
     #[arg(long)]
     pub on_auth_failure: Option<String>,
     #[command(subcommand)]
@@ -338,11 +334,11 @@ pub struct RedditSyncArgs {
     /// Run every reddit account in the config.
     #[arg(long, conflicts_with = "account")]
     pub all: bool,
-    /// Reddit username whose saved items to sync (env REDDIT_USERNAME, or *_FILE).
+    /// Reddit username whose saved items to sync (env `REDDIT_USERNAME`, or `*_FILE`).
     #[arg(long)]
     pub reddit_username: Option<String>,
-    /// Reddit session cookie, `reddit_session=…` or its bare value (env REDDIT_COOKIE,
-    /// or *_FILE).
+    /// Reddit session cookie, `reddit_session=…` or its bare value (env `REDDIT_COOKIE`,
+    /// or `*_FILE`).
     #[arg(long)]
     pub reddit_cookie: Option<String>,
     #[command(flatten)]
@@ -363,7 +359,7 @@ pub struct GitHubSyncArgs {
     /// Run every github account in the config.
     #[arg(long, conflicts_with = "account")]
     pub all: bool,
-    /// GitHub personal access token (env GITHUB_TOKEN, or *_FILE).
+    /// GitHub personal access token (env `GITHUB_TOKEN`, or `*_FILE`).
     #[arg(long)]
     pub github_token: Option<String>,
     #[command(flatten)]
@@ -383,7 +379,7 @@ pub struct HackerNewsSyncArgs {
     /// Run every hackernews account in the config.
     #[arg(long, conflicts_with = "account")]
     pub all: bool,
-    /// HackerNews username whose favorites to sync (env HN_USERNAME, or *_FILE).
+    /// HackerNews username whose favorites to sync (env `HN_USERNAME`, or `*_FILE`).
     #[arg(long = "hn-username", alias = "username", value_name = "HN_USERNAME")]
     pub username: Option<String>,
     #[command(flatten)]
@@ -397,7 +393,7 @@ pub struct HackerNewsSyncArgs {
 /// the declarations live in one place.
 #[derive(Args, Default)]
 pub struct SyncFlags {
-    /// Pinboard API token, "user:TOKEN" (env PINBOARD_TOKEN, or *_FILE).
+    /// Pinboard API token, "user:TOKEN" (env `PINBOARD_TOKEN`, or `*_FILE`).
     #[arg(long)]
     pub pinboard_token: Option<String>,
     /// `auto` (the default: no cap; stop paging once caught up),
@@ -493,10 +489,10 @@ impl DateFlags {
 pub struct GitHubCleanupArgs {
     /// Account name whose token/tags to use (default: the first github account).
     pub account: Option<String>,
-    /// GitHub personal access token (env GITHUB_TOKEN, or *_FILE).
+    /// GitHub personal access token (env `GITHUB_TOKEN`, or `*_FILE`).
     #[arg(long)]
     pub github_token: Option<String>,
-    /// Pinboard API token (env PINBOARD_TOKEN, or *_FILE).
+    /// Pinboard API token (env `PINBOARD_TOKEN`, or `*_FILE`).
     #[arg(long)]
     pub pinboard_token: Option<String>,
     #[command(flatten)]
@@ -510,7 +506,7 @@ pub struct GitHubCleanupArgs {
 pub struct HackerNewsCleanupArgs {
     /// Account name whose tag config to use (default: the first hackernews account).
     pub account: Option<String>,
-    /// Pinboard API token (env PINBOARD_TOKEN, or *_FILE).
+    /// Pinboard API token (env `PINBOARD_TOKEN`, or `*_FILE`).
     #[arg(long)]
     pub pinboard_token: Option<String>,
     /// Also link article bookmarks tagged with the link tag (default `find-hn`) to
@@ -531,15 +527,15 @@ pub struct HackerNewsCleanupArgs {
 pub struct RedditCleanupArgs {
     /// Account name whose cookie + domain/tags to use (default: the first reddit account).
     pub account: Option<String>,
-    /// Reddit session cookie, `reddit_session=…` or its bare value (env REDDIT_COOKIE,
-    /// or *_FILE). Needed for the `/api/info` lookups; not required with --no-nsfw
+    /// Reddit session cookie, `reddit_session=…` or its bare value (env `REDDIT_COOKIE`,
+    /// or `*_FILE`). Needed for the `/api/info` lookups; not required with --no-nsfw
     /// --no-titles.
     #[arg(long)]
     pub reddit_cookie: Option<String>,
-    /// Pinboard API token (env PINBOARD_TOKEN, or *_FILE).
+    /// Pinboard API token (env `PINBOARD_TOKEN`, or `*_FILE`).
     #[arg(long)]
     pub pinboard_token: Option<String>,
-    /// Skip NSFW tagging (no Reddit /api/info call for over_18).
+    /// Skip NSFW tagging (no Reddit `/api/info` call for `over_18`).
     #[arg(long)]
     pub no_nsfw: bool,
     /// Skip replacing generic placeholder titles.

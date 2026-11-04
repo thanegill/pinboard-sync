@@ -1302,7 +1302,7 @@ async fn many_file_gist_server(description: &str) -> MockServer {
         "id": GIST_ID,
         "html_url": gist_url(None),
         "description": description,
-        "files": many_files(200),
+        "files": many_files(500),
         "owner": { "login": "octocat" },
     });
     mount_starred(
@@ -1348,6 +1348,26 @@ async fn cleanup_leaves_a_gist_note_pinboard_trimmed_as_it_is() {
         writes, 0,
         "a trimmed note that is otherwise current is no change"
     );
+}
+
+#[tokio::test]
+async fn cleanup_lengthens_a_gist_note_stored_cut_short_once() {
+    let server = many_file_gist_server("Many files").await;
+    let synced = synced_account(&github_client(&server), NO_DATING).await;
+    let kept = synced[0]
+        .note
+        .strip_suffix(TRUNCATION_MARKER)
+        .expect("the fixture's note is cut");
+    let cut_short = vec![Bookmark {
+        note: format!("{}{TRUNCATION_MARKER}", &kept[..kept.len() / 2]),
+        ..synced[0].clone()
+    }];
+
+    let (first_writes, cleaned) = clean_trimmed(cut_short, &server).await;
+    assert_eq!(first_writes, 1);
+    assert_eq!(cleaned, synced);
+    let (second_writes, _) = clean_trimmed(cleaned, &server).await;
+    assert_eq!(second_writes, 0, "the lengthened note settles");
 }
 
 #[tokio::test]
@@ -1478,7 +1498,7 @@ fn round_trip_gists() -> Vec<serde_json::Value> {
             "id": "fedcba9876543210fedc",
             "html_url": "https://gist.github.com/fedcba9876543210fedc",
             "description": "Generated fixtures",
-            "files": many_files(300),
+            "files": many_files(600),
             "owner": { "login": "bulk" },
             "created_at": days_ago(3),
             "updated_at": days_ago(2),

@@ -26,12 +26,13 @@ pub const RATE_LIMIT: Duration = Duration::from_secs(3);
 const BACKOFF: LinearBackoff = LinearBackoff::new(5, RATE_LIMIT);
 
 /// `posts/add` is a GET, so every field -- notably `extended` (the notes) -- rides in
-/// the request URL. Servers cap the request line (Pinboard answers a long one with
-/// `414 URI Too Long`), so we trim `extended` to keep the encoded URL within a byte
-/// budget. This is the *starting* budget; Pinboard's exact limit is undocumented and
-/// is lower than the common ~8 KB, so [`PinboardClient::post_add`] halves the budget
-/// and retries if a 414 still comes back. Other fields are never trimmed.
-const MAX_URL_BYTES: usize = 4000;
+/// the request URL, and `extended` is trimmed to keep the whole URL, scheme and host
+/// included, percent-encoded as sent, within this many bytes. Other fields are never
+/// trimmed. Pinboard's nginx caps the request line at 8 KiB: a full URL of 8201 bytes
+/// passed and one of 8202 got `414 URI Too Long` (measured 2026-11-04). The margin under
+/// that absorbs a small change on Pinboard's side, and a 414 that still comes back makes
+/// [`PinboardClient::post_add`] halve the budget and retry.
+const MAX_URL_BYTES: usize = 8100;
 /// Floor for the adaptive 414 retry: below this we stop shrinking and surface the
 /// error rather than writing a bookmark with essentially no notes in an endless loop.
 const MIN_URL_BYTES: usize = 500;
@@ -203,10 +204,9 @@ impl PinboardClient {
         let endpoint = self.url("posts/add");
         let fixed = self.add_params(b, &tags, dt.as_deref());
 
-        // Trim the notes to the budget; if Pinboard still rejects the URL as too long
-        // (its limit is undocumented), halve the budget and retry rather than dropping
-        // the bookmark. Transient errors (network/429/5xx) are handled by
-        // `RetryingClient::send`.
+        // Trim the notes to the budget; if Pinboard still rejects the URL as too long,
+        // halve the budget and retry rather than dropping the bookmark. Transient errors
+        // (network/429/5xx) are handled by `RetryingClient::send`.
         let mut budget = MAX_URL_BYTES;
         loop {
             let extended = self.fitted_note(b, budget);
@@ -543,7 +543,7 @@ mod tests {
     /// A bookmark whose note is too long for a `posts/add` URL, dated `timestamp`.
     fn long_note_bookmark(timestamp: Option<time::OffsetDateTime>) -> Bookmark {
         Bookmark {
-            note: "a long note ".repeat(400),
+            note: "a long note ".repeat(800),
             timestamp,
             ..crate::test_support::stored_at("https://example.com/long")
         }
@@ -580,6 +580,58 @@ mod tests {
             c.fit(tagged(&["reddit", "rust"])).note,
             "the same tag set must cut the same, as `diff` compares tags as a set"
         );
+    }
+
+    #[test]
+    fn a_note_past_half_the_request_line_is_kept_whole() {
+        let c = test_client();
+        let b = Bookmark {
+            note: "a long note ".repeat(500),
+            ..crate::test_support::stored_at("https://example.com/long")
+        };
+        assert_ne!(
+            c.fitted_note(&b, MAX_URL_BYTES / 2),
+            b.note,
+            "the note must not fit half the budget"
+        );
+        assert_eq!(c.fit(b.clone()), b);
+    }
+
+    /// The length of the `posts/add` URL that sends `b`, measured with a `dt` as `fit` is.
+    fn sent_url_len(c: &PinboardClient, b: &Bookmark) -> usize {
+        let tags = b.tags.joined();
+        let mut params = c.add_params(b, &tags, Some(DT_PLACEHOLDER));
+        params.push(("extended", &b.note));
+        c.http
+            .get(c.url("posts/add"))
+            .query(&params)
+            .build()
+            .unwrap()
+            .url()
+            .as_str()
+            .len()
+    }
+
+    #[test]
+    fn tags_are_kept_whole_and_the_note_cut_to_make_room() {
+        let c = test_client();
+        let few_tags = long_note_bookmark(None);
+        let many_tags = Bookmark {
+            tags: (0..100).map(|n| format!("tag-number-{n:03}")).collect(),
+            ..few_tags.clone()
+        };
+
+        let fitted = c.fit(many_tags.clone());
+        assert_eq!(
+            Bookmark {
+                note: many_tags.note.clone(),
+                ..fitted.clone()
+            },
+            many_tags,
+            "only the note is cut"
+        );
+        assert!(fitted.note.len() < c.fit(few_tags).note.len());
+        assert!(sent_url_len(&c, &fitted) <= MAX_URL_BYTES);
     }
 
     /// A realistic set of fixed params (URL, title, tags, auth, ...).

@@ -192,10 +192,11 @@ holding back each one that would break either rule; each is refused like a visib
 mismatch, its URL marked `OccupiedByRefused` ahead of the fixpoint, so not even a cycle of
 moves loses it. A merge with no record staying is fitted against the base's stored record,
 so its cut is the one a lone rewrite makes. `PinboardClient` implements `fit` with
-`fitted_note`, which `post_add` uses too, so the two can't drift. It measures as if a `dt`
-were sent, so a note `sync` wrote undated cuts the same once `cleanup` writes it back
-dated. A test models the cut with `FakePinboard`'s `trims_notes`, which applies the real
-`fitted_note` to the fit and writes.
+`fitted_note`, which `post_add` uses too, so the two can't drift. Only the note is ever
+cut: every other field, tags included, is sent whole, even when that cuts the note
+further. It measures as if a `dt` were sent, so a note `sync` wrote undated cuts the same
+once `cleanup` writes it back dated. A test models the cut with `FakePinboard`'s
+`trims_notes`, which applies the real `fitted_note` to the fit and writes.
 
 **Every source is a `Source`, and one sync loop drives them all.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `BookmarkDraft`s (a `Bookmark`

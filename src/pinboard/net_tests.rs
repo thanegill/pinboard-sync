@@ -294,6 +294,44 @@ async fn add_retries_after_414_then_succeeds() {
     );
 }
 
+#[tokio::test]
+async fn add_sends_every_tag_and_cuts_the_note_to_make_room() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/add"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+        .mount(&server)
+        .await;
+    let tagged = Bookmark {
+        note: "long notes ".repeat(2000),
+        tags: (0..100).map(|n| format!("tag-number-{n:03}")).collect(),
+        timestamp: crate::timefmt::from_unix(1_700_000_000),
+        ..post()
+    };
+
+    client(&server).add(&tagged).await.unwrap();
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("recording requests");
+    let [request] = requests.as_slice() else {
+        panic!("one request, got {}", requests.len());
+    };
+    let param = |key: &str| {
+        request
+            .url
+            .query_pairs()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.into_owned())
+    };
+    assert_eq!(param("tags"), Some(tagged.tags.joined()));
+    assert!(param("dt").is_some(), "the write is dated");
+    let sent_note = param("extended").expect("posts/add sends extended");
+    assert!(sent_note.ends_with(TRUNCATION_MARKER), "{sent_note}");
+    assert!(request.url.as_str().len() <= MAX_URL_BYTES);
+}
+
 /// The `extended` value of every request `server` received, in order.
 async fn sent_notes(server: &MockServer) -> Vec<String> {
     server

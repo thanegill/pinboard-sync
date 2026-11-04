@@ -61,6 +61,14 @@ check: the sandbox has no network. An advisory `ignore` in `deny.toml` carries i
 reason. CI runs zizmor online, with the job's token, so it also checks that each pinned
 action SHA belongs to its repository and has no known advisory (`--offline` skips both).
 
+**A release is a bump PR, then a tag; CI never pushes to master.** Running
+`scripts/prepare-release.sh X.Y.Z` opens the PR that bumps Cargo.toml and Cargo.lock and
+moves the changelog's `[Unreleased]` items under `[X.Y.Z]`. Once it merges, pushing the
+`vX.Y.Z` tag on its commit starts [`release.yml`](.github/workflows/release.yml), which
+refuses a tag off master or one whose version Cargo.toml or Cargo.lock doesn't carry,
+then builds, publishes the release and moves `latest`. Its header gives the rest,
+including the rehearsal run, `gh workflow run release.yml -f rehearse=true`.
+
 ## Architecture
 
 The flow is one pass: a source yields drafts → skip those already on Pinboard → write the

@@ -2240,9 +2240,12 @@ async fn a_dry_run_previews_a_merge_and_its_absorbed_urls() {
     );
 }
 
-/// A note of 400 short blocks, too long for a `posts/add` URL.
+/// More short blocks than a `posts/add` URL holds.
+const BLOCKS_PAST_THE_LIMIT: usize = 800;
+
+/// A note of [`BLOCKS_PAST_THE_LIMIT`] short blocks, too long for a `posts/add` URL.
 fn note_pinboard_trims() -> String {
-    (0..400)
+    (0..BLOCKS_PAST_THE_LIMIT)
         .map(|n| format!("block {n:03}"))
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -2410,6 +2413,54 @@ async fn a_change_wholly_past_the_cut_is_not_written() {
         pinboard.updated.borrow()
     );
     assert!(crate::test_support::warnings(&logs).is_empty(), "{logs:#?}");
+}
+
+#[tokio::test]
+async fn a_note_stored_cut_shorter_than_a_write_now_keeps_is_rewritten_once() {
+    // Stored cut short, as a smaller budget once cut it; the plan is the whole note again.
+    let pinboard = FakePinboard::trimming();
+    let whole = note_pinboard_trims();
+    let kept_now = pinboard
+        .fit(Bookmark {
+            note: whole.clone(),
+            ..bookmark("https://long/")
+        })
+        .note;
+    let stored = Bookmark {
+        note: format!("{}{TRUNCATION_MARKER}", &whole[..kept_now.len() / 2]),
+        ..bookmark("https://long/")
+    };
+    let pass = FakePass(move |bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            note: whole.clone(),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+
+    let (first, _, after) = run_twice(std::slice::from_ref(&stored), &pass).await;
+    assert_eq!(first.changed, 1);
+    assert_eq!(after[0].note, kept_now);
+}
+
+#[tokio::test]
+async fn tags_a_plan_adds_are_written_whole_and_the_note_cut_for_them() {
+    let pinboard = FakePinboard::trimming();
+    let stored = with_note_just_under_the_budget(&pinboard, &bookmark("https://near/"));
+    let added: Vec<String> = (0..20).map(|n| format!("added-tag-{n:02}")).collect();
+    let retagged = Bookmark {
+        tags: stored.tags.iter().cloned().chain(added).collect(),
+        ..stored.clone()
+    };
+    let planned = retagged.clone();
+    let pass = FakePass(move |_: &Bookmark| Ok(Plan::Bookmark(planned.clone())));
+
+    let (first, _, after) = run_twice(std::slice::from_ref(&stored), &pass).await;
+    assert_eq!(first.changed, 1);
+    assert_eq!(after[0].tags, retagged.tags);
+    let kept = pinboard
+        .kept_of_cut(&after[0].note)
+        .expect("the note is cut to make room");
+    assert!(stored.note.starts_with(kept), "{}", after[0].note);
 }
 
 #[tokio::test]
@@ -2665,7 +2716,7 @@ fn long_resident_and_short_mover() -> (Bookmark, Bookmark) {
 /// note already holds, so the merge adds nothing and the mover loses nothing.
 fn long_resident_and_absorbable_mover() -> (Bookmark, Bookmark) {
     let (resident, mut mover) = long_resident_and_short_mover();
-    mover.note = "block 399".into();
+    mover.note = format!("block {:03}", BLOCKS_PAST_THE_LIMIT - 1);
     (resident, mover)
 }
 
@@ -2898,7 +2949,20 @@ async fn a_held_mover_in_a_cycle_of_moves_loses_no_bookmark() {
     let p = bookmark("https://target/");
     let m = with_note_just_under_the_budget(&FakePinboard::trimming(), &bookmark("https://u/"));
     let mut n = bookmark("https://n/");
-    n.note = "n".into();
+    n.note = "n, longer than the room m leaves".into();
+    let at_target = |note: String| Bookmark {
+        note,
+        ..bookmark("https://target/")
+    };
+    let alone = at_target(m.note.clone());
+    assert_eq!(FakePinboard::trimming().fit(alone.clone()), alone);
+    for note in [
+        format!("{}\n\n{}", n.note, m.note),
+        format!("{}\n\n{}", m.note, n.note),
+    ] {
+        let beside = at_target(note);
+        assert_ne!(FakePinboard::trimming().fit(beside.clone()), beside);
+    }
     let pass = FakePass(|bookmark: &Bookmark| {
         let url = if bookmark.url.as_str() == "https://target/" {
             "https://u/"
@@ -2922,7 +2986,7 @@ async fn a_held_mover_in_a_cycle_of_moves_loses_no_bookmark() {
         assert_eq!(outcome.write_failed, 0);
         let account = crate::test_support::replay(&books, &pinboard.ops.borrow());
         assert_eq!(account.len(), 3, "{books:?}: {account:?}");
-        for note in ["notes", "n", m.note.as_str()] {
+        for note in ["notes", n.note.as_str(), m.note.as_str()] {
             assert!(
                 account.iter().any(|bookmark| bookmark.note == note),
                 "{books:?}: {account:?}"
@@ -3063,7 +3127,7 @@ async fn a_merge_never_shortens_a_note_already_cut() {
     // only a tag would cut it shorter, losing more of that block, so it is held back.
     let pinboard = FakePinboard::trimming();
     let resident = pinboard.fit(Bookmark {
-        note: format!("{}\n\n{}", "A".repeat(1000), "B".repeat(5000)),
+        note: format!("{}\n\n{}", "A".repeat(2000), "B".repeat(10_000)),
         ..bookmark("https://target/")
     });
     assert!(
@@ -3636,7 +3700,7 @@ fn with_note_just_under_the_budget(pinboard: &FakePinboard, template: &Bookmark)
             .join("\n\n"),
         ..template.clone()
     };
-    let count = (1..400)
+    let count = (1..BLOCKS_PAST_THE_LIMIT)
         .take_while(|count| {
             let candidate = with_blocks(*count);
             pinboard.fit(candidate.clone()) == candidate
@@ -4211,7 +4275,7 @@ async fn a_block_the_plan_rewrites_is_the_members_own_up_to_the_change_after_an_
 /// Identical cut copies, the mover under a shorter title and both planned the whole note.
 /// A stored block the target holds whole, an `id=1` link, starts later blocks only the
 /// mover's lone rewrite reaches (`id=12`): that doesn't make those blocks its own, and it
-/// is absorbed.
+/// is absorbed. The copies are cut inside a paragraph, so no stored cut starts a link.
 #[tokio::test]
 async fn a_duplicate_whose_stored_block_starts_a_later_block_is_still_absorbed() {
     let link = "HN Link: https://news.ycombinator.com/item?id=1";
@@ -4224,12 +4288,25 @@ async fn a_duplicate_whose_stored_block_starts_a_later_block_is_still_absorbed()
         }))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let incumbent = FakePinboard::trimming().fit(Bookmark {
-        title: "A long title that takes room from the note at the target, and then some more room"
-            .into(),
-        note: full.clone(),
-        ..bookmark("https://target/")
-    });
+    let pinboard = FakePinboard::trimming();
+    let incumbent = (0..200)
+        .map(|padding| {
+            pinboard.fit(Bookmark {
+                title: format!(
+                    "A long title that takes room from the note at the target{}",
+                    "!".repeat(padding)
+                ),
+                note: full.clone(),
+                ..bookmark("https://target/")
+            })
+        })
+        .find(|fitted| {
+            pinboard
+                .kept_of_cut(&fitted.note)
+                .and_then(|kept| kept.rsplit("\n\n").next())
+                .is_some_and(|cut| cut.len() > 5 && !cut.starts_with("HN"))
+        })
+        .expect("a title that cuts inside a paragraph");
     for title_len in [1, 10, 30, 50] {
         let mover = Bookmark {
             url: u("https://mover/"),

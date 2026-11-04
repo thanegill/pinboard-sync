@@ -60,6 +60,12 @@ All notable changes to this project are documented here. The format is based on
   `; and for gists: ...`, as `cleanup hackernews` reports its two. A pass that halted, such
   as one with a dead token, leads instead.
 - `--help` puts every environment variable it names in backticks, as it did `RUST_LOG`.
+- A long note keeps about twice as much text before it is cut: a write's request URL may
+  now run to just under Pinboard's 8 KiB limit. Only the note is ever cut, so tags and the
+  other fields are always written whole. The next `cleanup github` rewrites a synced
+  gist's note that `sync` stored cut, once, with the longer text, and the next `cleanup
+  reddit` does the same for a self-post's note while the post still starts with the text
+  that was kept. HackerNews notes stored cut stay as they are.
 
 ### Deprecated
 

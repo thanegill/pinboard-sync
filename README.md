@@ -255,12 +255,14 @@ would leave too little room for the note already there. A refused bookmark is le
 untouched, so the duplicate stays until you resolve it yourself.
 
 A note too long for a Pinboard API request URL is cut short when written, with a marker
-appended (logged when it happens). `cleanup` compares what a write would store with what
-writing the bookmark back unchanged would store, so it doesn't rewrite a cut note every
-run, or cut a long note when the only change would be cut off anyway. A merge that adds
-nothing to the bookmark it lands on just deletes the one it absorbs, provided the notes
-it could keep are already there. The one exception is a note Pinboard rejects even once
-cut: the client cuts it further on retry, and `cleanup` then rewrites it on every run.
+appended (logged when it happens). Only the note is cut: tags and the other fields are
+always written whole, which leaves the note less room. `cleanup` compares what a write
+would store with what writing the bookmark back unchanged would store, so it doesn't
+rewrite a cut note every run, or cut a long note when the only change would be cut off
+anyway. A merge that adds nothing to the bookmark it lands on just deletes the one it
+absorbs, provided the notes it could keep are already there. The one exception is a note
+Pinboard rejects even once cut: the client cuts it further on retry, and `cleanup` then
+rewrites it on every run.
 
 - **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your configured
   `reddit_domain` (default `old.reddit.com`), unwrapping `over18` interstitial redirects

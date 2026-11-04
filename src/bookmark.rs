@@ -86,9 +86,10 @@ pub trait BookmarkStore {
     /// reads as unchanged rather than rewritten, and trimmed again, every run.
     fn fit(&self, b: Bookmark) -> Bookmark;
 
-    /// The part [`Self::fit`] kept of `note`, a note it returned cut; `None` from a store
-    /// that never cuts. Asked only of a note `fit` just shortened, since a whole note may
-    /// end in the same text as the store's cut marker.
+    /// The part [`Self::fit`] kept of `note`, when `note` ends in the store's cut marker;
+    /// `None` from a store that never cuts. A whole note may end in the same text, so a
+    /// caller treating `Some` as proof of a cut checks the kept part against what it could
+    /// have been cut from.
     fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str>;
 
     /// The cleanup re-write step: `update` the bookmark, then `delete` the old URL when it

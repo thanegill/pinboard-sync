@@ -1,5 +1,11 @@
 # pinboard-sync
 
+> **AI Disclosure:** This project falls under [Level 5: Bots coded, human understands
+> completely](https://www.visidata.org/blog/2026/ai/). Exact model used varies by commit
+> and is in the commit message. This is disclosed as useful context for anyone depending
+> on, auditing, or forking this code, not because I think it lowers the bar on the
+> quality. Reach out or report bugs the way you would for any other project.
+
 A small Rust CLI that syncs the things you save across the web into a single
 [Pinboard](https://pinboard.in) account, and tidies up the bookmarks once they're
 there. It currently knows three sources:

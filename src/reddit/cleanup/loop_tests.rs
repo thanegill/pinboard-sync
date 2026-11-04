@@ -1,4 +1,5 @@
 use super::*;
+use crate::pinboard::TRUNCATION_MARKER;
 use crate::source::Halt;
 use crate::test_support::{
     listing_entry, stored_at, strings, tag_list, FakePinboard, FakeReddit, NO_DATING,
@@ -459,6 +460,81 @@ async fn preserves_hand_written_note_on_a_self_post() {
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].extended, "my own thoughts -- revisit this later");
+}
+
+/// Reddit answering `/api/info` for one self-post, whose body is `selftext`.
+fn self_post_info(selftext: &str) -> FakeReddit {
+    FakeReddit {
+        info: vec![listing_entry(
+            "t3",
+            json!({ "name": "t3_a", "subreddit": "rust", "is_self": true,
+                    "permalink": "/r/rust/comments/a/x/", "title": "A real title",
+                    "selftext": selftext }),
+        )],
+        ..Default::default()
+    }
+}
+
+/// A normalized self-post bookmark at `host` with `note`.
+fn self_post_bookmark(host: &str, note: &str) -> Bookmark {
+    Bookmark {
+        title: "A real title".into(),
+        note: note.into(),
+        tags: tag_list(&["reddit", "subreddit:rust"]),
+        ..stored_at(&format!("https://{host}/r/rust/comments/a/x/"))
+    }
+}
+
+/// One cleanup run over `seed` on a Pinboard that cuts long notes, returning how many
+/// bookmarks it wrote and the account after it.
+async fn run_trimmed(seed: Vec<Bookmark>, reddit: &FakeReddit) -> (usize, Vec<Bookmark>) {
+    let pinboard = FakePinboard {
+        all: seed.clone(),
+        ..FakePinboard::trimming()
+    };
+    run(&pinboard.cleanup_store(), Some(reddit), &opts())
+        .await
+        .unwrap();
+    let stored = crate::test_support::replay(&seed, &pinboard.ops.borrow());
+    (pinboard.updated.into_inner().len(), stored)
+}
+
+#[tokio::test]
+async fn lengthens_a_self_post_note_stored_cut_short_once() {
+    // Stored cut to half of what a write keeps now, as a smaller budget once cut it.
+    let selftext = "a long self-post body ".repeat(1000);
+    let reddit = self_post_info(&selftext);
+    let pinboard = FakePinboard::trimming();
+    let rebuilt = crate::htmltext::blockquote(&selftext);
+    let kept_now = pinboard
+        .fit(self_post_bookmark("old.reddit.com", &rebuilt))
+        .note;
+    let kept = pinboard.kept_of_cut(&kept_now).expect("the rebuild is cut");
+    let cut_short = format!("{}{TRUNCATION_MARKER}", &kept[..kept.len() / 2]);
+
+    let seed = vec![self_post_bookmark("old.reddit.com", &cut_short)];
+    let (first_writes, cleaned) = run_trimmed(seed, &reddit).await;
+    assert_eq!(first_writes, 1);
+    assert_eq!(cleaned[0].note, kept_now);
+    let (second_writes, _) = run_trimmed(cleaned, &reddit).await;
+    assert_eq!(second_writes, 0, "the lengthened note settles");
+}
+
+#[tokio::test]
+async fn keeps_a_note_that_only_starts_like_the_rebuild_or_a_cut_of_it() {
+    // The www host forces a URL rewrite, so each run writes and shows the note it keeps.
+    let reddit = self_post_info("the authoritative body text");
+    for note in [
+        "<blockquote>the authoritative".to_string(),
+        "<blockquote>the authoritative body text</blockquote> and my own words".to_string(),
+        format!("<blockquote>the authoritative{TRUNCATION_MARKER} and my own words"),
+        format!("<blockquote>another body{TRUNCATION_MARKER}"),
+    ] {
+        let (writes, cleaned) =
+            run_trimmed(vec![self_post_bookmark("www.reddit.com", &note)], &reddit).await;
+        assert_eq!(writes, 1, "{note:?}");
+        assert_eq!(cleaned[0].note, note);
+    }
 }
 
 #[tokio::test]
@@ -1149,6 +1225,7 @@ async fn plans_the_tags_sync_writes_for_each_tag_config() {
                 ..Default::default()
             };
             let pass = RedditCleanupPass {
+                store: &FakePinboard::default(),
                 info: fetch_post_info(Some(&reddit), &opts, std::slice::from_ref(&synced))
                     .await
                     .unwrap(),

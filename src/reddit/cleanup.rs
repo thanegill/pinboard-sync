@@ -172,6 +172,7 @@ pub async fn run<S: BookmarkStore + AccountState, R: PostInfo>(
     let info = fetch_post_info(reddit, opts, &reddit_bms).await?;
     let keys = opts.reddit_keys();
     let pass = RedditCleanupPass {
+        store,
         info,
         opts,
         collapse_hosts: collapse_hosts(&reddit_bms, opts, &keys),
@@ -185,7 +186,9 @@ pub async fn run<S: BookmarkStore + AccountState, R: PostInfo>(
 /// Re-shapes one reddit bookmark: normalize the URL/tags, then apply the authoritative
 /// `/api/info` data (NSFW marker, placeholder-title replacement, post date, rebuilt notes,
 /// and the author/flair/media tags missing from the bookmark).
-struct RedditCleanupPass<'a> {
+struct RedditCleanupPass<'a, S> {
+    /// The store the pass writes to, which knows a note it stored cut.
+    store: &'a S,
     info: RedditInfo,
     opts: &'a RedditCleanupOpts,
     /// From [`RedditCleanupOpts::reddit_keys`].
@@ -194,7 +197,7 @@ struct RedditCleanupPass<'a> {
     collapse_hosts: HashMap<DedupKey, String>,
 }
 
-impl CleanupPass for RedditCleanupPass<'_> {
+impl<S: BookmarkStore> CleanupPass for RedditCleanupPass<'_, S> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
         let opts = self.opts;
         let mut new_url = opts.natural_url(&bookmark.url);
@@ -250,6 +253,7 @@ impl CleanupPass for RedditCleanupPass<'_> {
         } else if let Some(post) = post {
             if note_is_tool_generated(
                 &bookmark.note,
+                self.store.kept_of_cut(&bookmark.note),
                 &post.note,
                 &post.selftext,
                 &new_url,
@@ -498,11 +502,13 @@ pub fn normalize_tags<'e>(
 
 /// Whether a post bookmark's stored `note` is one the tool itself wrote -- so the
 /// authoritative `rebuilt` notes may safely replace it -- rather than a hand-written
-/// annotation to preserve. Recognized tool shapes: empty, the current rebuild, the raw
-/// `selftext` from before the `<blockquote>` retrofit, or a bare self-link an older sync
-/// left in an empty self-post.
+/// annotation to preserve. Recognized tool shapes: empty, the current rebuild or a cut of
+/// it (`kept_of_cut`, the part of `note` the store kept when it cut it, starts the
+/// rebuild), the raw `selftext` from before the `<blockquote>` retrofit, or a bare
+/// self-link an older sync left in an empty self-post.
 fn note_is_tool_generated(
     note: &str,
+    kept_of_cut: Option<&str>,
     rebuilt: &str,
     selftext: &str,
     url: &Url,
@@ -511,6 +517,7 @@ fn note_is_tool_generated(
     let trimmed = note.trim();
     trimmed.is_empty()
         || note == rebuilt
+        || kept_of_cut.is_some_and(|kept| rebuilt.starts_with(kept))
         || (!selftext.trim().is_empty() && trimmed == selftext.trim())
         || is_self_link_notes(note, url, keys)
 }

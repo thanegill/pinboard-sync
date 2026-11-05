@@ -266,8 +266,9 @@ a shorter note would cut text it already holds, and counts it refused (`--dry-ru
 foresee this); a new bookmark `sync` adds is retried with a shorter note instead. When
 the other fields leave the note no room under the tool's budget for the request URL, the
 note is cut to what fits under Pinboard's own limit, or dropped. A bookmark too long for
-that limit even with no note is never sent: `sync` fails it and `cleanup` counts it
-refused (neither command's `--dry-run` shows this).
+that limit even with no note is never sent: `sync` fails it, and `cleanup` refuses it
+before writing anything else, so `cleanup --dry-run` shows the refusal too (`sync`'s dry
+run still can't).
 
 - **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your configured
   `reddit_domain` (default `old.reddit.com`), unwrapping `over18` interstitial redirects

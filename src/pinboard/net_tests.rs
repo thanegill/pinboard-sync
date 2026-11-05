@@ -583,7 +583,7 @@ async fn add_stops_halving_once_the_fields_besides_the_note_are_over_the_next_bu
 
 /// A bookmark whose fields leave no room under the budget but some under Pinboard's limit:
 /// written with what fits there, stored as `fit` predicts, and left alone by the next
-/// cleanup run.
+/// cleanup run. One over the limit is refused before anything is sent.
 mod between_the_budget_and_the_limit {
     use super::*;
     use crate::bookmark::{AccountView, CleanupStore, WriteMode};
@@ -608,12 +608,9 @@ mod between_the_budget_and_the_limit {
         client: &PinboardClient,
         stored: &Bookmark,
         planned: &Bookmark,
+        mode: WriteMode,
     ) -> PassOutcome {
-        let store = CleanupStore::new(
-            client,
-            AccountView::new(vec![stored.clone()]),
-            WriteMode::Live,
-        );
+        let store = CleanupStore::new(client, AccountView::new(vec![stored.clone()]), mode);
         let pass = Planned(planned.clone());
         let slice = std::slice::from_ref(stored);
         crate::http::recording_waits(run_pass(&store, slice, "test", NO_DATING, &pass))
@@ -649,7 +646,7 @@ mod between_the_budget_and_the_limit {
             tags: tag_list(&["reddit", "retagged"]),
             ..synced
         };
-        let first = cleanup(&client, &stored, &retagged).await;
+        let first = cleanup(&client, &stored, &retagged, WriteMode::Live).await;
         assert_eq!((first.changed, first.refused), (1, 0));
         let rewritten = Bookmark {
             note: sent_notes(&server).await.remove(1),
@@ -657,13 +654,61 @@ mod between_the_budget_and_the_limit {
         };
         assert_eq!(rewritten, client.fit(retagged.clone()));
 
-        let second = cleanup(&client, &rewritten, &retagged).await;
+        let second = cleanup(&client, &rewritten, &retagged, WriteMode::Live).await;
         assert_eq!((second.changed, second.refused), (0, 0));
         assert_eq!(
             sent_notes(&server).await.len(),
             2,
             "the second run writes nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn a_rewrite_over_the_limit_is_refused_up_front_dry_run_included() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = leak_client(&server);
+        let stored = sent_at(&client, PINBOARD_URL_LIMIT + 1, dated());
+        let retagged = Bookmark {
+            tags: tag_list(&["reddit", "retagged"]),
+            ..stored.clone()
+        };
+
+        let (dry, logs) = capturing_logs(Box::pin(cleanup(
+            &client,
+            &stored,
+            &retagged,
+            WriteMode::DryRun,
+        )))
+        .await;
+        assert_eq!(
+            crate::test_support::warnings(&logs)[0],
+            format!(
+                "WARN skipping cleanup write to {url} from {url}: too long for Pinboard even \
+                 with no note ({} bytes without the note, over the 8201-byte limit)",
+                client.sent_without_note(&retagged),
+                url = stored.url
+            )
+        );
+        for line in &logs {
+            for leak in [LEAK_SECRET, "auth_token", &server.uri()] {
+                assert!(!line.contains(leak), "{leak} in {line}");
+            }
+        }
+        assert_eq!((dry.changed, dry.refused), (0, 1));
+        assert_eq!(
+            dry.preview,
+            [
+                format!("[dry-run] {}", stored.url),
+                "          (refused: too long for Pinboard even with no note)".to_string(),
+            ]
+        );
+        let live = cleanup(&client, &stored, &retagged, WriteMode::Live).await;
+        assert_eq!((live.changed, live.refused, live.write_failed), (0, 1, 0));
     }
 }
 

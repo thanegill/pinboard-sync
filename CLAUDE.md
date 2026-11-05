@@ -77,8 +77,9 @@ the sync write loop in [`src/sync.rs`](src/sync.rs).
 whose module doc gives the loop. A source implements `CleanupPass::plan` (one bookmark's
 end-state as a `Plan`, or `Err` for a per-item failure) and `run_pass` does the rest,
 sequencing phases, each its own function: `plan_all`, `group_by_target`, `write_order`,
-`residents_of`, `hold_back_visibility_mismatches`, `hold_back_cut_notes`, then per group a
-`GroupWriter`'s `refuse_group`, `write_single` or `write_merge`, tallying into a
+`residents_of`, `hold_back` (`lead_with_a_sendable_mover`, then
+`hold_back_visibility_mismatches`, `hold_back_cut_notes` and `hold_back_unwritable`), then
+per group a `GroupWriter`'s `refuse_group`, `write_single` or `write_merge`, tallying into a
 `PassOutcome`. [`src/cleanup_pass/merge.rs`](src/cleanup_pass/merge.rs) holds the merge
 rules (`merge_bookmarks`, `incumbent_of`).
 
@@ -126,7 +127,13 @@ refuses the group heading here if that write is refused, and the write loop mark
 occupied if it *fails*. Keep all three. A cycle of moves, such as a swap, has no such order,
 so it stays unprotected: if a later write in the cycle fails, or Pinboard refuses it as too
 long, the first has already overwritten a record that never moved. Either way it counts as
-a failed write (`GroupWriter::written` tells a refusal in a cycle from a plain one).
+a failed write (`GroupWriter::written` tells a refusal in a cycle from a plain one). A write
+the store says up front it could never send (`BookmarkStore::can_write`) is the exception:
+it is held back before any write, as the other hold-backs are, so the fixpoint keeps the
+rest of the cycle off its URL. Of a merge, only the member that makes it unsendable is held
+back, unless its lead cannot be sent even alone; with no record staying, the first mover
+that can be sent alone leads (`lead_with_a_sendable_mover`), so one that can't may still
+join behind it.
 
 **A merge never decides visibility.** A plan whose `public` doesn't match the record that
 stays drops out of its group, since the merge would either publish a private note or unshare
@@ -209,9 +216,10 @@ a note dropped that way as a cut that kept nothing, though it carries no marker.
 is sent whose URL is over that limit with no note at all**, measured as sent, with no `dt`
 for an undated write: `post_add` returns at once (`unfittable`), an error for `add` and
 `Update::TooLong` for `update`, and `add`'s halving stops the same way once the fields, as
-`fit` measures them, are over the next budget. A test models the cut with `FakePinboard`'s
-`trims_notes`, which applies the real `fitted_note` to the fit and writes, and a 414 with
-`too_long_urls`.
+`fit` measures them, are over the next budget. `PinboardClient::can_write` is that check, so
+the cleanup driver refuses such a plan up front, `--dry-run` included. A test models the cut
+with `FakePinboard`'s `trims_notes`, which applies the real `fitted_note` to the fit and
+writes, a 414 with `too_long_urls`, and a write it can't send with `unwritable_urls`.
 
 **Every source is a `Source`, and one sync loop drives them all.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `BookmarkDraft`s (a `Bookmark`

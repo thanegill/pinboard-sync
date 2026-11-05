@@ -13,7 +13,8 @@
 //! visibility with the record staying at its target is refused and left where it is; with
 //! no record staying, plans that disagree with each other about `public` are all refused,
 //! since a merge never picks a visibility. A bookmark planned to move *away* from a target
-//! neither leads that merge nor blocks it.
+//! neither leads that merge nor blocks it. A write the store could never send
+//! ([`BookmarkStore::can_write`]) is refused before any write, its members left in place.
 //!
 //! A rewrite never deletes an old URL that another plan targets, so chained rewrites can't
 //! clobber each other. Every refusal decided before the first write is closed under
@@ -31,7 +32,9 @@ use log::{debug, error, info, warn};
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::bookmark::{warn_note_cut, AccountState, Bookmark, BookmarkStore, WriteMode};
+use crate::bookmark::{
+    warn_note_cut, AccountState, Bookmark, BookmarkStore, TooLongToSend, WriteMode,
+};
 use crate::preview;
 use crate::source::{Halt, SourceError};
 use crate::stdout::outln;
@@ -102,13 +105,14 @@ pub struct PassOutcome {
     /// kept so tests can assert on what an operator reads before a real run.
     pub preview: Vec<String>,
     /// Rewrites this pass declined to make: a target that must not be written at all (see
-    /// [`Refusal`]), or a plan held back over visibility or over a note its merge would cut
-    /// off. Not a failure, but work that did not happen, so it is reported. Counted per
-    /// *group* for an untouchable target, unless a cycle of moves wrote over a member (a
-    /// failed write), and per *plan* for one held back, unless its group is refused whole,
-    /// so it counts abandoned writes, not bookmarks, and none twice. A write the store
-    /// refused as too long counts here too, as one more, besides the plans already held
-    /// back from its group.
+    /// [`Refusal`]), or a plan held back over visibility, over a note its merge would cut
+    /// off, or over a write too long to send. Not a failure, but work that did not happen,
+    /// so it is reported. Counted per *group* for an untouchable target, unless a cycle of
+    /// moves wrote over a member (a failed write), and per *plan* for one held back, unless
+    /// its group is refused whole, so it counts abandoned writes, not bookmarks, and none
+    /// twice. A write the store refuses as too long, whole up front
+    /// ([`BookmarkStore::can_write`]) or when sent, counts here too, as one more, besides
+    /// the plans already held back from its group.
     pub refused: usize,
     /// Bookmarks the source gave an answer for -- the evidence that it is reachable.
     /// Excludes [`Plan::Skipped`], which never asked it anything.
@@ -271,15 +275,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     let (first_appearance, mut groups) = group_by_target(&pairs);
     let group_order = write_order(&first_appearance, &groups);
     let residents = residents_of(store, &pairs, &group_order, &untouchable);
-    let mut held_back = hold_back_visibility_mismatches(
-        &group_order,
-        &mut groups,
-        &residents,
-        &mut untouchable,
-        mode,
-        &mut outcome,
-    );
-    for (key, count) in hold_back_cut_notes(
+    let held_back = hold_back(
         store,
         &group_order,
         &mut groups,
@@ -287,9 +283,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         &mut untouchable,
         mode,
         &mut outcome,
-    ) {
-        *held_back.entry(key).or_default() += count;
-    }
+    );
 
     // The URLs a planned write still owns. A rewrite's old URL is never deleted when it is
     // one of these, because that write's record will live there and deleting it would
@@ -523,6 +517,48 @@ fn residents_of<'p, S: AccountState>(
         .collect()
 }
 
+/// Every hold-back, in order, each building on the groups the ones before it left, once
+/// each group with no record staying is led, where one exists, by a mover that can be
+/// sent: visibility, then cut notes, then writes that can't be sent. Returns how many plans
+/// each target lost.
+fn hold_back<'p, S: BookmarkStore>(
+    store: &S,
+    group_order: &[&'p Url],
+    groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
+    residents: &HashMap<&'p Url, Bookmark>,
+    untouchable: &mut HashMap<Url, Refusal>,
+    mode: WriteMode,
+    outcome: &mut PassOutcome,
+) -> HashMap<Url, usize> {
+    lead_with_a_sendable_mover(store, group_order, groups, residents, untouchable);
+    let mut held_back = HashMap::new();
+    let each = [
+        hold_back_visibility_mismatches(group_order, groups, residents, untouchable, mode, outcome),
+        hold_back_cut_notes(
+            store,
+            group_order,
+            groups,
+            residents,
+            untouchable,
+            mode,
+            outcome,
+        ),
+        hold_back_unwritable(
+            store,
+            group_order,
+            groups,
+            residents,
+            untouchable,
+            mode,
+            outcome,
+        ),
+    ];
+    for (key, count) in each.into_iter().flatten() {
+        *held_back.entry(key).or_default() += count;
+    }
+    held_back
+}
+
 /// A plan [`hold_back_visibility_mismatches`] drops from its group.
 struct HeldBack<'p> {
     /// The held-back bookmark's stored URL, which it keeps.
@@ -723,6 +759,173 @@ fn hold_back_cut_notes<'p, S: BookmarkStore>(
         members.retain(|member| !held.contains(&member.stored.url));
     }
     held_from
+}
+
+/// Hold back the plans the store could never send ([`BookmarkStore::can_write`]), marking
+/// each one's own URL occupied, and return how many each target lost. Such a write is too
+/// long even with no note, so the store would refuse it anyway, but only once the writes
+/// before it had landed, a cycle of moves' included, and unseen by a dry run.
+///
+/// A merge is built up from its lead as in [`hold_back_cut_notes`], holding back each
+/// member whose joining would make it unsendable, so a duplicate can't freeze the cleanup
+/// of the record that stays. A group whose lead can't be sent even alone, or a lone plan
+/// that can't, is emptied, counting one refused write. Settled last, once the other
+/// hold-backs have fixed what each group merges, and before the fixpoint, like them.
+fn hold_back_unwritable<'p, S: BookmarkStore>(
+    store: &S,
+    group_order: &[&'p Url],
+    groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
+    residents: &HashMap<&'p Url, Bookmark>,
+    untouchable: &mut HashMap<Url, Refusal>,
+    mode: WriteMode,
+    outcome: &mut PassOutcome,
+) -> HashMap<Url, usize> {
+    let mut held_from: HashMap<Url, usize> = HashMap::new();
+    for key in group_order {
+        if untouchable.contains_key(*key) {
+            continue;
+        }
+        let resident = residents.get(key);
+        let members = groups.get_mut(key).expect("key came from group_order");
+        if members.is_empty() {
+            continue;
+        }
+        let sendable = |merging: &[Member<'p>]| {
+            let merge = merge_members(store, key, merging, resident);
+            if !merge.rewrite {
+                return Ok(());
+            }
+            store.can_write(&merge.fitted)
+        };
+        let mut held: Vec<Url> = Vec::new();
+        let lead = lead_of(members, key, resident.is_some());
+        let mut merging: Vec<Member<'p>> = lead.map(|at| vec![members[at]]).unwrap_or_default();
+        let lead_sendable = match (resident, &members[..]) {
+            (None, [Member { stored, planned }]) => {
+                let fitted = fit_plan(store, Some(stored), planned);
+                if stores_nothing_new(store, stored, &fitted) {
+                    Ok(())
+                } else {
+                    store.can_write(&fitted)
+                }
+            }
+            _ => sendable(&merging),
+        };
+        if let Err(why) = lead_sendable {
+            refuse_unwritable(key, members, why, untouchable, mode, outcome);
+            held_from.insert((*key).clone(), 1);
+            continue;
+        }
+        for (at, member) in members.iter().enumerate() {
+            if Some(at) == lead {
+                continue;
+            }
+            merging.push(*member);
+            let Err(why) = sendable(&merging) else {
+                continue;
+            };
+            merging.pop();
+            hold_back_unsendable(key, member, why, untouchable, mode, outcome);
+            *held_from.entry((*key).clone()).or_default() += 1;
+            held.push(member.stored.url.clone());
+        }
+        members.retain(|member| !held.contains(&member.stored.url));
+    }
+    held_from
+}
+
+/// Put first, in each group with no record staying at its target, the first mover the
+/// store could send alone ([`BookmarkStore::can_write`]). Whichever mover comes first leads
+/// such a merge, with its title, so without this one that can never be sent would take
+/// every other mover down with it, and which did would depend on snapshot order; behind a
+/// sendable lead it may still join. Settled first, before the hold-backs build on a lead.
+fn lead_with_a_sendable_mover<'p, S: BookmarkStore>(
+    store: &S,
+    group_order: &[&'p Url],
+    groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
+    residents: &HashMap<&'p Url, Bookmark>,
+    untouchable: &HashMap<Url, Refusal>,
+) {
+    for key in group_order {
+        let members = groups.get_mut(key).expect("key came from group_order");
+        if untouchable.contains_key(*key)
+            || residents.contains_key(key)
+            || members.len() < 2
+            || incumbent_of(members, key).is_some()
+        {
+            continue;
+        }
+        let sendable_alone = members.iter().position(|member| {
+            let alone = merge_members(store, key, std::slice::from_ref(member), None);
+            store.can_write(&alone.fitted).is_ok()
+        });
+        if let Some(at) = sendable_alone {
+            members[..=at].rotate_right(1);
+        }
+    }
+}
+
+/// Why [`hold_back_unwritable`] refuses a write.
+const UNWRITABLE: &str = "too long for Pinboard even with no note";
+
+/// Log and preview `member`, held back from its merge at `key` as too long to send (`why`),
+/// and mark its own URL occupied.
+fn hold_back_unsendable(
+    key: &Url,
+    member: &Member<'_>,
+    why: TooLongToSend,
+    untouchable: &mut HashMap<Url, Refusal>,
+    mode: WriteMode,
+    outcome: &mut PassOutcome,
+) {
+    warn!(
+        "not merging {} into {key}: the merge would be {UNWRITABLE} ({why})",
+        member.stored.url
+    );
+    if mode.is_dry_run() {
+        emit_preview(
+            &mut outcome.preview,
+            &member.stored.url,
+            [preview::detail(format!(
+                "(refused: would merge into {key}, {UNWRITABLE})"
+            ))],
+        );
+    }
+    untouchable
+        .entry(member.stored.url.clone())
+        .or_insert(Refusal::TooLong);
+}
+
+/// Log, preview and empty `members`, a group whose leading write to `key` could never be
+/// sent (`why`), marking each member's own URL occupied.
+fn refuse_unwritable(
+    key: &Url,
+    members: &mut Vec<Member<'_>>,
+    why: TooLongToSend,
+    untouchable: &mut HashMap<Url, Refusal>,
+    mode: WriteMode,
+    outcome: &mut PassOutcome,
+) {
+    let from: Vec<&str> = members
+        .iter()
+        .map(|member| member.stored.url.as_str())
+        .collect();
+    warn!(
+        "skipping cleanup write to {key} from {}: {UNWRITABLE} ({why})",
+        from.join(" ")
+    );
+    if mode.is_dry_run() {
+        emit_preview(
+            &mut outcome.preview,
+            key,
+            [preview::detail(format!("(refused: {UNWRITABLE})"))],
+        );
+    }
+    for member in members.drain(..) {
+        untouchable
+            .entry(member.stored.url.clone())
+            .or_insert(Refusal::TooLong);
+    }
 }
 
 /// The index among `members` of the one that leads their merge at `key`: none when a

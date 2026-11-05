@@ -4489,9 +4489,9 @@ async fn a_block_the_plan_rewrites_is_the_members_own_up_to_the_change_after_an_
 }
 
 /// Identical cut copies, the mover under a shorter title and both planned the whole note.
-/// A stored block the target holds whole, an `id=1` link, starts later blocks only the
-/// mover's lone rewrite reaches (`id=12`): that doesn't make those blocks its own, and it
-/// is absorbed. The copies are cut inside a paragraph, so no stored cut starts a link.
+/// A stored block the target holds whole, an `id=1` link, starts a later block only the
+/// mover's lone rewrite completes, the `id=1...` link both copies are cut in: that doesn't
+/// make the block its own, and it is absorbed. The stored cut counts only in its own place.
 #[tokio::test]
 async fn a_duplicate_whose_stored_block_starts_a_later_block_is_still_absorbed() {
     let link = "HN Link: https://news.ycombinator.com/item?id=1";
@@ -4504,39 +4504,44 @@ async fn a_duplicate_whose_stored_block_starts_a_later_block_is_still_absorbed()
         }))
         .collect::<Vec<_>>()
         .join("\n\n");
+    let incumbent = FakePinboard::trimming().fit(Bookmark {
+        title: "A long title that takes room from the note at the target, and then some more room"
+            .into(),
+        note: full.clone(),
+        ..bookmark("https://target/")
+    });
     let pinboard = FakePinboard::trimming();
-    let incumbent = (0..200)
-        .map(|padding| {
-            pinboard.fit(Bookmark {
-                title: format!(
-                    "A long title that takes room from the note at the target{}",
-                    "!".repeat(padding)
-                ),
-                note: full.clone(),
-                ..bookmark("https://target/")
-            })
-        })
-        .find(|fitted| {
-            pinboard
-                .kept_of_cut(&fitted.note)
-                .and_then(|kept| kept.rsplit("\n\n").next())
-                .is_some_and(|cut| cut.len() > 5 && !cut.starts_with("HN"))
-        })
-        .expect("a title that cuts inside a paragraph");
+    let stored_whole = pinboard
+        .kept_of_cut(&incumbent.note)
+        .and_then(|kept| kept.rsplit_once("\n\n"))
+        .map_or(0, |(whole, _)| whole.split("\n\n").count());
     for title_len in [1, 10, 30, 50] {
         let mover = Bookmark {
             url: u("https://mover/"),
             title: "T".repeat(title_len),
             ..incumbent.clone()
         };
-        let full = full.clone();
-        let pass = FakePass(move |bookmark: &Bookmark| {
-            Ok(Plan::Bookmark(Bookmark {
+        let plan_of = {
+            let full = full.clone();
+            move |bookmark: &Bookmark| Bookmark {
                 url: u("https://target/"),
                 note: full.clone(),
                 ..unchanged_plan(bookmark)
-            }))
-        });
+            }
+        };
+        let lone_rewrite = fit_plan(&pinboard, Some(&mover), &plan_of(&mover));
+        let reached = pinboard
+            .kept_of_cut(&lone_rewrite.note)
+            .and_then(|kept| kept.rsplit_once("\n\n"))
+            .map_or("", |(whole, _)| whole);
+        assert!(
+            reached
+                .split("\n\n")
+                .skip(stored_whole)
+                .any(|block| block.starts_with(link) && block != link),
+            "title of {title_len}: the lone rewrite completes a later block the `id=1` link starts"
+        );
+        let pass = FakePass(move |bookmark: &Bookmark| Ok(Plan::Bookmark(plan_of(bookmark))));
 
         let (first, _, after) = run_twice(&[incumbent.clone(), mover], &pass).await;
         assert_eq!(first.refused, 0, "title of {title_len}");

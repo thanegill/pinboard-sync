@@ -4148,6 +4148,102 @@ fn a_fragment_known_only_by_its_start_is_kept_by_the_block_in_its_place() {
     );
 }
 
+/// A fragment known only by its start is not kept by the target's block at its place when
+/// a block before it is not the member's: the target's earlier blocks are shifted, so that
+/// block is another one that starts the same way.
+#[test]
+fn a_fragment_known_only_by_its_start_is_not_kept_after_a_shifted_block() {
+    let store = FakePinboard::trimming();
+    let held = "extra\n\nHN Link: https://news.ycombinator.com/item?id=38\n\nown";
+    let mover = format!("own\n\nHN Link: https://news.ycomb{TRUNCATION_MARKER}");
+    assert!(!holds_what_it_keeps(
+        &store,
+        held,
+        [held, ""],
+        held,
+        &mover,
+        &mover,
+        &mover
+    ));
+}
+
+/// Merges onto `https://target/` the record at `lead_url` and a mover stored cut inside an
+/// `id=27` link, before its id, behind `shift` whole blocks. The lead holds those blocks
+/// too, but `shift` others come first, so its block in the cut's place is an `id=38`
+/// link: the fragment is not that block's, and the mover is held back.
+async fn assert_a_fragment_is_not_credited_after_a_shift(lead_url: &'static str, shift: usize) {
+    const ID27: &str = "HN Link: https://news.ycombinator.com/item?id=27";
+    const ID38: &str = "HN Link: https://news.ycombinator.com/item?id=38";
+    let own: Vec<String> = std::iter::once("y".repeat(6000))
+        .chain((1..shift).map(|n| format!("own {n}")))
+        .collect();
+    let lead_note = (0..shift)
+        .map(|n| format!("extra {n}"))
+        .chain([ID38.to_string()])
+        .chain(own.iter().cloned())
+        .chain(["z".repeat(4000)])
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let mover_note = own
+        .iter()
+        .cloned()
+        .chain([ID27.to_string(), "tail".to_string()])
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let pinboard = FakePinboard::trimming();
+    let lead = pinboard.fit(Bookmark {
+        note: lead_note.clone(),
+        ..bookmark(lead_url)
+    });
+    let mover = (1..4000)
+        .map(|title_len| {
+            pinboard.fit(Bookmark {
+                title: "T".repeat(title_len),
+                note: mover_note.clone(),
+                ..bookmark("https://mover/")
+            })
+        })
+        .find(|fitted| {
+            pinboard
+                .kept_of_cut(&fitted.note)
+                .and_then(|kept| kept.rsplit("\n\n").next())
+                .is_some_and(|cut| cut.starts_with("HN Link: https://") && !cut.contains("id="))
+        })
+        .expect("a title that cuts inside the link, before its id");
+    let pass = FakePass(move |bookmark: &Bookmark| {
+        let note = if bookmark.url.as_str() == lead_url {
+            lead_note.clone()
+        } else {
+            mover_note.clone()
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u("https://target/"),
+            note,
+            ..unchanged_plan(bookmark)
+        }))
+    });
+
+    let pinboard = FakePinboard::trimming();
+    let books = [lead, mover.clone()];
+    let outcome = run(&pinboard, &books, &pass).await;
+    let account = crate::test_support::replay(&books, &pinboard.ops.borrow());
+    assert_eq!(outcome.refused, 1);
+    assert!(
+        account.contains(&mover),
+        "the mover was absorbed: {account:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_fragment_is_not_credited_to_an_incumbents_block_shifted_by_one() {
+    assert_a_fragment_is_not_credited_after_a_shift("https://target/", 1).await;
+}
+
+#[tokio::test]
+async fn a_fragment_is_not_credited_to_a_bases_block_shifted_by_two() {
+    assert_a_fragment_is_not_credited_after_a_shift("https://base/", 2).await;
+}
+
 /// A stored cut is credited only to the block it was cut from: a one-character cut is not
 /// kept by an unrelated block that starts with the same character.
 #[test]

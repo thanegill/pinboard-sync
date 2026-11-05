@@ -1070,7 +1070,8 @@ impl Merge<'_> {
 /// member stores the start of a block, as far as `note` keeps it, that the target does
 /// not hold when a block of its stored note the target does not hold starts the same way
 /// at the same place, or begins that kept start or begins with it anywhere, or when the
-/// block begins with its stored cut.
+/// block begins with its stored cut: when `note` starts with the stored note's kept text,
+/// only the block in the cut's place, the one it was cut from; otherwise any block.
 fn holds_what_it_keeps<S: BookmarkStore>(
     store: &S,
     held: &str,
@@ -1084,6 +1085,11 @@ fn holds_what_it_keeps<S: BookmarkStore>(
     let carried = Kept::of(store, carried, [carried, ""]);
     let stored_kept = Kept::of(store, stored, [stored, ""]);
     let kept = Kept::of(store, note, [stored, planned]);
+    let note_text = store.kept_of_cut(note).unwrap_or(note);
+    let stored_cut_index = store
+        .kept_of_cut(stored)
+        .filter(|stored_text| note_text.starts_with(stored_text))
+        .map(|_| stored_kept.whole_count());
     let stores = |block: &str, index: usize, kept_of_block: &str| {
         let start_lost = |start: &str| !start.is_empty() && !held.holds_start(block, index, start);
         let stored_in_place = stored_kept
@@ -1093,7 +1099,9 @@ fn holds_what_it_keeps<S: BookmarkStore>(
                 start_lost(kept_of_block[..shared_prefix_len(kept_of_block, own)].trim_end())
             });
         stored_in_place
-            || (block.starts_with(stored_kept.cut) && start_lost(stored_kept.cut))
+            || (stored_cut_index.is_none_or(|own| own == index)
+                && block.starts_with(stored_kept.cut)
+                && start_lost(stored_kept.cut))
             || stored_kept
                 .whole_blocks()
                 .map(str::trim)

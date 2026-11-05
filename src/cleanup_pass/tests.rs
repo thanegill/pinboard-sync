@@ -4332,6 +4332,62 @@ async fn a_duplicate_whose_stored_block_starts_a_later_block_is_still_absorbed()
     }
 }
 
+/// Identical copies cut inside an `HN Link:` block, the mover under a shorter title and
+/// both planned the whole note. The stored cut starts every link block, including later
+/// ones only the mover's lone rewrite reaches, but it was cut from the block in its own
+/// place, which the target holds as far as the cut: the mover is absorbed.
+#[tokio::test]
+async fn a_duplicate_whose_stored_cut_starts_a_later_block_is_still_absorbed() {
+    let full = (1..=300u64)
+        .flat_map(|n| {
+            [
+                format!("{:016x} para", n.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ n),
+                format!("HN Link: https://news.ycombinator.com/item?id={n}"),
+            ]
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let pinboard = FakePinboard::trimming();
+    let at_target = |title: String| Bookmark {
+        title,
+        note: full.clone(),
+        ..bookmark("https://target/")
+    };
+    let stored_cut = |fitted: &Bookmark| {
+        let kept = pinboard.kept_of_cut(&fitted.note).expect("the note is cut");
+        kept.rsplit("\n\n").next().unwrap_or(kept).to_string()
+    };
+    let incumbent = (200..400)
+        .map(|title_len| pinboard.fit(at_target("A".repeat(title_len))))
+        .find(|fitted| {
+            let cut = stored_cut(fitted);
+            cut.starts_with("HN Link: https://") && !cut.contains("id=")
+        })
+        .expect("a title that cuts inside a link, before its id");
+    let mover = Bookmark {
+        url: u("https://mover/"),
+        title: "T".into(),
+        ..incumbent.clone()
+    };
+    let plan_of = move |bookmark: &Bookmark| Bookmark {
+        url: u("https://target/"),
+        note: full.clone(),
+        ..unchanged_plan(bookmark)
+    };
+    let lone_rewrite = fit_plan(&pinboard, Some(&mover), &plan_of(&mover));
+    let cut = stored_cut(&incumbent);
+    let reached = &lone_rewrite.note[incumbent.note.len() - TRUNCATION_MARKER.len()..];
+    assert!(
+        reached.contains(&format!("\n\n{cut}")),
+        "the lone rewrite reaches a later block the stored cut starts: {reached:?}"
+    );
+    let pass = FakePass(move |bookmark: &Bookmark| Ok(Plan::Bookmark(plan_of(bookmark))));
+
+    let (first, _, after) = run_twice(&[incumbent.clone(), mover], &pass).await;
+    assert_eq!(first.refused, 0);
+    assert_eq!(after, [incumbent]);
+}
+
 #[tokio::test]
 async fn a_block_the_plan_extends_is_the_members_own_wherever_the_plan_moves_it() {
     assert_stored_text_is_kept_after_an_earlier_block_changes(&format!(

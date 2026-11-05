@@ -3743,6 +3743,54 @@ async fn an_append_to_a_note_just_under_the_budget_is_not_written() {
     );
 }
 
+/// A bookmark tagged `find-hn` whose note `"hi"` fits whole beside a title so long that a
+/// longer note can't keep even the cut marker, so the store drops it.
+fn with_hi_where_no_marker_fits(pinboard: &FakePinboard) -> Bookmark {
+    let with_title = |len: usize, note: &str| Bookmark {
+        title: "t".repeat(len),
+        note: note.to_string(),
+        tags: tag_list(&["find-hn"]),
+        ..bookmark("https://near/")
+    };
+    let len = (8000..8300)
+        .find(|&len| {
+            pinboard
+                .fit(with_title(len, &"x".repeat(40)))
+                .note
+                .is_empty()
+                && pinboard.fit(with_title(len, "hi")).note == "hi"
+        })
+        .expect("a title that leaves room for \"hi\" but not the marker");
+    with_title(len, "hi")
+}
+
+#[tokio::test]
+async fn an_append_the_store_would_drop_leaves_the_stored_note() {
+    // The appended note fits to nothing, which carries no cut marker, yet it is a cut all
+    // the same: writing it would only erase the stored note.
+    let pinboard = FakePinboard::trimming();
+    let stored = with_hi_where_no_marker_fits(&pinboard);
+
+    let outcome = run(
+        &pinboard,
+        std::slice::from_ref(&stored),
+        &appending_a_link(&["find-hn"]),
+    )
+    .await;
+    assert_eq!(outcome.changed, 0);
+    assert!(
+        pinboard.updated.borrow().is_empty(),
+        "{:?}",
+        pinboard.updated.borrow()
+    );
+
+    let outcome = run(&pinboard, &[stored], &appending_a_link(&["hn-seen"])).await;
+    assert_eq!(outcome.changed, 1);
+    let updated = pinboard.updated.borrow();
+    assert_eq!(updated[0].extended, "hi", "the stored note is kept whole");
+    assert_eq!(updated[0].tags, ["hn-seen"]);
+}
+
 #[tokio::test]
 async fn an_append_beside_a_tag_change_keeps_the_whole_stored_note() {
     // As the discussion-link pass plans: the link line goes past the cut, so only the tag

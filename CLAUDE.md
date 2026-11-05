@@ -202,8 +202,16 @@ and the driver deletes nothing (`WriteOutcome`'s `too_long`), counts it refused 
 every member's URL `Refusal::TooLong`. A shorter note would cut text the record already
 holds, and a merge judged against the longer one would then delete what it absorbed.
 Only `add`, sync's write of a new bookmark, halves on a 414 (`OnTooLong`), each time from
-the full budget. A test models the cut with `FakePinboard`'s `trims_notes`, which applies
-the real `fitted_note` to the fit and writes, and a 414 with `too_long_urls`.
+the full budget, and never below `MIN_URL_BYTES`. When the fields other than the note are
+over the budget, `fit_extended` fits the note to `PINBOARD_URL_LIMIT` instead, dropping it
+when not even the marker fits, so nothing Pinboard would take is refused; `fit_plan` reads
+a note dropped that way as a cut that kept nothing, though it carries no marker. **No write
+is sent whose URL is over that limit with no note at all**, measured as sent, with no `dt`
+for an undated write: `post_add` returns at once (`unfittable`), an error for `add` and
+`Update::TooLong` for `update`, and `add`'s halving stops the same way once the fields, as
+`fit` measures them, are over the next budget. A test models the cut with `FakePinboard`'s
+`trims_notes`, which applies the real `fitted_note` to the fit and writes, and a 414 with
+`too_long_urls`.
 
 **Every source is a `Source`, and one sync loop drives them all.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `BookmarkDraft`s (a `Bookmark`

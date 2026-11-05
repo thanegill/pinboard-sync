@@ -1333,12 +1333,9 @@ fn holds_what_it_keeps<S: BookmarkStore>(
             held.holds_start(block, index, kept.cut)
                 || (!stores(block, index, kept.cut) && carried.holds_start(block, index, kept.cut))
         }
-        // The note was cut from a note already cut there, so all that is known of the
-        // block is this start: only the target's block at the same place in the note,
-        // whole or cut no earlier, can be holding it.
-        None => held
-            .block_at(index)
-            .is_some_and(|block| block.starts_with(kept.cut)),
+        // Cut from a note already cut there, so only this start of the block is known.
+        // Blocks before it count in any order: a merge appends what its lead lacks.
+        None => held.starts_like(&kept),
     }
 }
 
@@ -1392,12 +1389,35 @@ impl<'n> Kept<'n> {
         self.whole_blocks().count()
     }
 
-    /// Its block at `index`, whole or the cut one, trimmed.
-    fn block_at(&self, index: usize) -> Option<&'n str> {
+    /// Its blocks, whole then the cut one, trimmed, in order.
+    fn blocks(&self) -> impl Iterator<Item = &'n str> {
         self.whole_blocks()
             .map(str::trim)
             .chain((!self.cut.is_empty()).then_some(self.cut))
-            .nth(index)
+    }
+
+    /// Its block at `index`, whole or the cut one, trimmed.
+    fn block_at(&self, index: usize) -> Option<&'n str> {
+        self.blocks().nth(index)
+    }
+
+    /// Whether it starts with `other`'s whole blocks, in any order and as many times each,
+    /// then a block that starts with `other`'s cut. Blank blocks don't count, as in
+    /// [`holds_block`]: a merge never appends one, and the lead's may sit anywhere.
+    fn starts_like(&self, other: &Kept<'_>) -> bool {
+        let mut own: Vec<&str> = other
+            .whole_blocks()
+            .map(str::trim)
+            .filter(|block| !block.is_empty())
+            .collect();
+        let mut blocks = self.blocks().filter(|block| !block.is_empty());
+        let mut before: Vec<&str> = blocks.by_ref().take(own.len()).collect();
+        own.sort_unstable();
+        before.sort_unstable();
+        own == before
+            && blocks
+                .next()
+                .is_some_and(|block| block.starts_with(other.cut))
     }
 
     /// Whether it holds `block` whole.

@@ -712,6 +712,41 @@ mod between_the_budget_and_the_limit {
     }
 }
 
+/// A short note over the limit stored as the cut marker alone, or as nothing, keeps none
+/// of it: the warning says so, rather than reading the marker's length as a trim.
+#[tokio::test]
+async fn add_warns_a_note_none_of_which_fits_was_dropped() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/add"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+        .mount(&server)
+        .await;
+    let client = client(&server);
+    let marker_cost = "%E2%80%A6+%5Btruncated%5D".len();
+
+    for (fields, stored) in [
+        (PINBOARD_URL_LIMIT - marker_cost, TRUNCATION_MARKER),
+        (PINBOARD_URL_LIMIT - 10, ""),
+    ] {
+        let short_over = Bookmark {
+            note: "€€€€".into(),
+            ..sent_at(&client, fields, dated())
+        };
+        let (written, logs) = capturing_logs(client.add(&short_over)).await;
+        written.unwrap();
+
+        assert_eq!(sent_notes(&server).await.pop().as_deref(), Some(stored));
+        assert_eq!(
+            crate::test_support::warnings(&logs),
+            [
+                "WARN note dropped to fit the request URL for https://old.reddit.com/r/x/: none \
+              of its 12 bytes fit"
+            ]
+        );
+    }
+}
+
 #[tokio::test]
 async fn add_does_not_warn_for_a_note_that_fits() {
     let server = MockServer::start().await;

@@ -297,9 +297,7 @@ impl PinboardClient {
             // like several different notes were cut. Worth saying at all because the stored
             // note is now not the one the caller wrote. `cleanup` hands over notes `fit`
             // already cut and says so itself, so this never fires for them.
-            if extended != b.note {
-                warn_note_cut(&b.url, b.note.len(), extended.len());
-            }
+            warn_note_cut(self, &b.url, &b.note, &extended);
             return Ok(Update::Written);
         }
     }

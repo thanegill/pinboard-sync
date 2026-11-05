@@ -185,10 +185,25 @@ impl std::fmt::Display for TooLongToSend {
     }
 }
 
-/// Say that `url`'s note was cut from `from` bytes to `to` to fit a write: the stored note
-/// is shorter than the one the caller planned.
-pub fn warn_note_cut(url: &Url, from: usize, to: usize) {
-    warn!("note trimmed to fit the request URL for {url}: {from} bytes -> {to}");
+/// Say that a write to `url` stores `to`, as `store` fits it, in place of the note `from`:
+/// trimmed, or dropped when it keeps none of it (the cut marker alone, or nothing). Silent
+/// when they match.
+pub fn warn_note_cut<S: BookmarkStore>(store: &S, url: &Url, from: &str, to: &str) {
+    if to == from {
+        return;
+    }
+    if store.kept_of_cut(to).unwrap_or(to).is_empty() {
+        warn!(
+            "note dropped to fit the request URL for {url}: none of its {} bytes fit",
+            from.len()
+        );
+        return;
+    }
+    warn!(
+        "note trimmed to fit the request URL for {url}: {} bytes -> {}",
+        from.len(),
+        to.len()
+    );
 }
 
 /// What a store did with a rewrite of a stored bookmark.

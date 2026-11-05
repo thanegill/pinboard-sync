@@ -1035,7 +1035,7 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
             return Vec::new();
         }
         let changes = original.diff(&fitted);
-        warn_if_cut(planned, &fitted);
+        warn_if_cut(self.store, planned, &fitted);
         let planned = &fitted;
         // Delete the old URL only when it changed and no other planned write targets it;
         // otherwise that write's record lives there and must not be removed.
@@ -1128,7 +1128,7 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
             return Vec::new();
         }
         if rewrite {
-            warn_if_cut(&merged, &fitted);
+            warn_if_cut(self.store, &merged, &fitted);
         }
         let merged = &fitted;
 
@@ -1549,10 +1549,8 @@ fn stores_nothing_new<S: BookmarkStore>(store: &S, stored: &Bookmark, fitted: &B
 
 /// Log that `fitted`, about to be written, cuts `planned`'s note to fit the request URL.
 /// The store's own warning can't see it, since it is handed the note already cut.
-fn warn_if_cut(planned: &Bookmark, fitted: &Bookmark) {
-    if fitted.note != planned.note {
-        warn_note_cut(&planned.url, planned.note.len(), fitted.note.len());
-    }
+fn warn_if_cut<S: BookmarkStore>(store: &S, planned: &Bookmark, fitted: &Bookmark) {
+    warn_note_cut(store, &planned.url, &planned.note, &fitted.note);
 }
 
 /// Print one bookmark's dry-run preview, its `[dry-run] <url>` line and then its detail

@@ -140,12 +140,62 @@ async fn the_snapshot_reflects_this_runs_writes() {
         AccountView::new(vec![at("https://a/", "seed")]),
         WriteMode::Live,
     );
-    store.update(&at("https://a/", "written")).await.unwrap();
+    let stored = store.update(&at("https://a/", "written")).await.unwrap();
+    assert_eq!(stored, Update::Written);
 
     let all = store.snapshot(|_| true);
 
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].note, "written");
+}
+
+#[tokio::test]
+async fn the_snapshot_keeps_what_a_refused_write_left() {
+    let pinboard = FakePinboard {
+        too_long_urls: ["https://a/".to_string()].into(),
+        ..FakePinboard::default()
+    };
+    let store = CleanupStore::new(
+        &pinboard,
+        AccountView::new(vec![at("https://a/", "seed")]),
+        WriteMode::Live,
+    );
+    let stored = store.update(&at("https://a/", "written")).await.unwrap();
+
+    assert_eq!(stored, Update::TooLong);
+    assert_eq!(store.snapshot(|_| true)[0].note, "seed");
+}
+
+#[tokio::test]
+async fn a_refused_merge_deletes_nothing() {
+    let pinboard = FakePinboard {
+        too_long_urls: ["https://a/".to_string()].into(),
+        ..FakePinboard::default()
+    };
+    let absorbed = url("https://b/");
+
+    let out = pinboard
+        .apply_merge(&at("https://a/", "merged"), &[&absorbed])
+        .await;
+
+    assert!(out.too_long && !out.wrote && out.error.is_none(), "{out:?}");
+    assert!(pinboard.deleted.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn a_refused_move_keeps_its_old_url() {
+    let pinboard = FakePinboard {
+        too_long_urls: ["https://a/".to_string()].into(),
+        ..FakePinboard::default()
+    };
+    let old = url("https://b/");
+
+    let out = pinboard
+        .apply_update(&at("https://a/", "moved"), Some(&old))
+        .await;
+
+    assert!(out.too_long && !out.wrote && out.error.is_none(), "{out:?}");
+    assert!(pinboard.deleted.borrow().is_empty());
 }
 
 #[test]

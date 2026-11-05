@@ -124,8 +124,9 @@ is planned to move *away* has no record that stays; that is safe only because th
 own plan moves it first (`write_order` writes its group before this one), the fixpoint
 refuses the group heading here if that write is refused, and the write loop marks the URL
 occupied if it *fails*. Keep all three. A cycle of moves, such as a swap, has no such order,
-so it stays unprotected: if a later write in the cycle fails, the first has already
-overwritten a record that never moved.
+so it stays unprotected: if a later write in the cycle fails, or Pinboard refuses it as too
+long, the first has already overwritten a record that never moved. Either way it counts as
+a failed write (`GroupWriter::written` tells a refusal in a cycle from a plain one).
 
 **A merge never decides visibility.** A plan whose `public` doesn't match the record that
 stays drops out of its group, since the merge would either publish a private note or unshare
@@ -195,8 +196,14 @@ so its cut is the one a lone rewrite makes. `PinboardClient` implements `fit` wi
 `fitted_note`, which `post_add` uses too, so the two can't drift. Only the note is ever
 cut: every other field, tags included, is sent whole, even when that cuts the note
 further. It measures as if a `dt` were sent, so a note `sync` wrote undated cuts the same
-once `cleanup` writes it back dated. A test models the cut with `FakePinboard`'s
-`trims_notes`, which applies the real `fitted_note` to the fit and writes.
+once `cleanup` writes it back dated. **Cleanup refuses a write Pinboard still rejects as
+too long rather than halving it**: `update` writes nothing and returns `Update::TooLong`,
+and the driver deletes nothing (`WriteOutcome`'s `too_long`), counts it refused and marks
+every member's URL `Refusal::TooLong`. A shorter note would cut text the record already
+holds, and a merge judged against the longer one would then delete what it absorbed.
+Only `add`, sync's write of a new bookmark, halves on a 414 (`OnTooLong`), each time from
+the full budget. A test models the cut with `FakePinboard`'s `trims_notes`, which applies
+the real `fitted_note` to the fit and writes, and a 414 with `too_long_urls`.
 
 **Every source is a `Source`, and one sync loop drives them all.** The port lives in
 [`src/source.rs`](src/source.rs): `Source::fetch()` returns `BookmarkDraft`s (a `Bookmark`

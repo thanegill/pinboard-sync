@@ -4546,3 +4546,198 @@ async fn a_merge_in_a_cycle_never_deletes_a_url_another_group_writes() {
     assert_eq!(outcome.write_failed, 0, "{outcome:?}");
     assert_eq!(*pinboard.deleted.borrow(), ["https://z/"]);
 }
+
+/// A Pinboard that refuses every write to `https://target/` as too long, as it answers a
+/// URL over its limit with a 414.
+fn refusing_writes_to_the_target() -> FakePinboard {
+    FakePinboard {
+        too_long_urls: ["https://target/".to_string()].into(),
+        ..FakePinboard::trimming()
+    }
+}
+
+/// Plans the mover onto the target and every other bookmark onto the mover's URL.
+fn mover_onto_target_others_onto_mover() -> FakePass<impl Fn(&Bookmark) -> Result<Plan, SourceError>>
+{
+    FakePass(|bookmark: &Bookmark| {
+        let to = match bookmark.url.as_str() {
+            "https://mover/" => "https://target/",
+            _ => "https://mover/",
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(to),
+            ..unchanged_plan(bookmark)
+        }))
+    })
+}
+
+#[tokio::test]
+async fn a_merge_refused_as_too_long_writes_nothing_and_then_converges() {
+    let mut resident = bookmark("https://target/");
+    resident.note = "the resident's own note".into();
+    let mut mover = bookmark("https://mover/");
+    mover.note = "the mover's own note".into();
+    let mut other = bookmark("https://other/");
+    other.note = "a bookmark heading for the mover's URL".into();
+    let all = vec![resident.clone(), mover.clone(), other.clone()];
+    let slice = vec![mover.clone(), other];
+    let pass = mover_onto_target_others_onto_mover();
+
+    let pinboard = refusing_writes_to_the_target();
+    let first = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
+    assert!(pinboard.ops.borrow().is_empty(), "{:?}", pinboard.ops);
+    assert_eq!(
+        (first.changed, first.refused, first.write_failed),
+        (0, 2, 0)
+    );
+
+    let pinboard = FakePinboard::trimming();
+    run_over(&pinboard, &all, &slice, WriteMode::Live, &pass)
+        .await
+        .into_result()
+        .unwrap();
+    let settled = crate::test_support::replay(&all, &pinboard.ops.borrow());
+    let target = settled
+        .iter()
+        .find(|bookmark| bookmark.url.as_str() == "https://target/")
+        .expect("the target stays");
+    assert_eq!(target.note, format!("{}\n\n{}", resident.note, mover.note));
+}
+
+#[tokio::test]
+async fn a_move_refused_as_too_long_stays_where_it_is() {
+    let books = vec![bookmark("https://mover/")];
+
+    let pinboard = refusing_writes_to_the_target();
+    let outcome = run(&pinboard, &books, &onto_target()).await;
+    assert!(pinboard.ops.borrow().is_empty(), "{:?}", pinboard.ops);
+    assert_eq!((outcome.changed, outcome.refused), (0, 1));
+}
+
+#[tokio::test]
+async fn a_move_refused_as_too_long_is_not_written_over() {
+    let books = vec![bookmark("https://mover/"), bookmark("https://other/")];
+
+    let pinboard = refusing_writes_to_the_target();
+    let outcome = run(&pinboard, &books, &mover_onto_target_others_onto_mover()).await;
+    assert!(pinboard.ops.borrow().is_empty(), "{:?}", pinboard.ops);
+    assert_eq!((outcome.changed, outcome.refused), (0, 2));
+}
+
+#[tokio::test]
+async fn a_tags_only_rewrite_refused_as_too_long_writes_nothing() {
+    let stored = bookmark("https://target/");
+    let pass = FakePass(|bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            tags: tag_list(&["a", "b", "new"]),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+
+    let pinboard = refusing_writes_to_the_target();
+    let outcome = run(&pinboard, &[stored], &pass).await;
+    assert!(pinboard.ops.borrow().is_empty(), "{:?}", pinboard.ops);
+    assert_eq!((outcome.changed, outcome.refused), (0, 1));
+}
+
+#[tokio::test]
+async fn a_three_member_merge_refused_as_too_long_protects_every_member() {
+    let mut first = bookmark("https://m1/");
+    first.note = "first".into();
+    let mut second = bookmark("https://m2/");
+    second.note = "second".into();
+    let mut third = bookmark("https://m3/");
+    third.note = "third".into();
+    let mut heading_to_second = bookmark("https://other/");
+    heading_to_second.note = "other".into();
+    let books = vec![first, second, third, heading_to_second];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        let to = match bookmark.url.as_str() {
+            "https://other/" => "https://m2/",
+            _ => "https://target/",
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(to),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+
+    let pinboard = refusing_writes_to_the_target();
+    let outcome = run(&pinboard, &books, &pass).await;
+    assert!(pinboard.ops.borrow().is_empty(), "{:?}", pinboard.ops);
+    assert_eq!(
+        (outcome.changed, outcome.refused, outcome.write_failed),
+        (0, 2, 0)
+    );
+}
+
+/// A swap whose second write Pinboard refuses as too long: the first has already written
+/// over the record the second would have moved, so the run fails rather than reporting a
+/// refusal.
+#[tokio::test]
+async fn a_swap_whose_second_write_is_refused_fails_the_run() {
+    let mut a = bookmark("https://a/");
+    a.note = "a's own note".into();
+    let mut b = bookmark("https://b/");
+    b.note = "b's own note".into();
+    let books = vec![a, b];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        let to = if bookmark.url.as_str() == "https://a/" {
+            "https://b/"
+        } else {
+            "https://a/"
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(to),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let pinboard = FakePinboard {
+        too_long_urls: ["https://b/".to_string()].into(),
+        ..FakePinboard::trimming()
+    };
+
+    let outcome = run(&pinboard, &books, &pass).await;
+    assert_eq!(
+        (outcome.changed, outcome.refused, outcome.write_failed),
+        (1, 0, 1)
+    );
+    outcome.into_result().unwrap_err();
+}
+
+/// A three-way cycle whose middle write Pinboard refuses: the group behind it is refused in
+/// turn, after the first write already wrote over its record, so the run fails.
+#[tokio::test]
+async fn a_cycle_whose_refusal_strands_a_written_over_record_fails_the_run() {
+    let books: Vec<Bookmark> = ["a", "b", "c"]
+        .iter()
+        .map(|name| Bookmark {
+            note: format!("{name}'s own note"),
+            ..bookmark(&format!("https://{name}/"))
+        })
+        .collect();
+    let pass = FakePass(|bookmark: &Bookmark| {
+        let to = match bookmark.url.as_str() {
+            "https://a/" => "https://b/",
+            "https://b/" => "https://c/",
+            _ => "https://a/",
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(to),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let pinboard = FakePinboard {
+        too_long_urls: ["https://c/".to_string()].into(),
+        ..FakePinboard::trimming()
+    };
+
+    let outcome = run(&pinboard, &books, &pass).await;
+    let after = crate::test_support::replay(&books, &pinboard.ops.borrow());
+    assert!(
+        !after.iter().any(|bookmark| bookmark.note == books[0].note),
+        "a's record is written over: {after:?}"
+    );
+    assert_eq!(outcome.write_failed, 1, "{outcome:?}");
+    outcome.into_result().unwrap_err();
+}

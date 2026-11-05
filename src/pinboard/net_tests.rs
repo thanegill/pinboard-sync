@@ -190,10 +190,11 @@ async fn add_sends_each_field_under_its_pinboard_name() {
         .add(&bookmark("https://example.com/public", true, false))
         .await
         .unwrap();
-    client
+    let stored = client
         .update(&bookmark("https://example.com/read-later", false, true))
         .await
         .unwrap();
+    assert_eq!(stored, Update::Written);
 }
 
 /// The tag set, as cleanup's `diff` compares it and `fit` measures it.
@@ -330,6 +331,35 @@ async fn add_sends_every_tag_and_cuts_the_note_to_make_room() {
     let sent_note = param("extended").expect("posts/add sends extended");
     assert!(sent_note.ends_with(TRUNCATION_MARKER), "{sent_note}");
     assert!(request.url.as_str().len() <= MAX_URL_BYTES);
+}
+
+#[tokio::test]
+async fn update_refuses_a_414_without_retrying_and_add_still_halves() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/add"))
+        .respond_with(|request: &wiremock::Request| {
+            if request.url.as_str().len() > MAX_URL_BYTES * 3 / 4 {
+                ResponseTemplate::new(414)
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"}))
+            }
+        })
+        .mount(&server)
+        .await;
+    let client = client(&server);
+    let long = client.fit(Bookmark {
+        note: "long notes ".repeat(2000),
+        ..stored_at("https://example.com/long")
+    });
+
+    assert_eq!(client.update(&long).await.unwrap(), Update::TooLong);
+    assert_eq!(sent_notes(&server).await.len(), 1, "no retry");
+
+    client.add(&long).await.unwrap();
+    let sent = sent_notes(&server).await;
+    assert_eq!(sent.len(), 3, "a 414, then the halved write");
+    assert!(sent[2].len() < long.note.len());
 }
 
 /// The `extended` value of every request `server` received, in order.
@@ -624,4 +654,249 @@ async fn successive_adds_wait_out_the_rate_limit_between_them() {
 
     written.unwrap();
     assert_eq!(waits, [rate_limit], "a pause before the second add only");
+}
+
+/// Cleanup runs over the real client against a Pinboard whose limit is below the budget:
+/// a rewrite it refuses is not retried shorter, and the writes after it start from the
+/// full budget again.
+mod under_a_lower_limit {
+    use super::*;
+    use crate::bookmark::{AccountView, CleanupStore, WriteMode};
+    use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
+    use crate::source::SourceError;
+    use crate::test_support::NO_DATING;
+
+    /// The URL length above which the server answers 414: under the budget, so a note
+    /// `fit` keeps whole can still be refused.
+    const LIMIT: usize = MAX_URL_BYTES * 4 / 5;
+
+    /// Moves each `from` to its `to`, and retags a bookmark that stays where it is, so its
+    /// rewrite has something to write.
+    struct MapPass(Vec<(String, String)>);
+
+    impl MapPass {
+        fn new(moves: &[(&str, &str)]) -> Self {
+            Self(
+                moves
+                    .iter()
+                    .map(|(from, to)| ((*from).to_string(), (*to).to_string()))
+                    .collect(),
+            )
+        }
+    }
+
+    impl CleanupPass for MapPass {
+        async fn plan(&self, b: &Bookmark) -> Result<Plan, SourceError> {
+            let Some((_, to)) = self.0.iter().find(|(from, _)| from == b.url.as_str()) else {
+                return Ok(Plan::Unchanged);
+            };
+            let tags = if to == b.url.as_str() {
+                tag_list(&["x", "retagged"])
+            } else {
+                b.tags.clone()
+            };
+            Ok(Plan::Bookmark(Bookmark {
+                url: Url::parse(to).unwrap(),
+                tags,
+                ..b.clone()
+            }))
+        }
+    }
+
+    async fn limited_server() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/posts/add"))
+            .respond_with(|request: &wiremock::Request| {
+                if request.url.as_str().len() > LIMIT {
+                    ResponseTemplate::new(414)
+                } else {
+                    ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"}))
+                }
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/posts/delete"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn with_note(url: &str, note: String) -> Bookmark {
+        Bookmark {
+            title: "T".into(),
+            note,
+            tags: tag_list(&["x"]),
+            ..stored_at(url)
+        }
+    }
+
+    /// A bookmark whose move to `https://b1.example/` the server refuses.
+    fn refused_first() -> Bookmark {
+        with_note("https://a1.example/", "first ".repeat(1200))
+    }
+
+    /// Every request `server` received for `url` at `endpoint`, as the `extended` it sent,
+    /// or the `url` for a delete.
+    async fn sent(server: &MockServer, endpoint: &str, url: &str) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .expect("recording requests")
+            .iter()
+            .filter(|request| request.url.path() == endpoint)
+            .filter(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .any(|(name, value)| name == "url" && value == url)
+            })
+            .map(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .find(|(name, _)| name == "extended")
+                    .map_or_else(|| url.to_string(), |(_, value)| value.into_owned())
+            })
+            .collect()
+    }
+
+    /// Asserts the server refused `url`'s one write, with no shorter retry, and no delete
+    /// of `kept` followed it.
+    async fn assert_refused_once(server: &MockServer, url: &str, kept: &str) {
+        assert_eq!(sent(server, "/posts/add", url).await.len(), 1, "{url}");
+        assert!(
+            sent(server, "/posts/delete", kept).await.is_empty(),
+            "{kept}"
+        );
+    }
+
+    /// A cleanup pass over `slice` of the account `all`, returning how many bookmarks it
+    /// changed and how many writes it refused.
+    async fn run_over(
+        server: &MockServer,
+        all: &[Bookmark],
+        slice: &[Bookmark],
+        pass: &MapPass,
+    ) -> (usize, usize) {
+        let client = client(server);
+        let store = CleanupStore::new(&client, AccountView::new(all.to_vec()), WriteMode::Live);
+        let (outcome, _) =
+            crate::http::recording_waits(run_pass(&store, slice, "test", NO_DATING, pass)).await;
+        (outcome.changed, outcome.refused)
+    }
+
+    #[tokio::test]
+    async fn a_later_move_keeps_its_whole_note() {
+        let server = limited_server().await;
+        let second = with_note("https://a2.example/", "second ".repeat(700));
+        let all = vec![refused_first(), second.clone()];
+        let pass = MapPass::new(&[
+            ("https://a1.example/", "https://b1.example/"),
+            ("https://a2.example/", "https://b2.example/"),
+        ]);
+
+        assert_eq!(run_over(&server, &all, &all, &pass).await, (1, 1));
+
+        assert_refused_once(&server, "https://b1.example/", "https://a1.example/").await;
+        assert_eq!(
+            sent(&server, "/posts/add", "https://b2.example/").await,
+            [second.note]
+        );
+        assert_eq!(
+            sent(&server, "/posts/delete", "https://a2.example/").await,
+            ["https://a2.example/"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_merge_keeps_the_movers_text() {
+        let server = limited_server().await;
+        let first = refused_first();
+        let resident = with_note("https://t.example/", "resident ".repeat(550));
+        let mover = with_note("https://m.example/", "the mover's own words".into());
+        let all = vec![first.clone(), resident, mover.clone()];
+        let pass = MapPass::new(&[
+            ("https://a1.example/", "https://b1.example/"),
+            ("https://m.example/", "https://t.example/"),
+        ]);
+
+        assert_eq!(
+            run_over(&server, &all, &[first, mover.clone()], &pass).await,
+            (1, 1)
+        );
+
+        assert_refused_once(&server, "https://b1.example/", "https://a1.example/").await;
+        let at_target = sent(&server, "/posts/add", "https://t.example/").await;
+        assert!(
+            at_target.iter().any(|note| note.contains(&mover.note)),
+            "{at_target:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_rewrite_in_place_keeps_its_whole_note() {
+        let server = limited_server().await;
+        let second = with_note("https://c.example/", "second ".repeat(700));
+        let all = vec![refused_first(), second.clone()];
+        let pass = MapPass::new(&[
+            ("https://a1.example/", "https://b1.example/"),
+            ("https://c.example/", "https://c.example/"),
+        ]);
+
+        assert_eq!(run_over(&server, &all, &all, &pass).await, (1, 1));
+
+        assert_refused_once(&server, "https://b1.example/", "https://a1.example/").await;
+        assert_eq!(
+            sent(&server, "/posts/add", "https://c.example/").await,
+            [second.note]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_overlong_url_does_not_cut_the_writes_after_it() {
+        let server = limited_server().await;
+        let overlong = format!("https://p.example/?q={}", "a".repeat(LIMIT));
+        let second = with_note("https://a2.example/", "second ".repeat(150));
+        let all = vec![with_note(&overlong, "n".into()), second.clone()];
+        let pass = MapPass::new(&[
+            (&overlong, &overlong),
+            ("https://a2.example/", "https://b2.example/"),
+        ]);
+
+        assert_eq!(run_over(&server, &all, &all, &pass).await, (1, 1));
+
+        assert_refused_once(&server, &overlong, &overlong).await;
+        assert_eq!(
+            sent(&server, "/posts/add", "https://b2.example/").await,
+            [second.note]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_residents_whole_note_is_never_shortened() {
+        let server = limited_server().await;
+        let resident = with_note("https://t.example/", "resident ".repeat(680));
+        let mover = with_note("https://m.example/", "mover ".repeat(80));
+        let all = vec![resident, mover.clone()];
+        let pass = MapPass::new(&[("https://m.example/", "https://t.example/")]);
+
+        assert_eq!(run_over(&server, &all, &[mover], &pass).await, (0, 1));
+
+        assert_refused_once(&server, "https://t.example/", "https://m.example/").await;
+    }
+
+    #[tokio::test]
+    async fn a_tags_only_rewrite_refused_writes_nothing() {
+        let server = limited_server().await;
+        let whole = with_note("https://c.example/", "second ".repeat(950));
+        let pass = MapPass::new(&[("https://c.example/", "https://c.example/")]);
+
+        let account = std::slice::from_ref(&whole);
+        assert_eq!(run_over(&server, account, account, &pass).await, (0, 1));
+
+        assert_refused_once(&server, "https://c.example/", "https://c.example/").await;
+    }
 }

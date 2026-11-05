@@ -17,8 +17,8 @@
 //!
 //! A rewrite never deletes an old URL that another plan targets, so chained rewrites can't
 //! clobber each other. Every refusal decided before the first write is closed under
-//! [`propagate_refusals`], which makes it order-independent; a failed write re-closes it
-//! over the groups not yet written, so a failed run is the one case where order shows.
+//! [`propagate_refusals`], which makes it order-independent; a write that did not land
+//! re-closes it over the groups not yet written, so that is the one case where order shows.
 //! Groups are written in [`write_order`], each after the group moving its target's occupant
 //! away, so a failed move is protected before anything lands on the record it left behind.
 //! A cycle of moves, such as a swap, has no such order. The dry-run lines and tallies go
@@ -105,14 +105,17 @@ pub struct PassOutcome {
     /// [`Refusal`]), or a plan held back over visibility or over a note its merge would cut
     /// off. Not a failure, but work that did not happen, so it is reported. Counted per
     /// *group* for an untouchable target and per *plan* for one held back, unless its group
-    /// is refused whole, so it counts abandoned writes, not bookmarks, and none twice.
+    /// is refused whole, so it counts abandoned writes, not bookmarks, and none twice. A
+    /// write the store refused as too long counts here too, as one more, besides the plans
+    /// already held back from its group.
     pub refused: usize,
     /// Bookmarks the source gave an answer for -- the evidence that it is reachable.
     /// Excludes [`Plan::Skipped`], which never asked it anything.
     pub reached: usize,
     /// Bookmarks whose `plan` failed to read the source.
     pub plan_failed: usize,
-    /// Bookmarks whose write to the store failed.
+    /// Bookmarks whose write to the store failed, or whose record a cycle of moves wrote
+    /// over before their own move could land.
     pub write_failed: usize,
     /// Set when the source told us to stop partway. [`PassOutcome::into_result`] hands it
     /// back as [`SourceError::Halted`], so the `cleanup` command can tell a dead credential
@@ -136,6 +139,9 @@ enum Refusal {
     /// still there. Distinct from [`Refusal::OccupiedByRefused`] because the operator's
     /// problem is different: something is wrong with the writes, not with the plan.
     WriteFailed,
+    /// The target holds a bookmark whose own rewrite the store refused as too long
+    /// ([`crate::bookmark::WriteOutcome::too_long`]), so it is still there.
+    TooLong,
 }
 
 impl std::fmt::Display for Refusal {
@@ -144,6 +150,7 @@ impl std::fmt::Display for Refusal {
             Refusal::Unreadable => "occupied by a bookmark this pass could not read",
             Refusal::OccupiedByRefused => "occupied by a rewrite that was itself refused",
             Refusal::WriteFailed => "occupied by a bookmark whose own rewrite failed",
+            Refusal::TooLong => "occupied by a bookmark whose rewrite Pinboard refused as too long",
         })
     }
 }
@@ -296,6 +303,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     let mut writer = GroupWriter {
         store,
         targets,
+        written: HashSet::new(),
         mode,
         outcome,
     };
@@ -318,7 +326,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // URLs. Separate from the `targets` delete-guard -- that protects a URL some *plan*
         // writes to, this one a URL no plan may land on.
         if let Some(reason) = untouchable.get(key) {
-            writer.refuse_group(key, *reason);
+            writer.skip_group(key, &group, *reason);
             continue;
         }
         writer.outcome.refused += held_here;
@@ -329,13 +337,12 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
             (None, [Member { stored, planned }]) => writer.write_single(stored, planned).await,
             _ => writer.write_merge(key, &group, resident).await,
         };
-        // A failed write left its bookmarks where they were, so a later group heading for
-        // one of their URLs would overwrite it. Protect them and re-close the refusal set,
-        // over the groups after this one only, which is why a failed write stays a failure
-        // rather than becoming a refusal.
+        // A failed or refused write left its bookmarks where they were, so a later group
+        // heading for one of their URLs would overwrite it. Protect them and re-close the
+        // refusal set, over the groups after this one only.
         if !stranded.is_empty() {
-            for url in stranded {
-                untouchable.entry(url).or_insert(Refusal::WriteFailed);
+            for (url, reason) in stranded {
+                untouchable.entry(url).or_insert(reason);
             }
             propagate_refusals(&group_order, &groups, &mut untouchable);
         }
@@ -467,7 +474,8 @@ fn group_by_target<'p>(
 /// first-appearance order, which keeps a dry run's preview deterministic.
 ///
 /// A cycle, such as two bookmarks swapping URLs, has no safe order: one of its writes lands
-/// on a record that has not left yet and is lost if a later write in the cycle fails.
+/// on a record that has not left yet and is lost if a later write in the cycle fails or is
+/// refused as too long.
 fn write_order<'p>(
     first_appearance: &[&'p Url],
     groups: &HashMap<&'p Url, Vec<Member<'p>>>,
@@ -737,11 +745,59 @@ struct GroupWriter<'s, 'p, S> {
     /// A rewrite's old URL is never deleted when it is one of these, because that write's
     /// record will live there.
     targets: HashSet<&'p Url>,
+    /// The URLs a write of this pass has landed on. A bookmark stored at one of them before
+    /// the pass, and still planned to move, was written over by a cycle of moves.
+    written: HashSet<Url>,
     mode: WriteMode,
     outcome: PassOutcome,
 }
 
 impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
+    /// Count and log a write the store refused as too long, whose members were stored at
+    /// `stored`: a refusal, unless an earlier write of a cycle of moves already wrote over
+    /// one of them, whose record is then lost.
+    fn tally_too_long<'u>(&mut self, what: &str, stored: impl IntoIterator<Item = &'u Url>) {
+        match self.written_over(stored) {
+            None => {
+                self.outcome.refused += 1;
+                warn!("{what}: Pinboard refused the write as too long");
+            }
+            Some(lost) => {
+                self.outcome.write_failed += 1;
+                error!(
+                    "{what}: Pinboard refused the write as too long, after a cycle of moves \
+                     wrote over the record at {lost}"
+                );
+            }
+        }
+    }
+
+    /// The URLs among `stored`, a group's members' stored URLs, that a write of this pass
+    /// already landed on, space-separated: a cycle of moves wrote over their records, so a
+    /// group that then does not write loses them. `None` when there are none.
+    fn written_over<'u>(&self, stored: impl IntoIterator<Item = &'u Url>) -> Option<String> {
+        let lost: Vec<&str> = stored
+            .into_iter()
+            .filter(|url| self.written.contains(*url))
+            .map(Url::as_str)
+            .collect();
+        (!lost.is_empty()).then(|| lost.join(" "))
+    }
+
+    /// Count and log a group whose target must not be written: a refusal, unless a cycle of
+    /// moves already wrote over a member's record ([`Self::written_over`]), which is lost.
+    fn skip_group(&mut self, key: &Url, group: &[Member<'_>], reason: Refusal) {
+        let Some(lost) = self.written_over(group.iter().map(|member| &member.stored.url)) else {
+            self.refuse_group(key, reason);
+            return;
+        };
+        self.outcome.write_failed += 1;
+        error!(
+            "skipping cleanup write to {key}: {reason}, after a cycle of moves wrote over the \
+             record at {lost}"
+        );
+    }
+
     /// Count, log and preview a group whose target must not be written at all.
     fn refuse_group(&mut self, key: &Url, reason: Refusal) {
         self.outcome.refused += 1;
@@ -760,8 +816,13 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
     /// Write a lone plan with nothing stored at its target: skip it when it would store
     /// nothing new ([`stores_nothing_new`]), else rewrite it (deleting the old URL when it
     /// moved and no other plan targets it) and tally the result. Returns the stored URLs a
-    /// failed write left occupied, for the caller to protect: empty unless it failed.
-    async fn write_single(&mut self, original: &Bookmark, planned: &Bookmark) -> Vec<Url> {
+    /// write left occupied, for the caller to protect, each with why: empty unless it
+    /// failed or the store refused it as too long.
+    async fn write_single(
+        &mut self,
+        original: &Bookmark,
+        planned: &Bookmark,
+    ) -> Vec<(Url, Refusal)> {
         let fitted = fit_plan(self.store, Some(original), planned);
         if stores_nothing_new(self.store, original, &fitted) {
             return Vec::new();
@@ -788,7 +849,14 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
             .store
             .apply_update(planned, delete_old.then_some(&original.url))
             .await;
+        if write.wrote {
+            self.written.insert(planned.url.clone());
+        }
         match write.error {
+            None if write.too_long => {
+                self.tally_too_long(&format!("not rewriting {}", original.url), [&original.url]);
+                vec![(original.url.clone(), Refusal::TooLong)]
+            }
             None => {
                 self.outcome.changed += 1;
                 debug!(
@@ -812,7 +880,7 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
             Some(e) => {
                 self.outcome.write_failed += 1;
                 error!("rewriting bookmark {}: {e:#}", original.url);
-                vec![original.url.clone()]
+                vec![(original.url.clone(), Refusal::WriteFailed)]
             }
         }
     }
@@ -821,14 +889,15 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
     /// record, write it, and delete the absorbed URLs, so a later run sees a single
     /// bookmark at the target and converges. When the merge would store nothing new over
     /// the record stored there ([`stores_nothing_new`]), only the absorbed URLs are
-    /// deleted, and with none the group is skipped. Returns the stored URLs a failed write
-    /// left occupied, for the caller to protect: empty unless the write failed.
+    /// deleted, and with none the group is skipped. Returns the stored URLs a write left
+    /// occupied, for the caller to protect, each with why: empty unless the write failed or
+    /// the store refused it as too long.
     async fn write_merge(
         &mut self,
         key: &Url,
         group: &[Member<'_>],
         resident: Option<&Bookmark>,
-    ) -> Vec<Url> {
+    ) -> Vec<(Url, Refusal)> {
         let Merge {
             merged,
             fitted,
@@ -885,7 +954,22 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
         } else {
             self.store.apply_absorb(target, &old_urls).await
         };
+        if rewrite && write.wrote {
+            self.written.insert(target.clone());
+        }
         match write.error {
+            // Nothing was written or absorbed, so every member is still at its own URL, as
+            // after a failed write.
+            None if write.too_long => {
+                self.tally_too_long(
+                    &format!("not merging into {target}"),
+                    group.iter().map(|member| &member.stored.url),
+                );
+                group
+                    .iter()
+                    .map(|member| (member.stored.url.clone(), Refusal::TooLong))
+                    .collect()
+            }
             None => {
                 self.outcome.changed += 1;
                 let absorbed: Vec<&str> = write.deleted.iter().map(Url::as_str).collect();
@@ -913,7 +997,7 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
                 error!("merging into {target}: {e:#}");
                 group
                     .iter()
-                    .map(|member| member.stored.url.clone())
+                    .map(|member| (member.stored.url.clone(), Refusal::WriteFailed))
                     .collect()
             }
         }
@@ -1266,10 +1350,10 @@ fn emit_preview(kept: &mut Vec<String>, url: &Url, lines: impl IntoIterator<Item
 /// occupy the URL that refuses the next, which is what makes the result independent of the
 /// order groups are written in.
 ///
-/// Called once before any write, and again after each failed write -- a failure strands its
-/// group exactly as a refusal does, and leaving that un-propagated is worse than not
-/// protecting the stranded record at all: it refuses a group whose own members are then
-/// left unprotected in turn, trading one lost record for several.
+/// Called once before any write, and again after each write that did not land -- that
+/// strands its group exactly as a refusal does, and leaving that un-propagated is worse
+/// than not protecting the stranded record at all: it refuses a group whose own members
+/// are then left unprotected in turn, trading one lost record for several.
 fn propagate_refusals(
     group_order: &[&Url],
     groups: &HashMap<&Url, Vec<Member<'_>>>,

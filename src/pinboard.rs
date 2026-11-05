@@ -10,7 +10,7 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage, PRIMARY_STREAM};
-use crate::bookmark::{warn_note_cut, Bookmark, BookmarkStore};
+use crate::bookmark::{warn_note_cut, Bookmark, BookmarkStore, Update};
 use crate::http::{
     answered_a_retry, client_builder, error_with_body, redact, LinearBackoff, RetryingClient,
     REDACTED, USER_AGENT,
@@ -30,14 +30,27 @@ const BACKOFF: LinearBackoff = LinearBackoff::new(5, RATE_LIMIT);
 /// included, percent-encoded as sent, within this many bytes. Other fields are never
 /// trimmed. Pinboard's nginx caps the request line at 8 KiB: a full URL of 8201 bytes
 /// passed and one of 8202 got `414 URI Too Long` (measured 2026-11-04). The margin under
-/// that absorbs a small change on Pinboard's side, and a 414 that still comes back makes
-/// [`PinboardClient::post_add`] halve the budget and retry.
+/// that absorbs a small change on Pinboard's side; a 414 that still comes back is
+/// [`OnTooLong`]'s call.
 const MAX_URL_BYTES: usize = 8100;
 /// Floor for the adaptive 414 retry: below this we stop shrinking and surface the
 /// error rather than writing a bookmark with essentially no notes in an endless loop.
 const MIN_URL_BYTES: usize = 500;
 /// Appended to a trimmed `extended` so the truncation is visible in the bookmark.
 pub(crate) const TRUNCATION_MARKER: &str = "… [truncated]";
+
+/// What `posts/add` does when Pinboard answers `414 URI Too Long` anyway.
+#[derive(Clone, Copy)]
+enum OnTooLong {
+    /// Halve the budget and retry, down to [`MIN_URL_BYTES`]: a new bookmark has nothing
+    /// stored to lose, so a shorter note beats none.
+    Halve,
+    /// Write nothing: rewriting a stored bookmark with a note shorter than `fit` keeps
+    /// would cut text the store had accepted, and a merge judged against the longer note
+    /// would then delete what it absorbed.
+    Refuse,
+}
+
 /// A `dt` of the length every `dt` has, for measuring a write that sends none.
 const DT_PLACEHOLDER: &str = "1970-01-01T00:00:00Z";
 
@@ -196,17 +209,15 @@ impl PinboardClient {
     /// `posts/add` with `replace=yes`, mapping a domain [`Bookmark`] to the Pinboard
     /// parameters (`public`/`read_later` -> `shared`/`toread`, `timestamp` -> `dt`). A set
     /// `timestamp` sets the bookmark time. `extended` is trimmed if needed to keep the GET
-    /// URL under [`MAX_URL_BYTES`].
-    async fn post_add(&self, b: &Bookmark) -> Result<()> {
+    /// URL under [`MAX_URL_BYTES`]; what a 414 does is `too_long`'s call.
+    async fn post_add(&self, b: &Bookmark, too_long: OnTooLong) -> Result<Update> {
         self.pace().await;
         let tags = b.tags.joined();
         let dt = b.timestamp.and_then(crate::timefmt::to_pinboard_dt);
         let endpoint = self.url("posts/add");
         let fixed = self.add_params(b, &tags, dt.as_deref());
 
-        // Trim the notes to the budget; if Pinboard still rejects the URL as too long,
-        // halve the budget and retry rather than dropping the bookmark. Transient errors
-        // (network/429/5xx) are handled by `RetryingClient::send`.
+        // Transient errors (network/429/5xx) are handled by `RetryingClient::send`.
         let mut budget = MAX_URL_BYTES;
         loop {
             let extended = self.fitted_note(b, budget);
@@ -218,9 +229,18 @@ impl PinboardClient {
                 .send(&endpoint, || self.http.get(&endpoint).query(&params))
                 .await?;
 
-            if resp.status() == reqwest::StatusCode::URI_TOO_LONG && budget > MIN_URL_BYTES {
-                budget /= 2;
-                continue;
+            if resp.status() == reqwest::StatusCode::URI_TOO_LONG {
+                match too_long {
+                    OnTooLong::Refuse => {
+                        debug!("posts/add for {} was too long; nothing written", b.url);
+                        return Ok(Update::TooLong);
+                    }
+                    OnTooLong::Halve if budget > MIN_URL_BYTES => {
+                        budget /= 2;
+                        continue;
+                    }
+                    OnTooLong::Halve => {}
+                }
             }
             if !resp.status().is_success() {
                 return Err(self.status_error(&endpoint, resp).await);
@@ -234,11 +254,11 @@ impl PinboardClient {
             // rejecting is re-trimmed at each halved budget, and warning per attempt reads
             // like several different notes were cut. Worth saying at all because the stored
             // note is now shorter than the one the caller wrote. `cleanup` hands over notes
-            // `fit` already cut and says so itself, so this fires for them only on a 414.
+            // `fit` already cut and says so itself, so this never fires for them.
             if extended.len() < b.note.len() {
                 warn_note_cut(&b.url, b.note.len(), extended.len());
             }
-            return Ok(());
+            return Ok(Update::Written);
         }
     }
 
@@ -460,11 +480,11 @@ impl BookmarkStore for PinboardClient {
     }
 
     async fn add(&self, b: &Bookmark) -> Result<()> {
-        self.post_add(b).await
+        self.post_add(b, OnTooLong::Halve).await.map(drop)
     }
 
-    async fn update(&self, b: &Bookmark) -> Result<()> {
-        self.post_add(b).await
+    async fn update(&self, b: &Bookmark) -> Result<Update> {
+        self.post_add(b, OnTooLong::Refuse).await
     }
 
     fn fit(&self, mut b: Bookmark) -> Bookmark {

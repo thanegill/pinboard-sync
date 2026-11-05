@@ -260,9 +260,10 @@ always written whole, which leaves the note less room. `cleanup` compares what a
 would store with what writing the bookmark back unchanged would store, so it doesn't
 rewrite a cut note every run, or cut a long note when the only change would be cut off
 anyway. A merge that adds nothing to the bookmark it lands on just deletes the one it
-absorbs, provided the notes it could keep are already there. The one exception is a note
-Pinboard rejects even once cut: the client cuts it further on retry, and `cleanup` then
-rewrites it on every run.
+absorbs, provided the notes it could keep are already there. If Pinboard still rejects a
+`cleanup` write as too long, `cleanup` writes and deletes nothing for that bookmark, since
+a shorter note would cut text it already holds, and counts it refused (`--dry-run` can't
+foresee this); a new bookmark `sync` adds is retried with a shorter note instead.
 
 - **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your configured
   `reddit_domain` (default `old.reddit.com`), unwrapping `over18` interstitial redirects

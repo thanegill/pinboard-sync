@@ -76,8 +76,9 @@ impl Bookmark {
 pub trait BookmarkStore {
     /// Add a new bookmark. A `None` `timestamp` lets Pinboard default the date to now.
     async fn add(&self, b: &Bookmark) -> Result<()>;
-    /// Re-add an existing bookmark with normalized fields.
-    async fn update(&self, b: &Bookmark) -> Result<()>;
+    /// Re-add an existing bookmark with normalized fields, as [`Self::fit`] keeps it, or
+    /// write nothing when the store refuses it as too long.
+    async fn update(&self, b: &Bookmark) -> Result<Update>;
     /// Delete a bookmark by URL.
     async fn delete(&self, url: &Url) -> Result<()>;
 
@@ -93,15 +94,18 @@ pub trait BookmarkStore {
     fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str>;
 
     /// The cleanup re-write step: `update` the bookmark, then `delete` the old URL when it
-    /// changed (`old_url`). Any inter-write pacing is the store's own concern (the Pinboard
-    /// client spaces its `posts/add` calls internally).
+    /// changed (`old_url`), unless the store refused the write
+    /// ([`WriteOutcome::too_long`]). Any inter-write pacing is the store's own concern (the
+    /// Pinboard client spaces its `posts/add` calls internally).
     async fn apply_update(&self, update: &Bookmark, old_url: Option<&Url>) -> WriteOutcome {
-        if let Err(e) = self
+        match self
             .update(update)
             .await
             .with_context(|| format!("updating bookmark {}", update.url))
         {
-            return WriteOutcome::failed(e);
+            Err(e) => return WriteOutcome::failed(e),
+            Ok(Update::TooLong) => return WriteOutcome::too_long(),
+            Ok(Update::Written) => {}
         }
         let mut outcome = WriteOutcome::wrote();
         if let Some(old) = old_url {
@@ -121,16 +125,18 @@ pub trait BookmarkStore {
     /// single bookmark at the target and converge.
     ///
     /// A failed delete does not abandon the rest: the absorbed URLs are independent, and
-    /// stopping early strands duplicate records the store could have cleared.
+    /// stopping early strands duplicate records the store could have cleared. A write the
+    /// store refused deletes nothing ([`WriteOutcome::too_long`]).
     async fn apply_merge(&self, update: &Bookmark, old_urls: &[&Url]) -> WriteOutcome {
-        if let Err(e) = self
+        match self
             .update(update)
             .await
             .with_context(|| format!("updating merged bookmark {}", update.url))
         {
-            return WriteOutcome::failed(e);
+            Err(e) => WriteOutcome::failed(e),
+            Ok(Update::TooLong) => WriteOutcome::too_long(),
+            Ok(Update::Written) => self.apply_absorb(&update.url, old_urls).await,
         }
-        self.apply_absorb(&update.url, old_urls).await
     }
 
     /// The deleting half of [`Self::apply_merge`]: `delete` every `old_urls` entry that
@@ -159,6 +165,18 @@ pub fn warn_note_cut(url: &Url, from: usize, to: usize) {
     warn!("note trimmed to fit the request URL for {url}: {from} bytes -> {to}");
 }
 
+/// What a store did with a rewrite of a stored bookmark.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Update {
+    /// Stored, with the note as [`BookmarkStore::fit`] keeps it.
+    Written,
+    /// Refused as too long, as Pinboard answers a `posts/add` URL over its limit with a
+    /// 414: nothing was written. Storing a shorter note instead would cut text the
+    /// bookmark already holds.
+    TooLong,
+}
+
 /// What a write actually accomplished. Not a `Result<()>`, because a merge whose
 /// `posts/add` landed but whose delete failed has changed the account, and a caller that
 /// tracks the account's state has to be able to tell that apart from "nothing happened".
@@ -167,6 +185,9 @@ pub fn warn_note_cut(url: &Url, from: usize, to: usize) {
 pub struct WriteOutcome {
     /// The record is at its URL: written there, or already there for an absorb.
     pub wrote: bool,
+    /// The store refused the write as too long ([`Update::TooLong`]): nothing was
+    /// written or deleted.
+    pub too_long: bool,
     /// URLs the store confirmed it removed -- a subset of those asked for.
     pub deleted: Vec<Url>,
     /// The first failure, if any. Later deletes are still attempted.
@@ -177,6 +198,13 @@ impl WriteOutcome {
     fn wrote() -> Self {
         Self {
             wrote: true,
+            ..Self::default()
+        }
+    }
+
+    fn too_long() -> Self {
+        Self {
+            too_long: true,
             ..Self::default()
         }
     }
@@ -328,7 +356,8 @@ pub trait AccountState {
 ///
 /// In a dry run the view is still updated but nothing reaches the network: a preview has to
 /// show the same set of changes a real run would make, including the ones a later pass only
-/// makes because an earlier one already wrote.
+/// makes because an earlier one already wrote. A write Pinboard refuses as too long is the
+/// one it can't foresee.
 pub struct CleanupStore<'a, P> {
     inner: &'a P,
     view: std::cell::RefCell<AccountView>,
@@ -373,12 +402,16 @@ impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
         Ok(())
     }
 
-    async fn update(&self, b: &Bookmark) -> Result<()> {
-        if !self.mode.is_dry_run() {
-            self.inner.update(b).await?;
+    async fn update(&self, b: &Bookmark) -> Result<Update> {
+        let update = if self.mode.is_dry_run() {
+            Update::Written
+        } else {
+            self.inner.update(b).await?
+        };
+        if update == Update::Written {
+            self.view.borrow_mut().insert(b);
         }
-        self.view.borrow_mut().insert(b);
-        Ok(())
+        Ok(update)
     }
 
     async fn delete(&self, url: &Url) -> Result<()> {

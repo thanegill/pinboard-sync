@@ -78,6 +78,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- When Pinboard rejects a `cleanup` write's URL as too long (`414`), `cleanup` now writes
+  nothing for it and counts it refused. It used to retry with the note cut to half,
+  replacing text the bookmark already held, and then delete the bookmarks the write merged
+  or moved, though they held text the cut note lost. `sync` still retries a new bookmark
+  with a shorter note.
 - `cleanup github` leaves a `github.com/<owner>/.git` bookmark alone, and any whose repo
   name is `.` or `..` once `.git` is dropped. It used to move them to the owner's
   profile or to GitHub's home page.

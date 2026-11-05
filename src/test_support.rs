@@ -14,7 +14,7 @@ use tempfile::TempDir;
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore, WriteMode};
+use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore, Update, WriteMode};
 use crate::config::SyncLimit;
 use crate::keys::RedditKeys;
 use crate::pinboard::{PinboardBookmark, PinboardClient};
@@ -381,6 +381,9 @@ pub struct FakePinboard {
     /// way to reach the half-applied case where the write landed and an absorbed URL
     /// survived.
     pub fail_delete_urls: HashSet<String>,
+    /// URLs whose `update` the store refuses as too long, as Pinboard answers a 414:
+    /// nothing is written.
+    pub too_long_urls: HashSet<String>,
     /// The successful writes and deletes, interleaved in call order -- see [`replay`].
     pub ops: RefCell<Vec<Op>>,
     /// Trim a note too long for a `posts/add` URL as the Pinboard client does, both in
@@ -474,10 +477,13 @@ impl BookmarkStore for FakePinboard {
         self.ops.borrow_mut().push(Op::Write(b.clone()));
         Ok(())
     }
-    async fn update(&self, b: &Bookmark) -> Result<()> {
+    async fn update(&self, b: &Bookmark) -> Result<Update> {
         let b = &self.as_sent(b);
         if self.fail_update_urls.contains(b.url.as_str()) {
             return Err(anyhow!("simulated update failure for {}", b.url));
+        }
+        if self.too_long_urls.contains(b.url.as_str()) {
+            return Ok(Update::TooLong);
         }
         self.updated.borrow_mut().push(UpdateCall {
             url: b.url.to_string(),
@@ -489,7 +495,7 @@ impl BookmarkStore for FakePinboard {
             dt: bookmark_dt(b),
         });
         self.ops.borrow_mut().push(Op::Write(b.clone()));
-        Ok(())
+        Ok(Update::Written)
     }
     async fn delete(&self, url: &Url) -> Result<()> {
         self.deleted.borrow_mut().push(url.to_string());

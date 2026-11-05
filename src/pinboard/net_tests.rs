@@ -388,28 +388,32 @@ async fn add_stops_halving_the_budget_at_its_floor() {
         .respond_with(ResponseTemplate::new(414))
         .mount(&server)
         .await;
+    let pinboard = PinboardClient::build(
+        "user:tok".into(),
+        RATE_LIMIT,
+        server.uri(),
+        client_builder(),
+    )
+    .unwrap();
 
-    let err = client(&server)
-        .add(&Bookmark {
-            note: "long notes ".repeat(2000),
-            ..post()
-        })
-        .await
-        .unwrap_err();
+    let (result, waits) = crate::http::recording_waits(pinboard.add(&Bookmark {
+        note: "long notes ".repeat(2000),
+        ..post()
+    }))
+    .await;
 
+    let err = result.unwrap_err();
     assert!(err.to_string().contains("414"), "{err:#}");
-    let sent: Vec<usize> = server
-        .received_requests()
-        .await
-        .expect("recording requests")
-        .iter()
-        .map(|request| request.url.as_str().len())
-        .collect();
+    let sent = sent_lengths(&server).await;
     let budgets = [8100, 4050, 2025, 1012, 506];
     assert_eq!(sent.len(), budgets.len(), "{sent:?}");
     for (sent, budget) in sent.iter().zip(budgets) {
         assert!(*sent <= budget, "{sent} bytes over {budget}");
     }
+    assert_eq!(
+        waits, [RATE_LIMIT; 4],
+        "each retry waits out the rate limit, as any write after the first does"
+    );
 }
 
 /// The date the dated bookmarks below carry, so the URL sent is the one `fit` measures.

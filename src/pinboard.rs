@@ -20,7 +20,7 @@ use crate::tags::Tags;
 
 const PINBOARD_BASE: &str = "https://api.pinboard.in/v1";
 
-/// The wait between successful `posts/add` calls (Pinboard asks for ~3s).
+/// The wait between `posts/add` calls, a 414's retry included (Pinboard asks for ~3s).
 pub const RATE_LIMIT: Duration = Duration::from_secs(3);
 /// 5 tries, each retry waiting at least the ~3s Pinboard asks for between calls.
 const BACKOFF: LinearBackoff = LinearBackoff::new(5, RATE_LIMIT);
@@ -209,8 +209,8 @@ impl PinboardClient {
         format!("{}/{path}", self.base)
     }
 
-    /// Pinboard asks for ~3s between `posts/add` calls. Pause before each write *after*
-    /// the first (a failed attempt still hit the API, so it counts).
+    /// Pinboard asks for ~3s between `posts/add` calls, so pause before each one after the
+    /// first, a 414's retry included: a failed attempt still hit the API, so it counts.
     async fn pace(&self) {
         if self.wrote.get() {
             crate::http::sleep(self.rate_limit).await;
@@ -245,13 +245,13 @@ impl PinboardClient {
             );
             return unfittable(&b.url, &why, too_long);
         }
-        self.pace().await;
         let endpoint = self.url("posts/add");
         let measured_without_note = self.measured(b, |fixed| self.add_url_len(fixed, ""));
 
         // Transient errors (network/429/5xx) are handled by `RetryingClient::send`.
         let mut budget = MAX_URL_BYTES;
         loop {
+            self.pace().await;
             let extended = self.fitted_note(b, budget);
             let mut params = fixed.clone();
             params.push(("extended", extended.as_str()));

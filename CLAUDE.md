@@ -184,8 +184,8 @@ hold (the stored note on an absorb, the fitted one on a rewrite) all of the note
 rewrite of it would keep, short of text it doesn't store that the leading plan carries too
 (`Merge::would_lose`). A cut fragment counts only in the block it was cut from: the full
 block when a note it was cut from has it, looked for in the stored note first since
-`fit_plan` may have kept that, else the target's block at the same position
-(`holds_what_it_keeps`), never a block elsewhere that merely starts alike. And the leading
+`fit_plan` may have kept that, else the target's block in its place after the same blocks
+in any order (`holds_what_it_keeps`), not one elsewhere that starts alike. And the leading
 note (the resident's, the incumbent's plan or the base mover's) keeps all of what it keeps
 on its own, since other members' tags take room from the note too. Before any write,
 `hold_back_cut_notes` builds each merge up from its lead, adding members in merge order and

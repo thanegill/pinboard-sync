@@ -4167,6 +4167,31 @@ fn a_fragment_known_only_by_its_start_is_not_kept_after_a_shifted_block() {
     ));
 }
 
+/// The blocks before a fragment known only by its start count in any order, as a merge
+/// appending what its lead lacks leaves them, but each as many times as the member has it.
+#[test]
+fn a_fragment_known_only_by_its_start_is_kept_after_the_same_blocks_in_any_order() {
+    let store = FakePinboard::trimming();
+    let holds = |held: &str, before: &str| {
+        let mover = format!("{before}\n\nHN Link: https://news.ycomb{TRUNCATION_MARKER}");
+        holds_what_it_keeps(&store, held, [held, ""], held, &mover, &mover, &mover)
+    };
+    let link = "HN Link: https://news.ycombinator.com/item?id=38";
+    assert!(holds(&format!("b\n\na\n\n{link}"), "a\n\nb"));
+    assert!(
+        !holds(&format!("a\n\nb\n\nb\n\n{link}"), "a\n\na\n\nb"),
+        "a block held once does not stand for two"
+    );
+    assert!(
+        !holds(&format!("a\n\n{link}"), "a\n\na"),
+        "a missing copy shifts the link into the cut's place"
+    );
+    assert!(
+        holds(&format!("a\n\n{link}"), "a\n\n"),
+        "a blank block, which no merge carries, takes no place"
+    );
+}
+
 /// Merges onto `https://target/` the record at `lead_url` and a mover stored cut inside an
 /// `id=27` link, before its id, behind `shift` whole blocks. The lead holds those blocks
 /// too, but `shift` others come first, so its block in the cut's place is an `id=38`
@@ -4242,6 +4267,53 @@ async fn a_fragment_is_not_credited_to_an_incumbents_block_shifted_by_one() {
 #[tokio::test]
 async fn a_fragment_is_not_credited_to_a_bases_block_shifted_by_two() {
     assert_a_fragment_is_not_credited_after_a_shift("https://base/", 2).await;
+}
+
+/// A duplicate with an annotation first, stored cut far down, merging into a whole resident
+/// with fewer blocks: the merge appends the annotation and then the duplicate's later
+/// blocks, so its cut lands in its own place after the same blocks in another order. It is
+/// absorbed, and the next run writes nothing.
+#[tokio::test]
+async fn a_duplicate_whose_blocks_a_merge_reorders_is_still_absorbed() {
+    let filler = |n: u64| {
+        format!(
+            "{:016x} para",
+            (n + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ n
+        )
+    };
+    let pinboard = FakePinboard::trimming();
+    let resident = pinboard.fit(Bookmark {
+        note: (0..200).map(filler).collect::<Vec<_>>().join("\n\n"),
+        ..bookmark("https://target/")
+    });
+    assert!(pinboard.kept_of_cut(&resident.note).is_none());
+    let mover = pinboard.fit(Bookmark {
+        title: "T".repeat(45),
+        note: std::iter::once("user annotation".to_string())
+            .chain((0..500).map(filler))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        ..bookmark("https://mover/")
+    });
+    assert!(pinboard.kept_of_cut(&mover.note).is_some());
+    let pass = FakePass(|bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            url: u("https://target/"),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let all = [resident, mover.clone()];
+    let slice = std::slice::from_ref(&mover);
+
+    let first = FakePinboard::trimming();
+    let outcome = run_over(&first, &all, slice, WriteMode::Live, &pass).await;
+    let account = crate::test_support::replay(&all, &first.ops.borrow());
+    assert_eq!(outcome.refused, 0);
+    assert_eq!(*first.deleted.borrow(), strings(&["https://mover/"]));
+    let second = FakePinboard::trimming();
+    let again = run(&second, &account, &pass).await;
+    assert_eq!(again.refused, 0);
+    assert!(second.ops.borrow().is_empty(), "{:?}", second.ops.borrow());
 }
 
 /// A stored cut is credited only to the block it was cut from: a one-character cut is not

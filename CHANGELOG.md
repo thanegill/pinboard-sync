@@ -96,6 +96,11 @@ All notable changes to this project are documented here. The format is based on
 - `sync`'s `414` retries no longer go below their 500-byte floor: they stop at 506 bytes.
 - `sync`'s `414` retries wait out Pinboard's 3-second rate limit like any other write.
   They used to go out back to back.
+- `cleanup` keeps a duplicate whose note is stored cut inside a block, such as an
+  `HN Link:` line, when the bookmark it would merge into has different blocks before that
+  point. It used to merge and delete the duplicate if the block in the same place started
+  the same way, though that was another link, so nothing kept the duplicate's own. It now
+  refuses the merge, as for any other text a merge would lose.
 - `cleanup github` leaves a `github.com/<owner>/.git` bookmark alone, and any whose repo
   name is `.` or `..` once `.git` is dropped. It used to move them to the owner's
   profile or to GitHub's home page.

@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use log::{debug, warn};
 use serde::Deserialize;
 use url::Url;
@@ -27,12 +27,15 @@ const BACKOFF: LinearBackoff = LinearBackoff::new(5, RATE_LIMIT);
 
 /// `posts/add` is a GET, so every field -- notably `extended` (the notes) -- rides in
 /// the request URL, and `extended` is trimmed to keep the whole URL, scheme and host
-/// included, percent-encoded as sent, within this many bytes. Other fields are never
-/// trimmed. Pinboard's nginx caps the request line at 8 KiB: a full URL of 8201 bytes
-/// passed and one of 8202 got `414 URI Too Long` (measured 2026-11-04). The margin under
-/// that absorbs a small change on Pinboard's side; a 414 that still comes back is
-/// [`OnTooLong`]'s call.
+/// included, percent-encoded as sent, within this many bytes, when the other fields leave
+/// room under it (else see [`PinboardClient::fit_extended`]). Other fields are never
+/// trimmed. The margin under [`PINBOARD_URL_LIMIT`] absorbs a small change on Pinboard's
+/// side; a 414 that still comes back is [`OnTooLong`]'s call.
 const MAX_URL_BYTES: usize = 8100;
+/// The longest `posts/add` URL Pinboard takes, in encoded bytes, scheme and host included:
+/// its nginx caps the request line, and a URL of 8201 bytes passed while one of 8202 got
+/// `414 URI Too Long` (measured 2026-11-04).
+const PINBOARD_URL_LIMIT: usize = 8201;
 /// The 414 retry never tries a budget below this: it stops there and surfaces the 414.
 const MIN_URL_BYTES: usize = 500;
 /// Appended to a trimmed `extended` so the truncation is visible in the bookmark.
@@ -55,6 +58,18 @@ enum OnTooLong {
 fn halved(budget: usize) -> Option<usize> {
     let half = budget / 2;
     (half >= MIN_URL_BYTES).then_some(half)
+}
+
+/// What `post_add` does when it gives up the write to `url` without sending it (again),
+/// for the reason `why`.
+fn unfittable(url: &Url, why: &str, too_long: OnTooLong) -> Result<Update> {
+    match too_long {
+        OnTooLong::Refuse => {
+            debug!("{url}: {why}; nothing written");
+            Ok(Update::TooLong)
+        }
+        OnTooLong::Halve => Err(anyhow!("{why}")),
+    }
 }
 
 /// A `dt` of the length every `dt` has, for measuring a write that sends none.
@@ -215,13 +230,24 @@ impl PinboardClient {
     /// `posts/add` with `replace=yes`, mapping a domain [`Bookmark`] to the Pinboard
     /// parameters (`public`/`read_later` -> `shared`/`toread`, `timestamp` -> `dt`). A set
     /// `timestamp` sets the bookmark time. `extended` is trimmed if needed to keep the GET
-    /// URL under [`MAX_URL_BYTES`]; what a 414 does is `too_long`'s call.
+    /// URL under [`MAX_URL_BYTES`], or [`PINBOARD_URL_LIMIT`] when the other fields leave
+    /// it no room under the budget; what a 414 does is `too_long`'s call. Nothing is sent
+    /// when the URL is over the limit even with no note ([`unfittable`]).
     async fn post_add(&self, b: &Bookmark, too_long: OnTooLong) -> Result<Update> {
-        self.pace().await;
         let tags = b.tags.joined();
         let dt = b.timestamp.and_then(crate::timefmt::to_pinboard_dt);
-        let endpoint = self.url("posts/add");
         let fixed = self.add_params(b, &tags, dt.as_deref());
+        let sent_without_note = self.add_url_len(&fixed, "");
+        if sent_without_note > PINBOARD_URL_LIMIT {
+            let why = format!(
+                "the posts/add URL without the note is {sent_without_note} bytes, over \
+                 Pinboard's {PINBOARD_URL_LIMIT}-byte limit, so cutting the note can't fit it"
+            );
+            return unfittable(&b.url, &why, too_long);
+        }
+        self.pace().await;
+        let endpoint = self.url("posts/add");
+        let measured_without_note = self.measured(b, |fixed| self.add_url_len(fixed, ""));
 
         // Transient errors (network/429/5xx) are handled by `RetryingClient::send`.
         let mut budget = MAX_URL_BYTES;
@@ -241,6 +267,16 @@ impl PinboardClient {
                         debug!("posts/add for {} was too long; nothing written", b.url);
                         return Ok(Update::TooLong);
                     }
+                    (OnTooLong::Halve, Some(half)) if measured_without_note > half => {
+                        let why = format!(
+                            "the posts/add fields other than the note measure \
+                             {measured_without_note} bytes, over the next {half}-byte budget, \
+                             so a smaller budget can't shorten the URL"
+                        );
+                        return unfittable(&b.url, &why, too_long).with_context(|| {
+                            format!("Pinboard answered 414 at a {budget}-byte budget")
+                        });
+                    }
                     (OnTooLong::Halve, Some(half)) => {
                         budget = half;
                         continue;
@@ -259,9 +295,9 @@ impl PinboardClient {
             // Warn once the trim is final, not inside the retry: a note Pinboard keeps
             // rejecting is re-trimmed at each halved budget, and warning per attempt reads
             // like several different notes were cut. Worth saying at all because the stored
-            // note is now shorter than the one the caller wrote. `cleanup` hands over notes
-            // `fit` already cut and says so itself, so this never fires for them.
-            if extended.len() < b.note.len() {
+            // note is now not the one the caller wrote. `cleanup` hands over notes `fit`
+            // already cut and says so itself, so this never fires for them.
+            if extended != b.note {
                 warn_note_cut(&b.url, b.note.len(), extended.len());
             }
             return Ok(Update::Written);
@@ -294,45 +330,50 @@ impl PinboardClient {
     }
 
     /// `b`'s notes as a `posts/add` within `budget` stores them ([`Self::fit_extended`]).
-    /// Measured as if a `dt` were sent even when `b` has none: every `dt` is the same
-    /// length, so the trim doesn't depend on whether the write dates the bookmark. Without
-    /// that, a note `sync` trimmed undated would trim differently once `cleanup` writes it
-    /// back with the date Pinboard gave it, and be rewritten for that alone.
     fn fitted_note(&self, b: &Bookmark, budget: usize) -> String {
+        self.measured(b, |fixed| self.fit_extended(fixed, &b.note, budget))
+    }
+
+    /// `measure` applied to `b`'s [`Self::add_params`] as the budget counts them: with a
+    /// `dt` even when `b` has none. Every `dt` is the same length, so the trim doesn't
+    /// depend on whether the write dates the bookmark. Without that, a note `sync` trimmed
+    /// undated would trim differently once `cleanup` writes it back with the date Pinboard
+    /// gave it, and be rewritten for that alone.
+    fn measured<T>(&self, b: &Bookmark, measure: impl FnOnce(&[(&str, &str)]) -> T) -> T {
         let tags = b.tags.joined();
         let dt = b
             .timestamp
             .and_then(crate::timefmt::to_pinboard_dt)
             .unwrap_or_else(|| DT_PLACEHOLDER.to_string());
-        let fixed = self.add_params(b, &tags, Some(&dt));
-        self.fit_extended(&fixed, &b.note, budget)
+        measure(&self.add_params(b, &tags, Some(&dt)))
+    }
+
+    /// Byte length of the `posts/add` URL reqwest builds from `fixed` and `extended`.
+    fn add_url_len(&self, fixed: &[(&str, &str)], extended: &str) -> usize {
+        let mut params = fixed.to_vec();
+        params.push(("extended", extended));
+        self.http
+            .get(self.url("posts/add"))
+            .query(&params)
+            .build()
+            .map_or(usize::MAX, |r| r.url().as_str().len())
     }
 
     /// Trim `extended` so the encoded `posts/add` URL stays within `budget` bytes.
     /// Returns `extended` unchanged when the full request already fits; otherwise the
     /// largest char-boundary prefix that fits, with [`TRUNCATION_MARKER`] appended.
-    /// `fixed` is every other param (measured alongside, but never trimmed).
+    /// `fixed` is every other param (measured alongside, but never trimmed). When `fixed`
+    /// alone is over `budget`, the note is fitted to [`PINBOARD_URL_LIMIT`] instead, and
+    /// dropped when not even the marker fits under it.
     fn fit_extended(&self, fixed: &[(&str, &str)], extended: &str, budget: usize) -> String {
-        let endpoint = self.url("posts/add");
-        // Byte length of the URL reqwest would build with this `extended` value.
-        let url_len = |ext: &str| -> usize {
-            let mut params = fixed.to_vec();
-            params.push(("extended", ext));
-            self.http
-                .get(&endpoint)
-                .query(&params)
-                .build()
-                .map_or(usize::MAX, |r| r.url().as_str().len())
+        let url_len = |ext: &str| self.add_url_len(fixed, ext);
+        let room = if url_len("") > budget {
+            PINBOARD_URL_LIMIT
+        } else {
+            budget
         };
 
-        if url_len(extended) <= budget {
-            return extended.to_string();
-        }
-
-        // Fixed params alone exceed budget: the note isn't the overflow cause and the
-        // marker would only add bytes. Leave the note intact (the full request may still
-        // fit Pinboard's real limit; if not, the normal retry path handles it).
-        if url_len("") > budget {
+        if url_len(extended) <= room {
             return extended.to_string();
         }
 
@@ -345,16 +386,24 @@ impl PinboardClient {
             .chain(std::iter::once(extended.len()))
             .collect();
         let fitting = boundaries.partition_point(|&cut| {
-            url_len(&format!("{}{}", &extended[..cut], TRUNCATION_MARKER)) <= budget
+            url_len(&format!("{}{}", &extended[..cut], TRUNCATION_MARKER)) <= room
         });
         let best = fitting.checked_sub(1).map_or(0, |last| boundaries[last]);
 
         // Trim only when the marked result is actually shorter than the note, so a note
-        // barely over budget isn't replaced by a longer, fabricated "[truncated]" note.
-        if best + TRUNCATION_MARKER.len() >= extended.len() {
+        // barely over budget isn't replaced by a longer, fabricated "[truncated]" note,
+        // unless the note is over Pinboard's limit too.
+        if best + TRUNCATION_MARKER.len() >= extended.len()
+            && url_len(extended) <= PINBOARD_URL_LIMIT
+        {
             return extended.to_string();
         }
-        format!("{}{}", &extended[..best], TRUNCATION_MARKER)
+        let marked = format!("{}{}", &extended[..best], TRUNCATION_MARKER);
+        if url_len(&marked) <= PINBOARD_URL_LIMIT {
+            marked
+        } else {
+            String::new()
+        }
     }
 
     /// GET `posts/all` with the given `meta` flag (`"yes"` includes each entry's
@@ -833,23 +882,64 @@ mod tests {
         assert_eq!(c.fit_extended(FIXED, long, budget), TRUNCATION_MARKER);
     }
 
+    /// `FIXED` with a title of `t`s long enough that its URL without a note is `len` bytes.
+    fn fixed_of(c: &PinboardClient, len: usize) -> Vec<(&'static str, String)> {
+        let title = "t".repeat(len - url_len(c, "") + FIXED[1].1.len());
+        FIXED
+            .iter()
+            .map(|&(key, value)| match key {
+                "description" => (key, title.clone()),
+                _ => (key, value.to_string()),
+            })
+            .collect()
+    }
+
+    /// `fit_extended` over [`fixed_of`]'s params, with the URL it would send.
+    fn fit_with_fields_of(c: &PinboardClient, len: usize, note: &str) -> (String, usize) {
+        let owned = fixed_of(c, len);
+        let fixed: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        assert_eq!(c.add_url_len(&fixed, ""), len);
+        let fitted = c.fit_extended(&fixed, note, MAX_URL_BYTES);
+        let sent = c.add_url_len(&fixed, &fitted);
+        (fitted, sent)
+    }
+
     #[test]
-    fn note_untouched_when_fixed_params_alone_exceed_budget() {
+    fn fields_over_the_budget_fit_the_note_to_pinboards_limit() {
         let c = test_client();
-        // A budget the fixed params overrun on their own, so trimming the note can't help.
-        let budget = url_len(&c, "").saturating_sub(1);
+        let long = "word ".repeat(2000);
 
-        assert_eq!(c.fit_extended(FIXED, "", budget), "");
+        let (fitted, sent) = fit_with_fields_of(&c, MAX_URL_BYTES + 1, &long);
+        assert!(fitted.ends_with(TRUNCATION_MARKER), "{fitted:?}");
+        assert!(fitted.len() > TRUNCATION_MARKER.len(), "{fitted:?}");
+        assert!(sent <= PINBOARD_URL_LIMIT && sent > MAX_URL_BYTES, "{sent}");
 
-        let tiny = "hi";
-        assert_eq!(c.fit_extended(FIXED, tiny, budget), tiny);
+        assert_eq!(fit_with_fields_of(&c, MAX_URL_BYTES + 1, "hi").0, "hi");
+    }
 
-        // A note longer than the 15-byte marker must survive intact too: since the fixed
-        // params alone overrun the budget, trimming or marking it can't help, so replacing
-        // it with the marker would be silent data loss.
-        let long = "A full paragraph of notes that is well past the marker length.";
-        assert!(long.len() > TRUNCATION_MARKER.len());
-        assert_eq!(c.fit_extended(FIXED, long, budget), long);
+    #[test]
+    fn a_note_not_even_the_marker_fits_under_the_limit_is_dropped() {
+        let c = test_client();
+        let long = "word ".repeat(2000);
+        let marker_cost = url_len(&c, TRUNCATION_MARKER) - url_len(&c, "");
+
+        assert_eq!(
+            fit_with_fields_of(&c, PINBOARD_URL_LIMIT - marker_cost, &long),
+            (TRUNCATION_MARKER.to_string(), PINBOARD_URL_LIMIT)
+        );
+        let room_for_less = PINBOARD_URL_LIMIT - marker_cost + 1;
+        assert_eq!(fit_with_fields_of(&c, room_for_less, &long).0, "");
+        assert_eq!(
+            fit_with_fields_of(&c, room_for_less, "€€€€").0,
+            "",
+            "a note shorter than the marker but over the limit is dropped too"
+        );
+        assert_eq!(fit_with_fields_of(&c, room_for_less, "hi").0, "hi");
+        assert_eq!(
+            fit_with_fields_of(&c, PINBOARD_URL_LIMIT, "").1,
+            PINBOARD_URL_LIMIT
+        );
+        assert_eq!(fit_with_fields_of(&c, PINBOARD_URL_LIMIT + 1, &long).0, "");
     }
 
     fn wire(time: &str) -> PinboardBookmark {

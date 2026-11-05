@@ -87,6 +87,12 @@ All notable changes to this project are documented here. The format is based on
   start the same way, as `HN Link:` lines do. It used to refuse the duplicate, which then
   stayed and was counted as refused on every run, though the bookmark it would merge into
   already held all of its note.
+- A bookmark whose fields other than the note (URL, title, tags, ...) leave no room for
+  the note under the 8100-byte budget for the request URL is written with as much of the
+  note as fits under Pinboard's 8201-byte limit, or none. It used to be sent with the
+  whole note, six times over, while `sync` halved a budget no cut of the note could meet.
+  One whose URL is over that limit even with no note is no longer sent: `sync` fails it at
+  once with an error giving its size and the limit, and `cleanup` counts it refused.
 - `sync`'s `414` retries no longer go below their 500-byte floor: they stop at 506 bytes.
 - `cleanup github` leaves a `github.com/<owner>/.git` bookmark alone, and any whose repo
   name is `.` or `..` once `.git` is dropped. It used to move them to the owner's

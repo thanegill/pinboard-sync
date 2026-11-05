@@ -412,6 +412,264 @@ async fn add_stops_halving_the_budget_at_its_floor() {
     }
 }
 
+/// The date the dated bookmarks below carry, so the URL sent is the one `fit` measures.
+fn dated() -> Option<time::OffsetDateTime> {
+    crate::timefmt::from_unix(1_700_000_000)
+}
+
+/// The bytes of the `posts/add` URL that sends `b` with no note.
+fn sent_without_note(client: &PinboardClient, b: &Bookmark) -> usize {
+    let tags = b.tags.joined();
+    let dt = b.timestamp.and_then(crate::timefmt::to_pinboard_dt);
+    client.add_url_len(&client.add_params(b, &tags, dt.as_deref()), "")
+}
+
+/// A bookmark dated `timestamp` whose `posts/add` URL with no note is exactly `len` bytes,
+/// with a note far too long to send whole.
+fn sent_at(
+    client: &PinboardClient,
+    len: usize,
+    timestamp: Option<time::OffsetDateTime>,
+) -> Bookmark {
+    let mut b = Bookmark {
+        note: "long notes ".repeat(2000),
+        timestamp,
+        ..post()
+    };
+    b.title = "t".repeat(len - sent_without_note(client, &b) + b.title.len());
+    assert_eq!(sent_without_note(client, &b), len);
+    b
+}
+
+/// Every `posts/add` URL `server` received, in order.
+async fn sent_urls(server: &MockServer) -> Vec<Url> {
+    server
+        .received_requests()
+        .await
+        .expect("recording requests")
+        .into_iter()
+        .map(|request| request.url)
+        .collect()
+}
+
+/// The length of every URL `server` received, as the client sent it: wiremock rebuilds
+/// each one on `http://localhost`, without the port the client sent to.
+async fn sent_lengths(server: &MockServer) -> Vec<usize> {
+    sent_urls(server)
+        .await
+        .iter()
+        .map(|url| server.uri().len() + url[url::Position::BeforePath..].len())
+        .collect()
+}
+
+#[tokio::test]
+async fn add_sends_nothing_when_even_no_note_is_over_pinboards_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/add"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+        .mount(&server)
+        .await;
+    let pinboard = PinboardClient::build(
+        format!("user:{LEAK_SECRET}"),
+        RATE_LIMIT,
+        server.uri(),
+        client_builder(),
+    )
+    .unwrap();
+    let over = sent_at(&pinboard, PINBOARD_URL_LIMIT + 1, None);
+
+    let ((refused, written), waits) = crate::http::recording_waits(async {
+        (pinboard.add(&over).await, pinboard.add(&post()).await)
+    })
+    .await;
+
+    written.unwrap();
+    assert_eq!(
+        waits,
+        Vec::<Duration>::new(),
+        "the next write is the first sent, so it isn't paced"
+    );
+    let sent = sent_urls(&server).await;
+    let [request] = sent.as_slice() else {
+        panic!("only the write that fits is sent, got {sent:?}");
+    };
+    assert!(
+        request
+            .query_pairs()
+            .any(|(key, value)| key == "url" && value == post().url.as_str()),
+        "{request}"
+    );
+
+    let err = refused.unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "the posts/add URL without the note is 8202 bytes, over Pinboard's 8201-byte limit, \
+         so cutting the note can't fit it"
+    );
+    for rendering in [format!("{err:#}"), format!("{err:?}")] {
+        for leak in [LEAK_SECRET, "auth_token", &server.uri()] {
+            assert!(!rendering.contains(leak), "{leak} in {rendering}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn update_refuses_without_sending_when_even_no_note_is_over_pinboards_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/add"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let client = client(&server);
+    let over = sent_at(&client, PINBOARD_URL_LIMIT + 1, dated());
+
+    assert_eq!(client.update(&over).await.unwrap(), Update::TooLong);
+}
+
+/// A write whose URL with no note is exactly Pinboard's limit goes out with no note, dated
+/// or not: an undated one measures 28 bytes over the limit with the `dt` `fit` counts, yet
+/// is sent, since what goes on the wire fits.
+#[tokio::test]
+async fn a_write_with_room_for_no_note_at_all_is_sent_without_one() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/add"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+        .mount(&server)
+        .await;
+    let client = client(&server);
+    let dated_at_limit = sent_at(&client, PINBOARD_URL_LIMIT, dated());
+    let undated_at_limit = sent_at(&client, PINBOARD_URL_LIMIT, None);
+
+    client.add(&undated_at_limit).await.unwrap();
+    client.add(&dated_at_limit).await.unwrap();
+    assert_eq!(
+        client.update(&dated_at_limit).await.unwrap(),
+        Update::Written
+    );
+
+    assert_eq!(sent_notes(&server).await, ["", "", ""]);
+    assert_eq!(sent_lengths(&server).await, [PINBOARD_URL_LIMIT; 3]);
+    assert_eq!(client.fit(dated_at_limit).note, "");
+}
+
+#[tokio::test]
+async fn add_stops_halving_once_the_fields_besides_the_note_are_over_the_next_budget() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/add"))
+        .respond_with(ResponseTemplate::new(414))
+        .mount(&server)
+        .await;
+    let client = client(&server);
+
+    let err = client
+        .add(&sent_at(&client, 4050, dated()))
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        format!("{err:#}"),
+        "Pinboard answered 414 at a 4050-byte budget: the posts/add fields other than the \
+         note measure 4050 bytes, over the next 2025-byte budget, so a smaller budget can't \
+         shorten the URL"
+    );
+    assert_eq!(
+        sent_notes(&server).await.len(),
+        2,
+        "8100, then 4050, which the fields fill exactly"
+    );
+}
+
+/// A bookmark whose fields leave no room under the budget but some under Pinboard's limit:
+/// written with what fits there, stored as `fit` predicts, and left alone by the next
+/// cleanup run.
+mod between_the_budget_and_the_limit {
+    use super::*;
+    use crate::bookmark::{AccountView, CleanupStore, WriteMode};
+    use crate::cleanup_pass::{run_pass, CleanupPass, PassOutcome, Plan};
+    use crate::source::SourceError;
+    use crate::test_support::NO_DATING;
+
+    /// Plans the bookmark at `0`'s URL as `0`, and leaves every other one unchanged.
+    struct Planned(Bookmark);
+
+    impl CleanupPass for Planned {
+        async fn plan(&self, b: &Bookmark) -> Result<Plan, SourceError> {
+            Ok(if b.url == self.0.url {
+                Plan::Bookmark(self.0.clone())
+            } else {
+                Plan::Unchanged
+            })
+        }
+    }
+
+    async fn cleanup(
+        client: &PinboardClient,
+        stored: &Bookmark,
+        planned: &Bookmark,
+    ) -> PassOutcome {
+        let store = CleanupStore::new(
+            client,
+            AccountView::new(vec![stored.clone()]),
+            WriteMode::Live,
+        );
+        let pass = Planned(planned.clone());
+        let slice = std::slice::from_ref(stored);
+        crate::http::recording_waits(run_pass(&store, slice, "test", NO_DATING, &pass))
+            .await
+            .0
+    }
+
+    #[tokio::test]
+    async fn a_note_is_cut_to_the_limit_as_fit_predicts_and_then_left_alone() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/posts/add"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+            .mount(&server)
+            .await;
+        let client = client(&server);
+        let synced = sent_at(&client, MAX_URL_BYTES + 40, dated());
+
+        client.add(&synced).await.unwrap();
+        let stored = Bookmark {
+            note: sent_notes(&server).await.remove(0),
+            ..synced.clone()
+        };
+        assert_eq!(stored, client.fit(synced.clone()));
+        assert!(stored.note.ends_with(TRUNCATION_MARKER), "{}", stored.note);
+        let sent_len = sent_lengths(&server).await[0];
+        assert!(
+            sent_len > MAX_URL_BYTES && sent_len <= PINBOARD_URL_LIMIT,
+            "{sent_len}"
+        );
+
+        let retagged = Bookmark {
+            tags: tag_list(&["reddit", "retagged"]),
+            ..synced
+        };
+        let first = cleanup(&client, &stored, &retagged).await;
+        assert_eq!((first.changed, first.refused), (1, 0));
+        let rewritten = Bookmark {
+            note: sent_notes(&server).await.remove(1),
+            ..retagged.clone()
+        };
+        assert_eq!(rewritten, client.fit(retagged.clone()));
+
+        let second = cleanup(&client, &rewritten, &retagged).await;
+        assert_eq!((second.changed, second.refused), (0, 0));
+        assert_eq!(
+            sent_notes(&server).await.len(),
+            2,
+            "the second run writes nothing"
+        );
+    }
+}
+
 #[tokio::test]
 async fn add_does_not_warn_for_a_note_that_fits() {
     let server = MockServer::start().await;

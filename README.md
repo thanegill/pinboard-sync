@@ -263,7 +263,11 @@ anyway. A merge that adds nothing to the bookmark it lands on just deletes the o
 absorbs, provided the notes it could keep are already there. If Pinboard still rejects a
 `cleanup` write as too long, `cleanup` writes and deletes nothing for that bookmark, since
 a shorter note would cut text it already holds, and counts it refused (`--dry-run` can't
-foresee this); a new bookmark `sync` adds is retried with a shorter note instead.
+foresee this); a new bookmark `sync` adds is retried with a shorter note instead. When
+the other fields leave the note no room under the tool's budget for the request URL, the
+note is cut to what fits under Pinboard's own limit, or dropped. A bookmark too long for
+that limit even with no note is never sent: `sync` fails it and `cleanup` counts it
+refused (neither command's `--dry-run` shows this).
 
 - **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your configured
   `reddit_domain` (default `old.reddit.com`), unwrapping `over18` interstitial redirects

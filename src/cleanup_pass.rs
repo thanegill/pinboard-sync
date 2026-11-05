@@ -151,7 +151,7 @@ impl std::fmt::Display for Refusal {
             Refusal::Unreadable => "occupied by a bookmark this pass could not read",
             Refusal::OccupiedByRefused => "occupied by a rewrite that was itself refused",
             Refusal::WriteFailed => "occupied by a bookmark whose own rewrite failed",
-            Refusal::TooLong => "occupied by a bookmark whose rewrite Pinboard refused as too long",
+            Refusal::TooLong => "occupied by a bookmark whose rewrite is too long for Pinboard",
         })
     }
 }
@@ -761,12 +761,12 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
         match self.written_over(stored) {
             None => {
                 self.outcome.refused += 1;
-                warn!("{what}: Pinboard refused the write as too long");
+                warn!("{what}: the write is too long for Pinboard");
             }
             Some(lost) => {
                 self.outcome.write_failed += 1;
                 error!(
-                    "{what}: Pinboard refused the write as too long, after a cycle of moves \
+                    "{what}: the write is too long for Pinboard, after a cycle of moves \
                      wrote over the record at {lost}"
                 );
             }
@@ -1304,7 +1304,8 @@ fn merge_members<'p, S: BookmarkStore>(
 /// part of the stored one, as when a plan appends to a whole note just under the limit,
 /// writing it would only shorten the stored note and keep none of the plan's text. Then the
 /// rest of the plan goes over the stored note instead, itself fitted, so it stays whole
-/// when it still fits beside the plan's other fields.
+/// when it still fits beside the plan's other fields. A note the store drops whole, with
+/// no room left for even the cut marker, is such a cut too, keeping nothing.
 fn fit_plan<S: BookmarkStore>(
     store: &S,
     stored: Option<&Bookmark>,
@@ -1314,10 +1315,13 @@ fn fit_plan<S: BookmarkStore>(
     let Some(stored) = stored else {
         return fitted;
     };
-    let only_shortens = fitted.note != planned.note
-        && store
-            .kept_of_cut(&fitted.note)
-            .is_some_and(|kept| stored.note.starts_with(kept));
+    let kept = if fitted.note.is_empty() {
+        Some("")
+    } else {
+        store.kept_of_cut(&fitted.note)
+    };
+    let only_shortens =
+        fitted.note != planned.note && kept.is_some_and(|kept| stored.note.starts_with(kept));
     if !only_shortens {
         return fitted;
     }

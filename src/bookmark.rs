@@ -90,7 +90,8 @@ pub trait BookmarkStore {
     /// The part [`Self::fit`] kept of `note`, when `note` ends in the store's cut marker;
     /// `None` from a store that never cuts. A whole note may end in the same text, so a
     /// caller treating `Some` as proof of a cut checks the kept part against what it could
-    /// have been cut from.
+    /// have been cut from. A note `fit` drops whole, with no room for the marker, is empty
+    /// and carries none.
     fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str>;
 
     /// The cleanup re-write step: `update` the bookmark, then `delete` the old URL when it
@@ -172,8 +173,9 @@ pub enum Update {
     /// Stored, with the note as [`BookmarkStore::fit`] keeps it.
     Written,
     /// Refused as too long, as Pinboard answers a `posts/add` URL over its limit with a
-    /// 414: nothing was written. Storing a shorter note instead would cut text the
-    /// bookmark already holds.
+    /// 414, or as the client refuses one that is over that limit even with no note:
+    /// nothing was written. Storing a shorter note instead would cut text the bookmark
+    /// already holds.
     TooLong,
 }
 

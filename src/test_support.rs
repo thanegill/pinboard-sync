@@ -14,10 +14,12 @@ use tempfile::TempDir;
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::bookmark::{AccountView, Bookmark, BookmarkStore, CleanupStore, Update, WriteMode};
+use crate::bookmark::{
+    AccountView, Bookmark, BookmarkStore, CleanupStore, TooLongToSend, Update, WriteMode,
+};
 use crate::config::SyncLimit;
 use crate::keys::RedditKeys;
-use crate::pinboard::{PinboardBookmark, PinboardClient};
+use crate::pinboard::{PinboardBookmark, PinboardClient, PINBOARD_URL_LIMIT};
 use crate::reddit::model::{RedditConfig, RedditListingEntry};
 use crate::reddit::PostInfo;
 use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
@@ -384,6 +386,10 @@ pub struct FakePinboard {
     /// URLs whose `update` the store refuses as too long, as Pinboard answers a 414:
     /// nothing is written.
     pub too_long_urls: HashSet<String>,
+    /// URLs a write to which is too long to send at all, which [`BookmarkStore::can_write`]
+    /// says up front and `update` refuses as too long, as the client does a write over
+    /// Pinboard's limit even with no note.
+    pub unwritable_urls: HashSet<String>,
     /// The successful writes and deletes, interleaved in call order -- see [`replay`].
     pub ops: RefCell<Vec<Op>>,
     /// Trim a note too long for a `posts/add` URL as the Pinboard client does, both in
@@ -462,6 +468,20 @@ impl BookmarkStore for FakePinboard {
             .flatten()
     }
 
+    /// A URL in `unwritable_urls` reads as one byte over the client's limit.
+    fn can_write(&self, b: &Bookmark) -> Result<(), TooLongToSend> {
+        if self.unwritable_urls.contains(b.url.as_str()) {
+            return Err(TooLongToSend {
+                without_note: PINBOARD_URL_LIMIT + 1,
+                limit: PINBOARD_URL_LIMIT,
+            });
+        }
+        if !self.trims_notes {
+            return Ok(());
+        }
+        self.trimming_client().can_write(b)
+    }
+
     async fn add(&self, b: &Bookmark) -> Result<()> {
         let b = &self.as_sent(b);
         if self.fail_add_urls.contains(b.url.as_str()) {
@@ -482,7 +502,7 @@ impl BookmarkStore for FakePinboard {
         if self.fail_update_urls.contains(b.url.as_str()) {
             return Err(anyhow!("simulated update failure for {}", b.url));
         }
-        if self.too_long_urls.contains(b.url.as_str()) {
+        if self.too_long_urls.contains(b.url.as_str()) || self.can_write(b).is_err() {
             return Ok(Update::TooLong);
         }
         self.updated.borrow_mut().push(UpdateCall {

@@ -94,6 +94,12 @@ pub trait BookmarkStore {
     /// and carries none.
     fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str>;
 
+    /// Whether a write of `b` can be sent at all: [`TooLongToSend`] when it is too long for
+    /// the store even with no note, which [`Self::update`] refuses as [`Update::TooLong`]
+    /// and [`Self::add`] fails, unsent. The cleanup driver asks before any write, so such a
+    /// plan is refused up front.
+    fn can_write(&self, b: &Bookmark) -> Result<(), TooLongToSend>;
+
     /// The cleanup re-write step: `update` the bookmark, then `delete` the old URL when it
     /// changed (`old_url`), unless the store refused the write
     /// ([`WriteOutcome::too_long`]). Any inter-write pacing is the store's own concern (the
@@ -157,6 +163,25 @@ pub trait BookmarkStore {
             );
         }
         outcome
+    }
+}
+
+/// A write too long for the store to send even with no note: the length of its request URL
+/// without the note, and the store's limit on it, both in bytes. Its `Display` names no
+/// request URL, only the two lengths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TooLongToSend {
+    pub without_note: usize,
+    pub limit: usize,
+}
+
+impl std::fmt::Display for TooLongToSend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} bytes without the note, over the {}-byte limit",
+            self.without_note, self.limit
+        )
     }
 }
 
@@ -430,6 +455,10 @@ impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
 
     fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str> {
         self.inner.kept_of_cut(note)
+    }
+
+    fn can_write(&self, b: &Bookmark) -> Result<(), TooLongToSend> {
+        self.inner.can_write(b)
     }
 }
 

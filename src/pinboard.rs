@@ -10,7 +10,7 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::backup::{BackupDump, BackupSource, ExportBookmark, RawKind, RawPage, PRIMARY_STREAM};
-use crate::bookmark::{warn_note_cut, Bookmark, BookmarkStore, Update};
+use crate::bookmark::{warn_note_cut, Bookmark, BookmarkStore, TooLongToSend, Update};
 use crate::http::{
     answered_a_retry, client_builder, error_with_body, redact, LinearBackoff, RetryingClient,
     REDACTED, USER_AGENT,
@@ -35,7 +35,7 @@ const MAX_URL_BYTES: usize = 8100;
 /// The longest `posts/add` URL Pinboard takes, in encoded bytes, scheme and host included:
 /// its nginx caps the request line, and a URL of 8201 bytes passed while one of 8202 got
 /// `414 URI Too Long` (measured 2026-11-04).
-const PINBOARD_URL_LIMIT: usize = 8201;
+pub(crate) const PINBOARD_URL_LIMIT: usize = 8201;
 /// The 414 retry never tries a budget below this: it stops there and surfaces the 414.
 const MIN_URL_BYTES: usize = 500;
 /// Appended to a trimmed `extended` so the truncation is visible in the bookmark.
@@ -234,17 +234,17 @@ impl PinboardClient {
     /// it no room under the budget; what a 414 does is `too_long`'s call. Nothing is sent
     /// when the URL is over the limit even with no note ([`unfittable`]).
     async fn post_add(&self, b: &Bookmark, too_long: OnTooLong) -> Result<Update> {
-        let tags = b.tags.joined();
-        let dt = b.timestamp.and_then(crate::timefmt::to_pinboard_dt);
-        let fixed = self.add_params(b, &tags, dt.as_deref());
-        let sent_without_note = self.add_url_len(&fixed, "");
-        if sent_without_note > PINBOARD_URL_LIMIT {
+        if let Err(too_long_to_send) = self.can_write(b) {
             let why = format!(
-                "the posts/add URL without the note is {sent_without_note} bytes, over \
-                 Pinboard's {PINBOARD_URL_LIMIT}-byte limit, so cutting the note can't fit it"
+                "the posts/add URL without the note is {} bytes, over Pinboard's {}-byte \
+                 limit, so cutting the note can't fit it",
+                too_long_to_send.without_note, too_long_to_send.limit
             );
             return unfittable(&b.url, &why, too_long);
         }
+        let tags = b.tags.joined();
+        let dt = b.timestamp.and_then(crate::timefmt::to_pinboard_dt);
+        let fixed = self.add_params(b, &tags, dt.as_deref());
         let endpoint = self.url("posts/add");
         let measured_without_note = self.measured(b, |fixed| self.add_url_len(fixed, ""));
 
@@ -346,6 +346,14 @@ impl PinboardClient {
             .and_then(crate::timefmt::to_pinboard_dt)
             .unwrap_or_else(|| DT_PLACEHOLDER.to_string());
         measure(&self.add_params(b, &tags, Some(&dt)))
+    }
+
+    /// Byte length of the `posts/add` URL that sends `b` with no note, as sent: with no
+    /// `dt` when `b` has none.
+    fn sent_without_note(&self, b: &Bookmark) -> usize {
+        let tags = b.tags.joined();
+        let dt = b.timestamp.and_then(crate::timefmt::to_pinboard_dt);
+        self.add_url_len(&self.add_params(b, &tags, dt.as_deref()), "")
     }
 
     /// Byte length of the `posts/add` URL reqwest builds from `fixed` and `extended`.
@@ -549,6 +557,19 @@ impl BookmarkStore for PinboardClient {
 
     fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str> {
         note.strip_suffix(TRUNCATION_MARKER)
+    }
+
+    /// Measured as sent, with no `dt` for an undated write, so nothing Pinboard would take
+    /// is refused.
+    fn can_write(&self, b: &Bookmark) -> Result<(), TooLongToSend> {
+        let without_note = self.sent_without_note(b);
+        if without_note <= PINBOARD_URL_LIMIT {
+            return Ok(());
+        }
+        Err(TooLongToSend {
+            without_note,
+            limit: PINBOARD_URL_LIMIT,
+        })
     }
 }
 
@@ -838,6 +859,31 @@ mod tests {
         assert_eq!(budgets, [8100, 4050, 2025, 1012, 506]);
         assert_eq!(halved(2 * MIN_URL_BYTES), Some(MIN_URL_BYTES));
         assert_eq!(halved(2 * MIN_URL_BYTES - 1), None);
+    }
+
+    #[test]
+    fn a_write_can_be_sent_while_its_url_with_no_note_is_within_the_limit() {
+        let c = test_client();
+        let titled = |len: usize, timestamp| {
+            let mut b = Bookmark {
+                note: "a long note ".repeat(800),
+                timestamp,
+                ..crate::test_support::stored_at("https://example.com/long")
+            };
+            b.title = "t".repeat(len - c.sent_without_note(&b));
+            assert_eq!(c.sent_without_note(&b), len);
+            b
+        };
+        for timestamp in [None, crate::timefmt::from_unix(1_700_000_000)] {
+            assert_eq!(c.can_write(&titled(PINBOARD_URL_LIMIT, timestamp)), Ok(()));
+            assert_eq!(
+                c.can_write(&titled(PINBOARD_URL_LIMIT + 1, timestamp)),
+                Err(TooLongToSend {
+                    without_note: PINBOARD_URL_LIMIT + 1,
+                    limit: PINBOARD_URL_LIMIT
+                })
+            );
+        }
     }
 
     #[test]

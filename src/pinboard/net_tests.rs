@@ -421,13 +421,6 @@ fn dated() -> Option<time::OffsetDateTime> {
     crate::timefmt::from_unix(1_700_000_000)
 }
 
-/// The bytes of the `posts/add` URL that sends `b` with no note.
-fn sent_without_note(client: &PinboardClient, b: &Bookmark) -> usize {
-    let tags = b.tags.joined();
-    let dt = b.timestamp.and_then(crate::timefmt::to_pinboard_dt);
-    client.add_url_len(&client.add_params(b, &tags, dt.as_deref()), "")
-}
-
 /// A bookmark dated `timestamp` whose `posts/add` URL with no note is exactly `len` bytes,
 /// with a note far too long to send whole.
 fn sent_at(
@@ -440,8 +433,8 @@ fn sent_at(
         timestamp,
         ..post()
     };
-    b.title = "t".repeat(len - sent_without_note(client, &b) + b.title.len());
-    assert_eq!(sent_without_note(client, &b), len);
+    b.title = "t".repeat(len - client.sent_without_note(&b) + b.title.len());
+    assert_eq!(client.sent_without_note(&b), len);
     b
 }
 

@@ -398,11 +398,18 @@ async fn add_stops_halving_the_budget_at_its_floor() {
         .unwrap_err();
 
     assert!(err.to_string().contains("414"), "{err:#}");
-    // MAX_URL_BYTES, then halved down to MIN_URL_BYTES, and no further.
-    let budgets = std::iter::successors(Some(MAX_URL_BYTES), |budget| {
-        (*budget > MIN_URL_BYTES).then_some(budget / 2)
-    });
-    assert_eq!(sent_notes(&server).await.len(), budgets.count());
+    let sent: Vec<usize> = server
+        .received_requests()
+        .await
+        .expect("recording requests")
+        .iter()
+        .map(|request| request.url.as_str().len())
+        .collect();
+    let budgets = [8100, 4050, 2025, 1012, 506];
+    assert_eq!(sent.len(), budgets.len(), "{sent:?}");
+    for (sent, budget) in sent.iter().zip(budgets) {
+        assert!(*sent <= budget, "{sent} bytes over {budget}");
+    }
 }
 
 #[tokio::test]

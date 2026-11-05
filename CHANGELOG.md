@@ -87,6 +87,7 @@ All notable changes to this project are documented here. The format is based on
   start the same way, as `HN Link:` lines do. It used to refuse the duplicate, which then
   stayed and was counted as refused on every run, though the bookmark it would merge into
   already held all of its note.
+- `sync`'s `414` retries no longer go below their 500-byte floor: they stop at 506 bytes.
 - `cleanup github` leaves a `github.com/<owner>/.git` bookmark alone, and any whose repo
   name is `.` or `..` once `.git` is dropped. It used to move them to the owner's
   profile or to GitHub's home page.

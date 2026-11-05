@@ -33,8 +33,7 @@ const BACKOFF: LinearBackoff = LinearBackoff::new(5, RATE_LIMIT);
 /// that absorbs a small change on Pinboard's side; a 414 that still comes back is
 /// [`OnTooLong`]'s call.
 const MAX_URL_BYTES: usize = 8100;
-/// Floor for the adaptive 414 retry: below this we stop shrinking and surface the
-/// error rather than writing a bookmark with essentially no notes in an endless loop.
+/// The 414 retry never tries a budget below this: it stops there and surfaces the 414.
 const MIN_URL_BYTES: usize = 500;
 /// Appended to a trimmed `extended` so the truncation is visible in the bookmark.
 pub(crate) const TRUNCATION_MARKER: &str = "… [truncated]";
@@ -42,13 +41,20 @@ pub(crate) const TRUNCATION_MARKER: &str = "… [truncated]";
 /// What `posts/add` does when Pinboard answers `414 URI Too Long` anyway.
 #[derive(Clone, Copy)]
 enum OnTooLong {
-    /// Halve the budget and retry, down to [`MIN_URL_BYTES`]: a new bookmark has nothing
-    /// stored to lose, so a shorter note beats none.
+    /// Halve the budget and retry ([`halved`]): a new bookmark has nothing stored to
+    /// lose, so a shorter note beats none.
     Halve,
     /// Write nothing: rewriting a stored bookmark with a note shorter than `fit` keeps
     /// would cut text the store had accepted, and a merge judged against the longer note
     /// would then delete what it absorbed.
     Refuse,
+}
+
+/// The budget the 414 retry tries after `budget`, or `None` when half of it would be
+/// below [`MIN_URL_BYTES`].
+fn halved(budget: usize) -> Option<usize> {
+    let half = budget / 2;
+    (half >= MIN_URL_BYTES).then_some(half)
 }
 
 /// A `dt` of the length every `dt` has, for measuring a write that sends none.
@@ -230,16 +236,16 @@ impl PinboardClient {
                 .await?;
 
             if resp.status() == reqwest::StatusCode::URI_TOO_LONG {
-                match too_long {
-                    OnTooLong::Refuse => {
+                match (too_long, halved(budget)) {
+                    (OnTooLong::Refuse, _) => {
                         debug!("posts/add for {} was too long; nothing written", b.url);
                         return Ok(Update::TooLong);
                     }
-                    OnTooLong::Halve if budget > MIN_URL_BYTES => {
-                        budget /= 2;
+                    (OnTooLong::Halve, Some(half)) => {
+                        budget = half;
                         continue;
                     }
-                    OnTooLong::Halve => {}
+                    (OnTooLong::Halve, None) => {}
                 }
             }
             if !resp.status().is_success() {
@@ -774,6 +780,15 @@ mod tests {
         let small = c.fit_extended(FIXED, &huge, MIN_URL_BYTES);
         assert!(small.len() < big.len());
         assert!(url_len(&c, &small) <= MIN_URL_BYTES);
+    }
+
+    #[test]
+    fn the_414_retry_halves_down_to_its_floor_and_no_further() {
+        let budgets: Vec<usize> =
+            std::iter::successors(Some(MAX_URL_BYTES), |&budget| halved(budget)).collect();
+        assert_eq!(budgets, [8100, 4050, 2025, 1012, 506]);
+        assert_eq!(halved(2 * MIN_URL_BYTES), Some(MIN_URL_BYTES));
+        assert_eq!(halved(2 * MIN_URL_BYTES - 1), None);
     }
 
     #[test]

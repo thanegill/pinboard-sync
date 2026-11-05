@@ -4797,3 +4797,73 @@ async fn a_cycle_whose_refusal_strands_a_written_over_record_fails_the_run() {
     assert_eq!(outcome.write_failed, 1, "{outcome:?}");
     outcome.into_result().unwrap_err();
 }
+
+/// The three-way cycle `a -> b -> c -> a`, whose writes land on `a`, `c`, then `b`, with a
+/// fourth bookmark `d` heading for `b` too and held back there: `a`'s note just fits on its
+/// own, and not beside `d`'s. Checks that `d` is left as stored, and returns the outcome.
+async fn cycle_with_a_held_back_plan(pinboard: &FakePinboard) -> PassOutcome {
+    let a = with_note_just_under_the_budget(pinboard, &bookmark("https://a/"));
+    let mut b = bookmark("https://b/");
+    b.note = "b's own note".into();
+    let mut c = bookmark("https://c/");
+    c.note = "c's own note".into();
+    let mut d = bookmark("https://d/");
+    d.note = "d, longer than the room a leaves".into();
+    let books = vec![a, b, c, d.clone()];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        let to = match bookmark.url.as_str() {
+            "https://b/" => "https://c/",
+            "https://c/" => "https://a/",
+            _ => "https://b/",
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(to),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let outcome = run(pinboard, &books, &pass).await;
+    let after = crate::test_support::replay(&books, &pinboard.ops.borrow());
+    assert!(after.contains(&d), "{after:?}");
+    outcome
+}
+
+/// When the group a plan was held back from is skipped after a cycle of moves wrote over
+/// one of its members and then a write of the cycle failed, the group is a failed write
+/// and the held-back plan still a refusal of its own. The case of a refusal as too long
+/// is in `a_held_back_plan_counts_once_whichever_write_is_refused`.
+#[tokio::test]
+async fn a_plan_held_back_from_a_group_a_failed_write_strands_is_still_refused() {
+    let pinboard = FakePinboard {
+        fail_update_urls: ["https://c/".to_string()].into(),
+        ..FakePinboard::trimming()
+    };
+    let outcome = cycle_with_a_held_back_plan(&pinboard).await;
+    assert_eq!(
+        (outcome.changed, outcome.refused, outcome.write_failed),
+        (1, 1, 2)
+    );
+}
+
+/// With no write refused, or with each of the cycle's writes refused as too long, the plan
+/// held back at `b` counts once: as its own refusal, or as part of its group's when that is
+/// refused whole.
+#[tokio::test]
+async fn a_held_back_plan_counts_once_whichever_write_is_refused() {
+    for (too_long, tally) in [
+        (None, (3, 1, 0)),
+        (Some("https://a/"), (0, 3, 0)),
+        (Some("https://c/"), (1, 2, 1)),
+        (Some("https://b/"), (2, 1, 1)),
+    ] {
+        let pinboard = FakePinboard {
+            too_long_urls: too_long.iter().map(ToString::to_string).collect(),
+            ..FakePinboard::trimming()
+        };
+        let outcome = cycle_with_a_held_back_plan(&pinboard).await;
+        assert_eq!(
+            (outcome.changed, outcome.refused, outcome.write_failed),
+            tally,
+            "{too_long:?}: {outcome:?}"
+        );
+    }
+}

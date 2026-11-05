@@ -104,10 +104,11 @@ pub struct PassOutcome {
     /// Rewrites this pass declined to make: a target that must not be written at all (see
     /// [`Refusal`]), or a plan held back over visibility or over a note its merge would cut
     /// off. Not a failure, but work that did not happen, so it is reported. Counted per
-    /// *group* for an untouchable target and per *plan* for one held back, unless its group
-    /// is refused whole, so it counts abandoned writes, not bookmarks, and none twice. A
-    /// write the store refused as too long counts here too, as one more, besides the plans
-    /// already held back from its group.
+    /// *group* for an untouchable target, unless a cycle of moves wrote over a member (a
+    /// failed write), and per *plan* for one held back, unless its group is refused whole,
+    /// so it counts abandoned writes, not bookmarks, and none twice. A write the store
+    /// refused as too long counts here too, as one more, besides the plans already held
+    /// back from its group.
     pub refused: usize,
     /// Bookmarks the source gave an answer for -- the evidence that it is reachable.
     /// Excludes [`Plan::Skipped`], which never asked it anything.
@@ -326,7 +327,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
         // URLs. Separate from the `targets` delete-guard -- that protects a URL some *plan*
         // writes to, this one a URL no plan may land on.
         if let Some(reason) = untouchable.get(key) {
-            writer.skip_group(key, &group, *reason);
+            writer.skip_group(key, &group, *reason, held_here);
             continue;
         }
         writer.outcome.refused += held_here;
@@ -784,14 +785,17 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
         (!lost.is_empty()).then(|| lost.join(" "))
     }
 
-    /// Count and log a group whose target must not be written: a refusal, unless a cycle of
-    /// moves already wrote over a member's record ([`Self::written_over`]), which is lost.
-    fn skip_group(&mut self, key: &Url, group: &[Member<'_>], reason: Refusal) {
+    /// Count and log a group whose target must not be written, with `held` plans held back
+    /// from it: one refusal, which covers those plans too, unless a cycle of moves already
+    /// wrote over a member's record ([`Self::written_over`]). That record is lost, so the
+    /// group is a failed write, and each held-back plan is a refusal of its own.
+    fn skip_group(&mut self, key: &Url, group: &[Member<'_>], reason: Refusal, held: usize) {
         let Some(lost) = self.written_over(group.iter().map(|member| &member.stored.url)) else {
             self.refuse_group(key, reason);
             return;
         };
         self.outcome.write_failed += 1;
+        self.outcome.refused += held;
         error!(
             "skipping cleanup write to {key}: {reason}, after a cycle of moves wrote over the \
              record at {lost}"

@@ -94,6 +94,12 @@ pub trait BookmarkStore {
     /// and carries none.
     fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str>;
 
+    /// Whether a write of `b` can be sent at all: [`TooLongToSend`] when it is too long for
+    /// the store even with no note, which [`Self::update`] refuses as [`Update::TooLong`]
+    /// and [`Self::add`] fails, unsent. The cleanup driver asks before any write, so such a
+    /// plan is refused up front.
+    fn can_write(&self, b: &Bookmark) -> Result<(), TooLongToSend>;
+
     /// The cleanup re-write step: `update` the bookmark, then `delete` the old URL when it
     /// changed (`old_url`), unless the store refused the write
     /// ([`WriteOutcome::too_long`]). Any inter-write pacing is the store's own concern (the
@@ -160,10 +166,44 @@ pub trait BookmarkStore {
     }
 }
 
-/// Say that `url`'s note was cut from `from` bytes to `to` to fit a write: the stored note
-/// is shorter than the one the caller planned.
-pub fn warn_note_cut(url: &Url, from: usize, to: usize) {
-    warn!("note trimmed to fit the request URL for {url}: {from} bytes -> {to}");
+/// A write too long for the store to send even with no note: the length of its request URL
+/// without the note, and the store's limit on it, both in bytes. Its `Display` names no
+/// request URL, only the two lengths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TooLongToSend {
+    pub without_note: usize,
+    pub limit: usize,
+}
+
+impl std::fmt::Display for TooLongToSend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} bytes without the note, over the {}-byte limit",
+            self.without_note, self.limit
+        )
+    }
+}
+
+/// Say that a write to `url` stores `to`, as `store` fits it, in place of the note `from`:
+/// trimmed, or dropped when it keeps none of it (the cut marker alone, or nothing). Silent
+/// when they match.
+pub fn warn_note_cut<S: BookmarkStore>(store: &S, url: &Url, from: &str, to: &str) {
+    if to == from {
+        return;
+    }
+    if store.kept_of_cut(to).unwrap_or(to).is_empty() {
+        warn!(
+            "note dropped to fit the request URL for {url}: none of its {} bytes fit",
+            from.len()
+        );
+        return;
+    }
+    warn!(
+        "note trimmed to fit the request URL for {url}: {} bytes -> {}",
+        from.len(),
+        to.len()
+    );
 }
 
 /// What a store did with a rewrite of a stored bookmark.
@@ -430,6 +470,10 @@ impl<P: BookmarkStore> BookmarkStore for CleanupStore<'_, P> {
 
     fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str> {
         self.inner.kept_of_cut(note)
+    }
+
+    fn can_write(&self, b: &Bookmark) -> Result<(), TooLongToSend> {
+        self.inner.can_write(b)
     }
 }
 

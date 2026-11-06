@@ -96,6 +96,10 @@ All notable changes to this project are documented here. The format is based on
 - `sync`'s `414` retries no longer go below their 500-byte floor: they stop at 506 bytes.
 - `sync`'s `414` retries wait out Pinboard's 3-second rate limit like any other write.
   They used to go out back to back.
+- `cleanup` refuses a rewrite too long for Pinboard even with no note before writing
+  anything, so `--dry-run` shows it as refused rather than as a change, and a cycle of
+  moves, such as a swap, no longer writes over one of its records before the refusal. The
+  refusal logs the length and the limit.
 - `cleanup github` leaves a `github.com/<owner>/.git` bookmark alone, and any whose repo
   name is `.` or `..` once `.git` is dropped. It used to move them to the owner's
   profile or to GitHub's home page.

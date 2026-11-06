@@ -421,13 +421,6 @@ fn dated() -> Option<time::OffsetDateTime> {
     crate::timefmt::from_unix(1_700_000_000)
 }
 
-/// The bytes of the `posts/add` URL that sends `b` with no note.
-fn sent_without_note(client: &PinboardClient, b: &Bookmark) -> usize {
-    let tags = b.tags.joined();
-    let dt = b.timestamp.and_then(crate::timefmt::to_pinboard_dt);
-    client.add_url_len(&client.add_params(b, &tags, dt.as_deref()), "")
-}
-
 /// A bookmark dated `timestamp` whose `posts/add` URL with no note is exactly `len` bytes,
 /// with a note far too long to send whole.
 fn sent_at(
@@ -440,8 +433,8 @@ fn sent_at(
         timestamp,
         ..post()
     };
-    b.title = "t".repeat(len - sent_without_note(client, &b) + b.title.len());
-    assert_eq!(sent_without_note(client, &b), len);
+    b.title = "t".repeat(len - client.sent_without_note(&b) + b.title.len());
+    assert_eq!(client.sent_without_note(&b), len);
     b
 }
 
@@ -590,7 +583,7 @@ async fn add_stops_halving_once_the_fields_besides_the_note_are_over_the_next_bu
 
 /// A bookmark whose fields leave no room under the budget but some under Pinboard's limit:
 /// written with what fits there, stored as `fit` predicts, and left alone by the next
-/// cleanup run.
+/// cleanup run. One over the limit is refused before anything is sent.
 mod between_the_budget_and_the_limit {
     use super::*;
     use crate::bookmark::{AccountView, CleanupStore, WriteMode};
@@ -615,12 +608,9 @@ mod between_the_budget_and_the_limit {
         client: &PinboardClient,
         stored: &Bookmark,
         planned: &Bookmark,
+        mode: WriteMode,
     ) -> PassOutcome {
-        let store = CleanupStore::new(
-            client,
-            AccountView::new(vec![stored.clone()]),
-            WriteMode::Live,
-        );
+        let store = CleanupStore::new(client, AccountView::new(vec![stored.clone()]), mode);
         let pass = Planned(planned.clone());
         let slice = std::slice::from_ref(stored);
         crate::http::recording_waits(run_pass(&store, slice, "test", NO_DATING, &pass))
@@ -656,7 +646,7 @@ mod between_the_budget_and_the_limit {
             tags: tag_list(&["reddit", "retagged"]),
             ..synced
         };
-        let first = cleanup(&client, &stored, &retagged).await;
+        let first = cleanup(&client, &stored, &retagged, WriteMode::Live).await;
         assert_eq!((first.changed, first.refused), (1, 0));
         let rewritten = Bookmark {
             note: sent_notes(&server).await.remove(1),
@@ -664,12 +654,95 @@ mod between_the_budget_and_the_limit {
         };
         assert_eq!(rewritten, client.fit(retagged.clone()));
 
-        let second = cleanup(&client, &rewritten, &retagged).await;
+        let second = cleanup(&client, &rewritten, &retagged, WriteMode::Live).await;
         assert_eq!((second.changed, second.refused), (0, 0));
         assert_eq!(
             sent_notes(&server).await.len(),
             2,
             "the second run writes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rewrite_over_the_limit_is_refused_up_front_dry_run_included() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = leak_client(&server);
+        let stored = sent_at(&client, PINBOARD_URL_LIMIT + 1, dated());
+        let retagged = Bookmark {
+            tags: tag_list(&["reddit", "retagged"]),
+            ..stored.clone()
+        };
+
+        let (dry, logs) = capturing_logs(Box::pin(cleanup(
+            &client,
+            &stored,
+            &retagged,
+            WriteMode::DryRun,
+        )))
+        .await;
+        assert_eq!(
+            crate::test_support::warnings(&logs)[0],
+            format!(
+                "WARN skipping cleanup write to {url} from {url}: too long for Pinboard even \
+                 with no note ({} bytes without the note, over the 8201-byte limit)",
+                client.sent_without_note(&retagged),
+                url = stored.url
+            )
+        );
+        for line in &logs {
+            for leak in [LEAK_SECRET, "auth_token", &server.uri()] {
+                assert!(!line.contains(leak), "{leak} in {line}");
+            }
+        }
+        assert_eq!((dry.changed, dry.refused), (0, 1));
+        assert_eq!(
+            dry.preview,
+            [
+                format!("[dry-run] {}", stored.url),
+                "          (refused: too long for Pinboard even with no note)".to_string(),
+            ]
+        );
+        let live = cleanup(&client, &stored, &retagged, WriteMode::Live).await;
+        assert_eq!((live.changed, live.refused, live.write_failed), (0, 1, 0));
+    }
+}
+
+/// A short note over the limit stored as the cut marker alone, or as nothing, keeps none
+/// of it: the warning says so, rather than reading the marker's length as a trim.
+#[tokio::test]
+async fn add_warns_a_note_none_of_which_fits_was_dropped() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/posts/add"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result_code": "done"})))
+        .mount(&server)
+        .await;
+    let client = client(&server);
+    let marker_cost = "%E2%80%A6+%5Btruncated%5D".len();
+
+    for (fields, stored) in [
+        (PINBOARD_URL_LIMIT - marker_cost, TRUNCATION_MARKER),
+        (PINBOARD_URL_LIMIT - 10, ""),
+    ] {
+        let short_over = Bookmark {
+            note: "€€€€".into(),
+            ..sent_at(&client, fields, dated())
+        };
+        let (written, logs) = capturing_logs(client.add(&short_over)).await;
+        written.unwrap();
+
+        assert_eq!(sent_notes(&server).await.pop().as_deref(), Some(stored));
+        assert_eq!(
+            crate::test_support::warnings(&logs),
+            [
+                "WARN note dropped to fit the request URL for https://old.reddit.com/r/x/: none \
+              of its 12 bytes fit"
+            ]
         );
     }
 }

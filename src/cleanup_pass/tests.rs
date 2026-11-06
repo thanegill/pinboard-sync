@@ -4915,3 +4915,312 @@ async fn a_held_back_plan_counts_once_whichever_write_is_refused() {
         );
     }
 }
+
+/// A Pinboard that can't send a write to `https://target/` at all, too long even with no
+/// note, and says so up front ([`BookmarkStore::can_write`]).
+fn unable_to_write_the_target() -> FakePinboard {
+    FakePinboard {
+        unwritable_urls: ["https://target/".to_string()].into(),
+        ..FakePinboard::trimming()
+    }
+}
+
+#[tokio::test]
+async fn a_move_that_can_never_be_sent_is_refused_up_front_and_previewed() {
+    let books = vec![bookmark("https://mover/")];
+    let pinboard = unable_to_write_the_target();
+
+    let dry = run_dry(&pinboard, &books, &onto_target()).await;
+    assert_eq!((dry.changed, dry.refused), (0, 1));
+    assert_eq!(
+        dry.preview,
+        vec![
+            "[dry-run] https://target/",
+            "          (refused: too long for Pinboard even with no note)",
+        ]
+    );
+
+    let live = run(&pinboard, &books, &onto_target()).await;
+    assert!(pinboard.ops.borrow().is_empty(), "{:?}", pinboard.ops);
+    assert_eq!((live.changed, live.refused, live.write_failed), (0, 1, 0));
+}
+
+#[tokio::test]
+async fn a_mover_whose_merge_can_never_be_sent_stays_where_it_is() {
+    let mut resident = bookmark("https://target/");
+    resident.note = "the resident's own note".into();
+    let mut mover = bookmark("https://mover/");
+    mover.note = "the mover's own note".into();
+    let mut other = bookmark("https://other/");
+    other.note = "a bookmark heading for the mover's URL".into();
+    let all = vec![resident, mover.clone(), other.clone()];
+    let slice = vec![mover, other];
+    let pass = mover_onto_target_others_onto_mover();
+    let pinboard = unable_to_write_the_target();
+
+    let dry = run_over(&pinboard, &all, &slice, WriteMode::DryRun, &pass).await;
+    assert_eq!((dry.changed, dry.refused), (0, 2), "{:?}", dry.preview);
+    assert_eq!(
+        dry.preview,
+        vec![
+            "[dry-run] https://mover/",
+            "          (refused: would merge into https://target/, too long for Pinboard even \
+             with no note)",
+            "[dry-run] https://mover/",
+            "          (refused: occupied by a bookmark whose rewrite is too long for Pinboard)",
+        ]
+    );
+
+    let live = run_over(&pinboard, &all, &slice, WriteMode::Live, &pass).await;
+    assert!(pinboard.ops.borrow().is_empty(), "{:?}", pinboard.ops);
+    assert_eq!((live.changed, live.refused, live.write_failed), (0, 2, 0));
+}
+
+/// Refused before any write, a swap whose one write can never be sent writes neither, so
+/// no record is written over: unlike a refusal only Pinboard's 414 can tell, in
+/// `a_swap_whose_second_write_is_refused_fails_the_run`.
+#[tokio::test]
+async fn a_swap_with_a_write_that_can_never_be_sent_writes_neither() {
+    let books = vec![bookmark("https://a/"), bookmark("https://target/")];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        let to = if bookmark.url.as_str() == "https://a/" {
+            "https://target/"
+        } else {
+            "https://a/"
+        };
+        Ok(Plan::Bookmark(Bookmark {
+            url: u(to),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let pinboard = unable_to_write_the_target();
+
+    let outcome = run(&pinboard, &books, &pass).await;
+    assert!(pinboard.ops.borrow().is_empty(), "{:?}", pinboard.ops);
+    assert_eq!(
+        (outcome.changed, outcome.refused, outcome.write_failed),
+        (0, 2, 0)
+    );
+    outcome.into_result().unwrap();
+}
+
+#[tokio::test]
+async fn a_merge_that_only_absorbs_sends_no_write_and_still_absorbs() {
+    let pinboard = unable_to_write_the_target();
+    let (resident, mover) = long_resident_and_absorbable_mover();
+    let all = vec![mover.clone(), resident.clone()];
+
+    let outcome = run_over(&pinboard, &all, &[mover], WriteMode::Live, &onto_target()).await;
+    assert_eq!(*pinboard.deleted.borrow(), strings(&["https://mover/"]));
+    assert_eq!((outcome.changed, outcome.refused), (1, 0));
+}
+
+#[tokio::test]
+async fn a_plan_that_writes_nothing_is_not_refused_however_long() {
+    let books = vec![bookmark("https://target/")];
+    let pass = FakePass(|bookmark: &Bookmark| Ok(Plan::Bookmark(unchanged_plan(bookmark))));
+    let pinboard = unable_to_write_the_target();
+
+    let outcome = run(&pinboard, &books, &pass).await;
+    assert_eq!((outcome.changed, outcome.refused), (0, 0));
+
+    let pinboard = unable_to_write_the_target();
+    let books = vec![with_note_just_under_the_budget(
+        &pinboard,
+        &bookmark("https://target/"),
+    )];
+    let outcome = run(&pinboard, &books, &appending_a_link(&["a", "b"])).await;
+    assert_eq!(
+        (outcome.changed, outcome.refused),
+        (0, 0),
+        "an append past the cut stores nothing new, so nothing is sent"
+    );
+}
+
+/// A merge whose leading plan can't be sent even alone is refused whole, every member left
+/// where it is.
+#[tokio::test]
+async fn a_merge_whose_lead_can_never_be_sent_is_refused_whole() {
+    let books = vec![bookmark("https://target/"), bookmark("https://mover/")];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            url: u("https://target/"),
+            title: "New".into(),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let pinboard = unable_to_write_the_target();
+
+    let dry = run_dry(&pinboard, &books, &pass).await;
+    assert_eq!((dry.changed, dry.refused), (0, 1));
+    assert_eq!(
+        dry.preview,
+        vec![
+            "[dry-run] https://target/",
+            "          (refused: too long for Pinboard even with no note)",
+        ]
+    );
+    let live = run(&pinboard, &books, &pass).await;
+    assert!(pinboard.ops.borrow().is_empty(), "{:?}", pinboard.ops);
+    assert_eq!((live.changed, live.refused, live.write_failed), (0, 1, 0));
+}
+
+/// Only the mover whose tags push the merge past what can be sent is held back: the
+/// record that stays there can still be sent on its own, and its own cleanup must not be
+/// frozen by a duplicate.
+#[tokio::test]
+async fn a_mover_that_makes_a_merge_unsendable_is_held_back_alone() {
+    let tagged = |url: &str, prefix: &str| Bookmark {
+        note: String::new(),
+        tags: (0..250).map(|n| format!("{prefix}-{n:07}")).collect(),
+        ..bookmark(url)
+    };
+    let incumbent = tagged("https://target/", "incumbent");
+    let mover = tagged("https://mover/", "moverxxxx");
+    let books = vec![incumbent.clone(), mover.clone()];
+    let pass = FakePass(|bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            url: u("https://target/"),
+            title: "New".into(),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+    let pinboard = FakePinboard::trimming();
+    assert!(pinboard.can_write(&incumbent).is_ok() && pinboard.can_write(&mover).is_ok());
+
+    let dry = run_dry(&pinboard, &books, &pass).await;
+    assert_eq!((dry.changed, dry.refused), (1, 1), "{:?}", dry.preview);
+    assert_eq!(
+        dry.preview[..2],
+        [
+            "[dry-run] https://mover/",
+            "          (refused: would merge into https://target/, too long for Pinboard even \
+             with no note)",
+        ]
+    );
+
+    let (live, logs) = crate::test_support::capturing_logs(run(&pinboard, &books, &pass)).await;
+    assert_eq!((live.changed, live.refused, live.write_failed), (1, 1, 0));
+    assert_eq!(pinboard.updated_urls(), ["https://target/"]);
+    assert_eq!(pinboard.updated.borrow()[0].description, "New");
+    assert!(pinboard.deleted.borrow().is_empty());
+    let held = crate::test_support::warnings(&logs)[0];
+    let size = held
+        .strip_prefix(
+            "WARN not merging https://mover/ into https://target/: the merge would be too long \
+             for Pinboard even with no note (",
+        )
+        .and_then(|rest| rest.strip_suffix(" bytes without the note, over the 8201-byte limit)"))
+        .unwrap_or_else(|| panic!("{held}"));
+    assert!(size.parse::<usize>().unwrap() > 8201, "{held}");
+}
+
+/// With no record staying at the target, a mover that can be sent leads the merge, so one
+/// too long to send alone joins it behind, whichever comes first.
+#[tokio::test]
+async fn with_no_record_staying_a_mover_that_can_be_sent_leads() {
+    let long = Bookmark {
+        title: "t".repeat(8300),
+        ..bookmark("https://long/")
+    };
+    let short = bookmark("https://short/");
+    let third = bookmark("https://third/");
+    for books in [
+        vec![long.clone(), short.clone()],
+        vec![long.clone(), short.clone(), third.clone()],
+        vec![short.clone(), long.clone(), third.clone()],
+    ] {
+        let mut deleted = vec!["https://short/", "https://long/", "https://third/"];
+        deleted.truncate(books.len());
+        let pinboard = FakePinboard::trimming();
+        let outcome = run(&pinboard, &books, &onto_target()).await;
+        assert_eq!(
+            (outcome.changed, outcome.refused, outcome.write_failed),
+            (1, 0, 0),
+            "{books:?}"
+        );
+        assert_eq!(pinboard.updated_urls(), ["https://target/"]);
+        assert_eq!(pinboard.updated.borrow()[0].description, short.title);
+        assert_eq!(*pinboard.deleted.borrow(), strings(&deleted));
+    }
+}
+
+/// With no record staying and no mover that can be sent even alone, the merge is refused
+/// whole.
+#[tokio::test]
+async fn with_no_record_staying_and_no_mover_that_can_be_sent_the_merge_is_refused() {
+    let books: Vec<Bookmark> = ["https://one/", "https://two/"]
+        .iter()
+        .map(|url| Bookmark {
+            title: "t".repeat(8300),
+            ..bookmark(url)
+        })
+        .collect();
+    let pinboard = FakePinboard::trimming();
+
+    let outcome = run(&pinboard, &books, &onto_target()).await;
+    assert!(pinboard.ops.borrow().is_empty(), "{:?}", pinboard.ops);
+    assert_eq!(
+        (outcome.changed, outcome.refused, outcome.write_failed),
+        (0, 1, 0)
+    );
+}
+
+/// A record staying at the target leads the merge, so a mover too long to send alone may
+/// still join it: only how the merge as a whole would be sent decides.
+#[tokio::test]
+async fn a_mover_too_long_alone_still_merges_into_a_record_that_stays() {
+    let resident = bookmark("https://target/");
+    let long = Bookmark {
+        title: "t".repeat(8300),
+        ..bookmark("https://long/")
+    };
+    let short = bookmark("https://short/");
+    let all = vec![resident, long.clone(), short.clone()];
+    let pinboard = FakePinboard::trimming();
+
+    let outcome = run_over(
+        &pinboard,
+        &all,
+        &[long, short],
+        WriteMode::Live,
+        &onto_target(),
+    )
+    .await;
+    assert_eq!(
+        (outcome.refused, outcome.write_failed),
+        (0, 0),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        *pinboard.deleted.borrow(),
+        strings(&["https://long/", "https://short/"])
+    );
+}
+
+/// An incumbent leads its merge as a resident does, so the movers merge behind it in
+/// snapshot order, one too long to send alone included.
+#[tokio::test]
+async fn a_mover_too_long_alone_still_merges_behind_an_incumbent() {
+    let long = Bookmark {
+        title: "t".repeat(8300),
+        ..bookmark("https://long/")
+    };
+    let books = vec![
+        long,
+        bookmark("https://short/"),
+        bookmark("https://target/"),
+    ];
+    let pinboard = FakePinboard::trimming();
+
+    let outcome = run(&pinboard, &books, &onto_target()).await;
+    assert_eq!(
+        (outcome.refused, outcome.write_failed),
+        (0, 0),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        *pinboard.deleted.borrow(),
+        strings(&["https://long/", "https://short/"])
+    );
+}

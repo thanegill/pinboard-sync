@@ -6,22 +6,141 @@
 > on, auditing, or forking this code, not because I think it lowers the bar on the
 > quality. Reach out or report bugs the way you would for any other project.
 
-A small Rust CLI that syncs the things you save across the web into a single
-[Pinboard](https://pinboard.in) account, and tidies up the bookmarks once they're
-there. It currently knows three sources:
+A Rust CLI that copies what you save on the web into one [Pinboard](https://pinboard.in)
+account, then tidies those bookmarks. It reads:
 
-- **Reddit** — your saved posts and comments.
-- **GitHub** — your starred repositories and starred gists.
-- **HackerNews** — your favorited stories and comments.
+- **Reddit**: your saved posts and comments.
+- **GitHub**: your starred repositories and starred gists.
+- **HackerNews**: your favorited stories and comments.
 
-Each run is a single pass: read what you've saved from a source, skip anything
-already on Pinboard, and write the rest. Pinboard *is* the state — there's no local
-database — so runs are idempotent and safe to schedule.
+Each run reads a source, skips what's already on Pinboard, and writes the rest. Pinboard
+is the only state, with no local database, so runs are idempotent and safe to schedule.
 
-## How bookmarks look
+## Install
 
-Every source maps an item to a Pinboard bookmark (`url`, title, notes, tags) with
-sensible, fully-configurable tags:
+With Nix, which also installs bash/zsh/fish completions, the man page and the example
+config (`share/pinboard-sync/config.example.toml`):
+
+```sh
+nix build            # ./result/bin/pinboard-sync
+nix run . -- --help
+```
+
+Or with Cargo, which needs OpenSSL and pkg-config on Linux:
+
+```sh
+cargo build --release
+```
+
+## Authentication
+
+Every command that touches Pinboard needs your Pinboard API token (`username:TOKEN`,
+from your [settings](https://pinboard.in/settings/password)). Each source adds its own:
+
+- **Reddit** needs your **username** and a **`reddit_session` cookie**, since Reddit has
+  no self-serve API and its edge blocks cookieless requests. Copy `reddit_session` from
+  your browser's DevTools (Application → Cookies → reddit.com); its bare value and
+  `reddit_session=<value>` both work. It lasts about a year. When it expires the run
+  exits non-zero and runs the [auth-failure hook](#auth-failure-hook).
+- **GitHub** needs a **personal access token**. It only reads: your starred repos and
+  gists, and in `cleanup` each repo and gist they name. A classic token needs no scope
+  (add `repo` to include private repos you starred). A fine-grained token needs the
+  account permission **Starring: read**.
+- **HackerNews** needs only your **username**; favorites are public.
+
+### Secrets and environment variables
+
+Each value comes from the first non-blank of, in order: a CLI flag, the environment
+variable, the variable's `_FILE` form, the config file's inline value, then its `*_file`
+path. Values are trimmed. A `_FILE` variable holds a **path whose trimmed contents are
+the value**, so the secret itself never sits in the environment or the Nix store:
+
+```sh
+export PINBOARD_TOKEN='user:abcdef0123456789'
+export PINBOARD_TOKEN_FILE=/run/secrets/pinboard-token   # same, read from a file
+```
+
+| Variable (each also as `<VAR>_FILE`) | Sets | Secret |
+| --- | --- | --- |
+| `PINBOARD_TOKEN` | Pinboard API token (`user:TOKEN`), shared by every source | yes |
+| `REDDIT_USERNAME` | Reddit user whose saved items to read | no |
+| `REDDIT_COOKIE` | Reddit `reddit_session` cookie, bare or as `reddit_session=…` | yes |
+| `GITHUB_TOKEN` | GitHub personal access token | yes |
+| `HN_USERNAME` | HackerNews user whose favorites to read | no |
+
+Two variables take a direct value and have no `_FILE` form: `PINBOARD_SYNC_CONFIG`, the
+path to the config file (same as `--config`), and `PINBOARD_SYNC_ON_AUTH_FAILURE`.
+
+### Auth-failure hook
+
+A shell command run when a source needs re-authentication (an expired Reddit cookie, a
+GitHub 401), on `sync`, `cleanup` and `backup`. It runs via `/bin/sh -c` (or `sh` from
+`PATH` when there is no `/bin/sh`) with `PINBOARD_SYNC_AUTH_ERROR` and
+`PINBOARD_SYNC_EVENT` set. It resolves `--on-auth-failure` (on `sync` and `backup`;
+`cleanup` has none) or `$PINBOARD_SYNC_ON_AUTH_FAILURE`, then the account's
+`on_auth_failure`, then `[defaults.<source>]`, then `[hooks]`. It does not run for a
+rate limit, which only waiting clears, nor for Reddit's "blocked by network security"
+page, which refuses the request whatever cookie it carries.
+
+## Usage
+
+The examples assume `PINBOARD_TOKEN` is set. `pinboard-sync <command> <source> --help`
+lists every flag, and `pinboard-sync man` prints the man page.
+
+```sh
+pinboard-sync sync reddit --reddit-username you --reddit-cookie 'reddit_session=…'
+pinboard-sync sync github                     # GITHUB_TOKEN
+pinboard-sync sync hackernews --hn-username you
+pinboard-sync sync reddit --dry-run           # preview without writing
+
+pinboard-sync cleanup reddit                  # URLs → configured domain, tags, NSFW, titles
+pinboard-sync cleanup github                  # canonicalize repo + gist URLs, follow renames
+pinboard-sync cleanup hackernews              # rewrite HN item URLs to the linked article
+
+pinboard-sync doctor                          # check the token and every account
+
+pinboard-sync backup --all --out ~/snapshots/pinboard-sync
+pinboard-sync backup pinboard --out DIR       # just the Pinboard account
+pinboard-sync backup reddit main --out DIR    # just one source account
+```
+
+The per-run settings (`--limit`, `--toread`, `--public`, `--use-post-date`,
+`--post-date-max-age-days`, `--cleanup-stale-to-now`) are flags or config keys, never
+environment variables. They resolve flag → account → `[defaults.<source>]` →
+`[pinboard]` → built-in default. A boolean flag alone means `true`, and `--toread=false`
+turns off a config-set `true`.
+
+A flag a command shares with its subcommand, such as `--dry-run`, `--out` or a `cleanup`
+date flag, can go on either side: `cleanup --dry-run reddit` equals
+`cleanup reddit --dry-run`. Giving it on both sides is an error, as is giving `--config`
+twice at any level. `-v` adds up wherever it appears: `-v sync reddit -v` logs at trace.
+
+**Exit status** is 0 on success and non-zero on failure. `sync` fails when a write or an
+account fails, `doctor` when any check fails, and `backup` when any target fails.
+`cleanup` fails when a write fails, when a source stops the pass (a dead credential, a
+rate limit, a block), or when most of its lookups fail. A blocked Reddit `/api/info`
+falls back to the saved listing instead (see [Troubleshooting](#troubleshooting)). A few
+failed lookups only log a warning, so one dead URL can't fail a scheduled run for good,
+and a refused rewrite doesn't fail the run.
+
+### Logging
+
+Progress goes to **stderr** at `info` (counts per account, source and run), so stdout
+stays clean for output like `--dry-run` listings. `-v` is debug, `-vv` trace and `-vvv`
+adds dependency logs; `RUST_LOG` (for example `RUST_LOG=pinboard_sync=debug`) overrides
+`-v`. An error quotes at most 300 bytes of a server's response, on one line. Debug level
+logs the whole body, with the Pinboard token, GitHub token and Reddit cookie redacted.
+Under the NixOS service the log is in the journal (`journalctl -u pinboard-sync`). To
+debug a unit (`pinboard-sync`, `pinboard-sync-cleanup` or `pinboard-sync-backup`), set
+`RUST_LOG` in its environment, for example:
+
+```nix
+systemd.services.pinboard-sync-cleanup.environment.RUST_LOG = "pinboard_sync=debug";
+```
+
+## What `sync` does
+
+Each saved item becomes one bookmark:
 
 | Source | URL | Title | Tags (defaults) |
 | --- | --- | --- | --- |
@@ -30,356 +149,132 @@ sensible, fully-configurable tags:
 | GitHub gist | `gist.github.com/<owner>/<id>` | the description, else the first filename | `github-star`, `github-gist`, `lang:<language>` per file language, `author:github:<owner>` |
 | HackerNews | the article (or HN permalink) | story title | `hackernews`, `hackernews-comment`, `author:hackernews:<u>`, `hackernews:show-hn` (and `ask-hn`/`tell-hn`/`launch-hn`) |
 
-A favorited HN *story* is bookmarked as the linked article with the discussion in the
-notes; a favorited *comment* keeps the HN permalink. A starred gist's notes quote its
-description and list its files; `gists = false` on a `[[github]]` account stops syncing
-them. Dedup is by URL, so the same item saved under any subdomain (or already bookmarked
-from elsewhere) is left alone. `--limit N` is an optional per-run write cap, not
-correctness — Reddit also caps any listing at ~1000 items.
+A favorited HN story is bookmarked as its article, with the discussion in the notes; a
+favorited comment keeps its HN permalink. A gist's notes quote its description and list
+its files; `gists = false` on a `[[github]]` account skips gists. Dedup is by URL, so an
+item already bookmarked, under any Reddit subdomain or from elsewhere, is left alone.
+Reddit caps any listing at about 1000 items.
 
-Every source lists what you saved newest first, so by default (`limit = "auto"`) `sync`
-stops reading a source at the first page with nothing new to write. Once an account is
-caught up, a run reads one page per source (one each for HN stories and comments, and
-for GitHub stars and gists) instead of every page: Reddit and GitHub return 100 items a
-page, so an account with about 600 saves and 1,100 stars drops from 7 and 11 requests to
-1 each. New items are written oldest first, so a run interrupted partway leaves the
-newest unwritten, and the next run reads down to the ones already written and writes the
-rest. This has four known limits:
+`--limit` (or `limit` in the config) takes `auto`, `all` or a number. `auto`, the
+default, stops reading a source at the first page with nothing new, so a caught-up run
+reads one page per source (one each for HN stories and comments, and for GitHub stars
+and gists). `all` reads every page. A number `N` caps the run at N new bookmarks and
+reads every page; `0` is rejected. New items are written oldest first, so the next run
+finishes one that was interrupted. `auto` has known limits, all fixed by one
+`sync <source> --limit all`:
 
-- An older saved item you deleted from Pinboard is not added back.
-- If a write fails and at least a page's worth of newer items in the same run succeed,
-  later runs won't reach the failed item.
-- A page whose items are all already on Pinboard stops the read, even when older items
-  below it are missing. That happens on a first sync whose newest items you saved by hand
-  or with another tool, or when such items shift above an unwritten one between runs.
-- GitHub doesn't document the order of starred gists, so the gists are assumed to list
-  newest first too. Under 100 starred gists fit on one page, where order doesn't matter.
-
-`sync <source> --limit all` reads every page once and writes whatever is missing.
+- An older item you deleted from Pinboard is not added back.
+- If a write fails and a page's worth of newer items in the same run succeed, later runs
+  don't reach the failed item.
+- A page whose items are all on Pinboard already stops the read, even when older items
+  below it are missing. That happens on a first sync whose newest items you saved by
+  hand or with another tool, or when such items move above an unwritten one.
+- GitHub doesn't document the order of starred gists, so they are assumed newest first.
+  Under 100 gists fit on one page, where order doesn't matter.
 
 `backup`, `doctor` and `cleanup github` with `use_post_date` always read every page.
 
-## Install
-
-With Nix (provides the binary plus shell completions and an example config):
-
-```sh
-nix build            # ./result/bin/pinboard-sync
-nix run . -- --help
-```
-
-Or build with Cargo (needs OpenSSL + pkg-config on Linux — the HTTP client uses
-native-tls, explained on the `reqwest` dependency in `Cargo.toml`):
-
-```sh
-cargo build --release
-```
-
-## Authentication
-
-The Pinboard API token (`username:TOKEN`, from your
-[settings](https://pinboard.in/settings/password)) is shared by every source.
-
-Per source:
-
-- **Reddit** needs your **username** (non-secret — whose saves to read) and a
-  **`reddit_session` cookie**. Reddit ended self-serve API access, and its anti-bot
-  edge blocks cookieless requests, so the tool reads
-  `old.reddit.com/user/<you>/saved.json` with a logged-in cookie. Copy
-  `reddit_session` from your browser's DevTools (Application → Cookies →
-  reddit.com); either its bare value or `reddit_session=<value>` works. It lasts
-  about a year; when it expires the tool exits non-zero and runs the optional
-  auth-failure hook so you can re-copy it.
-- **GitHub** needs a **personal access token** (`public_repo`/`read` scope is
-  plenty — it only reads `/user/starred` and `/gists/starred`). The starred gists need
-  nothing more than the stars: GitHub's docs give `/gists/starred` no required
-  permission for a fine-grained token, and a classic token reads gists with no scope.
-- **HackerNews** needs only your **username**; favorites are public.
-
-### Environment variables
-
-Each value resolves through a ladder, highest precedence first: a **CLI flag**, the
-**environment variable**, that variable's **`<VAR>_FILE`** form, then the inline value
-and `*_file` path in the **`--config` file** (below). A blank or missing rung falls
-through to the next; the first non-empty value wins, trimmed of surrounding whitespace.
-
-`<VAR>_FILE` names a **path whose trimmed contents are the value** — so the secret
-itself never sits in the environment or the Nix store, only a path to it does. Every
-variable in the table accepts this `_FILE` form. For any variable, the inline value and
-the `_FILE` path are equivalent:
-
-```sh
-# value inline in the environment…
-export PINBOARD_TOKEN='user:abcdef0123456789'
-# …or the value read (and trimmed) from a file — how the NixOS service feeds sops-nix:
-export PINBOARD_TOKEN_FILE=/run/secrets/pinboard-token
-
-# the same applies to every variable below
-export REDDIT_USERNAME=alice
-export REDDIT_COOKIE_FILE=/run/secrets/reddit-cookie
-export GITHUB_TOKEN_FILE=/run/secrets/github-token
-export HN_USERNAME_FILE=/run/secrets/hn-username
-```
-
-| Variable | Sets | Secret |
-| --- | --- | --- |
-| `PINBOARD_TOKEN` | Pinboard API token (`user:TOKEN`), shared by every source | yes |
-| `REDDIT_USERNAME` | Reddit user whose saved items to read | no |
-| `REDDIT_COOKIE` | Reddit `reddit_session` cookie, bare or as `reddit_session=…` | yes |
-| `GITHUB_TOKEN` | GitHub personal access token | yes |
-| `HN_USERNAME` | HackerNews user whose favorites to read | no |
-
-Two variables are **direct values, not `_FILE`-capable**:
-
-- **`PINBOARD_SYNC_CONFIG`** — a direct path to the `--config` TOML file (equivalent to
-  passing `--config`). The config is already a file, so it takes no `_FILE` indirection.
-- **`PINBOARD_SYNC_ON_AUTH_FAILURE`** — a shell command run when a source needs
-  re-authentication, on both `sync` and `cleanup`. It can also be set per-account, as
-  `[defaults.<source>] on_auth_failure`, or as `[hooks] on_auth_failure`, resolving
-  **flag/env → account → `[defaults.<source>]` → `[hooks]`**. (`cleanup` takes no
-  `--on-auth-failure` flag, so the env var is its top rung.) It does not run for a rate
-  limit — waiting, not a new credential, is what clears one — nor when Reddit answers
-  with its "blocked by network security" page, which refuses the request whatever cookie
-  it carries ([#78](https://github.com/thanegill/pinboard-sync/issues/78),
-  [#89](https://github.com/thanegill/pinboard-sync/issues/89)).
-
-## Usage
-
-**Every command needs your Pinboard token** (the destination), via `--pinboard-token`,
-`$PINBOARD_TOKEN`, or `[pinboard]` in the config — the examples below assume it's in
-the environment. Each source then adds its own auth on top.
-
-```sh
-# Reddit (PINBOARD_TOKEN + REDDIT_USERNAME, REDDIT_COOKIE)
-pinboard-sync sync reddit --reddit-username you --reddit-cookie 'reddit_session=…'
-
-# GitHub (PINBOARD_TOKEN + GITHUB_TOKEN)
-pinboard-sync sync github
-
-# HackerNews (PINBOARD_TOKEN + HN_USERNAME; favorites are public)
-pinboard-sync sync hackernews --hn-username you
-
-# Preview without writing
-pinboard-sync sync reddit --dry-run
-
-# Normalize existing bookmarks
-pinboard-sync cleanup reddit          # URLs → configured domain, tags, NSFW, titles
-pinboard-sync cleanup github          # canonicalize repo + gist URLs, refresh renames
-pinboard-sync cleanup hackernews      # rewrite HN item URLs to the linked article
-
-# Validate the Pinboard token + every configured account's credentials
-pinboard-sync doctor
-
-# Snapshot every service to a directory (full API responses + normalized items)
-pinboard-sync backup --all --out ~/snapshots/pinboard-sync
-pinboard-sync backup pinboard --out DIR    # just the Pinboard account
-pinboard-sync backup reddit main --out DIR # just one source account
-```
-
-`cleanup reddit` only contacts Reddit when marking NSFW or fixing placeholder titles
-(`--no-nsfw --no-titles` skip both, and the cookie). The utility subcommands —
-`completions`, `config example` and `config check` — are covered in
-[Shell completions and example config](#shell-completions-and-example-config).
-
-### Per-run setting flags
-
-These per-account settings can also be set on the command line, where the flag tops
-the resolution tier (**flag → account → `[defaults.<source>]` → `[pinboard]` global →
-built-in default**). They are CLI- and config-only — there are no environment
-variables for them.
-
-| Flag | Commands | Setting |
-| --- | --- | --- |
-| `--limit <auto\|all\|N>` | `sync` | `auto` (default): no cap, and each source stops reading pages at the first one with nothing new. `all`: no cap, read every page. `N`: write at most N new bookmarks, reading every page. `0` is rejected. |
-| `--post-date-max-age-days <N>` | `sync`, `cleanup` | Only backdate posts newer than N days; older use "now". |
-| `--toread[=BOOL]` | `sync` | Mark new bookmarks to-read. |
-| `--public[=BOOL]` | `sync` | Create bookmarks public (default private). |
-| `--use-post-date[=BOOL]` | `sync`, `cleanup` | Date bookmarks by the source post date. |
-| `--cleanup-stale-to-now[=BOOL]` | `cleanup` | Re-date too-old posts to now (default: keep existing). |
-
-The boolean flags take an optional value: `--toread` means `true`, `--toread=false`
-forces it off (so a config-set `true` can be overridden back to `false`). Bare
-`--public` likewise means `--public=true`.
-
-A flag a command shares with its subcommand, such as `--dry-run`, `--out`,
-`--on-auth-failure` or a `cleanup` date flag, goes on either side of the subcommand:
-`cleanup --dry-run reddit` and `cleanup reddit --dry-run` are the same run. Giving it on
-both sides is an error, whatever the two values. A value from the environment, such as
-`PINBOARD_SYNC_ON_AUTH_FAILURE`, doesn't count as a side. The same goes for `--config`,
-which every command takes: give it once, at any level. `-v` is the exception, and adds up
-wherever it is given, so `-v sync reddit -v` logs at trace.
-
-### Logging
-
-Progress is logged to **stderr** at `info` level by default (the version on startup,
-account and bookmark counts, per-source fetched/new counts, and a per-run summary), so
-**stdout stays clean** for generated output like `--dry-run` listings. Raise the
-verbosity with a repeatable `-v` (`-v` = debug, `-vv` = trace, `-vvv` also includes
-dependency logs), or set `RUST_LOG` for full control (e.g. `RUST_LOG=pinboard_sync=debug`),
-which overrides `-v`. Under the NixOS service these lines land in the journal
-(`journalctl -u pinboard-sync`).
-
-An error that quotes a server's response body shows at most 300 bytes of it, on one line.
-At debug level (`-v`, or `RUST_LOG=pinboard_sync=debug`) the full body is logged too, with
-the Pinboard token, GitHub token and Reddit cookie redacted. So is the page behind a
-Reddit 401/403 that isn't one of the edge pages it recognises. Debug level also logs the
-protocol each response came over (`api.github.com answered over HTTP/2.0`). Under the
-NixOS service, set `RUST_LOG` on the unit you are debugging (`pinboard-sync`,
-`pinboard-sync-cleanup` or `pinboard-sync-backup`), e.g.
-`systemd.services.pinboard-sync-cleanup.environment.RUST_LOG = "pinboard_sync=debug";`.
-
 ## What `cleanup` does
 
-Where `sync` *adds* new bookmarks, `cleanup` *repairs the ones already on Pinboard* —
-normalizing URLs, tags, and titles that drift over time or were saved in a messier
-form. It only touches bookmarks it recognizes as belonging to that source, is
-idempotent (safe to re-run — it re-writes a bookmark only when a field actually
-changes, comparing creation dates by instant so an equivalently-formatted timestamp
-isn't treated as a change), and supports `--dry-run` to preview every change first.
-`cleanup --all` runs all three once over the shared bookmark set.
+`cleanup` repairs the bookmarks already on Pinboard: URLs, tags and titles. It touches
+only bookmarks it recognizes as that source's, rewrites one only when a field changes,
+and takes `--dry-run` to preview. `cleanup --all` runs github, reddit and hackernews in
+turn over the shared bookmark set.
 
-**It can combine two of your bookmarks into one.** Pinboard stores one record per URL,
-so when cleanup rewrites a bookmark onto a URL you have saved separately — an HN story
-whose article you also bookmarked, a GitHub repo starred under both its old and new
-names — the two are **merged** rather than one overwriting the other: tags are unioned,
-notes are concatenated, and the bookmark already at that URL keeps its title, date and
-to-read state. **The absorbed bookmark is then deleted**, since its content now lives in
-the merged record. `--dry-run` lists each merge with an `absorb <url>` line for every
-bookmark that would be removed; it is worth reading before the first real run.
+**It can merge two of your bookmarks into one.** Pinboard keeps one record per URL, so
+when cleanup moves a bookmark onto a URL you saved separately (an HN story whose article
+you also bookmarked, a repo starred under its old and new names), the two are merged:
+tags are unioned, notes concatenated, and the bookmark already there keeps its title,
+date and to-read state. **The absorbed bookmark is then deleted**, and when the merge
+adds nothing, that delete is all it does. Before your first real run, read the
+`absorb <url>` lines `--dry-run` prints, one per bookmark a merge would delete.
 
-Some rewrites are **refused** and reported instead: cleanup will not write over a
-bookmark it could not read this run, and it will not merge bookmarks that disagree about
-being public or private, since that would either publish a private note or unshare
-something you chose to share. Nor will it merge a bookmark whose notes the merged record
-has no room to hold (see below), since deleting it would lose the rest, or whose tags
-would leave too little room for the note already there. A refused bookmark is left
-untouched, so the duplicate stays until you resolve it yourself.
+**Some rewrites are refused** and reported, leaving the bookmark and any duplicate
+untouched. Cleanup won't write over a bookmark it couldn't read this run, merge
+bookmarks that disagree about being public, or merge one whose notes the merged record
+has no room for, or whose tags would crowd out the note already there. A bookmark it
+couldn't read is tried again next run; resolve the others by hand.
 
-A note too long for a Pinboard API request URL is cut short when written, with a marker
-appended (logged when it happens). Only the note is cut: tags and the other fields are
-always written whole, which leaves the note less room. `cleanup` compares what a write
-would store with what writing the bookmark back unchanged would store, so it doesn't
-rewrite a cut note every run, or cut a long note when the only change would be cut off
-anyway. A merge that adds nothing to the bookmark it lands on just deletes the one it
-absorbs, provided the notes it could keep are already there. If Pinboard still rejects a
-`cleanup` write as too long, `cleanup` writes and deletes nothing for that bookmark, since
-a shorter note would cut text it already holds, and counts it refused (`--dry-run` can't
-foresee this); a new bookmark `sync` adds is retried with a shorter note instead. When
-the other fields leave the note no room under the tool's budget for the request URL, the
-note is cut to what fits under Pinboard's own limit, or dropped. A bookmark too long for
-that limit even with no note is never sent: `sync` fails it, and `cleanup` refuses it
-before writing anything else, so `cleanup --dry-run` shows the refusal too (`sync`'s dry
-run still can't).
+**Long notes are cut.** Pinboard's API carries the note in the request URL, so a note
+too long for it is cut, with a marker, when written (and logged). Tags and other fields
+are always sent whole, which leaves the note less room; when they leave none, the note
+is cut to Pinboard's own limit or dropped. `cleanup` doesn't rewrite a note already
+stored cut, or cut a long one for a change past the cut. If Pinboard still rejects a
+`cleanup` write as too long, nothing is written or deleted for that bookmark and it
+counts as refused; `--dry-run` can't foresee this. `sync` retries a new bookmark with a
+shorter note instead. A bookmark too long even with no note is never sent: `sync` fails
+it, and `cleanup` refuses it before writing anything, which `cleanup --dry-run` shows
+(`sync`'s dry run can't).
 
-- **Reddit** (`cleanup reddit`) — rewrites each Reddit bookmark's URL to your configured
-  `reddit_domain` (default `old.reddit.com`), unwrapping `over18` interstitial redirects
-  to the real post. A bookmark already on any `[[reddit]]` account's `reddit_domain`
-  stays there and is shaped with that account's tag settings, and a post stored on
-  several of them collapses onto the one listed first. It normalizes tags (ensures every
-  entry of `tags` and a correctly-cased `subreddit:<sub>` tag, dropping bare/legacy
-  duplicates except one that an account on the bookmark's domain adds as a base, NSFW or
-  comment tag), adds `reddit-comment` to comment bookmarks, and — using Reddit's
-  `/api/info` — marks `over_18` posts `nsfw`, replaces generic placeholder titles with
-  the real ones, and adds the author, flair and media-type tags `sync` writes. Each of
-  those three is added only when the bookmark has no tag with its prefix yet, so a
-  stored author or flair is never replaced. A comment is looked up by its own id and
-  tagged only from that entry, never from its post's. The `/api/info` call is made for
-  NSFW marking, title fixing or `use_post_date`, and needs the `reddit_session` cookie;
-  the backfill rides on it. With all three off (`--no-nsfw --no-titles`, no
-  `use_post_date`) cleanup does not contact Reddit, needs no cookie, and adds only
-  `reddit-comment`.
+- **Reddit**: moves each Reddit bookmark to your `reddit_domain` (default
+  `old.reddit.com`), unwrapping `over18` redirects. A bookmark already on some
+  `[[reddit]]` account's domain stays there, with that account's tag settings, and a
+  post stored on several collapses onto the first listed. It normalizes tags (every
+  `tags` entry and a correctly-cased `subreddit:<sub>`, dropping legacy duplicates) and
+  tags comments `reddit-comment`. Through Reddit's `/api/info`, which needs the cookie,
+  it tags `over_18` posts `nsfw`, replaces placeholder titles, and adds the author,
+  flair and media tags `sync` writes, each only when no tag with that prefix exists yet.
+  A comment is tagged from its own entry, never its post's. With `--no-nsfw --no-titles`
+  and no `use_post_date`, it skips `/api/info` and needs no cookie.
+- **GitHub** (needs the GitHub token): canonicalizes repo URLs to
+  `https://github.com/<owner>/<repo>` (https, lowercase host, no `.git`, trailing slash,
+  query or fragment), leaving deeper links like `/issues` alone, and follows renames and
+  transfers through the API. It refreshes only what `sync github` wrote: notes when
+  empty or in sync's shape; base, `lang:` and owner tags on bookmarks carrying an
+  account's first non-empty `tags` entry (`github-star`), with that account's settings;
+  the title while it is still `owner/repo`; and, under `use_post_date`, the running
+  account's star date while title and notes are still the tool's. So a repo saved by
+  hand or by `sync hackernews` keeps its title, tags and date. A repo gone (404),
+  blocked (DMCA 451, ToS 403) or behind SSO the token can't use keeps only the URL fix,
+  with a warning for the last two.
 
-  Since 2026-11-09 ([#89](https://github.com/thanegill/pinboard-sync/issues/89)),
-  Reddit's edge answers `/api/info` with its "blocked by network security" page even
-  with a valid cookie. When it does, cleanup reads the account's saved listing instead,
-  which needs the account's `username` (or `$REDDIT_USERNAME`, or its `_FILE` form). A
-  post still in the listing gets every fix above from it. A comment gets its tags when
-  it is in the listing, and its NSFW and title fixes when its thread is, since those
-  come from the thread. A bookmark the listing covers neither way is cleaned up like one
-  of a deleted post: its URL and tags are normalized, and its title, notes and date stay
-  as they are. The run exits 0 and logs one warning, every time, that quotes the block
-  and says how many bookmarks took their metadata from the saved listing and how many
-  got URL-only normalization. It still fails when the saved listing can't be read
-  either, or when no username is set, and a refused cookie runs the auth-failure hook as
-  usual, whichever read refused it.
+  Gists get the same treatment in a second pass, unless the running account has
+  `gists = false`. Each is canonicalized to `https://gist.github.com/<owner>/<id>`,
+  owner-less links included. Its tags, and its title while sync's, are refreshed only
+  when it carries an account's markers: the first `gist_tags` entry and the first one
+  `tags` lacks (`github-star` and `github-gist` by default), so a hand-saved gist tagged
+  `github-star` keeps its title and tags. When every `gist_tags` entry is also in
+  `tags`, the first alone is the marker, so a hand-saved gist with that tag counts as
+  synced. Under `use_post_date` a gist is re-dated by `gist_post_date` while its title
+  and notes are still the tool's. A deleted gist keeps its URL.
+- **HackerNews**: rewrites favorited story bookmarks on `news.ycombinator.com/item?id=…`
+  to the linked article, re-deriving title, `HN Link:` notes and tags; comments keep
+  their permalink. It needs only the Pinboard token. `--link-discussions` goes the other
+  way: for each article bookmark you tagged with the marker (`find-hn`, or `--tag-link`
+  / `tag_link`), it looks the URL up on HN and, if there is a discussion, adds an
+  `HN Link:` line and swaps the marker for the HN base tags.
 
-- **GitHub** (`cleanup github`) — canonicalizes repo bookmark URLs to
-  `https://github.com/<owner>/<repo>` (forcing https, lowercasing the host, dropping a
-  `.git` suffix, trailing slash, and any query/fragment); deeper links like `/tree/...`
-  or `/issues` are left alone. It then looks each repo up via the GitHub API, which
-  follows **renames and transfers**, and rewrites a moved repo's URL to its current
-  location. It refreshes only what `sync github` wrote. Notes are rebuilt from the
-  repo's description only when they are empty or in the shape sync writes; any other
-  notes are kept. The base tags, the `lang:` tag and the owner tag are refreshed only on
-  bookmarks carrying the first non-empty entry of some `[[github]]` account's `tags`
-  (`github-star` by default), with that account's tag settings (the running account's
-  where two share a base tag), and their title only while it is still `owner/repo`.
-  Under `use_post_date` they are re-dated to the star time only while both title and
-  notes are still the tool's, and only from the running account's stars. So a repo saved
-  by hand or bookmarked by `sync hackernews` keeps its title, tags and date. A repo that
-  no longer exists (404), is blocked (a DMCA 451 or a Terms of Service 403), or sits
-  behind organization SSO the token isn't authorized for keeps just the URL
-  canonicalization, with a warning for the last two. Needs the GitHub token; without
-  `use_post_date` the bookmark's creation time is preserved.
+`cleanup reddit` also moves, re-tags and (under `use_post_date`) re-dates an HN story
+that links a Reddit post, and `cleanup github` canonicalizes and follows renames for one
+linking a repo. `sync hackernews` still recognizes those, except a renamed repo's: a
+sync reading that far back re-adds the story at the old URL, and the next
+`cleanup github` merges it back.
 
-  Gist bookmarks get the same treatment in a second pass, unless the running account
-  (the first `[[github]]` one under `cleanup --all`) has `gists = false`. It reads the
-  starred gists once and looks up only the ones not among them. Each is canonicalized to
-  `https://gist.github.com/<owner>/<id>`, folding in the owner-less form, and its notes
-  are rebuilt only when empty or in the shape sync writes. Its tags, and its title while
-  it is still one sync gave it, are refreshed only when it carries some account's
-  markers, with that account's settings. The markers are up to two tags: the first entry
-  of `gist_tags` and the first one `tags` lacks (`github-star` and `github-gist` by
-  default), so a gist you saved by hand and tagged `github-star` keeps its title and
-  tags. When every `gist_tags` entry is also in `tags`, the first entry alone is the
-  marker, and such a gist does count as synced. Under `use_post_date` a gist is re-dated
-  by `gist_post_date` only while both title and notes are still the tool's. A deleted
-  gist keeps its URL.
+### Several accounts of one source
 
-- **HackerNews** (`cleanup hackernews`) — rewrites favorited *story* bookmarks whose URL
-  is the HN item page (`news.ycombinator.com/item?id=…`) to the linked **article**,
-  re-deriving the title, the `HN Link:` notes, and tags; favorited *comments* keep their
-  HN permalink. Favorites are public, so no auth beyond the Pinboard token is needed.
-  Optionally, `--link-discussions` (off by default) goes the other way: for article
-  bookmarks carrying the marker tag (`find-hn` by default, override with `--tag-link`), it
-  looks each up on HN by URL and adds the discussion link to the notes.
+`cleanup` runs as one account per source: the one named, else the first (each source's
+first under `cleanup --all`). Its dating settings apply to the whole source, and its tag
+settings can rewrite what another account's `sync` wrote:
 
-**`cleanup` runs as one account per source**: the one named, else the first, and under
-`cleanup --all` each source's first. That account's dating settings apply to every
-bookmark of the source, and with several accounts its tag settings can rewrite what
-another account's `sync` wrote:
-
-- **HackerNews** adds the running account's base, comment, author and special-type tags
-  to every favorited comment and text post, whichever account synced it. Keep the tag
-  settings the same across HackerNews accounts.
-- **GitHub** refreshes a star with the tag settings of the account whose base tag it
-  carries, the running account's where two share one. Two accounts sharing `github-star`
-  then add their other `tags`, and their own language and owner tags, to each other's
-  stars. Where one's `tag_lang_prefix` starts the other's, as `lang:` starts
-  `lang:work:`, cleanup run as the first also drops the other's `lang:work:rust`.
-  `tag_author_prefix` behaves the same way, and gists the same by their `gist_tags`
-  markers. Give each account its own base tag and a first `gist_tags` entry (its base
-  tag, by default) that no other account's `gist_tags` holds (so never `github-gist`);
-  or give them all the same tag settings.
-- **Reddit** shapes a bookmark on the running account's `reddit_domain` with that
-  account's tags, so accounts sharing a domain add their own tags to each other's
-  bookmarks. Give each account its own `reddit_domain`, or the same tag settings.
-
-Separately, `cleanup reddit` moves, re-tags and (under `use_post_date`) re-dates an HN
-story that `sync hackernews` saved as a link to a Reddit post, and `cleanup github`
-canonicalizes the URL of one linking a repo and follows the repo's renames.
-`sync hackernews` still recognizes a moved or canonicalized link, so it does not add it
-again, but not a renamed repo's: a sync that reads that far back adds the story again at
-the old URL, and the next `cleanup github` merges it back.
+- **HackerNews** adds the running account's tags to every favorited comment and text
+  post. Keep tag settings the same across HackerNews accounts.
+- **GitHub** uses the settings of the account whose base tag a star carries (the running
+  account's when two share one), so accounts sharing `github-star` add their tags to
+  each other's stars, and cleanup run as an account whose prefix starts another's
+  (`lang:` and `lang:work:`) drops the other's prefixed tags. Gists behave the same by
+  their `gist_tags` markers. Give each account its own base tag and a first `gist_tags`
+  entry no other account holds (never `github-gist`), or the same tag settings.
+- **Reddit** shapes a bookmark with the tags of the account whose `reddit_domain` it is
+  on, the running account's when several share a domain, so accounts sharing a domain
+  add their tags to each other's bookmarks. Give each account its own `reddit_domain`,
+  or the same tag settings.
 
 ## What `backup` does
 
-Where `sync` and `cleanup` *write to Pinboard*, `backup` only reads: it snapshots every
-service to a directory, so nothing depends on Pinboard — or on the sources — still having
-your data. It matters because the sync path is deliberately lossy. Each wire struct keeps
-only the fields it needs, so a starred repo arrives with ~80 fields and `sync` uses five;
-Reddit caps a saved listing near 1000 items; and Pinboard's own copy of a long note may
-already be truncated to fit its API's URL budget.
+`backup` only reads. It snapshots every service to a directory, so your data doesn't
+depend on Pinboard or the sources keeping it. It also keeps what `sync` drops: every API
+field, not only the few `sync` uses, and, in each source's snapshot, the full text of
+notes Pinboard stores cut.
 
 ```
 <dir>/raw/pinboard.json                      # posts/all with meta=yes, every field
@@ -392,62 +287,63 @@ already be truncated to fit its API's URL budget.
 <dir>/manifest.json                          # run timestamp, version, per-file counts
 ```
 
-- **`raw/` keeps every field.** Bodies are captured as text *before* any parsing, during
-  the same traversal that builds the normalized half — so the two halves always describe
-  one instant, and nothing the typed read path drops is lost. It is not a byte-for-byte
-  copy: merging a service's pages into one file means re-serializing, which sorts each
-  object's keys. Same fields, same values, different bytes.
-- **Pages are merged per service.** A response that is itself a JSON array flattens into
-  one array of items (GitHub, Pinboard); anything else is kept whole as one element per
-  page (Reddit's `Listing` envelope, Algolia's `{"hits": […]}`). HackerNews' favorites are
-  scraped HTML, so they land as `.html` with the pages concatenated behind marker comments.
-- **`normalized/` is one uniform shape** across every service — `url`, `title`, `note`,
-  `tags`, `timestamp`, `public`, `read_later`, and each source's `dedup_key`.
-- **Each run replaces the previous snapshot in place.** There are no timestamped run
-  directories and nothing is pruned, so point a real backup tool (git, borg, Time Machine)
-  at the directory if you want history. Every file is written atomically at mode 0600 —
-  a snapshot holds all your private bookmarks — and a body that doesn't parse, or isn't a
-  JSON array, is rejected rather than allowed to overwrite a good snapshot.
-- **`manifest.json` is written last and says whether the run was complete.** Per-file
-  atomicity isn't *run* atomicity, so the manifest carries `complete: false` and names the
-  `failed` targets when any target failed. Each file also records **its own**
-  `generated_at`, and a narrowed run merges into the existing manifest rather than
-  replacing it — so after `backup pinboard`, the other targets' files are still described,
-  with their older timestamps visible. Entries always describe what is on disk *now*, even
-  for a target that failed after writing; a file that isn't a trustworthy snapshot carries
-  its own `unusable` reason, which survives later runs of other targets; and entries are
-  dropped when their file goes away. Each reports either `items` or `pages`, never both,
-  because an envelope stream's element count is a page count (10 pages of Reddit saves is
-  not 10 saves). One writer at a time per directory — concurrent runs race.
-- **A truncated fetch is a failure, not a quiet overwrite.** Each source has a page cap as
-  a runaway-pagination backstop; hitting it means the snapshot is only part of the account,
-  so the target is reported failed and lands in the manifest's `failed` list rather than
-  silently replacing a complete snapshot with a partial one.
-- **The directory comes from `--out DIR` or `[backup].directory`**, with no built-in
-  default. An empty value is an error in either place. `backup <target>` narrows a run to
-  one service (or one account); `--all` covers the Pinboard account plus every configured
-  source account. A source's backup never contacts Pinboard and needs no Pinboard token.
-- `--dry-run` prints the file plan without writing, but still performs the full fetch.
+- `raw/` and `normalized/` come from one read, so they describe the same moment. `raw/`
+  keeps every field but isn't byte-for-byte: a service's pages are merged into one file,
+  which sorts object keys. A JSON-array response flattens into one array (GitHub,
+  Pinboard); anything else is one element per page (Reddit, Algolia). HackerNews
+  favorites are HTML pages joined behind marker comments.
+- `normalized/` has one shape for every service: `url`, `title`, `note`, `tags`,
+  `timestamp`, `public`, `read_later` and the source's `dedup_key`.
+- Each run replaces the last snapshot in place, with no history or pruning; point a
+  backup tool (git, borg, Time Machine) at the directory for that. Files are written
+  atomically at mode 0600, and a body that doesn't parse never overwrites a good file.
+  Run one backup at a time per directory.
+- `manifest.json` is written last. If a target fails it has `complete: false` and lists
+  the `failed` targets. Each file's entry has its own `generated_at` and counts `items`,
+  or `pages` for page envelopes. A narrowed run such as `backup pinboard` updates only
+  its own entries. A file that isn't a trustworthy snapshot gets an `unusable` reason.
+- Each source stops at a page cap against runaway paging. Hitting it fails the target
+  rather than overwriting a full snapshot with part of one.
+- The directory comes from `--out DIR` or `[backup].directory`, with no default, and an
+  empty one is an error. `backup <target>` runs one service or account, and `--all` the
+  Pinboard account plus every configured account. Backing up a source needs no Pinboard
+  token. `--dry-run` prints the file plan but still fetches everything.
 
-## Config file and multiple accounts
+## What `doctor` does
 
-For multiple accounts of a source, or to keep settings out of flags, use a TOML
-config passed via `--config <path>` (or `$PINBOARD_SYNC_CONFIG`). It holds
-one `[pinboard]` destination, an optional `[hooks]` block, and arrays of accounts
-per source. Every key is listed in the [config reference](#config-reference) below,
-and a fully-commented template lives at
-[`src/config.example.toml`](src/config.example.toml) — which is also what
-`pinboard-sync config example` prints. In brief:
+`doctor` checks the Pinboard token, the backup directory (when one is configured) and
+every configured account, by fetching each source. It prints a ✓ or ✗ line per check and
+exits non-zero if any failed. It checks only the accounts in the config, so an account
+given only by flags or environment variables isn't checked.
+
+## Config file
+
+A TOML file passed with `--config` (or `$PINBOARD_SYNC_CONFIG`) holds one `[pinboard]`
+destination, optional `[hooks]`, `[backup]` and `[defaults.<source>]` tables, and an
+array of accounts per source. `pinboard-sync config example` prints every key with its
+default and a note on it, so start from it. Its source is
+[`src/config.example.toml`](src/config.example.toml).
+
+```sh
+pinboard-sync config example > pinboard-sync.toml
+$EDITOR pinboard-sync.toml
+pinboard-sync config check pinboard-sync.toml
+pinboard-sync --config pinboard-sync.toml sync --all --dry-run
+```
 
 ```toml
 [pinboard]
 token_file = "/run/secrets/pinboard-token"
+use_post_date = true          # global default
+
+[defaults.reddit]
+use_post_date = false         # ...but not for reddit accounts
 
 [[reddit]]
 name = "main"
 username = "you"
 cookie_file = "/run/secrets/reddit-cookie"
-# tag_* keys (config-only) customize the tags; `tags` defaults to ["reddit"].
+use_post_date = true          # ...except this one
 
 [[github]]
 name = "personal"
@@ -457,268 +353,72 @@ token_file = "/run/secrets/github-token"
 username = "you"
 ```
 
-Then select an account by name, or run them all:
+Every key is optional, and an unknown key is an error. Settings resolve flag → account →
+`[defaults.<source>]` → `[pinboard]` (or `[hooks]`) → built-in default.
+
+**Selecting accounts.** A command uses the account named, else the first of that source:
 
 ```sh
 pinboard-sync --config ./config.toml sync github personal   # one named account
 pinboard-sync --config ./config.toml sync github --all      # every github account
 pinboard-sync --config ./config.toml sync --all             # every account, every source
-pinboard-sync --config ./config.toml cleanup --all          # reddit + github + hackernews
+pinboard-sync --config ./config.toml cleanup --all          # github, reddit, then hackernews
 ```
 
-The selector is an account's `name`, falling back to its `username` for Reddit and
-HackerNews — so an account with `username = "alice"` and no `name` is reachable as
-`sync reddit alice`. GitHub has no username, so its accounts are selected by `name`
-only. At most one account per source may have no selector (or one like `default` that
-makes the same backup filename), and no two may have selectors that make the same
-backup filename (`a.b` and `a/b`, or `Alice` and `alice`); a username from a flag or the
-environment (`$REDDIT_USERNAME`, `$HN_USERNAME`, or their `_FILE` forms) doesn't count,
-since it applies to every account alike. With no selector, a command uses the first
-account of that source. All tag settings (prefixes, the base `tags` list, the Reddit
-media-type allowlist, the HN special-type prefix) live in the config only — there are
-no tag CLI flags.
+An account's selector is its `name`, else its `username` (Reddit and HackerNews), so
+`username = "alice"` is `sync reddit alice`; a GitHub account needs a `name`. At most
+one account per source may lack a selector, and no two selectors may make the same
+backup filename (`a.b` and `a/b`, `Alice` and `alice`, or `default` and no selector). A
+username from a flag or the environment doesn't count, as it applies to every account.
 
-### Config reference
+**Tags are config-only**; there are no tag flags. Setting `tags` replaces the default
+list, so include the base tag yourself. Setting a prefixed or conditional tag to `""`
+disables it. A tag or prefix with whitespace or a comma is rejected, and values placed
+in a prefix are slugged (`Jupyter Notebook` → `lang:jupyter-notebook`). `reddit_domain`
+is a bare host, with no scheme, path or port.
 
-Every key the config accepts, with its built-in default. A fully-commented template
-carrying all of these lives at
-[`src/config.example.toml`](src/config.example.toml) and is what
-`pinboard-sync config example` prints — it is embedded in the binary, so the copy you
-print always matches your build.
+**Dating by the source post date.** With `use_post_date`, a bookmark is dated to when
+the item was posted (Reddit `created_utc`, HackerNews `created_at`) or starred (GitHub).
+A gist has no star date, so `gist_post_date` picks `now` (the default), `created` or
+`updated`. `cleanup reddit` reads the date from `/api/info` and so needs the cookie;
+`cleanup github` reads the star list. `post_date_max_age_days` (default 30) bounds how
+far back: an older post gets "now" from `sync`, while `cleanup` keeps the bookmark's
+date unless `cleanup_stale_to_now` re-dates it to now, at most once per cap period. A
+cap of `0` with `cleanup_stale_to_now` is rejected. When the source gives no date, the
+bookmark's date is left alone.
 
-Every key is optional; an absent config means built-in defaults throughout. Unknown
-keys are a hard error rather than being ignored, so a typo fails the run instead of
-silently doing nothing. [`config check`](#config-check) catches it before a run.
+## Utility commands
 
-#### `[pinboard]` — the shared destination
+- `config example` prints the commented template above; it is built into the binary, so
+  it always matches the version you run.
+- `config check <file>` validates a config as a run would: unknown keys, bad values,
+  whitespace or commas in tags, a malformed `reddit_domain` and duplicate account names.
+  It opens no `*_file` path and contacts no service; `doctor` does that. An error exits
+  non-zero and names the key, plus the line for a syntax or type error, never the value:
 
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `token` | string | — | Pinboard API token, `user:HEX`. |
-| `token_file` | path | — | File whose trimmed contents are the token. |
-| `public` | bool | `false` | Write bookmarks public. |
-| `toread` | bool | `false` | Mark new bookmarks unread. |
-| `rate_limit_secs` | int | `3` | Seconds between `posts/add` writes. |
-| `limit` | `"auto"`, `"all"` or int | `"auto"` | As `--limit`: `"auto"` is no cap with each source stopping once caught up, `"all"` no cap reading every page, a positive N a cap. `0` is rejected. |
-| `use_post_date` | bool | `false` | Date bookmarks by the source post date instead of now. |
-| `post_date_max_age_days` | int | `30` | Only backdate posts newer than this. |
-| `cleanup_stale_to_now` | bool | `false` | On `cleanup`, re-date too-old posts to now instead of keeping their date. |
+  ```console
+  $ pinboard-sync config check pinboard-sync.toml
+  pinboard-sync.toml: OK (1 reddit, 0 github, 1 hackernews account(s))
+  $ pinboard-sync config check typo.toml
+  ERROR parsing config: line 3, column 1: unknown field `tokn`, expected one of `token`, …
+  ```
 
-#### `[hooks]`
+- `completions <shell>` prints a script for `bash`, `zsh`, `fish`, `elvish` or
+  `powershell`. Re-run it after upgrading, and reload the shell (`compinit` for zsh):
 
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `on_auth_failure` | string | — | Shell command run via `/bin/sh -c` (or `sh` from `PATH` on a host without `/bin/sh`) when a source needs re-authentication. Receives `PINBOARD_SYNC_AUTH_ERROR` and `PINBOARD_SYNC_EVENT`. |
+  ```sh
+  pinboard-sync completions bash > ~/.local/share/bash-completion/completions/pinboard-sync
+  pinboard-sync completions zsh > ~/.zfunc/_pinboard-sync     # any dir on $fpath
+  pinboard-sync completions fish > ~/.config/fish/completions/pinboard-sync.fish
+  ```
 
-#### `[backup]`
-
-| Key | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `directory` | path | — | Where `backup` writes its snapshot. `--out` overrides it. |
-
-#### `[defaults.reddit]` / `[defaults.github]` / `[defaults.hackernews]`
-
-The middle override tier — **CLI → account → `[defaults.<source>]` → global**. Each
-table accepts the same seven keys, all with the same meaning as their `[pinboard]` or
-`[hooks]` counterpart:
-
-`toread`, `public`, `limit`, `on_auth_failure`, `use_post_date`,
-`post_date_max_age_days`, `cleanup_stale_to_now`
-
-`[defaults.github]` also takes `gist_post_date`, which an account's own overrides (see
-[dating](#per-source-defaults-and-dating-by-the-source-post-date)).
-
-#### Account tables
-
-`[[reddit]]`, `[[github]]` and `[[hackernews]]` are arrays — repeat the table for
-multiple accounts of one source. All three accept the per-account override keys
-`limit`, `toread`, `public`, `use_post_date`, `post_date_max_age_days` and
-`cleanup_stale_to_now`, plus:
-
-| Key | Sources | Type | Default | Meaning |
-| --- | --- | --- | --- | --- |
-| `name` | all | string | — | Selector for `sync <source> <name>`. Falls back to `username` for Reddit and HackerNews; GitHub has no username, so its accounts need a `name`. |
-| `username` | reddit, hackernews | string | — | Whose saves/favorites to read. HackerNews favorites are public; Reddit needs the cookie too. `cleanup reddit` reads the saves in place of a blocked `/api/info`. |
-| `cookie` / `cookie_file` | reddit | string / path | — | `reddit_session` cookie, bare or as `reddit_session=…`, or a file holding it. |
-| `token` / `token_file` | github | string / path | — | Personal access token, or a file holding it. |
-| `on_auth_failure` | reddit, github | string | — | Per-account override of `[hooks].on_auth_failure`. |
-| `gists` | github | bool | `true` | Also sync the account's starred gists. |
-| `gist_post_date` | github | `"now"`, `"created"` or `"updated"` | `"now"` | Which of a gist's dates is its post date. |
-
-##### Tag keys (config-only — there are no tag CLI flags)
-
-`tags` is the base list applied to every bookmark from that account, and setting it
-**replaces** the default rather than adding to it, so include the base tag yourself.
-Setting any prefixed or conditional tag to `""` disables it. Pinboard splits its tag
-string on spaces and forbids commas in a tag, so a tag or prefix containing whitespace
-or a comma is rejected at parse time; values interpolated into a prefix are slugged
-(`Jupyter Notebook` → `lang:jupyter-notebook`, `Help, Question` →
-`reddit-flair:help-question`).
-
-| Key | Source | Default | Produces |
-| --- | --- | --- | --- |
-| `tags` | reddit | `["reddit"]` | On every bookmark. |
-| `reddit_domain` | reddit | `"old.reddit.com"` | Host for bookmark and thread URLs: a bare host, with no scheme, path or port. Also where `cleanup reddit` moves a reddit.com bookmark that is on no account's `reddit_domain`. |
-| `tag_subreddit_prefix` | reddit | `"subreddit:"` | `subreddit:<sub>` |
-| `tag_comment` | reddit | `"reddit-comment"` | On saved comments. |
-| `tag_nsfw` | reddit | `"nsfw"` | When the post is `over_18`. |
-| `tag_author_prefix` | reddit | `"author:reddit:"` | `author:reddit:<name>` |
-| `tag_flair_prefix` | reddit | `"reddit-flair:"` | `reddit-flair:<slug>` |
-| `tag_media_prefix` | reddit | `"type:"` | `type:image`, `type:video` |
-| `tag_media_types` | reddit | `["image", "video"]` | Which media types get a `type:` tag; `[]` disables. |
-| `tags` | github | `["github-star"]` | On every bookmark. |
-| `tag_lang_prefix` | github | `"lang:"` | `lang:<language>` |
-| `tag_author_prefix` | github | `"author:github:"` | `author:github:<owner>` |
-| `gist_tags` | github | `tags` plus `"github-gist"` | On every gist. |
-| `gist_tag_lang_prefix` | github | `tag_lang_prefix` | `lang:<language>`, one per distinct file language. |
-| `gist_tag_author_prefix` | github | `tag_author_prefix` | `author:github:<owner>` |
-| `tags` | hackernews | `["hackernews"]` | On every bookmark. |
-| `tag_comment` | hackernews | `"hackernews-comment"` | On favorited comments. |
-| `tag_author_prefix` | hackernews | `"author:hackernews:"` | `author:hackernews:<name>` |
-| `tag_special_prefix` | hackernews | `"hackernews:"` | `hackernews:show-hn` and the Ask/Tell/Launch forms. |
-| `tag_link` | hackernews | `"find-hn"` | Marker tag you add by hand to an article bookmark. `cleanup hackernews --link-discussions` looks each one up on HN by URL and, if a discussion exists, adds an `HN Link:` line to the notes and swaps the marker for the base HN tags. |
-
-#### Secrets
-
-Every secret resolves through one ladder — **CLI flag → `$VAR` → `$VAR_FILE` → config
-inline → config `*_file`** — so a value can come from wherever suits the deployment
-without the config having to change. The `_file` forms hold a *path* whose trimmed
-contents are the value, which is what lets sops-nix and systemd credentials work
-without secrets ever entering the unit environment. `--config` itself is the one
-exception: it resolves flag → `$PINBOARD_SYNC_CONFIG` only, since it is already a path.
-
-### Per-source defaults and dating by the source post date
-
-A `[defaults.<source>]` table is a middle override tier between the `[pinboard]` /
-`[hooks]` globals and a per-account value. `use_post_date`, `toread`, `public`,
-`limit`, `on_auth_failure`, `post_date_max_age_days`, and `cleanup_stale_to_now`
-resolve **CLI → account → `[defaults.<source>]` → global**:
-
-```toml
-[pinboard]
-use_post_date = true        # global default
-post_date_max_age_days = 30 # only backdate posts this recent (older use "now")
-
-[defaults.reddit]
-use_post_date = false       # ...but not for reddit accounts
-
-[[reddit]]
-name = "main"
-use_post_date = true        # ...except this one
-```
-
-With `use_post_date`, a bookmark's creation date (Pinboard's `dt`) is set to the
-**source post date** rather than the time of the sync. The exact logic:
-
-- **Where the date comes from.** Reddit uses the post's `created_utc`, HackerNews the
-  item's `created_at`, and GitHub the time you *starred* the repo (`starred_at`). GitHub
-  gives no star time for a gist, so `gist_post_date` picks one: `now` (the default, no
-  post date), the gist's `created` or its `updated` time. `cleanup reddit` reads the
-  date from `/api/info`, so it needs the `reddit_session` cookie when `use_post_date` is
-  on; `cleanup github` reads the star list to map it.
-- **The age cap.** `post_date_max_age_days` (default 30) bounds how far back a bookmark
-  is dated. A post **within** the cap is dated to its source time. A post **older** than
-  the cap is treated differently by the two commands:
-  - `sync` falls back to **"now"** (it omits `dt`, letting Pinboard default it).
-  - `cleanup` **keeps the bookmark's existing date** — unless `cleanup_stale_to_now =
-    true`, which re-dates stale items to now. A bookmark already dated within the cap
-    keeps its date, so a stale item is re-dated at most once per cap period (monthly by
-    default). The config rejects a cap of `0` with `cleanup_stale_to_now`, since every
-    date would then be outside the cap, and `cleanup` refuses the same pairing when
-    `--post-date-max-age-days` or `--cleanup-stale-to-now` supplies either half.
-- **When the date is unknown** (the source exposes none), the date is left untouched.
-- **`cleanup` compares by instant.** A re-write only happens when a field a write would
-  change actually differs. The date is compared as a moment in time, not as a string, so
-  a stored timestamp and the source date that are the *same instant* formatted
-  differently (e.g. a `+00:00` offset vs a trailing `Z`) are **not** counted as a change
-  and don't trigger a needless re-write.
-
-Dating is off by default; enable it per the resolution tiers above.
-
-## Shell completions and example config
-
-`completions` and `config example` print to **stdout** so you can pipe or redirect them
-wherever you like. (The Nix package runs both at build time and installs the results
-for you — see below — so these are mainly for non-Nix installs.) `config check`
-validates a config file you've written.
-
-### `config example`
-
-`pinboard-sync config example` prints a fully-commented config template: every key
-with its built-in default and a short note on what it does. It's the canonical
-reference for the config schema — start here rather than copying snippets. Pipe it to
-a file and edit:
-
-```sh
-pinboard-sync config example > pinboard-sync.toml
-$EDITOR pinboard-sync.toml
-pinboard-sync --config pinboard-sync.toml sync --all --dry-run
-```
-
-The template is embedded in the binary, so it always matches that build's schema. Its
-source is [`src/config.example.toml`](src/config.example.toml); a test fails the build
-if a config field is ever added without a line documenting it there.
-
-### `config check`
-
-`pinboard-sync config check <file>` parses and validates a config file exactly as a
-run's `--config` does: unknown keys, bad values, whitespace or commas in tags, a malformed
-`reddit_domain` and duplicate account names all fail it. It contacts no service and
-uses no secret, so a `*_file` path is not opened and an inline token is not
-checked against Pinboard. Use `doctor` for that. It prints an `OK` line and exits 0, or
-prints the error and exits non-zero. As in a real run, the error names the key (and the
-line, for a syntax or type error), never the value:
-
-```console
-$ pinboard-sync config check pinboard-sync.toml
-pinboard-sync.toml: OK (1 reddit, 0 github, 1 hackernews account(s))
-$ pinboard-sync config check typo.toml
-ERROR parsing config: line 3, column 1: unknown field `tokn`, expected one of `token`, …
-```
-
-The flake's `checks.nixos-module` runs it against the TOML the NixOS module renders.
-
-### `completions`
-
-`pinboard-sync completions <shell>` prints a completion script for `<shell>` —
-`bash`, `zsh`, and `fish` (plus `elvish` and `powershell`). Install it where your
-shell looks for completions, for example:
-
-```sh
-# bash (current user)
-pinboard-sync completions bash > ~/.local/share/bash-completion/completions/pinboard-sync
-
-# zsh — anywhere on your $fpath, e.g.
-pinboard-sync completions zsh > ~/.zfunc/_pinboard-sync
-
-# fish
-pinboard-sync completions fish > ~/.config/fish/completions/pinboard-sync.fish
-```
-
-Completions cover the subcommands, flags, and `<shell>`/source values; re-run after
-upgrading so they track the installed version. Reload your shell (or `compinit` for
-zsh) to pick them up.
-
-`pinboard-sync man` prints a roff man page to stdout (`pinboard-sync man | man -l -`
-to read it).
-
-### Installed by the Nix package
-
-`nix build` already generates and installs these, so you don't run the commands by
-hand:
-
-- bash/zsh/fish completions under the usual
-  `share/{bash-completion,zsh/site-functions,fish/vendor_completions.d}` paths,
-- the man page at `share/man/man1/pinboard-sync.1`, and
-- the template at `share/pinboard-sync/config.example.toml`.
+- `man` prints a roff man page: `pinboard-sync man | man -l -`.
 
 ## Running as a NixOS service
 
-The flake exports the module as `nixosModules.pinboard-sync` (with
-`nixosModules.default` as an alias). It renders the non-secret config to the Nix
-store and reads secrets from a systemd `environmentFile` (e.g. a sops-nix rendered
-template, read as root — never in the store), running on a timer under a hardened
-`DynamicUser`:
+The flake exports `nixosModules.pinboard-sync` (alias `nixosModules.default`). It
+renders `settings` to a TOML file in the Nix store, so keep secrets out of it, and runs
+each timer as a hardened `DynamicUser`:
 
 ```nix
 {
@@ -733,64 +433,80 @@ template, read as root — never in the store), running on a timer under a harde
 
   services.pinboard-sync = {
     enable = true;
-    # Each account runs by default; set `enable = false` to keep it configured but
-    # skip it (the flag is stripped before the config is rendered).
     settings.reddit = [
       { name = "main"; }
-      { enable = false; name = "alt"; }        # configured but not synced
+      { enable = false; name = "alt"; }        # configured but skipped
     ];
     environmentFile = config.sops.templates."pinboard-sync.env".path;
     # sync.schedule = "*:0/30";               # sync timer; default every 30 minutes
-    cleanup.enable = true;                   # also normalize existing bookmarks…
-    # cleanup.schedule = "weekly";           # …on its own timer; default weekly
-    backup.enable = true;                    # also snapshot every service to disk…
-    # backup.schedule = "daily";             # …on its own timer; default daily
+    cleanup.enable = true;                   # cleanup --all on its own timer…
+    # cleanup.schedule = "weekly";           # …default weekly
+    backup.enable = true;                    # backup --all on its own timer…
+    # backup.schedule = "daily";             # …default daily
     # backup.directory = "/var/lib/pinboard-sync/backup";  # default location
   };
 }
 ```
 
-The `backup` timer writes into the service's `StateDirectory`
-(`/var/lib/pinboard-sync`); `backup.path` must stay under it, since the hardened
-`DynamicUser` can only write there. Each run replaces the file atomically, and the
-snapshot is readable by root (retrieve it with a root-run job — the state dir lives
-under the 0700 `/var/lib/private`).
+An account with `enable = false` stays configured but is left out of the runs.
+`backup.directory` must stay under the `StateDirectory` (`/var/lib/pinboard-sync`), the
+only place the `DynamicUser` can write. The snapshot is readable by root only, since the
+state directory is under the 0700 `/var/lib/private`, so fetch it with a root job.
 
-Instead of rendering every credential into one `environmentFile`, you can point the
-per-credential `*File` options at individual secret paths (e.g. one sops-nix secret
-per credential). Each is loaded into the unit's credentials directory via systemd
-`LoadCredential` and read through its `<VAR>_FILE` env var, so the value never lands in
-the unit environment or the store, and the `DynamicUser` can read it even though the
-source path is root-only:
+Instead of one `environmentFile`, you can point a per-credential option at each secret:
+`pinboardTokenFile`, `redditUsernameFile`, `redditCookieFile`, `githubTokenFile` and
+`hnUsernameFile`. Each is loaded with systemd `LoadCredential` and read through its
+`_FILE` variable, so the value stays out of the unit environment and the store, and the
+`DynamicUser` can read it even when the source file is root-only:
 
 ```nix
 services.pinboard-sync = {
   enable = true;
   pinboardTokenFile = config.sops.secrets.pinboard-token.path;
   redditUsernameFile = config.sops.secrets.reddit-username.path;
-  # The Reddit cookie file holds the `reddit_session` value, bare or as `reddit_session=<value>`.
-  redditCookieFile = config.sops.secrets.reddit-cookie.path;
+  redditCookieFile = config.sops.secrets.reddit-cookie.path;  # bare or reddit_session=…
 };
 ```
 
-The options are `pinboardTokenFile`, `redditUsernameFile`, `redditCookieFile`,
-`githubTokenFile`, and `hnUsernameFile`. Set at least one of them or `environmentFile`;
-the two can be combined, and credentials may also come from `*_file` paths inside
-account tables.
+The two can be combined, and credentials can also be `*_file` paths in `settings`. The
+binary opens those itself as the `DynamicUser`, so each must be readable by it (for
+example sops-nix `mode = "0444"`); a root-only `0400` secret fails every run. The module
+requires a Pinboard token from one of these.
+
+`onAuthFailure` sets the [auth-failure hook](#auth-failure-hook) for every unit. The
+hook runs inside the unit's sandbox: its `PATH` has only the service defaults, so call
+other programs by store path (`${lib.getExe pkgs.curl}`), and only IPv4/IPv6 sockets
+work, so `systemctl`, `logger` and desktop notifiers fail. A host without `/bin/sh`
+needs a package providing `bin/sh` on each unit's `path`.
+
+## Troubleshooting
+
+- **Start with `doctor`**, which checks the Pinboard token and every account in the
+  config, and `config check` for the config. Add `-v` to see response bodies.
+- **Reddit cookie expired**: the run exits non-zero and the hook fires. Copy a fresh
+  `reddit_session` (see [Authentication](#authentication)).
+- **"blocked by network security"**: Reddit's edge refuses some requests even with a
+  valid cookie ([#78](https://github.com/thanegill/pinboard-sync/issues/78)). No hook
+  fires, since a new cookie won't help. When it blocks `/api/info`
+  ([#89](https://github.com/thanegill/pinboard-sync/issues/89)), `cleanup reddit` reads
+  the account's saved listing instead, which needs its `username` (or
+  `$REDDIT_USERNAME`). A post in the listing gets every fix; a comment gets its tags
+  when it is listed, and its NSFW and title fixes when its thread is. Other bookmarks
+  get only URL and tag normalization. The run exits 0 with one warning saying how many
+  bookmarks took each path. It fails if the listing can't be read or no username is set,
+  and a refused cookie still fires the hook.
+- **GitHub SSO or blocked-repo warnings**: the repo gets only its URL fix. For SSO,
+  authorize the token for that organization.
+- **A refused cleanup rewrite** leaves the bookmark and its duplicate as they are, for
+  you to resolve by hand. A bookmark refused because its source couldn't be read is
+  retried on the next run.
 
 ## Roadmap
 
-Planned but not yet implemented:
-
-- **Tag bundles.** Setting and updating Pinboard tag bundles. This depends on the
-  Pinboard **API v2** — the v1 API has no bundle support, and v2 (which does) is a
-  documented 2021 draft that hasn't been deployed, so this is on hold until v2
-  ships.
-- **Prune / reconcile mode.** Optionally remove Pinboard bookmarks a source no longer
-  has (opt-in, dry-run-first) — sync is additive-only today.
-- **More sources.** Generic RSS/Atom, Mastodon bookmarks, Lobsters.
-- **Machine-readable output and a post-run hook.** A `--format json` run summary, and
-  a general post-run hook (not just the auth-failure one).
+- **Tag bundles**, which need Pinboard's API v2 (a 2021 draft, not yet deployed).
+- **Prune mode**, opt-in and dry-run first, removing bookmarks a source no longer has.
+- **More sources**: RSS/Atom, Mastodon bookmarks, Lobsters.
+- **A `--format json` run summary** and a general post-run hook.
 
 ## Development
 

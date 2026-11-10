@@ -8,73 +8,53 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
-- `cleanup reddit` now adds the author, flair, media and comment tags `sync` writes,
-  each only when the bookmark has no tag of that kind yet.
-- `config check <file>` validates a config without contacting any service.
-- GitHub stars get an `author:github:<owner>` tag. The next `cleanup github` rewrites
-  each synced star once to add it; `tag_author_prefix = ""` turns it off.
-- `sync github` also syncs starred gists, **on by default** (`gists = false` opts out),
-  tagged like stars plus `github-gist`. The token needs no new permission.
+- `sync github` also syncs starred gists, on by default (`gists = false` turns it off),
+  tagged like stars plus `github-gist`. Their tags and date have their own keys:
+  `gist_tags`, `gist_tag_lang_prefix`, `gist_tag_author_prefix` and `gist_post_date`. The
+  token needs no new permission.
 - `cleanup github` moves gist bookmarks to `gist.github.com/<owner>/<id>` and refreshes
-  the ones `sync github` wrote, as it does stars.
-- A warning when a setting in the environment (`$GITHUB_TOKEN`, `$REDDIT_COOKIE_FILE`,
-  `$HN_USERNAME`, ...) applies to several configured accounts of one source, since it
-  outranks each account's own value.
+  the ones `sync github` wrote.
+- GitHub stars get an `author:github:<owner>` tag; `tag_author_prefix = ""` turns it off.
+- `cleanup reddit` adds the author, flair, media and comment tags `sync` writes to
+  bookmarks that have no tag of that kind.
+- `config check <file>` validates a config without contacting any service.
+- A warning when an environment setting (`$GITHUB_TOKEN`, `$REDDIT_COOKIE_FILE`, ...)
+  applies to several accounts of one source, since it outranks each account's own value.
 
 ### Changed
 
-- **Breaking:** a flag given both before and after its subcommand, such as
-  `sync --dry-run reddit --dry-run` or `backup --out A pinboard --out B`, is an error.
-  Before, `--dry-run` took either, `--out` the one after, and the hook and date flags the
-  one before. Give each flag once. A value from the environment doesn't count.
-- **Breaking:** `--config` given at two levels, such as
-  `--config A sync reddit --config B`, is an error. It used to take the last one.
-- `-v` adds up wherever it is given, so `-v sync -vv` is `-vvv`. Before, only the `-v`s
-  at the deepest level that had any counted.
-- Four flags are renamed. Three take the spelling of the config key they override:
-  `--max-age-days` is `--post-date-max-age-days`, `--stale-to-now` is
-  `--cleanup-stale-to-now` and `--link-tag` is `--tag-link`. HackerNews' `--username` is
-  `--hn-username`, beside `--reddit-username`. `--help` and the shell completions offer
-  only the new names, their value names follow (`<POST_DATE_MAX_AGE_DAYS>`, ...), and
-  messages name the new flag even when the old one was typed.
-- A config pairing `post_date_max_age_days = 0` with `cleanup_stale_to_now` is rejected.
-- `cleanup` refuses the same pairing when `--post-date-max-age-days` or
-  `--cleanup-stale-to-now` sets it.
-- Either refusal names where each half was set: the flag, the account,
-  `[defaults.<source>]` or `[pinboard]`.
-- The flake is built with flake-parts. Its `flake-utils` input is now `flake-parts`, and
-  its `nixosModules` are module attrsets tagged `_class = "nixos"` rather than bare
-  functions: importing them works as before, calling one as a function does not.
-- An empty `--out` is an error, as an empty `[backup].directory` already was. It used to
-  fall back to `[backup].directory`.
+- **Breaking:** a flag given at two levels, such as `sync --dry-run reddit --dry-run` or
+  `--config A sync reddit --config B`, is an error. Give each flag once.
+- **Breaking:** a config is rejected, by `config check` too, when two accounts of a source
+  would share a backup file name (two unnamed accounts, or names like `a.b` and `a/b`),
+  when a `reddit_domain` isn't a bare host, when a configured tag or prefix has a comma,
+  or when `[backup].directory` is blank.
+- **Breaking:** `post_date_max_age_days = 0` with `cleanup_stale_to_now` is refused, in
+  the config or from `cleanup`'s flags, and the error names where each half was set.
+- **Breaking:** the flake is built with flake-parts. Its `flake-utils` input is now
+  `flake-parts`, so a `follows` on it fails, and its `nixosModules` can be imported as
+  before but no longer called as functions.
+- Four flags are renamed: `--max-age-days` to `--post-date-max-age-days`, `--stale-to-now`
+  to `--cleanup-stale-to-now`, `--link-tag` to `--tag-link`, and HackerNews' `--username`
+  to `--hn-username`. `--help`, the completions and messages use the new names.
+- The next `cleanup github` adds `author:github:<owner>` to each synced star, once.
+- A long note keeps about twice as much text before it is cut: the request URL may now run
+  to just under Pinboard's 8201-byte limit. Only the note is ever cut.
+- The next `cleanup reddit` rewrites each cut self-post note once, to keep more of it.
+- `-v` adds up wherever it is given, so `-v sync -vv` is `-vvv`.
+- An empty `--out` is an error. It used to fall back to `[backup].directory`.
 - A token or username set by flag, environment variable or inline config is trimmed of
   surrounding whitespace, as one read from a `*_FILE` already was.
 - An `--all` run's per-account errors and the `--on-auth-failure` hook's messages go
-  through the logger, so they read `ERROR ...`/`INFO ...` like a single-account run's
-  instead of `error: ...` and bare text.
-- `sync <source> --all` with no account of that source names the source, as `backup
-  <source> --all` already did.
-- `sync --help` describes `--on-auth-failure` in one line, naming
-  `PINBOARD_SYNC_ON_AUTH_FAILURE`, instead of printing notes about the code.
-- When both of `cleanup github`'s passes fail, the error reports the repo pass first, then
-  `; and for gists: ...`, as `cleanup hackernews` reports its two. A pass that halted, such
-  as one with a dead token, leads instead.
-- `--help` puts every environment variable it names in backticks, as it did `RUST_LOG`.
-- A long note keeps about twice as much text before it is cut: a write's request URL may
-  now run to just under Pinboard's 8 KiB limit. Only the note is ever cut, so tags and the
-  other fields are always written whole. The next `cleanup github` rewrites a synced
-  gist's note that `sync` stored cut, once, with the longer text, and the next `cleanup
-  reddit` does the same for a self-post's note while the post still starts with the text
-  that was kept. HackerNews notes stored cut stay as they are.
-- A release is now a bump PR (`scripts/prepare-release.sh X.Y.Z`), then a `vX.Y.Z` tag on
-  its merged commit. The release workflow no longer pushes a commit to master. It refuses
-  a tag off master, one whose version Cargo.toml or Cargo.lock doesn't carry, or one whose
-  changelog section is missing or empty, and moves `latest` only forward.
+  through the logger, as `ERROR ...` and `INFO ...` lines.
+- `sync --help` describes `--on-auth-failure` in one line, and `--help` puts environment
+  variables in backticks.
+- `sync <source> --all` with no account of that source names the source.
 
 ### Deprecated
 
-- `--max-age-days`, `--stale-to-now`, `--link-tag` and HackerNews' `--username` still work,
-  as hidden aliases of their new names, for this release only.
+- `--max-age-days`, `--stale-to-now`, `--link-tag` and HackerNews' `--username` still
+  work, as hidden aliases of their new names, for this release only.
 
 ### Removed
 
@@ -82,176 +62,76 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
-- When Pinboard rejects a `cleanup` write's URL as too long (`414`), `cleanup` now writes
-  nothing for it and counts it refused. It used to retry with the note cut to half,
-  replacing text the bookmark already held, and then delete the bookmarks the write merged
-  or moved, though they held text the cut note lost. `sync` still retries a new bookmark
-  with a shorter note.
-- `cleanup` merges a duplicate whose note is stored cut inside a block that later blocks
-  start the same way, as `HN Link:` lines do. It used to refuse the duplicate, which then
-  stayed and was counted as refused on every run, though the bookmark it would merge into
-  already held all of its note.
-- A bookmark whose fields other than the note (URL, title, tags, ...) leave no room for
-  the note under the 8100-byte budget for the request URL is written with as much of the
-  note as fits under Pinboard's 8201-byte limit, or none. It used to be sent with the
-  whole note, six times over, while `sync` halved a budget no cut of the note could meet.
-  One whose URL is over that limit even with no note is no longer sent: `sync` fails it at
-  once with an error giving its size and the limit, and `cleanup` counts it refused.
-- `sync`'s `414` retries no longer go below their 500-byte floor: they stop at 506 bytes.
-- `sync`'s `414` retries wait out Pinboard's 3-second rate limit like any other write.
-  They used to go out back to back.
-- `cleanup` refuses a rewrite too long for Pinboard even with no note before writing
-  anything, so `--dry-run` shows it as refused rather than as a change, and a cycle of
-  moves, such as a swap, no longer writes over one of its records before the refusal. The
-  refusal logs the length and the limit.
-- `cleanup` keeps a duplicate whose note is stored cut inside a block, such as an
-  `HN Link:` line, when the bookmark it would merge into has other blocks before that
-  point. It used to delete the duplicate if the block in that place started the same way,
-  even when that was another link. A duplicate with three or more blank lines in a row
-  before its cut is no longer refused on every run.
-- `cleanup` keeps a duplicate whose note would be cut inside a block, such as an
-  `HN Link:` line, when the bookmark it would merge into is stored cut at that point after
-  other blocks. It used to delete the duplicate if that stored cut started the same way. A
-  duplicate with three or more blank lines in a row before that point, in either note, is
-  no longer refused on every run.
-- `cleanup github` leaves a `github.com/<owner>/.git` bookmark alone, and any whose repo
-  name is `.` or `..` once `.git` is dropped. It used to move them to the owner's
-  profile or to GitHub's home page.
-- `cleanup github` drops a repo URL's `.git` suffix in any case (`Repo.GIT`), and leaves
-  `owner/.GIT` alone as it does `owner/.git`.
-- `cleanup github` drops every trailing `.git` in one run, so `repo.git.git` no longer takes
-  two runs, and its key no longer changes between them.
-- `sync` keys a GitHub repo URL with a doubled slash (`owner//repo`) as the `owner/repo`
-  that `cleanup github` rewrites it to, so it no longer adds the repo again.
-- A gist URL ending in `.GIT` or `.git.git` counts as the gist, as a repo URL does:
-  `cleanup github` moves it to the gist's URL and `sync` no longer adds the gist again.
-- `sync hackernews` no longer adds a story whose GitHub link differs from a bookmark only by
-  a doubled slash, such as `owner//repo/issues/5`.
-- A gist URL on `www.gist.github.com` counts as the gist, as one on `gist.github.com` does:
-  `cleanup github` moves it to the gist's URL and `sync` no longer adds the gist again.
-- `cleanup github` leaves a gist revision without its owner (`gist.github.com/<id>/<sha>`)
-  alone, instead of looking the revision's SHA up as a gist.
-- A missing Reddit or HackerNews username or Pinboard token names every setting it can come
-  from, `$REDDIT_USERNAME_FILE`, `$HN_USERNAME_FILE` and `$PINBOARD_TOKEN_FILE` included,
-  as the cookie and GitHub token messages already did.
-- A `--tag-link` with whitespace or a comma is refused as `--tag-link`'s own error, no
-  longer one that starts `config:` as if the config had set it.
-- A Reddit cookie with a stray `;` (`abc;`, `a=1;;`) is sent without it, so a bare value
-  still counts as the session.
-- `sync reddit` no longer re-adds a saved post whose bookmark is still Reddit's `over18`
-  interstitial: the interstitial now matches the post it leads to.
-- A Reddit cookie in doubled quotes (`""abc==""`), or in quotes beside a blank pair
-  (`"abc==";=`), is sent as the unquoted session.
-- Error excerpts and `-v` body logs redact the GitHub token and Reddit cookie too.
-- An error for an empty response body no longer ends in a dangling `: `.
-- Reddit no longer pauses after its last saved page when the page cap stops it.
-- `cleanup reddit` no longer adds an empty tag when `tags` is empty or starts with `""`,
-  so it settles instead of rewriting every bookmark each run.
-- `cleanup reddit` no longer adds a bare subreddit tag when `tag_subreddit_prefix = ""`;
-  ones it already added stay until removed by hand.
-- `cleanup reddit` adds and keeps every entry of `tags`, as `sync` writes them, not just
-  the first; an extra tag named like the subreddit is no longer stripped.
-- Reddit items whose author shows as `[deleted]` no longer get an
-  `author:reddit:[deleted]` tag.
-- `cleanup github` keeps hand-written notes, and the title, tags and date of repo
-  bookmarks `sync github` didn't write.
-- `cleanup github` refreshes the stars of every `[[github]]` account, each by its own
-  tags, not only the selected account's.
+- `cleanup reddit` reads the account's saved listing when Reddit blocks `/api/info`
+  ([#89](https://github.com/thanegill/pinboard-sync/issues/89)), and warns how many
+  bookmarks the listing covered. The account needs its `username`.
+- `cleanup github` rewrites only what `sync github` wrote, keeping hand-written notes and
+  the title, tags and date of other repo bookmarks, and refreshes every `[[github]]`
+  account's stars with that account's tags.
+- `cleanup` moves a bookmark off a URL before writing another over it, so a failed move no
+  longer loses the bookmark, unless the moves form a cycle such as a swap.
+- When Pinboard rejects a `cleanup` write as too long (`414`), `cleanup` writes nothing,
+  deletes nothing, and counts it refused rather than failed.
+- A `cleanup` merge no longer deletes a bookmark whose note the merged record has no room
+  for. The bookmark stays and is counted refused.
+- A bookmark whose other fields leave no room for its note is written with as much of the
+  note as fits, or none. One too long even with no note is not sent: `sync` fails it with
+  its size and the limit, and `cleanup` refuses it before any write, `--dry-run` included.
+- `cleanup` no longer rewrites a bookmark on every run because its note was stored cut,
+  nor cuts a whole note to append text that would be cut off anyway.
+- `cleanup_stale_to_now` re-dates a stale bookmark at most once per cap period.
+- `sync reddit` matches a save on any configured `reddit_domain`, so a mirror outside
+  reddit.com no longer re-adds every save on every run, and no save is re-added after
+  `cleanup` moves it, written twice, or re-added while stored as Reddit's `over18` page.
+- `sync hackernews` no longer re-adds a favorite linking a Reddit or GitHub page after
+  `cleanup` moves it to its canonical URL, nor adds a duplicate of one whose GitHub link
+  differs from a bookmark only by a doubled slash.
+- `cleanup reddit` cleans bookmarks on every `[[reddit]]` account's `reddit_domain`, with
+  that account's tags, leaving each on its domain, and merges a post stored on two.
+  Accounts sharing a domain no longer undo each other's tags.
+- `cleanup reddit` writes the base and subreddit tags as `sync` does: no empty tag, no
+  bare subreddit tag when `tag_subreddit_prefix = ""`, and every entry of `tags`.
+- Reddit items by a `[deleted]` author no longer get an `author:reddit:[deleted]` tag.
+- Commas are slugged like spaces in derived tags, as in `reddit-flair:help-question`.
+- `cleanup` no longer decodes HTML entities in stored titles on every run, and Reddit
+  titles keep literal text like `&amp;`.
 - `cleanup github` skips a repo GitHub refuses with a lasting 403 (a ToS block or
-  unauthorized SSO) instead of counting it as a failed lookup every run.
-- A config with two unnamed `[[github]]` accounts is rejected, rather than failing
-  every `backup --all` on their shared `github-default` files.
-- So is one with two `[[reddit]]` or `[[hackernews]]` accounts that set neither `name`
-  nor `username`.
-- So is one with two accounts of a source whose names or usernames make the same backup
-  file name (`a.b` and `a/b`, or `Alice` and `alice`).
-- `cleanup_stale_to_now` re-dates a stale bookmark at most once per cap period, not on
-  every run.
+  unauthorized SSO) instead of counting a failed lookup every run.
+- `cleanup github` drops every `.git` from a repo URL in one run, in any case (`Repo.GIT`,
+  `repo.git.git`), and `sync` no longer duplicates a repo bookmarked as `owner//repo`.
+- `cleanup github` leaves `github.com/<owner>/.git`, and a repo named `.` or `..`, alone
+  instead of moving it to the owner's profile or GitHub's home page.
+- `backup --all` fires the `PINBOARD_SYNC_ON_AUTH_FAILURE` hook, as `sync --all` does.
+- `backup --all`, `backup <source> --all` and `sync <source> --all` go on when one account
+  can't be built, and count it as failed.
+- `sync <source> <account> --all` and `backup <source> <account> --all` are refused. They
+  used to ignore the account.
+- A `sync --all` run where an account fails and bookmarks fail to write reports both.
+- `cleanup <source>` checks the GitHub token, Reddit cookie or `--tag-link` before reading
+  `posts/all`, so a bad one no longer spends that rate-limited call.
+- A response cut off mid-body from Reddit, HackerNews favorites or a GitHub `403`/`429` is
+  reported as a read error, not as a parse error, changed markup or an expired cookie.
+- A Pinboard delete retried after a lost response no longer fails on `item not found`.
+- A repeated tag is sent to Pinboard once, so it no longer takes room from a long note.
 - Dates are sent to Pinboard in UTC at whole seconds, the format its API documents.
 - The NixOS module passes a `%` in `onAuthFailure`, `backup.directory` or a secret path
   through to the service as written.
-- A `reddit_domain` outside reddit.com no longer makes every `sync` re-add every save.
-- `sync reddit` no longer re-adds a save after `cleanup reddit`, run as another account,
-  moved it onto that account's `reddit_domain`, nor writes a post twice when accounts on
-  different `reddit_domain`s both saved it.
-- `cleanup reddit` also cleans bookmarks on another `[[reddit]]` account's
-  `reddit_domain`, by that account's tags and leaving them there, and merges a post
-  stored on two such domains.
-- `cleanup reddit` settles when accounts share a `reddit_domain` and one's base, NSFW or
-  comment tag is named like a subreddit or the subreddit prefix, instead of removing and
-  re-adding it on alternate runs.
-- A HackerNews favorite linking a Reddit or GitHub page is no longer re-added after
-  `cleanup` moves it to its canonical URL, even on a `reddit_domain` outside reddit.com.
-- Commas, which Pinboard forbids in tags, are slugged like spaces in derived tags
-  (`reddit-flair:help-question`) and rejected in configured ones; tags already written
-  with a comma stay until removed by hand.
-- `cleanup` no longer decodes HTML entities in stored titles again on every run, so a
-  title like `Tom &amp;amp; Jerry` settles at once. Titles already stored with entities
-  now keep them.
-- Reddit titles keep literal text like `&amp;`, which `raw_json=1` already returns
-  unescaped, instead of decoding it.
-- `backup --all` fires the `PINBOARD_SYNC_ON_AUTH_FAILURE` hook, as `sync --all` does.
-- `backup --all` and `backup <source> --all` back up the rest when one account can't be
-  built, and record it as failed.
-- `sync <source> --all` syncs the other accounts when one can't be built, as `sync --all`
-  does.
-- `cleanup <source>` checks the GitHub token, Reddit cookie or `--tag-link` before
-  reading `posts/all`, so a bad one no longer spends that rate-limited call.
-- A Reddit or HackerNews favorites response cut off mid-body is reported as a read error,
-  no longer as a parse error, changed markup or, for a Reddit 403, an expired cookie.
-- A GitHub 403 or 429 cut off mid-body is a read error too, no longer an ordinary refusal
-  that hides a blocked repo or a secondary rate limit.
-- `sync <source> <account> --all` and `backup <source> <account> --all` are refused. They
-  used to ignore the account, even one that doesn't exist.
-- `cleanup` moves a bookmark off a URL before writing another over it, so a failed move no
-  longer loses the bookmark. Moves that form a cycle, such as a swap, still can.
-- A Pinboard delete retried after a lost response no longer fails on `item not found`.
-- A `reddit_domain` with a port or another form that isn't a bare host is rejected.
-- A HackerNews favorite linking a Reddit `over18` page or the bare Reddit root is no longer
-  re-added after `cleanup reddit` rewrites it.
-- `cleanup` no longer rewrites a bookmark every run because its notes were cut to fit
-  Pinboard's request URL, such as a starred gist with hundreds of files. An undated `sync`
-  now cuts such a note a few bytes shorter. If `cleanup` rebuilds a note an earlier
-  undated `sync` cut, it rewrites it once to match.
-- A `cleanup` merge that adds nothing to the bookmark it lands on now only deletes the one
-  it absorbs, instead of rewriting, and cutting, a long note there.
-- A `cleanup` merge no longer deletes a bookmark whose notes the merged record has no
-  room to hold, as far as a write of that bookmark alone would keep them, such as an
-  `HN Link:` past a long note's cut, nor cuts the note already there to make room for a
-  bookmark's tags. That bookmark stays where it is and is reported as refused, and the
-  rest of the merge goes ahead without it.
-- That check credits the cut-off end of a note only to the block it was cut from, so a
-  bookmark is no longer absorbed because another block starts the same way, such as a
-  different `HN Link:`.
-- `cleanup`'s count of rewrites not made no longer counts a bookmark held back from a
-  merge again when that whole merge is refused too.
-- `cleanup` no longer cuts a whole note just under the URL limit when what a plan appends
-  to it would be cut off anyway. The rest of the plan is still written, over the note kept
-  whole if it still fits.
-- A bookmark's tags are sent to Pinboard once each, so a repeated tag no longer shifts
-  where a long note is cut.
-- Output piped to a reader that exits early, such as `config example | head` or a dry-run
-  piped to `less`, no longer panics. The command finishes as it otherwise would.
-- A `[backup].directory` of only whitespace is rejected when the config is read, so
-  `config check` no longer passes a config that `backup` then refuses.
-- `cleanup hackernews --link-discussions` no longer writes an `HN Link:` for a search hit
-  whose id isn't a number, and `sync` and `backup` skip such a HackerNews favorites row.
-  Each warns, and a favorites page none of whose rows has a numeric id fails as changed
-  markup does.
-- A `sync --all` run where an account fails and bookmarks fail to write reports both, as
-  `1 account(s) failed; 3 bookmark(s) failed to write`, instead of only the first.
-- `cleanup reddit` no longer fails when Reddit's edge blocks `/api/info`
-  ([#89](https://github.com/thanegill/pinboard-sync/issues/89)), as it has since
-  2026-11-09 even with a valid cookie. It reads the account's saved listing instead (the
-  account needs its `username`). A post still saved gets the same NSFW, title, notes, date
-  and tag fixes from it, a comment its tags when it is saved, and its NSFW and title fixes
-  when its thread is. A bookmark covered neither way gets only its URL and tags
-  normalized. The run exits 0 and warns, every time, with how many bookmarks each kind
-  covered. It still fails when the saved listing can't be read either, and a refused
-  cookie on either read still runs the auth-failure hook.
-- The message for Reddit's edge blocking `/api/info` links
-  [#89](https://github.com/thanegill/pinboard-sync/issues/89), which tracks that block. It
-  used to link #78, the unrelated saved-listing fix.
+- A Reddit cookie with a stray `;` (`abc;`) or doubled quotes (`""abc==""`) is sent as the
+  session, without the stray `;` or the quotes.
+- A missing Reddit or HackerNews username or Pinboard token names every setting it can
+  come from, `*_FILE` variables included.
+- A bad `--tag-link` is reported as the flag's error, no longer one that starts `config:`.
+- Output piped to a reader that exits early, such as `config example | head`, no longer
+  makes the command panic.
+- `cleanup hackernews --link-discussions`, `sync` and `backup` skip a HackerNews id that
+  isn't a number, with a warning.
+- An error for an empty response body no longer ends in a dangling `: `.
+- Reddit no longer pauses after its last saved page when the page cap stops it.
+
+### Security
+
+- Error excerpts and `-v` body logs redact the GitHub token and the Reddit cookie, as they
+  already redacted the Pinboard token.
 
 ## [0.6.0] - 2026-10-25
 

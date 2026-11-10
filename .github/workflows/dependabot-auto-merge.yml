@@ -1,0 +1,84 @@
+name: Dependabot auto-merge
+
+# Turns on auto-merge for a Dependabot PR that bumps cargo crates or workflow actions
+# by a semver patch or minor version, so it merges itself once master's required checks
+# pass, and turns its own auto-merge off again if a later push makes the PR ineligible.
+# Every bumped version must also stay compatible by Cargo's rule (0.4.1 -> 0.4.2 is,
+# 0.4 -> 0.5 is not), which Dependabot's update-type ignores, and must not be a
+# pre-release. Major bumps, flake.lock inputs and fetch-metadata itself wait for a
+# human: a nixpkgs bump moves the toolchain under every check, and a fetch-metadata
+# bump would run its own new code with this job's write token. The job runs on
+# `pull_request`, gated on the PR's author, not `github.actor`, which a later push can
+# change, and checks out no code.
+
+on:
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    name: auto-merge
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.repository == github.event.pull_request.head.repo.full_name
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # merge the PR
+      pull-requests: write # turn its auto-merge on or off
+    env:
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Fetch the update's metadata
+        id: metadata
+        if: >-
+          !contains(github.head_ref, '/dependabot/fetch-metadata-') &&
+          !contains(github.event.pull_request.body, '[dependabot/fetch-metadata](')
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Decide whether the update may merge itself
+        id: eligibility
+        env:
+          ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          UPDATED_DEPENDENCIES: ${{ steps.metadata.outputs.updated-dependencies-json }}
+        run: |
+          # Cargo treats a version's leftmost non-zero component as its breaking part.
+          eligible='
+            def breaking_part:
+              ltrimstr("v") | sub("\\+.*"; "") | split(".")
+              | if .[0] != "0" then .[0]
+                elif (.[1] // "0") != "0" then "0." + .[1]
+                else "0.0." + (.[2] // "") end;
+            def stable_release: . != "" and (sub("\\+.*"; "") | contains("-") | not);
+            (env.ECOSYSTEM | IN("cargo", "github_actions"))
+            and (env.UPDATE_TYPE
+              | IN("version-update:semver-patch", "version-update:semver-minor"))
+            and type == "array" and length > 0
+            and all(.[];
+              (.prevVersion | stable_release) and (.newVersion | stable_release)
+              and (.prevVersion | breaking_part) == (.newVersion | breaking_part))'
+          if jq -e "$eligible" <<<"$UPDATED_DEPENDENCIES" >/dev/null; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Not a compatible patch or minor update; leaving it for review."
+          fi
+
+      - name: Turn on auto-merge
+        if: steps.eligibility.outputs.eligible == 'true'
+        run: gh pr merge --auto --merge "$PR_URL"
+
+      - name: Turn off the auto-merge this workflow turned on
+        if: ${{ !cancelled() && steps.eligibility.outputs.eligible != 'true' }}
+        run: |
+          enabled_by=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '
+            .autoMergeRequest.enabledBy | select(.is_bot) | .login | ltrimstr("app/")')
+          if [[ $enabled_by == github-actions ]]; then
+            gh pr merge --disable-auto "$PR_URL"
+          fi

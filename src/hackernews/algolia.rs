@@ -15,12 +15,11 @@ use crate::keys::url_key;
 use crate::source::SourceError;
 
 const ALGOLIA_BASE: &str = "https://hn.algolia.com";
-/// Item IDs per Algolia `objectID:... OR ...` query. The API rejects very long filter
-/// strings (~200+ clauses), so stay well under that.
+/// Item IDs per `objectID:... OR ...` query, well under the ~200 clauses Algolia rejects.
 pub(super) const ITEM_BATCH: usize = 100;
 /// The pause before each Algolia item chunk after the first.
 pub(super) const ALGOLIA_CHUNK_PAUSE: Duration = Duration::from_millis(300);
-/// Hits a URL search asks for, each checked for a URL that matches the bookmark's.
+/// Hits a URL search asks for, each checked for the bookmark's URL.
 const URL_SEARCH_HITS: &str = "5";
 
 /// An Algolia HN search response.
@@ -47,7 +46,7 @@ struct AlgoliaHit {
     comment_text: Option<String>,
     #[serde(rename = "_tags", default)]
     tags: Vec<String>,
-    /// Item creation time (unix epoch seconds).
+    /// Epoch seconds.
     #[serde(default)]
     created_at_i: Option<i64>,
 }
@@ -56,7 +55,7 @@ struct AlgoliaHit {
 impl TryFrom<AlgoliaHit> for HackerNewsItem {
     type Error = std::num::ParseIntError;
     fn try_from(h: AlgoliaHit) -> Result<Self, Self::Error> {
-        // The item type is carried in `_tags` (e.g. "story"/"comment"/"poll"/"job").
+        // The item type rides in `_tags` ("story", "comment", "poll", "job").
         let kind = [
             HackerNewsItemKind::Comment,
             HackerNewsItemKind::Poll,
@@ -78,11 +77,10 @@ impl TryFrom<AlgoliaHit> for HackerNewsItem {
     }
 }
 
-/// Reads HN items from the Algolia search API: all `cleanup hackernews` needs, and the
-/// item details `sync` looks favorites up in.
+/// Reads HN items from Algolia: all `cleanup hackernews` needs, and the details `sync`
+/// looks favorites up in.
 pub struct AlgoliaClient {
     http: RetryingClient,
-    /// API base (overridden in tests).
     base: String,
 }
 
@@ -98,15 +96,14 @@ impl AlgoliaClient {
         })
     }
 
-    /// Test constructor pointing the API at a mock server.
+    /// A client on another API base, for tests.
     #[cfg(test)]
     pub(crate) fn with_base_url(base: String) -> Self {
         Self::build(base).unwrap()
     }
 
-    /// Batch-fetch item details by ID from the Algolia HN search API, keyed by ID.
-    /// IDs are queried in chunks of [`ITEM_BATCH`] via `objectID:... OR ...`; items that
-    /// no longer exist are simply absent from the map.
+    /// The items for `ids`, keyed by ID, read [`ITEM_BATCH`] at a time; an item that no
+    /// longer exists is absent.
     pub(super) async fn fetch_items(
         &self,
         ids: &[HackerNewsItemId],
@@ -147,8 +144,7 @@ impl AlgoliaClient {
         Ok(out)
     }
 
-    /// Find the HN story id discussing `url`, via the Algolia URL search. Returns
-    /// the id only when a hit's URL matches `url` (so loose matches are ignored).
+    /// The story discussing `url`: a hit whose URL matches it, never a loose match.
     pub(super) async fn search_by_url(
         &self,
         url: &Url,
@@ -190,8 +186,7 @@ impl AlgoliaClient {
     }
 }
 
-/// `resp` when it succeeded, else an error naming the `what` request with its status and
-/// an excerpt of the body.
+/// `resp` on success, else an error naming `what`, the status and a body excerpt.
 async fn algolia_success(
     resp: reqwest::Response,
     what: &str,

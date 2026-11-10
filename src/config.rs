@@ -1,9 +1,6 @@
-//! The `--config <path>` TOML: one Pinboard destination, an optional auth-failure
-//! hook, and per-source arrays of accounts. Each account holds non-secret settings
-//! (tags, domain, limit) plus secret values inline or as a `*_file` path. Secrets
-//! resolve through the ladder in `secrets`; this module is the typed schema + the
-//! account -> typed-config mapping. Every field is optional, so an absent or empty
-//! config yields all defaults.
+//! The `--config` TOML's typed schema: one Pinboard destination, the hook, and per-source
+//! account arrays, whose secrets sit inline or behind a `*_file` path and resolve in
+//! `secrets`. Every field is optional, so an empty config means the defaults.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -28,8 +25,7 @@ pub struct Config {
     pub pinboard: PinboardConfig,
     #[serde(default)]
     pub backup: BackupConfig,
-    /// Per-source default overrides (the middle tier between `[pinboard]`/`[hooks]`
-    /// globals and a per-account override).
+    /// The tier between the globals and each account.
     #[serde(default)]
     pub defaults: Defaults,
     #[serde(default)]
@@ -40,9 +36,7 @@ pub struct Config {
     pub hackernews: Vec<HackerNewsAccount>,
 }
 
-/// Per-source default overrides, keyed by source (`[defaults.reddit]` etc.). Each
-/// field, when set, overrides the corresponding global default and is in turn
-/// overridden by a per-account value of the same name.
+/// `[defaults.<source>]`: each field over the global and under the account's.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Defaults {
@@ -54,8 +48,7 @@ pub struct Defaults {
     pub hackernews: SourceDefaults,
 }
 
-/// The overridable settings, as a per-source default tier. All `Option` -- `None`
-/// falls through to the global default.
+/// The overridable settings of one source; `None` falls through to the global.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceDefaults {
@@ -76,9 +69,8 @@ pub struct GitHubDefaults {
     pub gist_post_date: Option<GistPostDate>,
 }
 
-/// `[defaults.github]` as written: [`SourceDefaults`]' keys alongside GitHub's own.
-/// Spelled out rather than `#[serde(flatten)]`ed, which can't be combined with
-/// `deny_unknown_fields`.
+/// `[defaults.github]` as written: [`SourceDefaults`]' keys spelled out beside GitHub's
+/// own, since `#[serde(flatten)]` can't be combined with `deny_unknown_fields`.
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GitHubDefaultsTable {
@@ -124,8 +116,7 @@ impl From<GitHubDefaultsTable> for GitHubDefaults {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackupConfig {
-    /// Directory the snapshot is written into, overwritten in place each run. Unset means
-    /// `--out` is required.
+    /// The snapshot directory, overwritten in place; unset, `--out` is required.
     pub directory: Option<String>,
 }
 
@@ -133,7 +124,7 @@ pub struct BackupConfig {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Hooks {
-    /// Shell command run on a re-auth failure (per-account override available).
+    /// Shell command run on a re-auth failure.
     pub on_auth_failure: Option<String>,
 }
 
@@ -150,34 +141,30 @@ pub struct PinboardConfig {
     /// Write bookmarks public (default private).
     #[serde(default)]
     pub public: bool,
-    /// Mark new bookmarks to-read/unread (default false). Per-account overridable.
+    /// Mark new bookmarks to-read (default false).
     #[serde(default)]
     pub toread: bool,
     /// Seconds to pause between `posts/add` writes (default 3, what Pinboard asks for).
     pub rate_limit_secs: Option<u64>,
-    /// Global [`SyncLimit`] (per-source/per-account overridable; unset = `auto`). The CLI
-    /// `--limit` still wins.
+    /// The global [`SyncLimit`]; unset is `auto`.
     pub limit: Option<SyncLimit>,
-    /// Set a bookmark's creation date to the source post date (default false).
-    /// Per-source/per-account overridable.
+    /// Date a bookmark by the source post date (default false).
     #[serde(default)]
     pub use_post_date: bool,
-    /// With `use_post_date`, only backdate posts at most this many days old (unset =
-    /// [`DEFAULT_MAX_AGE_DAYS`]); older posts use "now" (sync) / keep their existing
-    /// time (cleanup).
+    /// With `use_post_date`, backdate only posts at most this many days old (unset,
+    /// [`DEFAULT_MAX_AGE_DAYS`]); older ones are dated now (sync) or kept (cleanup).
     pub post_date_max_age_days: Option<u64>,
-    /// With `use_post_date`, whether `cleanup` re-dates posts older than the cap to "now"
-    /// instead of leaving their existing date (default false -- keeps cleanup idempotent).
+    /// With `use_post_date`, whether `cleanup` re-dates posts older than the cap to now
+    /// (default false, which keeps cleanup idempotent).
     #[serde(default)]
     pub cleanup_stale_to_now: bool,
 }
 
-/// Built-in default backdate window (days) when no config sets `post_date_max_age_days`.
+/// The backdate window in days when no tier sets `post_date_max_age_days`.
 pub const DEFAULT_MAX_AGE_DAYS: u64 = 30;
 
-/// How much one `sync` run writes and reads: the `limit` config key at every tier and the
-/// `--limit` flag. Written `auto`, `all`, or a positive number. `0` is rejected rather
-/// than quietly mapped to either word.
+/// How much one `sync` run writes and reads (`limit`, `--limit`): `auto`, `all` or a
+/// positive number; `0` is refused rather than mapped to either word.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SyncLimit {
     /// No write cap; a source may stop paging once it reaches items already synced.
@@ -190,8 +177,8 @@ pub enum SyncLimit {
     Max(NonZeroUsize),
 }
 
-/// The complaint about a malformed `limit`. It names the field and never the value, which
-/// could be a credential pasted into the wrong key.
+/// The error for a malformed `limit`, naming the field, never the value: it could be a
+/// credential pasted into the wrong key.
 const SYNC_LIMIT_EXPECTED: &str = "`limit` must be `auto` (no cap; stop paging once \
      caught up), `all` (no cap; read every page) or a positive number of bookmarks";
 
@@ -261,8 +248,7 @@ impl<'de> Deserialize<'de> for SyncLimit {
     }
 }
 
-/// One reddit account: whose saves to read, the session cookie, and the
-/// (non-secret) tag/domain vocabulary.
+/// One Reddit account: whose saves to read, the cookie, and the domain and tags.
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RedditAccount {
@@ -310,7 +296,7 @@ impl Config {
             .collect()
     }
 
-    /// Parse a config from TOML text, validating tag fields.
+    /// Parse and [validate](Self::validate) a config.
     pub fn parse(text: &str) -> Result<Self> {
         let config: Config = toml::from_str(text)
             .map_err(|e| anyhow!("parsing config: {}", describe_toml_error(&e, text)))?;
@@ -318,12 +304,10 @@ impl Config {
         Ok(config)
     }
 
-    /// Reject what parses but can't be used: an empty or blank `backup.directory`, two
-    /// accounts of a source sharing a name or a backup file slug, an account (or, with none
-    /// configured, the source's implicit CLI/env account) whose dating settings would
-    /// re-date its bookmarks on every cleanup, a malformed `reddit_domain`, and tag values
-    /// containing whitespace or commas, which Pinboard tags can't hold (its API splits the
-    /// tag string on spaces), so one would silently corrupt every bookmark it tags.
+    /// Reject what parses but can't be used: a blank `backup.directory`, two accounts of a
+    /// source sharing a name or backup slug, dating settings that re-date on every cleanup
+    /// (for the implicit account too), a malformed `reddit_domain`, and a tag with
+    /// whitespace or a comma, which would silently corrupt every bookmark it tags.
     fn validate(&self) -> Result<()> {
         const NAME_OR_USERNAME: &str = "`name` (or, with no `name`, `username`)";
         if self
@@ -396,10 +380,10 @@ impl Config {
         Ok(())
     }
 
-    /// Error if an account's dating settings, resolved through the config tiers, pair a
-    /// zero age cap with `cleanup_stale_to_now`: every date is then outside the cap, so
-    /// cleanup would re-date each stale bookmark on every run. With no accounts the
-    /// source's implicit CLI/env account is checked instead.
+    /// Error if an account's dating settings, resolved through the tiers, pair a zero age
+    /// cap, under which every bookmark is stale, with `cleanup_stale_to_now`, so cleanup
+    /// would re-date every bookmark on every run. With no accounts, the implicit CLI/env
+    /// account is checked.
     fn check_stale_to_now_cap<T: Account>(&self, accounts: &[T]) -> Result<()> {
         let source = T::SOURCE;
         let check = |account: Option<&T>, scope: String| {
@@ -462,11 +446,9 @@ fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
     (line, column)
 }
 
-/// Error if `value` (a tag or tag prefix) contains whitespace or a comma -- Pinboard tags
-/// can't contain either (its API splits the tag string on spaces, and its docs forbid
-/// commas), so one here silently corrupts and should fail loudly instead. The error names
-/// the `setting` (a config field or a flag, as the message spells it), never the value,
-/// which may be a credential pasted into the wrong key.
+/// Error if a tag or prefix holds whitespace or a comma, which Pinboard splits on or
+/// forbids. The error names `setting`, never the value, which may be a credential pasted
+/// into the wrong key.
 pub(crate) fn check_taggable(setting: &str, value: &str) -> Result<()> {
     if value.chars().any(char::is_whitespace) {
         bail!("{setting} must not contain whitespace");
@@ -490,12 +472,10 @@ fn check_tags(field: &str, values: Option<&[String]>) -> Result<()> {
     Ok(())
 }
 
-/// Error if two accounts of a source would write the same backup files, so that every
-/// `backup --all` fails in `check_stem_collisions`: their [`Account::account_name`]s (a
-/// `name`, or for Reddit and HackerNews a `username`) [`slug`] alike. Slugging lowercases
-/// and folds punctuation, so `a.b` and `a/b`, or `Alice` and `alice`, collide; no name,
-/// an empty one and `default` all slug to `default`. `remedy` names the fields that
-/// would set a distinct one. The error names positions, never the names.
+/// Error if two accounts' [`Account::account_name`]s [`slug`] alike (`a.b` and `a/b`,
+/// `Alice` and `alice`, or none and `default`), so every `backup --all` would fail in
+/// `check_stem_collisions`. `remedy` names the fields to change; the error names positions,
+/// never the names.
 ///
 /// [`slug`]: crate::backup::slug
 fn check_distinct_slugs<T: Account>(accounts: &[T], remedy: &str) -> Result<()> {
@@ -522,8 +502,7 @@ fn check_distinct_slugs<T: Account>(accounts: &[T], remedy: &str) -> Result<()> 
     Ok(())
 }
 
-/// Error if two accounts of a source share a `name` (the second would be
-/// unreachable by name in `sync <source> <name>`).
+/// Error if two accounts of a source share a name, which leaves the second unreachable.
 fn check_unique_names<T: Account>(accounts: &[T]) -> Result<()> {
     let source = T::SOURCE;
     let mut first_with_name = HashMap::new();
@@ -538,12 +517,10 @@ fn check_unique_names<T: Account>(accounts: &[T]) -> Result<()> {
     Ok(())
 }
 
-/// Error if `value` isn't a bare host written as the `url` crate spells it: it's
-/// interpolated as `https://<domain>...` and set as `cleanup reddit`'s host, and
-/// `RedditKeys` compares it to a parsed URL's host, so a scheme, slash, whitespace, port,
-/// or any form the parser rewrites (percent-escapes, non-ASCII) would corrupt the URLs or
-/// never match. A trailing `.` would be set as the host, which `cleanup reddit`'s
-/// reddit.com filter then no longer recognizes.
+/// Error if `value` isn't a bare host as the `url` crate spells it: it is interpolated into
+/// URLs, set as a host and compared with parsed hosts, so a scheme, slash, port or any form
+/// the parser rewrites would corrupt or never match. A trailing `.` would defeat
+/// `cleanup reddit`'s reddit.com filter.
 fn check_domain(field: &str, value: Option<&str>) -> Result<()> {
     let Some(domain) = value else {
         return Ok(());
@@ -570,8 +547,7 @@ fn check_domain(field: &str, value: Option<&str>) -> Result<()> {
     bail!("config: `{field}` {problem}; it must be a bare host like \"old.reddit.com\"")
 }
 
-/// The account's non-secret [`RedditConfig`] (bookmark domain + tag vocabulary), each
-/// field falling back to its built-in default.
+/// The account's [`RedditConfig`], each field defaulting.
 impl From<&RedditAccount> for RedditConfig {
     fn from(account: &RedditAccount) -> Self {
         let d = RedditConfig::default();
@@ -592,7 +568,7 @@ impl From<&RedditAccount> for RedditConfig {
     }
 }
 
-/// One GitHub account: a personal access token plus the (non-secret) tag config.
+/// One GitHub account: a token and the tags.
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GitHubAccount {
@@ -626,10 +602,9 @@ pub struct GitHubAccount {
 }
 
 impl GitHubConfig {
-    /// The non-secret [`GitHubConfig`] (tag vocabulary and gist settings) of `account`,
-    /// or of the implicit CLI/env account when `None`. Each field falls back to its
-    /// built-in default, a gist tag field to the stars' own, and `gist_post_date` to
-    /// `[defaults.github]` and then `now`.
+    /// The [`GitHubConfig`] of `account`, or the implicit CLI/env account: each field
+    /// defaulting, a gist tag field to the stars', and `gist_post_date` to
+    /// `[defaults.github]`, then `now`.
     pub fn resolve(account: Option<&GitHubAccount>, defaults: &GitHubDefaults) -> Self {
         let d = GitHubConfig::default();
         let field = |pick: fn(&GitHubAccount) -> Option<&String>, default: String| {
@@ -666,7 +641,7 @@ impl GitHubConfig {
     }
 }
 
-/// One HackerNews account: a public username plus the (non-secret) tag config.
+/// One HackerNews account: a public username and the tags.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HackerNewsAccount {
@@ -691,8 +666,7 @@ pub struct HackerNewsAccount {
     pub tags: Option<Vec<String>>,
 }
 
-/// The account's non-secret [`HackerNewsConfig`] (tag vocabulary), each field falling
-/// back to its built-in default.
+/// The account's [`HackerNewsConfig`], each field defaulting.
 impl From<&HackerNewsAccount> for HackerNewsConfig {
     fn from(account: &HackerNewsAccount) -> Self {
         let d = HackerNewsConfig::default();
@@ -843,13 +817,9 @@ impl fmt::Debug for GitHubAccount {
     }
 }
 
-/// One source's account type: where its accounts and `[defaults.<source>]` live in the
-/// config, and the per-account settings shared across every source. Each setting returns
-/// the account-level override, or `None` to fall through to the per-source default and
-/// then the `[pinboard]` global -- letting the job/cleanup builders resolve them
-/// generically (see [`resolve_setting`](crate::settings::resolve_setting) and
-/// [`resolve_dates`](crate::settings::resolve_dates)). The method names normalize the two
-/// longer field names (`post_date_max_age_days`, `cleanup_stale_to_now`).
+/// One source's account type: where its accounts and defaults live, and the settings every
+/// source shares (`max_age_days` and `stale_to_now` for the `post_date_max_age_days` and
+/// `cleanup_stale_to_now` keys), each `None` to fall through to the next tier.
 pub trait Account: Sized {
     /// The source's name in messages, job labels, backup file stems and `doctor` lines.
     const SOURCE: &'static str;
@@ -1001,9 +971,8 @@ pub fn own_then_configured<'a, C>(
     std::iter::once(own).chain(configured)
 }
 
-/// Pick the account named `name`, or the first account when `name` is `None`.
-/// Returns `Ok(None)` only when there are no configured accounts and no name was
-/// given (the caller then falls back to CLI flags / env for a single account).
+/// The account `name`, or the first; `Ok(None)` with no name and no accounts, for the
+/// implicit CLI/env one.
 pub fn select_account<'a, T: Account>(
     accounts: &'a [T],
     name: Option<&str>,

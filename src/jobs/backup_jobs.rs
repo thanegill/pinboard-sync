@@ -206,7 +206,7 @@ fn build_backup_job<A: SourceAccount>(
         stem: format!(
             "{}-{}",
             A::SOURCE,
-            backup::slug(account.and_then(config::Named::account_name))
+            backup::slug(account.and_then(config::Account::account_name))
         ),
         label,
         hook,

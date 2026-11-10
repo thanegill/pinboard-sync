@@ -435,6 +435,15 @@ fn group_by_target<'p>(
     (group_order, groups)
 }
 
+/// The members of the group at `key`, which must be a key of `groups`, as every
+/// [`write_order`] key is.
+fn members_at<'g, 'p>(
+    groups: &'g mut HashMap<&'p Url, Vec<Member<'p>>>,
+    key: &Url,
+) -> &'g mut Vec<Member<'p>> {
+    groups.get_mut(key).expect("key came from group_order")
+}
+
 /// The groups in write order: each after the group moving its target's occupant away, so a
 /// URL is vacated before a record lands on it, and a failed move leaves its record where
 /// [`propagate_refusals`] still protects it. Otherwise first-appearance order, so a dry
@@ -553,7 +562,7 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
                     .map(|member| member.planned.public)
                     .filter(|first| members.iter().all(|m| m.planned.public == *first)),
             };
-            let members = groups.get_mut(key).expect("key came from group_order");
+            let members = members_at(groups, key);
             let (kept, refused): (Vec<_>, Vec<_>) = match agreed {
                 Some(public) => members
                     .iter()
@@ -627,7 +636,7 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
                 continue;
             }
             let resident = residents.get(key);
-            let members = groups.get_mut(key).expect("key came from group_order");
+            let members = members_at(groups, key);
             // A lone plan with nothing stored at its target is a rewrite, which loses
             // nothing a rewrite of it alone wouldn't.
             if members.is_empty() || (resident.is_none() && members.len() == 1) {
@@ -688,7 +697,7 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
                 continue;
             }
             let resident = residents.get(key);
-            let members = groups.get_mut(key).expect("key came from group_order");
+            let members = members_at(groups, key);
             if members.is_empty() {
                 continue;
             }
@@ -746,7 +755,7 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
     /// build on a lead.
     fn lead_with_a_sendable_mover(&self, groups: &mut HashMap<&'p Url, Vec<Member<'p>>>) {
         for key in self.group_order {
-            let members = groups.get_mut(key).expect("key came from group_order");
+            let members = members_at(groups, key);
             if self.untouchable.contains_key(*key)
                 || self.residents.contains_key(key)
                 || members.len() < 2

@@ -1,6 +1,5 @@
-//! `cleanup github`'s gist pass: canonicalize each gist bookmark to
-//! `gist.github.com/<owner>/<id>` and refresh what `sync github` wrote of it, under the
-//! same ownership rules as the repo pass.
+//! `cleanup github`'s gist pass: each gist moves to `gist.github.com/<owner>/<id>`, and
+//! what `sync github` wrote of it is refreshed, under the repo pass's ownership rules.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -15,14 +14,12 @@ use crate::source::SourceError;
 use crate::tags::Tags;
 use crate::timefmt::DateOpts;
 
-/// Plan every gist bookmark in the run's live view (so the repo pass's writes are already
-/// reflected), unless the running account has `gists = false`. `configured` is every
-/// configured account's config, as for the repos.
+/// Plan every gist bookmark in the live view, after the repo pass's writes, unless the
+/// running account has `gists = false`. `configured` is as for the repos.
 ///
-/// The starred gists are read once up front and planned from; only a gist not among them
-/// (saved by hand, unstarred or deleted) is looked up on its own. A failed read fails the
-/// pass before anything is planned, so it can't let every gist look reached, and a halt
-/// there (a dead token, a rate limit) comes back as itself.
+/// The starred gists are read once and planned from; only a gist not among them is looked
+/// up alone. A failed read fails the pass before any plan, so it can't make every gist look
+/// reached, and a halt there comes back as itself.
 pub(super) async fn run<S: BookmarkStore + AccountState>(
     store: &S,
     client: &GitHubClient,
@@ -51,14 +48,12 @@ pub(super) async fn run<S: BookmarkStore + AccountState>(
         .into_result()
 }
 
-/// The tags marking a gist `sync github` wrote under `cfg`, all of which a synced gist
-/// carries: the first non-empty entry of its `gist_tags`, and the first that its `tags`
-/// lack. No single tag will do, since the default `gist_tags` are the account's `tags`
-/// plus `github-gist`: `github-gist` is every account's, so it can't tell one account's
-/// gists from another's, and `github-star` also marks a gist saved by hand and tagged
-/// like a star. Two rather than every entry, so a tag added to `gist_tags` later still
-/// reaches the gists synced before it, as a star's extra tags do. When every entry is also
-/// in `tags` the first is the only marker, and a gist tagged like a star then counts.
+/// The tags every gist synced under `cfg` carries: the first non-empty `gist_tags` entry,
+/// and the first that `tags` lack. No single tag will do: the default `gist_tags` are the
+/// account's `tags` plus `github-gist`, which all accounts share, and `github-star` also
+/// marks a hand-saved gist tagged like a star. Two, not every entry, so a tag added to
+/// `gist_tags` later still reaches older gists. With every entry also in `tags` the first
+/// is the sole marker, and a gist tagged like a star counts.
 fn markers(cfg: &GitHubConfig) -> BTreeSet<String> {
     let mut gist_tags = cfg.gists.tags.iter().filter(|tag| !tag.is_empty());
     let first = gist_tags.clone().next();
@@ -79,8 +74,8 @@ impl MarkedGistConfig {
     }
 }
 
-/// The gist configs of `own` followed by each of `configured`, keeping one per set of
-/// [`markers`] (the client's own where they share it) and none with no marker at all.
+/// The gist configs of `own`, then `configured`: one per set of [`markers`], the client's
+/// own where they share one, and none without a marker.
 fn gist_configs(own: &GitHubConfig, configured: &[GitHubConfig]) -> Vec<MarkedGistConfig> {
     let mut configs: Vec<MarkedGistConfig> = Vec::new();
     for cfg in own_then_configured(own, configured) {
@@ -95,9 +90,8 @@ fn gist_configs(own: &GitHubConfig, configured: &[GitHubConfig]) -> Vec<MarkedGi
     configs
 }
 
-/// Re-shapes one gist bookmark: skip anything that isn't a gist root, else take the gist
-/// from the starred list or look it up, and plan its canonical URL and the notes, title,
-/// tags and date the tool owns of it. A deleted or refused gist keeps its URL.
+/// Re-shapes one gist-root bookmark: its canonical URL, and the notes, title, tags and date
+/// the tool owns of it. A deleted or refused gist keeps its URL.
 struct GistCleanupPass<'a> {
     client: &'a GitHubClient,
     /// The starred gists, keyed by id, from [`GitHubClient::starred_gists`].
@@ -160,9 +154,8 @@ impl CleanupPass for GistCleanupPass<'_> {
     }
 }
 
-/// `note` split from the file list on the `Files:` line
-/// [`gist_note`](crate::github::gists::gist_note) ends with: after a blank line, or as the
-/// whole note when the gist has no description.
+/// `note` split from the `Files:` line [`gist_note`](crate::github::gists::gist_note) ends
+/// it with: after a blank line, or the whole note for a gist with no description.
 fn split_files_line(note: &str) -> (&str, Option<&str>) {
     match note.rsplit_once("\n\nFiles: ") {
         Some((body, files)) if !files.contains('\n') => (body, Some(files)),
@@ -178,11 +171,10 @@ fn without_files_line(note: &str) -> &str {
     split_files_line(note).0
 }
 
-/// Whether a gist bookmark's stored `note` is one the tool wrote, so a rebuild from the
-/// current gist may replace it: empty, or the current description in a `<blockquote>`,
-/// either with or without a `Files:` line. On a `synced` gist any lone `<blockquote>` and
-/// any file list count, so an upstream edit still refreshes; elsewhere the quote may be a
-/// passage the user saved and the list must be the gist's current one.
+/// Whether a gist's `note` is the tool's, so a rebuild may replace it: empty, or the
+/// description in a `<blockquote>`, with or without a `Files:` line. On a `synced` gist any
+/// lone `<blockquote>` and file list count, so an upstream edit still refreshes; elsewhere
+/// the quote may be the user's and the list must be the current one.
 fn note_is_tool_generated(note: &str, gist: &GitHubGist, synced: bool) -> bool {
     let (body, files) = split_files_line(note);
     let body = body.trim();
@@ -200,9 +192,8 @@ fn note_is_tool_generated(note: &str, gist: &GitHubGist, synced: bool) -> bool {
         || description.is_some_and(|description| body == blockquote(description))
 }
 
-/// Whether a synced gist's (plain-text) `title` is still one sync gave it: empty, the
-/// gist's current title, one of its filenames, or the description its stored `note`
-/// quotes, from before an upstream edit.
+/// Whether a synced gist's `title` is still one sync gave it: empty, its current title, a
+/// filename, or the description its `note` quotes, from before an upstream edit.
 fn title_is_tool_generated(title: &str, note: &str, gist: &GitHubGist) -> bool {
     let title = title.trim();
     let quoted = without_files_line(note)

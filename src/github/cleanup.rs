@@ -1,8 +1,8 @@
-//! `cleanup github`: canonicalize GitHub repo-root bookmarks and refresh each one from the
-//! API (which follows renames and transfers), rewriting a moved repo's URL, then do the
-//! same for gist bookmarks ([`gists`]). Only what the tool wrote is refreshed: notes in the
-//! shape `sync github` writes, and the title and tags of bookmarks carrying any configured
-//! account's base tag (a gist's marker tag, for a gist).
+//! `cleanup github`: canonicalizes repo-root bookmarks and refreshes each from the API,
+//! which follows renames and transfers, then does the same for gists ([`gists`]). Only what
+//! the tool wrote is refreshed: notes in `sync github`'s shape, and the title, tags and
+//! date of a bookmark carrying a configured account's base tag (a gist's markers, for a
+//! gist). [`run`] gives the rules.
 
 use std::collections::HashMap;
 
@@ -24,20 +24,18 @@ use crate::urls::UrlExt;
 
 mod gists;
 
-/// Normalize existing GitHub repo bookmarks, then gist bookmarks, each pass reaching its
-/// own verdict. A repo is a root URL on the bare `github.com` host (`owner/repo`); each is
-/// looked up via the API, which follows renames and transfers, and a moved one rewritten to
-/// its current URL. Only what the tool wrote is refreshed: notes in its shape
-/// ([`note_is_tool_generated`]), and on a star `sync github` wrote ([`is_synced_star`]) its
-/// tags, its title while still `owner/repo` and, under `use_post_date`, its star date while
-/// its title and notes are both the tool's; any other bookmark of a repo, such as an HN
-/// story linking it, keeps its title, notes, tags and date. A repo that is gone (404) keeps
-/// only its canonical URL.
+/// Normalize the repo bookmarks, then the gists, each pass reaching its own verdict. A repo
+/// root (`github.com/owner/repo`) is looked up and a moved one rewritten to its current
+/// URL. Only what the tool wrote is refreshed: notes in its shape
+/// ([`note_is_tool_generated`]), and on a synced star ([`is_synced_star`]) its tags, its
+/// title while still `owner/repo` and, under `use_post_date`, its star date while title and
+/// notes are both the tool's. Any other bookmark of a repo, such as an HN story linking it,
+/// keeps its title, tags and date, and any note not in the tool's shape. A repo gone (404)
+/// keeps only its canonical URL.
 ///
-/// `configured` holds the tag config of every configured GitHub account. A star carrying
-/// any of their base tags counts as synced, and its tags are refreshed by the config of
-/// each account whose base tag it carries, the client's own first, so a star of a second
-/// account doesn't gain the first's base tag.
+/// A star carrying any `configured` account's base tag counts as synced, and its tags are
+/// refreshed by each such account's config, the client's own first, so a second account's
+/// star doesn't gain the first's base tag.
 pub async fn run<S: BookmarkStore + AccountState>(
     store: &S,
     client: &GitHubClient,
@@ -46,9 +44,7 @@ pub async fn run<S: BookmarkStore + AccountState>(
 ) -> Result<(), SourceError> {
     let gh_bms = store.snapshot(|bookmark| bookmark.url.host_is("github.com"));
 
-    // `starred_at` isn't on the per-repo lookup, so for use_post_date fetch the star
-    // list once and map url_key -> star time. A repo no longer starred won't be here
-    // (it keeps its existing time).
+    // The repo lookup carries no `starred_at`. A repo no longer starred keeps its date.
     let star_dates: HashMap<String, OffsetDateTime> = if dates.use_post_date {
         client
             .fetch_stars(None, &mut RawSink::disabled())
@@ -72,14 +68,12 @@ pub async fn run<S: BookmarkStore + AccountState>(
     if let Err(halt @ SourceError::Halted(_)) = repos {
         return Err(halt);
     }
-    // Each pass reaches its own verdict, so a pass of repo lookups can't vouch for the
-    // gist lookups or the reverse.
     let gists = gists::run(store, client, dates, configured).await;
     two_pass_verdict(("repos", repos), ("gists", gists))
 }
 
-/// `own` followed by each of `configured` with a base tag no earlier config has, so every
-/// base tag is refreshed by one config: the client's own where they share it.
+/// `own`, then each of `configured` with a base tag no earlier one has, so each base tag is
+/// refreshed by one config, the client's own where they share it.
 fn star_configs(own: &GitHubConfig, configured: &[GitHubConfig]) -> Vec<GitHubConfig> {
     let mut configs: Vec<GitHubConfig> = Vec::new();
     for cfg in own_then_configured(own, configured) {
@@ -93,10 +87,7 @@ fn star_configs(own: &GitHubConfig, configured: &[GitHubConfig]) -> Vec<GitHubCo
     configs
 }
 
-/// Re-shapes one GitHub repo-root bookmark: skip anything that isn't a bare
-/// `github.com/owner/repo` URL, else canonicalize it and refresh from the API (which
-/// follows renames/transfers) -- the current URL, plus what the tool owns of it: notes it
-/// wrote, and a synced star's title and tags. A 404 keeps just the canonicalization.
+/// Re-shapes one repo-root bookmark: its current URL and what the tool owns ([`run`]).
 struct GitHubCleanupPass<'a> {
     client: &'a GitHubClient,
     star_dates: HashMap<String, OffsetDateTime>,
@@ -106,14 +97,10 @@ struct GitHubCleanupPass<'a> {
 
 impl CleanupPass for GitHubCleanupPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
-        // Only genuine repo-root URLs on the bare github.com host are normalized;
-        // deep links (issues/PRs/blob/tree) and gist/other subdomains are left untouched
-        // without an API call, so they say nothing about whether GitHub is reachable.
+        // No lookup, so no evidence GitHub is reachable.
         let Some(root) = repo_root(&bookmark.url) else {
             return Ok(Plan::Skipped);
         };
-        // Default to the canonicalization, then refresh from the API when the repo still
-        // exists (a 404 keeps just the canonical URL).
         let mut url = root
             .canonical_url()
             .context("building the canonical github URL")?;
@@ -126,13 +113,10 @@ impl CleanupPass for GitHubCleanupPass<'_> {
             .filter(|cfg| is_synced_star(bookmark, cfg))
             .collect();
         let synced = !syncing.is_empty();
-        // A failed lookup is surfaced to the driver, which logs and counts it (or, for a
-        // dead credential, aborts the pass).
         let lookup = self.client.repo(&root.owner, &root.name).await?;
         let names = repo_names(&bookmark.url, lookup.as_ref());
-        // A rename can merge a star into another source's bookmark of the repo, leaving a
-        // record with the base tag but that source's title or notes: it is not the star's
-        // to re-title or re-date.
+        // A rename can merge a star into another source's bookmark, leaving the base tag on
+        // that source's title or notes, which are not the star's to change.
         let star_owns_title = synced && title_is_tool_generated(&title, &names);
         let note_is_tools = lookup
             .as_ref()
@@ -170,9 +154,7 @@ impl CleanupPass for GitHubCleanupPass<'_> {
     }
 }
 
-/// Whether `host` is GitHub's repo web host: the bare `github.com` or its `www.`
-/// alias (the same pages). Other subdomains -- `gist.github.com`, `api.github.com`,
-/// `raw.githubusercontent.com` -- are distinct sites and are not repo hosts.
+/// Whether `host` serves repo pages: `github.com` or its `www.` alias, no other subdomain.
 fn is_repo_host(host: &str) -> bool {
     matches!(host, "github.com" | "www.github.com")
 }
@@ -190,18 +172,14 @@ impl RepoName {
         self.owner.eq_ignore_ascii_case(owner) && self.name.eq_ignore_ascii_case(name)
     }
 
-    /// `https://github.com/<owner>/<name>`: what `cleanup github` writes when the API
-    /// has no such repo, and replaces with the API's `html_url` when it has.
+    /// `https://github.com/<owner>/<name>`, written when the API has no such repo.
     fn canonical_url(&self) -> Result<Url, url::ParseError> {
         Url::parse(&format!("https://github.com/{}/{}", self.owner, self.name))
     }
 }
 
-/// The [`RepoName`] of a genuine repo-root URL: the host must be the `github.com` repo host
-/// (bare or the `www.` alias, not another subdomain) and the path a [`repo_path`]: exactly
-/// two non-empty segments, the second naming a repo. `None` for anything else -- a deep
-/// link (`/issues`, `/tree/...`), a gist or other subdomain, a non-GitHub host, or a name
-/// that is no repo's (`/owner/.git`, `/owner/..git`) -- which cleanup leaves untouched.
+/// The [`RepoName`] of a repo-root URL: an [`is_repo_host`] host and a [`repo_path`].
+/// `None` for a deep link, another host, or a name that is no repo's (`/owner/.git`).
 fn repo_root(url: &Url) -> Option<RepoName> {
     if !is_repo_host(url.host_str()?) {
         return None;
@@ -214,15 +192,13 @@ fn repo_root(url: &Url) -> Option<RepoName> {
 }
 
 /// Whether `sync github` wrote this bookmark under `cfg`: it carries that config's
-/// [`base_tag`]. That makes its tags the tool's to refresh, and its title and star date
-/// too while they still look the tool's (see [`run`]). With every base tag disabled
-/// nothing marks a star, so no bookmark qualifies.
+/// [`base_tag`], so its tags are the tool's, and its title and star date while they still
+/// look the tool's ([`run`]). With the base tags disabled nothing marks a star.
 fn is_synced_star(bookmark: &Bookmark, cfg: &GitHubConfig) -> bool {
     base_tag(cfg).is_some_and(|base| bookmark.tags.has(base))
 }
 
-/// The tag marking a star `sync github` wrote under `cfg`: the first non-empty entry of
-/// its `tags`.
+/// The tag marking a star synced under `cfg`: its first non-empty `tags` entry.
 fn base_tag(cfg: &GitHubConfig) -> Option<&str> {
     cfg.tags
         .iter()
@@ -230,14 +206,12 @@ fn base_tag(cfg: &GitHubConfig) -> Option<&str> {
         .find(|tag| !tag.is_empty())
 }
 
-/// Whether a repo bookmark's stored `note` is one the tool wrote, so a rebuild from fresh
-/// repo data may replace it, rather than a hand-written note (or another source's, like an
-/// HN story's `HN Link:`) to keep. The recognized shapes are [`github_note`]'s, each with
-/// or without its `Project homepage:` line: empty, the current description in a
-/// `<blockquote>`, a bare link to this repo (the no-description fallback), or the current
-/// description unwrapped, as syncs before the `<blockquote>` retrofit wrote it. On a
+/// Whether a repo bookmark's `note` is the tool's, so a rebuild may replace it, rather than
+/// the user's or another source's (an HN `HN Link:`). The tool's shapes, each with or
+/// without its `Project homepage:` line: empty, the current description in a `<blockquote>`
+/// or bare (a legacy shape), or a bare link to the repo (the no-description fallback). On a
 /// `synced` star any lone `<blockquote>` counts, so an upstream description edit still
-/// refreshes; elsewhere it may be a passage the user quoted when saving the page.
+/// refreshes; elsewhere it may be a passage the user quoted.
 fn note_is_tool_generated(note: &str, repo: &GitHubRepo, names: &[RepoName], synced: bool) -> bool {
     let body = match note.rsplit_once(HOMEPAGE_SEPARATOR) {
         Some((body, homepage)) if !homepage.contains('\n') => body,
@@ -257,8 +231,7 @@ fn note_is_tool_generated(note: &str, repo: &GitHubRepo, names: &[RepoName], syn
         || links_to_repo(body, names)
 }
 
-/// Whether a synced star's (plain-text) `title` is still the `owner/repo` sync gave it,
-/// under either of the repo's `names`, rather than one the user edited.
+/// Whether a synced star's `title` is still sync's `owner/repo`, under either of `names`.
 fn title_is_tool_generated(title: &str, names: &[RepoName]) -> bool {
     let title = title.trim();
     title.is_empty()
@@ -274,8 +247,7 @@ fn is_lone_blockquote(text: &str) -> bool {
         .is_some_and(|inner| !inner.contains("<blockquote>") && !inner.contains("</blockquote>"))
 }
 
-/// The names a bookmark's repo goes by: under its stored URL and, after a rename or
-/// transfer, its current one.
+/// The repo's names: its stored URL's and, after a rename or transfer, its current one.
 fn repo_names(stored_url: &Url, repo: Option<&GitHubRepo>) -> Vec<RepoName> {
     let current = repo.and_then(|repo| Url::parse(&repo.html_url).ok());
     [Some(stored_url), current.as_ref()]
@@ -299,11 +271,9 @@ fn links_to_repo(text: &str, names: &[RepoName]) -> bool {
         .is_some_and(|linked| is_one_of(&linked.owner, &linked.name, names))
 }
 
-/// Refresh the language and owner tags from the current repo under each of `configs`,
-/// keeping other existing tags and ensuring the base tags: drop every old tag under any of
-/// their `lang_prefix`es and `author_prefix`es, then re-add each config's base tags,
-/// current `lang:` tag and owner tag. Dropping all before adding any makes the order of
-/// `configs` irrelevant, even when one prefix starts another (`lang:`, `lang:work:`).
+/// The tags with each of `configs`' language and owner tags refreshed and base tags
+/// ensured. Every old prefixed tag goes before any is added, so the order of `configs`
+/// doesn't matter even when one prefix starts another (`lang:`, `lang:work:`).
 fn refresh_tags(existing: Tags, repo: &GitHubRepo, configs: &[&GitHubConfig]) -> Tags {
     let prefixes: Vec<&str> = configs
         .iter()
@@ -318,8 +288,7 @@ fn refresh_tags(existing: Tags, repo: &GitHubRepo, configs: &[&GitHubConfig]) ->
     retag(existing, &prefixes, additions)
 }
 
-/// `existing` without any tag under one of `prefixes` (an empty prefix marks none), then
-/// each of `additions` it doesn't already hold, skipping empty ones.
+/// `existing` without tags under `prefixes` (an empty one marks none), plus `additions`.
 fn retag(mut tags: Tags, prefixes: &[&str], additions: impl IntoIterator<Item = String>) -> Tags {
     tags.retain(|tag| {
         !prefixes

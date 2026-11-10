@@ -230,12 +230,11 @@ pub fn merge_json_pages(bodies: &[&str]) -> Result<(Value, Count)> {
     for (i, body) in bodies.iter().enumerate() {
         let value: Value = serde_json::from_str(body)
             .with_context(|| format!("parsing captured response page {}", i + 1))?;
-        match value {
-            Value::Array(items) => merged.extend(items),
-            other => {
-                all_arrays = false;
-                merged.push(other);
-            }
+        if let Value::Array(items) = value {
+            merged.extend(items);
+        } else {
+            all_arrays = false;
+            merged.push(value);
         }
     }
     let count = if all_arrays {

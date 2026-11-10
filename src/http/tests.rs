@@ -285,7 +285,8 @@ fn the_classifiers_differ_only_on_a_429() {
         Verdict::RetryOnceAfter(Duration::from_secs(30))
     );
     assert_eq!(honor(&response(429, &[])), Verdict::Done);
-    for classify in [&backoff_if_transient as &dyn Fn(&_) -> _, &honor] {
+    let classifiers: [&dyn Fn(&reqwest::Response) -> Verdict; 2] = [&backoff_if_transient, &honor];
+    for classify in classifiers {
         assert_eq!(classify(&response(502, &[])), Verdict::Backoff);
         assert_eq!(classify(&response(200, &[])), Verdict::Done);
         assert_eq!(classify(&response(403, &[])), Verdict::Done);

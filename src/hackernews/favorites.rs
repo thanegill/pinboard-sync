@@ -1,6 +1,7 @@
 //! Scraping a user's favorited item IDs from `/favorites?id=<user>` and `&comments=t`.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::time::Duration;
 
 use html5ever::tendril::TendrilSink;
@@ -292,7 +293,7 @@ impl Element {
 fn document_elements(html: &str) -> Vec<Element> {
     let dom = html5ever::parse_document(RcDom::default(), ParseOpts::default()).one(html);
     let mut elements = Vec::new();
-    let mut pending = vec![dom.document.clone()];
+    let mut pending = vec![Rc::clone(&dom.document)];
     while let Some(node) = pending.pop() {
         if let NodeData::Element {
             name,

@@ -11,6 +11,10 @@ use std::io::{self, Write};
 /// caller's to report.
 #[cfg(not(test))]
 #[expect(clippy::disallowed_methods, reason = "the one place stdout is opened")]
+#[expect(
+    clippy::cfg_not_test,
+    reason = "tests write through a capturing stand-in; `write_to`, which holds the logic, is tested directly"
+)]
 pub fn write(text: impl AsRef<[u8]>) -> io::Result<()> {
     write_to(&mut io::stdout().lock(), text.as_ref())
 }

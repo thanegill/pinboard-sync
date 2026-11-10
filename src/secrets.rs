@@ -280,6 +280,10 @@ pub fn warn_if_env_shared(source: &str, secrets: &[SecretSpec], accounts: usize)
 
 /// An environment variable the run reads: the secret rungs and the auth-failure hook.
 #[cfg(not(test))]
+#[expect(
+    clippy::cfg_not_test,
+    reason = "tests read the fake environment `FakeSecretEnv` sets, never the developer's real one"
+)]
 pub(crate) fn env_var(var: &str) -> Option<String> {
     std::env::var(var).ok()
 }

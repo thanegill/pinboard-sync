@@ -373,6 +373,7 @@ impl RedditSavedItem {
 /// date a post.
 #[expect(
     clippy::cast_possible_truncation,
+    clippy::as_conversions,
     reason = "whole seconds are the point, and `as` saturates a value out of range"
 )]
 pub(crate) fn created_at(created_utc: Option<f64>) -> Option<OffsetDateTime> {

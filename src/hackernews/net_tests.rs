@@ -476,7 +476,9 @@ async fn collect_ids_stops_at_the_page_cap() {
     let hn = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/favorites"))
-        .respond_with(PagingFavorites { hits: hits.clone() })
+        .respond_with(PagingFavorites {
+            hits: Arc::clone(&hits),
+        })
         .mount(&hn)
         .await;
 
@@ -513,7 +515,7 @@ async fn fetch_items_pauses_only_between_algolia_chunks() {
         UNUSED.into(),
         algolia.uri(),
     );
-    let ids: Vec<HackerNewsItemId> = (0..=ITEM_BATCH as u64)
+    let ids: Vec<HackerNewsItemId> = (0..=u64::try_from(ITEM_BATCH).unwrap())
         .map(HackerNewsItemId::from)
         .collect();
 

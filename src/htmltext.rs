@@ -1,6 +1,8 @@
 //! Source text shaped for Pinboard: titles as one line of plain text, HackerNews bodies as
 //! Markdown, quoted bodies in a literal `<blockquote>`, which Pinboard renders.
 
+use std::rc::Rc;
+
 use html5ever::tendril::TendrilSink;
 use html5ever::{local_name, ns, ParseOpts, QualName};
 use markup5ever_rcdom::{NodeData, RcDom};
@@ -23,7 +25,7 @@ fn body_fragment_text(html: &str) -> String {
         html5ever::parse_fragment(RcDom::default(), ParseOpts::default(), body, vec![], false)
             .one(html);
     let mut text = String::new();
-    let mut pending = vec![dom.document.clone()];
+    let mut pending = vec![Rc::clone(&dom.document)];
     while let Some(node) = pending.pop() {
         if let NodeData::Text { contents } = &node.data {
             text.push_str(&contents.borrow());

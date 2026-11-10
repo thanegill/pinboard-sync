@@ -923,16 +923,16 @@ mod tests {
     fn parse_reddit_sync(extra: &[&str]) -> RedditSyncArgs {
         let mut argv = vec!["pinboard-sync", "sync", "reddit"];
         argv.extend_from_slice(extra);
-        match crate::test_support::parse_cli(argv)
+        let Command::Sync(SyncCmd {
+            source: Some(SyncSource::Reddit(args)),
+            ..
+        }) = crate::test_support::parse_cli(argv)
             .expect("parses")
             .command
-        {
-            Command::Sync(SyncCmd {
-                source: Some(SyncSource::Reddit(args)),
-                ..
-            }) => args,
-            _ => panic!("expected `sync reddit` args"),
-        }
+        else {
+            panic!("expected `sync reddit` args");
+        };
+        args
     }
 
     #[test]

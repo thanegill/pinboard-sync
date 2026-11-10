@@ -251,16 +251,9 @@ impl RedditClient {
     /// Fetch all saved items, newest first, following `after` pagination (Reddit caps any
     /// listing at ~1000).
     async fn fetch_saved(&self) -> Result<Vec<RedditListingEntry>, SourceError> {
-        self.fetch_saved_capturing(&mut RawSink::disabled()).await
-    }
-
-    /// [`fetch_saved`](Self::fetch_saved), pushing each response body to `sink` as it
-    /// arrives so `backup` gets the verbatim listing out of the same traversal.
-    async fn fetch_saved_capturing(
-        &self,
-        sink: &mut RawSink,
-    ) -> Result<Vec<RedditListingEntry>, SourceError> {
-        self.session.read_saved(&self.username, sink).await
+        self.session
+            .read_saved(&self.username, &mut RawSink::disabled())
+            .await
     }
 
     /// Shape saved entries into drafts. A non-empty listing that yields zero drafts is an
@@ -423,7 +416,7 @@ impl BackupSource for RedditClient {
     /// written over a good snapshot.)
     async fn dump(&self) -> Result<BackupDump, SourceError> {
         let mut sink = RawSink::collecting();
-        let entries = self.fetch_saved_capturing(&mut sink).await?;
+        let entries = self.session.read_saved(&self.username, &mut sink).await?;
         let records = self
             .drafts_from(entries)
             .map(|drafts| drafts.iter().map(ExportBookmark::from).collect())

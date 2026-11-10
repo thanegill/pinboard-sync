@@ -104,6 +104,11 @@ All notable changes to this project are documented here. The format is based on
   anything, so `--dry-run` shows it as refused rather than as a change, and a cycle of
   moves, such as a swap, no longer writes over one of its records before the refusal. The
   refusal logs the length and the limit.
+- `cleanup` keeps a duplicate whose note is stored cut inside a block, such as an
+  `HN Link:` line, when the bookmark it would merge into has other blocks before that
+  point. It used to delete the duplicate if the block in that place started the same way,
+  even when that was another link. A duplicate with three or more blank lines in a row
+  before its cut is no longer refused on every run.
 - `cleanup github` leaves a `github.com/<owner>/.git` bookmark alone, and any whose repo
   name is `.` or `..` once `.git` is dropped. It used to move them to the owner's
   profile or to GitHub's home page.

@@ -42,7 +42,7 @@ fn post_url_and_tags() {
         "https://old.reddit.com/r/rust/comments/abc/title/"
     );
     assert_eq!(it.title, "A title");
-    // A plain link post gets no `type:` tag (only image/video do).
+    // Only image and video posts get a `type:` tag.
     assert_eq!(
         it.tags(&RedditConfig::default()),
         vec!["reddit", "subreddit:rust"]
@@ -121,8 +121,7 @@ fn empty_subreddit_prefix_disables_the_subreddit_tag() {
 
 #[test]
 fn into_draft_skips_item_with_unparseable_url() {
-    // A `domain` that can't form a valid URL (a space in the host) -- the item is
-    // dropped rather than producing a draft with no URL.
+    // A `domain` with a space can't form a URL.
     let cfg = RedditConfig {
         domain: "bad host".into(),
         ..RedditConfig::default()
@@ -246,7 +245,6 @@ fn media_type_tag_is_gated_by_the_media_types_allowlist() {
 
 #[test]
 fn text_and_link_posts_get_no_type_tag_and_comment_links_its_parent_thread() {
-    // A self/text post gets no `type:` tag.
     let post = item(
         "t3",
         serde_json::json!({
@@ -290,8 +288,7 @@ fn empty_self_post_has_no_duplicated_permalink_in_notes() {
 
 #[test]
 fn empty_link_post_keeps_the_external_url_in_notes() {
-    // A link post with no selftext keeps its external URL in the notes -- that's
-    // not the bookmark URL (which is the reddit permalink), so it's not a dup.
+    // The external URL isn't the bookmark's, which is the reddit permalink, so it's no dup.
     let post = item(
         "t3",
         serde_json::json!({
@@ -318,7 +315,6 @@ fn comment_gets_reddit_comment_tag_and_link_title() {
     assert_eq!(it.kind, RedditKind::Comment);
     assert_eq!(it.title, "The story");
     assert_eq!(it.note, "<blockquote>my comment</blockquote>");
-    // All-caps subreddit lowercased.
     assert_eq!(
         it.tags(&RedditConfig::default()),
         vec!["reddit", "subreddit:news", "reddit-comment"]
@@ -328,7 +324,6 @@ fn comment_gets_reddit_comment_tag_and_link_title() {
 #[test]
 fn notes_wrap_the_quoted_body_and_keep_links_outside() {
     let domain = "old.reddit.com";
-    // Comment: thread link outside, body in a blockquote.
     assert_eq!(
         comment_note("hi", Some("/r/x/comments/a/t/"), domain),
         "Thread: https://old.reddit.com/r/x/comments/a/t/\n\n<blockquote>hi</blockquote>"
@@ -352,7 +347,6 @@ fn notes_wrap_the_quoted_body_and_keep_links_outside() {
         }
         .post_note()
     };
-    // Self-post: selftext wrapped.
     assert_eq!(
         post_note("post body", "", true),
         "<blockquote>post body</blockquote>"
@@ -415,9 +409,7 @@ fn a_deleted_author_gets_no_author_tag() {
 
 #[test]
 fn malformed_child_is_skipped_not_failing_the_whole_page() {
-    // The second child lacks the required `kind`, so it can't deserialize into a
-    // RedditListingEntry. It must be dropped, keeping the good sibling rather than
-    // failing the entire listing.
+    // The second child lacks the required `kind`.
     let listing: RedditListing = serde_json::from_str(
         r#"{
                 "kind": "Listing",
@@ -441,9 +433,7 @@ fn malformed_child_is_skipped_not_failing_the_whole_page() {
 
 #[test]
 fn all_children_failing_is_an_error_not_a_silent_empty_page() {
-    // Both children lack the required `kind`, so a schema break drops every entry.
-    // A non-empty page that parses to zero items must error rather than silently
-    // yield an empty page (which would make sync exit 0 having imported nothing).
+    // A schema break drops every entry, and an empty page would let sync exit 0 silently.
     let result: Result<RedditListing, _> = serde_json::from_str(
         r#"{
                 "kind": "Listing",
@@ -460,7 +450,6 @@ fn all_children_failing_is_an_error_not_a_silent_empty_page() {
 
 #[test]
 fn genuinely_empty_children_is_ok() {
-    // An empty page is legitimate (nothing saved / end of listing): no error.
     let listing: RedditListing =
         serde_json::from_str(r#"{ "kind": "Listing", "data": { "after": null, "children": [] } }"#)
             .unwrap();
@@ -473,8 +462,7 @@ fn genuinely_empty_children_is_ok() {
 
 #[test]
 fn non_array_children_still_fail() {
-    // A body whose `children` isn't a JSON array (e.g. an anti-bot page shape) is
-    // still a genuine error, not silently an empty page.
+    // A non-array `children`, as an anti-bot page might send, is still an error.
     let result: Result<RedditListing, _> =
         serde_json::from_str(r#"{ "kind": "Listing", "data": { "children": "nope" } }"#);
     result.unwrap_err();

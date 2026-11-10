@@ -1,14 +1,12 @@
-//! A bookmark's tag list: the [`Tags`] every source shapes its configured tags into,
-//! where an empty tag means "disabled" and whitespace and commas can't survive (Pinboard
-//! splits the tag string on whitespace and forbids commas).
+//! A bookmark's [`Tags`]. An empty tag means disabled, and no tag holds whitespace or a
+//! comma: Pinboard splits on whitespace and forbids commas.
 
 use indexmap::set::Iter;
 use indexmap::IndexSet;
 
-/// A bookmark's tags, each once, in the order first added. Pinboard keeps them
-/// case-sensitively and stores them as one space-separated string. Every method that adds
-/// a tag skips an empty one (a disabled tag) and one already here. Equality sees order;
-/// [`Tags::differs_from`] compares as sets.
+/// A bookmark's tags, each once, in the order first added, case-sensitive as Pinboard's.
+/// Adding skips an empty (disabled) tag. Equality sees order; [`Tags::differs_from`]
+/// compares as sets.
 #[derive(Debug, Clone, Default)]
 pub struct Tags(IndexSet<String>);
 
@@ -27,16 +25,14 @@ impl Tags {
             .join(" ")
     }
 
-    /// Append `tag` unless it is empty (empty = the tag is disabled) or already here.
-    /// Stored tags derive via `split_whitespace` and so can never contain `""`, so adding
-    /// one would make a cleanup plan diff against storage on every run.
+    /// Append `tag` unless it is empty or already here. A stored tag is never empty, so an
+    /// empty one would make a cleanup plan differ from storage every run.
     pub fn push(&mut self, tag: &str) {
         if !tag.is_empty() {
             self.0.insert(tag.to_string());
         }
     }
 
-    /// [`Tags::push`] each of `tags`, in order.
     pub fn push_all<'t>(&mut self, tags: impl IntoIterator<Item = &'t String>) {
         for tag in tags {
             self.push(tag);
@@ -48,7 +44,6 @@ impl Tags {
         self.0.extend(prefixed(prefix, value));
     }
 
-    /// Keep only the tags `keep` accepts, in order.
     pub fn retain(&mut self, keep: impl FnMut(&String) -> bool) {
         self.0.retain(keep);
     }
@@ -58,7 +53,6 @@ impl Tags {
         self.0.sort_unstable();
     }
 
-    /// The tags, in order.
     pub fn iter(&self) -> Iter<'_, String> {
         self.0.iter()
     }
@@ -68,7 +62,6 @@ impl Tags {
         self.0.iter().cloned().collect()
     }
 
-    /// Whether `tag` is one of the tags.
     pub fn has(&self, tag: &str) -> bool {
         self.0.contains(tag)
     }

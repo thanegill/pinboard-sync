@@ -4099,6 +4099,28 @@ fn a_target_cut_of_an_unknown_block_counts_only_in_its_place() {
     ));
 }
 
+/// A target cut of an unknown block is not the member's block in its place when the blocks
+/// before it differ: here the target holds `a` once and an `x` where the member has its
+/// second `a`, so its cut, really of an `id=25` link, is not the member's `id=27` one.
+#[test]
+fn a_target_cut_of_an_unknown_block_is_not_kept_after_other_blocks() {
+    let store = FakePinboard::trimming();
+    let held =
+        format!("a\n\nx\n\nHN Link: https://news.ycombinator.com/item?id=2{TRUNCATION_MARKER}");
+    let planned = "a\n\na\n\nHN Link: https://news.ycombinator.com/item?id=27\n\ntail";
+    let alone =
+        format!("a\n\na\n\nHN Link: https://news.ycombinator.com/item?id=2{TRUNCATION_MARKER}");
+    assert!(!holds_what_it_keeps(
+        &store,
+        &held,
+        [&held, ""],
+        "",
+        planned,
+        planned,
+        &alone
+    ));
+}
+
 /// A stored cut stays the member's own when its plan moves the block it was cut from to
 /// another place: the lead's plan carrying the block doesn't excuse losing the cut.
 #[test]
@@ -4279,6 +4301,62 @@ async fn a_fragment_is_not_credited_to_an_incumbents_block_shifted_by_one() {
 #[tokio::test]
 async fn a_fragment_is_not_credited_to_a_bases_block_shifted_by_two() {
     assert_a_fragment_is_not_credited_after_a_shift("https://base/", 2).await;
+}
+
+/// A resident stored cut inside an `id=25` link, after `a` and `x`, and a mover stored
+/// whole with an `id=27` link after `a` twice. Under the same title the mover's lone
+/// rewrite is cut at the same `id=2`, but the resident's cut is not the mover's link, since
+/// the blocks before it differ: the mover is held back with its link.
+#[tokio::test]
+async fn a_residents_cut_is_not_credited_with_a_movers_link_after_other_blocks() {
+    const ID25: &str = "HN Link: https://news.ycombinator.com/item?id=25";
+    const ID27: &str = "HN Link: https://news.ycombinator.com/item?id=27";
+    let a = "a".repeat(3000);
+    let resident_note = [a.clone(), "x".repeat(3000), ID25.into(), "z".repeat(3000)].join("\n\n");
+    let mover_note = [a.clone(), a, ID27.into(), "w".repeat(3000)].join("\n\n");
+    let pinboard = FakePinboard::trimming();
+    let resident = (1..4000)
+        .map(|title_len| {
+            pinboard.fit(Bookmark {
+                title: "T".repeat(title_len),
+                note: resident_note.clone(),
+                ..bookmark("https://target/")
+            })
+        })
+        .find(|fitted| {
+            pinboard.kept_of_cut(&fitted.note).is_some_and(|kept| {
+                kept.ends_with("\n\nHN Link: https://news.ycombinator.com/item?id=2")
+            })
+        })
+        .expect("a title that cuts the link at its id's first digit");
+    let mover = Bookmark {
+        title: resident.title.clone(),
+        note: mover_note,
+        ..bookmark("https://mover/")
+    };
+    let pass = FakePass(|bookmark: &Bookmark| {
+        Ok(Plan::Bookmark(Bookmark {
+            url: u("https://target/"),
+            ..unchanged_plan(bookmark)
+        }))
+    });
+
+    let pinboard = FakePinboard::trimming();
+    let all = [resident, mover.clone()];
+    let outcome = run_over(
+        &pinboard,
+        &all,
+        std::slice::from_ref(&mover),
+        WriteMode::Live,
+        &pass,
+    )
+    .await;
+    let account = crate::test_support::replay(&all, &pinboard.ops.borrow());
+    assert_eq!(outcome.refused, 1);
+    assert!(
+        account.contains(&mover),
+        "the mover was absorbed: {account:?}"
+    );
 }
 
 /// A duplicate with an annotation first, stored cut far down, merging into a whole resident

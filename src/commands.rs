@@ -28,7 +28,7 @@ use crate::reddit::cleanup::RedditCleanupOverrides;
 use crate::reddit::model::RedditConfig;
 use crate::reddit::RedditInfoClient;
 use crate::secrets::{
-    first_nonempty, missing_reddit_cookie, require_github_token, resolve_reddit_cookie,
+    first_nonempty, missing_reddit_cookie, require_github_token, resolve_reddit_cookie, SecretSpec,
 };
 use crate::settings::resolve_cleanup_dates;
 use crate::source::{BookmarkDraft, SourceError};
@@ -451,7 +451,8 @@ async fn run_cleanup_reddit(
     reddit.run(&store).await
 }
 
-/// A Reddit cleanup pass's options, the `/api/info` client when a step needs one, and its
+/// A Reddit cleanup pass's options, the `/api/info` client when a step needs one (which
+/// reads the account's saved listing in its place while it is blocked), and its
 /// auth-failure hook.
 struct RedditCleanup {
     opts: reddit::cleanup::RedditCleanupOpts,
@@ -477,7 +478,10 @@ impl RedditCleanup {
         let client = if opts.needs_post_info() {
             let cookie = resolve_reddit_cookie(overrides.cookie, account)
                 .with_context(missing_reddit_cookie)?;
-            Some(RedditInfoClient::new(cookie)?)
+            let username = SecretSpec::REDDIT_USERNAME
+                .resolve(None, account.and_then(|a| a.username.clone()), None)
+                .map(|username| username.value);
+            Some(RedditInfoClient::new(cookie, username)?)
         } else {
             None
         };

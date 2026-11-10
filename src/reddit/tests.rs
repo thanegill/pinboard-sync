@@ -16,6 +16,11 @@ fn response(status: u16, body: &str) -> reqwest::Response {
     )
 }
 
+const REQ: RedditRequest = RedditRequest {
+    what: "req",
+    block_issue: 1234,
+};
+
 fn test_cookie() -> SessionCookie {
     SessionCookie {
         header: "a=1; reddit_session=test-session; token_v2=x".into(),
@@ -29,7 +34,7 @@ async fn redacts_the_cookie_from_a_logged_or_quoted_body() {
     let redacted = "sent [redacted], session [redacted]";
     let (result, logs) = crate::test_support::capturing_logs(decode_reddit_json::<Sample>(
         response(500, echo),
-        "req",
+        REQ,
         Some(&test_cookie()),
     ))
     .await;
@@ -49,7 +54,7 @@ async fn redacts_the_cookie_from_a_logged_or_quoted_body() {
 
     let (result, logs) = crate::test_support::capturing_logs(decode_reddit_json::<Sample>(
         html_response(403, echo),
-        "req",
+        REQ,
         Some(&test_cookie()),
     ))
     .await;
@@ -66,10 +71,9 @@ async fn redacts_the_cookie_from_a_logged_or_quoted_body() {
 #[tokio::test]
 async fn maps_401_and_403_to_reauth() {
     for code in [401u16, 403] {
-        let err =
-            decode_reddit_json::<Sample>(response(code, "denied"), "req", Some(&test_cookie()))
-                .await
-                .unwrap_err();
+        let err = decode_reddit_json::<Sample>(response(code, "denied"), REQ, Some(&test_cookie()))
+            .await
+            .unwrap_err();
         assert!(
             matches!(err, SourceError::Halted(Halt::Reauth(_))),
             "status {code} should require re-auth"
@@ -164,7 +168,7 @@ fn does_not_mistake_other_refusals_for_an_edge_page() {
 async fn keeps_the_network_policy_page_a_credential_problem() {
     let err = decode_reddit_json::<Sample>(
         html_response(403, NETWORK_POLICY_PAGE),
-        "req",
+        REQ,
         Some(&test_cookie()),
     )
     .await
@@ -196,7 +200,7 @@ async fn keeps_other_403s_as_reauth() {
             response(403, BLOCK_PAGE),
         ),
     ] {
-        let err = decode_reddit_json::<Sample>(resp, "req", Some(&test_cookie()))
+        let err = decode_reddit_json::<Sample>(resp, REQ, Some(&test_cookie()))
             .await
             .unwrap_err();
         assert!(
@@ -211,7 +215,7 @@ async fn logs_an_unrecognised_refusal_page_at_debug() {
     let page = "<html>\n<title>reddit: log in</title>\n</html>";
     let (result, logs) = crate::test_support::capturing_logs(decode_reddit_json::<Sample>(
         html_response(403, page),
-        "req",
+        REQ,
         Some(&test_cookie()),
     ))
     .await;
@@ -239,19 +243,19 @@ async fn logs_an_unrecognised_refusal_page_at_debug() {
 #[tokio::test]
 async fn maps_a_403_block_page_to_blocked_not_reauth() {
     let err =
-        decode_reddit_json::<Sample>(html_response(403, BLOCK_PAGE), "req", Some(&test_cookie()))
+        decode_reddit_json::<Sample>(html_response(403, BLOCK_PAGE), REQ, Some(&test_cookie()))
             .await
             .unwrap_err();
     let SourceError::Halted(Halt::Blocked(message)) = err else {
         panic!("a block page must not ask for a new cookie: {err:?}");
     };
-    assert!(message.contains("issues/78"), "{message}");
+    assert!(message.contains("pinboard-sync/issues/1234."), "{message}");
     assert!(!message.contains("likely expired"), "{message}");
 }
 
 #[tokio::test]
 async fn maps_500_to_other() {
-    let err = decode_reddit_json::<Sample>(response(500, "boom"), "req", Some(&test_cookie()))
+    let err = decode_reddit_json::<Sample>(response(500, "boom"), REQ, Some(&test_cookie()))
         .await
         .unwrap_err();
     assert!(matches!(err, SourceError::Other(_)), "{err:?}");
@@ -260,12 +264,12 @@ async fn maps_500_to_other() {
 #[tokio::test]
 async fn parses_success_and_reports_bad_json_as_other() {
     let ok =
-        decode_reddit_json::<Sample>(response(200, r#"{"ok":true}"#), "req", Some(&test_cookie()))
+        decode_reddit_json::<Sample>(response(200, r#"{"ok":true}"#), REQ, Some(&test_cookie()))
             .await
             .unwrap();
     assert_eq!(ok, Sample { ok: true });
 
-    let err = decode_reddit_json::<Sample>(response(200, "not json"), "req", Some(&test_cookie()))
+    let err = decode_reddit_json::<Sample>(response(200, "not json"), REQ, Some(&test_cookie()))
         .await
         .unwrap_err();
     assert!(matches!(err, SourceError::Other(_)), "{err:?}");
@@ -285,10 +289,9 @@ async fn maps_a_redirect_to_login_to_reauth() {
         "https://old.reddit.com/login/?dest=https%3A%2F%2Fold.reddit.com%2Fuser%2Fx%2Fsaved.json",
         "/login",
     ] {
-        let err =
-            decode_reddit_json::<Sample>(redirect(Some(location)), "req", Some(&test_cookie()))
-                .await
-                .unwrap_err();
+        let err = decode_reddit_json::<Sample>(redirect(Some(location)), REQ, Some(&test_cookie()))
+            .await
+            .unwrap_err();
         let SourceError::Halted(Halt::Reauth(message)) = err else {
             panic!("a login redirect to {location} must ask for a new cookie: {err:?}");
         };
@@ -304,7 +307,7 @@ async fn maps_any_other_redirect_to_other() {
         Some("/logins"),
         None,
     ] {
-        let err = decode_reddit_json::<Sample>(redirect(location), "req", Some(&test_cookie()))
+        let err = decode_reddit_json::<Sample>(redirect(location), REQ, Some(&test_cookie()))
             .await
             .unwrap_err();
         assert!(
@@ -329,7 +332,7 @@ fn every_entry_point_names_a_bare_cookie() {
     )
     .unwrap();
     assert_eq!(sent(&sync.session), named);
-    let cleanup = RedditInfoClient::new(configured("bare-value\n")).unwrap();
+    let cleanup = RedditInfoClient::new(configured("bare-value\n"), None).unwrap();
     assert_eq!(sent(&cleanup.session), named);
 }
 
@@ -341,8 +344,8 @@ async fn names_the_cookie_setting_in_every_refusal() {
         ..test_cookie()
     };
     let refusals = [
-        decode_reddit_json::<Sample>(response(403, "denied"), "req", Some(&cookie)),
-        decode_reddit_json::<Sample>(redirect(Some("/login")), "req", Some(&cookie)),
+        decode_reddit_json::<Sample>(response(403, "denied"), REQ, Some(&cookie)),
+        decode_reddit_json::<Sample>(redirect(Some("/login")), REQ, Some(&cookie)),
     ];
     for refusal in refusals {
         let SourceError::Halted(Halt::Reauth(message)) = refusal.await.unwrap_err() else {
@@ -359,8 +362,8 @@ async fn names_the_cookie_setting_in_every_refusal() {
 #[tokio::test]
 async fn says_no_cookie_is_configured_when_none_was() {
     let refusals = [
-        decode_reddit_json::<Sample>(response(403, "denied"), "req", None),
-        decode_reddit_json::<Sample>(redirect(Some("/login")), "req", None),
+        decode_reddit_json::<Sample>(response(403, "denied"), REQ, None),
+        decode_reddit_json::<Sample>(redirect(Some("/login")), REQ, None),
     ];
     for refusal in refusals {
         let SourceError::Halted(Halt::Reauth(message)) = refusal.await.unwrap_err() else {

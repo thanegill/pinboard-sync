@@ -120,6 +120,11 @@ impl SecretSpec {
     /// config's `x` or `x_file`" for a message to follow "set". The two config rungs share
     /// one entry rather than naming the config twice.
     pub fn settings(self) -> String {
+        format!("{}, {}", self.flag, self.settings_without_flag())
+    }
+
+    /// [`Self::settings`] less the flag, for a command that doesn't take it.
+    pub fn settings_without_flag(self) -> String {
         let config = match self.config_file {
             Some(file) => {
                 let (owner, _) = self.config_inline.rsplit_once(' ').unwrap_or_default();
@@ -128,10 +133,7 @@ impl SecretSpec {
             }
             None => self.config_inline.to_string(),
         };
-        format!(
-            "{}, {}, {}, or {config}",
-            self.flag, self.env, self.env_file
-        )
+        format!("{}, {}, or {config}", self.env, self.env_file)
     }
 
     /// "missing X (set ...)", naming every setting the secret can come from.

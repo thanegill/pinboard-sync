@@ -114,3 +114,95 @@ async fn a_sync_run_reports_failed_writes_beside_a_failed_account() {
         "1 account(s) failed; 1 bookmark(s) failed to write"
     );
 }
+
+/// What one Reddit endpoint answers in
+/// [`a_reddit_cleanup_fires_the_hook_only_for_a_refused_cookie`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RedditAnswer {
+    Ok,
+    Block,
+    RefusedCookie,
+}
+
+impl RedditAnswer {
+    fn response(self, ok_body: &serde_json::Value) -> ResponseTemplate {
+        match self {
+            RedditAnswer::Ok => ResponseTemplate::new(200).set_body_json(ok_body),
+            RedditAnswer::Block => ResponseTemplate::new(403).set_body_raw(
+                "<html><body><h1>You've been blocked by network security.</h1></body></html>",
+                "text/html; charset=utf-8",
+            ),
+            RedditAnswer::RefusedCookie => ResponseTemplate::new(403).set_body_string("denied"),
+        }
+    }
+}
+
+/// `cleanup reddit` fires the auth-failure hook when `/api/info`, or the saved listing
+/// standing in for it, refuses the cookie. A saved listing standing in for a blocked
+/// `/api/info` is a run that succeeds.
+#[tokio::test]
+async fn a_reddit_cleanup_fires_the_hook_only_for_a_refused_cookie() {
+    use crate::test_support::scratch_dir;
+    use RedditAnswer::{Block, RefusedCookie};
+
+    let listing = serde_json::json!({
+        "kind": "Listing",
+        "data": { "after": null, "children": [
+            { "kind": "t3", "data": { "name": "t3_abc", "subreddit": "rust",
+              "permalink": "/r/rust/comments/abc/x/", "title": "Real Title" } }
+        ] }
+    });
+    let cases = [
+        (RefusedCookie, None, true),
+        (Block, Some(RedditAnswer::Ok), false),
+        (Block, Some(RefusedCookie), true),
+        (Block, Some(Block), false),
+    ];
+    for (info, saved, fires) in cases {
+        let scratch = scratch_dir("reddit-cleanup-hook");
+        let marker = scratch.path().join("fired");
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/info.json"))
+            .respond_with(info.response(&listing))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user/psophis/saved.json"))
+            .respond_with(saved.unwrap_or(RedditAnswer::Ok).response(&listing))
+            .expect(u64::from(saved.is_some()))
+            .mount(&server)
+            .await;
+        let pinboard = FakePinboard {
+            all: vec![stored_at("https://www.reddit.com/r/rust/comments/abc/x/")],
+            ..Default::default()
+        };
+        let cleanup = RedditCleanup {
+            opts: reddit::cleanup::RedditCleanupOpts {
+                mark_nsfw: true,
+                fix_titles: true,
+                config: RedditConfig::default(),
+                dates: NO_DATING,
+                configured: Vec::new(),
+            },
+            client: Some(RedditInfoClient::with_base_url(
+                Some("reddit_session=synthetic".into()),
+                Some("psophis"),
+                server.uri(),
+            )),
+            hook: Some(format!("touch {}", marker.display())),
+        };
+
+        let (result, _) =
+            crate::http::recording_waits(cleanup.run(&pinboard.cleanup_store())).await;
+
+        let case = format!("{info:?} then {saved:?}");
+        assert_eq!(marker.exists(), fires, "{case}");
+        assert_eq!(
+            result.is_ok(),
+            saved == Some(RedditAnswer::Ok),
+            "{case}: {result:?}"
+        );
+    }
+}

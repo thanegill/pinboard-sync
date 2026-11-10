@@ -240,6 +240,18 @@ All notable changes to this project are documented here. The format is based on
   markup does.
 - A `sync --all` run where an account fails and bookmarks fail to write reports both, as
   `1 account(s) failed; 3 bookmark(s) failed to write`, instead of only the first.
+- `cleanup reddit` no longer fails when Reddit's edge blocks `/api/info`
+  ([#89](https://github.com/thanegill/pinboard-sync/issues/89)), as it has since
+  2026-11-09 even with a valid cookie. It reads the account's saved listing instead (the
+  account needs its `username`). A post still saved gets the same NSFW, title, notes, date
+  and tag fixes from it, a comment its tags when it is saved, and its NSFW and title fixes
+  when its thread is. A bookmark covered neither way gets only its URL and tags
+  normalized. The run exits 0 and warns, every time, with how many bookmarks each kind
+  covered. It still fails when the saved listing can't be read either, and a refused
+  cookie on either read still runs the auth-failure hook.
+- The message for Reddit's edge blocking `/api/info` links
+  [#89](https://github.com/thanegill/pinboard-sync/issues/89), which tracks that block. It
+  used to link #78, the unrelated saved-listing fix.
 
 ## [0.6.0] - 2026-10-25
 

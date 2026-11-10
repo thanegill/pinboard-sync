@@ -10,6 +10,7 @@ use std::io::{self, Write};
 /// Write `text` to stdout, unchanged. A closed pipe is `Ok`; any other failure is the
 /// caller's to report.
 #[cfg(not(test))]
+#[expect(clippy::disallowed_methods, reason = "the one place stdout is opened")]
 pub fn write(text: impl AsRef<[u8]>) -> io::Result<()> {
     write_to(&mut io::stdout().lock(), text.as_ref())
 }

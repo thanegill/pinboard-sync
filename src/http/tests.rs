@@ -724,7 +724,7 @@ pub(super) fn assert_error_hides(
 
 #[tokio::test]
 async fn request_error_does_not_leak_query_token() {
-    let http = reqwest::Client::new();
+    let http = client_builder().build().unwrap();
 
     // reqwest rejects the scheme before opening a socket but still attaches the URL.
     let err = send_with_connect_backoff(
@@ -746,7 +746,7 @@ async fn request_error_does_not_leak_query_token() {
 
 #[tokio::test]
 async fn a_request_that_cannot_be_built_fails_at_once_without_its_url() {
-    let http = reqwest::Client::new();
+    let http = client_builder().build().unwrap();
     let builds = Cell::new(0);
 
     let err = send_with_connect_backoff(

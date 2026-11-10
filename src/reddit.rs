@@ -1,10 +1,8 @@
-//! The Reddit clients: [`RedditClient`] reads the user's private **saved listing**
-//! (`/user/<name>/saved.json`, for `sync`), and [`RedditInfoClient`] looks up post metadata
-//! via **`/api/info.json`** (for `cleanup`), reading the saved listing in its place while
-//! Reddit's edge blocks it. Both run over the same transport -- a `reddit_session` cookie +
-//! native-tls, no OAuth app -- because Reddit's anti-bot edge refuses cookieless requests
-//! *and* rustls's TLS fingerprint. The cookie authenticates the saved listing, and the
-//! non-secret username picks whose saves to read.
+//! The Reddit clients: [`RedditClient`] reads the user's saved listing
+//! (`/user/<name>/saved.json`, for `sync`), and [`RedditInfoClient`] looks posts up in
+//! `/api/info.json` (for `cleanup`), reading the saved listing instead while Reddit's edge
+//! blocks it. Both send a `reddit_session` cookie over native-tls, no OAuth app: the
+//! anti-bot edge refuses cookieless requests and rustls's TLS fingerprint.
 
 pub mod cleanup;
 pub mod cookie;
@@ -31,21 +29,17 @@ use crate::source::{
     page_is_caught_up, BookmarkDraft, DedupKey, Halt, Source, SourceError, UrlKey,
 };
 
-/// Host serving both the saved listing and `/api/info.json`; old.reddit.com
-/// matches the bookmark URLs.
+/// Serves both endpoints, and matches the bookmark URLs.
 const REDDIT_BASE: &str = "https://old.reddit.com";
 
 /// Saved items per listing page: the most Reddit returns.
 const SAVED_PAGE_SIZE: &str = "100";
 /// Fullnames per `/api/info` request: the most Reddit accepts.
 const INFO_BATCH: usize = 100;
-/// Backstop against a malformed `after` cursor that never nulls out. Reddit caps any
-/// listing near 1000 items at 100 per page, so this covers a full saved listing many
-/// times over -- it only bounds a response that keeps returning a non-null cursor; the
-/// cursor-repeat case is caught by the `visited` guard.
+/// Backstop against an `after` cursor that never nulls out: a listing caps near 1000 items,
+/// so this is many full listings. A repeating cursor is the `visited` guard's.
 const MAX_SAVED_PAGES: u32 = 100;
-/// The pause before each saved page or `/api/info` batch after the first, to be gentle
-/// with Reddit's rate limit.
+/// Reddit's rate-limit pause before each saved page or `/api/info` batch after the first.
 const REQUEST_PAUSE: Duration = Duration::from_millis(1000);
 
 /// A Reddit request, as the messages about it name it.
@@ -68,13 +62,11 @@ const API_INFO: RedditRequest = RedditRequest {
     block_issue: 89,
 };
 
-/// The Reddit reads `cleanup reddit` makes: `/api/info` lookups by fullname, for
-/// `over_18`, the title, the post date, the notes and the tags, and the saved listing that
-/// stands in for them while Reddit's edge blocks `/api/info` (#89).
+/// The reads `cleanup reddit` makes: `/api/info` lookups by fullname, and the saved listing
+/// that stands in while Reddit's edge blocks them (#89).
 pub trait PostInfo {
-    /// Look `fullnames` up. Reddit's edge blocking a batch with its network-security page
-    /// ends the lookups without an error: the answer holds the batches before it and the
-    /// block.
+    /// Look `fullnames` up. A batch blocked by the edge's network-security page ends the
+    /// lookups without an error, answering the batches before it and the block.
     async fn info(&self, fullnames: &[String]) -> Result<InfoAnswer, SourceError>;
 
     /// Every item in the saved listing, or `None` when no username names whose to read.
@@ -86,8 +78,7 @@ pub trait PostInfo {
 pub struct InfoAnswer {
     /// The entries found, from every batch it answered.
     pub entries: Vec<RedditListingEntry>,
-    /// The [`Halt::Blocked`] message of the batch Reddit's edge blocked, which ended the
-    /// lookups.
+    /// The [`Halt::Blocked`] message of the batch that ended the lookups.
     pub blocked: Option<String>,
 }
 
@@ -95,7 +86,6 @@ pub struct InfoAnswer {
 struct RedditSession {
     http: RetryingClient,
     cookie: Option<SessionCookie>,
-    /// Host base for every endpoint (overridden in tests).
     base: String,
 }
 
@@ -114,7 +104,6 @@ impl RedditSession {
         })
     }
 
-    /// Attach the session cookie to a request, if one is configured.
     fn with_cookie(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.cookie {
             Some(cookie) => req.header(reqwest::header::COOKIE, &cookie.header),
@@ -122,9 +111,7 @@ impl RedditSession {
         }
     }
 
-    /// Every item in `username`'s saved listing, newest first, following `after` pagination
-    /// (Reddit caps any listing at ~1000), pushing each response body to `sink` as it
-    /// arrives.
+    /// `username`'s whole saved listing, newest first, each body pushed to `sink`.
     async fn read_saved(
         &self,
         username: &str,
@@ -216,7 +203,7 @@ pub struct RedditClient {
     session: RedditSession,
     /// Whose saved listing to read.
     username: String,
-    /// Per-account config: bookmark domain + tag vocabulary for shaping drafts.
+    /// The bookmark domain and tags drafts are shaped with.
     config: RedditConfig,
     /// Every configured account's `reddit_domain`, so a bookmark another account's
     /// `cleanup reddit` moved onto its mirror still keys as this save.
@@ -224,8 +211,6 @@ pub struct RedditClient {
 }
 
 impl RedditClient {
-    /// Reads `<base>/user/<username>/saved.json` and shapes drafts using `config`
-    /// (bookmark domain + tag vocabulary).
     pub fn new(
         username: String,
         cookie: Option<ConfiguredSecret>,
@@ -248,18 +233,16 @@ impl RedditClient {
         }
     }
 
-    /// Fetch all saved items, newest first, following `after` pagination (Reddit caps any
-    /// listing at ~1000).
+    /// The whole saved listing, newest first.
     async fn fetch_saved(&self) -> Result<Vec<RedditListingEntry>, SourceError> {
         self.session
             .read_saved(&self.username, &mut RawSink::disabled())
             .await
     }
 
-    /// Shape saved entries into drafts. A non-empty listing that yields zero drafts is an
-    /// error, not an empty success: it means every entry was dropped (e.g. a renamed
-    /// required subfield that still deserializes as `None`), which would otherwise make
-    /// `sync` exit 0 having imported nothing.
+    /// The drafts `entries` make. A non-empty listing making none is an error: every entry
+    /// was dropped (a renamed field reads as `None`), and `sync` would import nothing and
+    /// still exit 0.
     fn drafts_from(
         &self,
         entries: Vec<RedditListingEntry>,
@@ -302,8 +285,7 @@ impl RedditInfoClient {
 }
 
 impl PostInfo for RedditInfoClient {
-    /// Batch-fetch Thing data by fullname via `/api/info.json`, [`INFO_BATCH`] per
-    /// request. Answers with the entries that exist.
+    /// The entries that exist, [`INFO_BATCH`] fullnames per request.
     async fn info(&self, fullnames: &[String]) -> Result<InfoAnswer, SourceError> {
         let session = &self.session;
         let mut out: Vec<RedditListingEntry> = Vec::new();
@@ -357,10 +339,7 @@ impl PostInfo for RedditInfoClient {
 }
 
 impl Source for RedditClient {
-    /// Fetch the saved listing and shape each post/comment into a draft. A non-empty
-    /// listing that yields zero drafts is an error, not an empty success: it means every
-    /// entry was dropped (e.g. a renamed required subfield that still deserializes as
-    /// `None`), which would otherwise make `sync` exit 0 having imported nothing.
+    /// The saved listing as drafts ([`RedditClient::drafts_from`]).
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
         self.drafts_from(self.fetch_saved().await?)
     }
@@ -409,11 +388,10 @@ fn not_all_dropped(
 }
 
 impl BackupSource for RedditClient {
-    /// The listing is fetched in full before any of it is shaped, so a shape break is
-    /// reported *without* discarding the raw pages -- a schema change is exactly when the
-    /// verbatim body is worth having. (GitHub and HackerNews shape inline as they
-    /// paginate, so a failure there means the capture is incomplete and must not be
-    /// written over a good snapshot.)
+    /// The listing is read in full before any is shaped, so a shape break is reported with
+    /// the raw pages kept: a schema change is when they are worth having. GitHub and
+    /// HackerNews shape as they page, so a failure there leaves a capture too incomplete to
+    /// write over a good snapshot.
     async fn dump(&self) -> Result<BackupDump, SourceError> {
         let mut sink = RawSink::collecting();
         let entries = self.session.read_saved(&self.username, &mut sink).await?;
@@ -426,8 +404,6 @@ impl BackupSource for RedditClient {
 }
 
 impl UrlKey for RedditClient {
-    /// Reddit's dedup key is the host-agnostic permalink path, so the same post matches
-    /// across `old.`/`www.`/`m.` subdomains and every configured `reddit_domain`.
     fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         self.keys().dedup_key(url)
     }
@@ -437,9 +413,8 @@ impl UrlKey for RedditClient {
     }
 }
 
-/// The error for a redirect. A redirect to `/login` means Reddit wants a session it
-/// accepts (seen for a request with no cookie), so that becomes [`Halt::Reauth`]; any
-/// other target is a plain error.
+/// The error for a redirect: [`Halt::Reauth`] for one to `/login`, Reddit asking for a
+/// session it accepts; a plain error for any other target.
 fn redirect_error(
     resp: &reqwest::Response,
     what: &str,
@@ -475,9 +450,8 @@ fn redirect_error(
 /// - any other failure status, or a body cut off on a success or 401/403 (a partial 403
 ///   page can't tell a block from a refused cookie), is [`SourceError::Other`].
 ///
-/// `request` names the request, and a block's message links its issue. `cookie` is the one
-/// it sent: messages name its setting, and its [secrets](SessionCookie::secrets) are
-/// redacted from any body logged or quoted.
+/// A block's message links `request`'s issue. Messages name the setting `cookie` came from,
+/// and its [secrets](SessionCookie::secrets) are redacted from any body shown.
 async fn reddit_body(
     resp: reqwest::Response,
     request: RedditRequest,
@@ -555,22 +529,18 @@ async fn reddit_body(
 /// One of the HTML pages Reddit's edge answers a refused request with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EdgePage {
-    /// "You've been blocked by network security" (since 2026-10-20, redlib-org/redlib#591,
-    /// thanegill/pinboard-sync#78, and for `/api/info` since 2026-11-09, #89): served to a
-    /// request carrying a *valid* cookie, so no credential change lifts it.
+    /// "You've been blocked by network security" (#78, and #89 for `/api/info`): served
+    /// with a *valid* cookie, so no credential change lifts it.
     NetworkSecurity,
-    /// "whoa there, pardner! Your request has been blocked due to a network policy":
-    /// served for a junk cookie or bearer token as well as for blocked IP ranges, so it
-    /// stays a credential problem.
+    /// "whoa there, pardner! Your request has been blocked due to a network policy": served
+    /// for a junk cookie too, so it stays a credential problem.
     NetworkPolicy,
 }
 
-/// Which edge page a response is, if any: a 403 `text/html` body carrying the page's
-/// phrase. Neither phrase includes the apostrophe, and each is matched
-/// case-insensitively anywhere in the body with its whitespace collapsed, so the
-/// apostrophe's spelling and the markup and line breaks around it don't matter. Reddit's
-/// API answers a real 403 with short JSON, which the content type rules out even if it
-/// ever quoted a phrase.
+/// Which edge page a response is: a 403 `text/html` body holding its phrase, matched
+/// without the apostrophe, whose spelling varies, case-insensitively and with whitespace
+/// collapsed, so markup and line breaks don't matter. A real API 403 is JSON, which the
+/// content type rules out.
 fn edge_page(status: reqwest::StatusCode, content_type: &str, body: &str) -> Option<EdgePage> {
     if status != reqwest::StatusCode::FORBIDDEN
         || !content_type.to_ascii_lowercase().starts_with("text/html")

@@ -647,7 +647,9 @@ fn error_excerpt(text: &str) -> String {
         return one_line;
     }
     let cut = one_line.floor_char_boundary(ERROR_BODY_MAX_BYTES - ELLIPSIS.len());
-    format!("{}{ELLIPSIS}", &one_line[..cut])
+    #[expect(clippy::string_slice, reason = "`cut` is a floored char boundary")]
+    let kept = &one_line[..cut];
+    format!("{kept}{ELLIPSIS}")
 }
 
 #[cfg(test)]

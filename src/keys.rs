@@ -136,6 +136,11 @@ impl UrlKey for HackerNewsKeys {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::string_slice,
+        reason = "a test's slice off a char boundary fails the test, as indexing may in tests"
+    )]
+
     use proptest::prelude::*;
 
     use super::*;

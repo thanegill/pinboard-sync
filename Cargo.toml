@@ -80,6 +80,11 @@ option_if_let_else = "warn"
 redundant_pub_crate = "warn"
 str_to_string = "warn"
 use_self = "warn"
+# No `[]` string slice off a char boundary, `[]` index past the end, or bare `panic!`
+# outside tests. A site proven safe says so in an `#[expect]`.
+indexing_slicing = "warn"
+panic = "warn"
+string_slice = "warn"
 
 [[bin]]
 name = "pinboard-sync"

@@ -276,7 +276,7 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     // bookmark moving away from it at both URLs for good.
     let targets: HashSet<&Url> = group_order
         .iter()
-        .filter(|key| !groups[*key].is_empty())
+        .filter(|key| groups.get(*key).is_some_and(|members| !members.is_empty()))
         .copied()
         .collect();
     let mut writer = GroupWriter {
@@ -389,6 +389,7 @@ async fn plan_all<'b, C: CleanupPass>(
             // every one after it.
             Err(SourceError::Halted(halt)) => {
                 outcome.halted = Some(halt);
+                #[expect(clippy::indexing_slicing, reason = "`index` is from `enumerate`")]
                 untouchable.extend(
                     bookmarks[index..]
                         .iter()
@@ -559,6 +560,7 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
             // The record that stays sets the visibility. With none (an empty target, or an
             // occupant moving away) the plans must agree with each other, or none writes: a
             // merge would pick a visibility with nothing to justify it.
+            #[expect(clippy::indexing_slicing, reason = "`incumbent_of` returns a position")]
             let staying = residents
                 .get(key)
                 .map(|resident| resident.public)
@@ -656,6 +658,10 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
                 continue;
             }
             let lead = lead_of(members, key, resident.is_some());
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "`lead_of` returns a position, or 0 of the non-empty `members`"
+            )]
             let mut merging: Vec<Member<'p>> = lead.map(|at| vec![members[at]]).unwrap_or_default();
             let lead_note = kept_text(store, merge_members(store, key, &merging, resident).kept());
             let mut held: Vec<Url> = Vec::new();
@@ -723,6 +729,10 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
             };
             let mut held: Vec<Url> = Vec::new();
             let lead = lead_of(members, key, resident.is_some());
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "`lead_of` returns a position, or 0 of the non-empty `members`"
+            )]
             let mut merging: Vec<Member<'p>> = lead.map(|at| vec![members[at]]).unwrap_or_default();
             let lead_sendable = match (resident, &members[..]) {
                 (None, [Member { stored, planned }]) => {
@@ -781,6 +791,7 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
                 self.store.can_write(&alone.fitted).is_ok()
             });
             if let Some(at) = sendable_alone {
+                #[expect(clippy::indexing_slicing, reason = "`at` is from `position`")]
                 members[..=at].rotate_right(1);
             }
         }
@@ -1191,6 +1202,10 @@ fn holds_what_it_keeps<S: BookmarkStore>(
     let stores = |block: &str, index: usize, kept_of_block: &str| {
         let start_lost =
             |start: &str| !start.is_empty() && !held.holds_start(&kept, index, block, start);
+        #[expect(
+            clippy::string_slice,
+            reason = "`shared_prefix_len` ends on a char boundary of its first argument"
+        )]
         let stored_in_place = stored_kept
             .block_at(index)
             .filter(|own| !held.holds(own))
@@ -1340,6 +1355,10 @@ fn sorted_blocks<'n>(blocks: impl Iterator<Item = &'n str>) -> Vec<&'n str> {
 
 /// The whole block of one of `sources` that `kept`, a cut note's kept text, was cut inside:
 /// in the first source `kept` starts, the block running from the boundary before the cut.
+#[expect(
+    clippy::string_slice,
+    reason = "`source` starts with `kept`, and `start` follows a `\\n\\n` found in it"
+)]
 fn block_cut_from<'n>(kept: &str, sources: [&'n str; 2]) -> Option<&'n str> {
     let source = sources
         .into_iter()
@@ -1365,6 +1384,7 @@ fn merge_members<'p, S: BookmarkStore>(
         .is_none()
         .then(|| incumbent_of(members, key))
         .flatten();
+    #[expect(clippy::indexing_slicing, reason = "`incumbent_of` returns a position")]
     let survivor = resident.or_else(|| lifted.map(|at| members[at].planned));
     let mut movers = members
         .iter()
@@ -1396,6 +1416,7 @@ fn merge_members<'p, S: BookmarkStore>(
         merged.timestamp = survivor.timestamp.or(merged.timestamp);
     }
     // The stored record, not the incumbent's plan: what the merge is fitted against.
+    #[expect(clippy::indexing_slicing, reason = "`lifted` is from `incumbent_of`")]
     let stored_at_target = resident.or_else(|| lifted.map(|at| members[at].stored));
     let fitted_from = stored_at_target.or(base.map(|member| member.stored));
     let fitted = fit_plan(store, fitted_from, &merged);

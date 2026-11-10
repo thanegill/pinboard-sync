@@ -134,9 +134,13 @@ fn flag_given_twice(
                 continue;
             }
             if let Some(&first) = first_level.get(arg.get_id()) {
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "a level above this one has a subcommand, which `names` holds"
+                )]
+                let subcommand = names[first];
                 return Some(format!(
-                    "'--{long}' was given both before and after '{}'; give it once",
-                    names[first]
+                    "'--{long}' was given both before and after '{subcommand}'; give it once"
                 ));
             }
             first_level.insert(arg.get_id(), depth);

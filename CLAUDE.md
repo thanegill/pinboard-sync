@@ -417,8 +417,10 @@ other 401/403 is `Halt::Reauth`, including the "whoa there, pardner" page, which
 serves for a junk cookie. A block arrives with a valid cookie (#78), so the hook would send
 the operator to re-copy a credential that isn't the problem. It shares `RateLimited`'s
 handling (no hook; a pass halts via `Halt::Blocked`) but keeps its own variant so the
-message names a block, which no reset is known to lift. A 401/403 whose body is cut off
-mid-read is `Other`, since without the whole page a block and a refused cookie look alike.
+message names a block, which no reset is known to lift; each `RedditRequest` names the issue
+its message links (#78 for the saved listing, #89 for `/api/info`). A 401/403 whose body is
+cut off mid-read is `Other`, since without the whole page a block and a refused cookie look
+alike.
 
 **The Reddit clients never follow a redirect.** Reddit answers a request without a session
 it accepts with a 302 to `/login`, and following it can land on a login page that answers

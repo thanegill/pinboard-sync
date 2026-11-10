@@ -299,10 +299,10 @@ async fn fetch_saved_maps_a_block_page_to_blocked() {
         server.uri(),
     );
     let err = client.fetch_saved().await.unwrap_err();
-    assert!(
-        matches!(err, SourceError::Halted(Halt::Blocked(_))),
-        "got {err:?}"
-    );
+    let SourceError::Halted(Halt::Blocked(message)) = err else {
+        panic!("got {err:?}");
+    };
+    assert!(message.contains("pinboard-sync/issues/78."), "{message}");
 }
 
 #[tokio::test]
@@ -316,10 +316,10 @@ async fn info_maps_a_block_page_to_blocked() {
         .await;
     let client = info_client(&server, "reddit_session=secret");
     let err = client.info(&strings(&["t3_a"])).await.unwrap_err();
-    assert!(
-        matches!(err, SourceError::Halted(Halt::Blocked(_))),
-        "got {err:?}"
-    );
+    let SourceError::Halted(Halt::Blocked(message)) = err else {
+        panic!("got {err:?}");
+    };
+    assert!(message.contains("pinboard-sync/issues/89."), "{message}");
 }
 
 #[tokio::test]

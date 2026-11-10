@@ -240,6 +240,9 @@ All notable changes to this project are documented here. The format is based on
   markup does.
 - A `sync --all` run where an account fails and bookmarks fail to write reports both, as
   `1 account(s) failed; 3 bookmark(s) failed to write`, instead of only the first.
+- The message for Reddit's edge blocking `/api/info` links
+  [#89](https://github.com/thanegill/pinboard-sync/issues/89), which tracks that block. It
+  used to link #78, the unrelated saved-listing fix.
 
 ## [0.6.0] - 2026-10-25
 

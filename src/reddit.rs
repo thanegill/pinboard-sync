@@ -47,6 +47,26 @@ const MAX_SAVED_PAGES: u32 = 100;
 /// with Reddit's rate limit.
 const REQUEST_PAUSE: Duration = Duration::from_millis(1000);
 
+/// A Reddit request, as the messages about it name it.
+#[derive(Debug, Clone, Copy)]
+struct RedditRequest {
+    /// What messages call the request.
+    what: &'static str,
+    /// The pinboard-sync issue tracking Reddit's edge blocking it.
+    block_issue: u32,
+}
+
+/// The saved listing, for `sync`, `backup` and the `/api/info` fallback.
+const SAVED_LISTING: RedditRequest = RedditRequest {
+    what: "saved listing",
+    block_issue: 78,
+};
+/// `/api/info`, for `cleanup reddit`.
+const API_INFO: RedditRequest = RedditRequest {
+    what: "api/info",
+    block_issue: 89,
+};
+
 /// Reddit `/api/info` lookups by fullname (used by `cleanup` for `over_18` and the title).
 pub trait PostInfo {
     async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError>;
@@ -115,7 +135,7 @@ impl RedditSession {
             let after_ref = after.as_deref();
             let resp = self
                 .http
-                .send("saved listing", || {
+                .send(SAVED_LISTING.what, || {
                     let mut req = self
                         .http
                         .get(&endpoint)
@@ -126,7 +146,7 @@ impl RedditSession {
                     self.with_cookie(req)
                 })
                 .await?;
-            let body = reddit_body(resp, "saved listing", self.cookie.as_ref()).await?;
+            let body = reddit_body(resp, SAVED_LISTING, self.cookie.as_ref()).await?;
             sink.push(PRIMARY_STREAM, RawKind::Json, &body);
             let listing: RedditListing =
                 serde_json::from_str(&body).context("parsing saved listing response")?;
@@ -244,7 +264,7 @@ impl PostInfo for RedditInfoClient {
             let ids = chunk.join(",");
             let resp = session
                 .http
-                .send("api/info", || {
+                .send(API_INFO.what, || {
                     session.with_cookie(
                         session
                             .http
@@ -254,7 +274,7 @@ impl PostInfo for RedditInfoClient {
                 })
                 .await?;
             let listing: RedditListing =
-                decode_reddit_json(resp, "api/info", session.cookie.as_ref()).await?;
+                decode_reddit_json(resp, API_INFO, session.cookie.as_ref()).await?;
             out.extend(listing.data.children);
         }
         Ok(out)
@@ -411,15 +431,18 @@ fn redirect_error(
 /// - any other failure status, or a body cut off on a success or 401/403 (a partial 403
 ///   page can't tell a block from a refused cookie), is [`SourceError::Other`].
 ///
-/// `what` names the request. `cookie` is the one it sent: messages name its setting, and
-/// its [secrets](SessionCookie::secrets) are redacted from any body logged or quoted.
+/// `request` names the request, and a block's message links its issue. `cookie` is the one
+/// it sent: messages name its setting, and its [secrets](SessionCookie::secrets) are
+/// redacted from any body logged or quoted.
 async fn reddit_body(
     resp: reqwest::Response,
-    what: &str,
+    request: RedditRequest,
     cookie: Option<&SessionCookie>,
 ) -> Result<String, SourceError> {
     use reqwest::header::CONTENT_TYPE;
     use reqwest::StatusCode;
+
+    let RedditRequest { what, block_issue } = request;
 
     let cookie_source = cookie.map(|cookie| cookie.source);
     let secrets = cookie.map(SessionCookie::secrets).unwrap_or_default();
@@ -452,7 +475,7 @@ async fn reddit_body(
             Some(EdgePage::NetworkSecurity) => SourceError::Halted(Halt::Blocked(format!(
                 "{what} returned {status} — Reddit's edge blocked the request with its \
                  network-security page. Re-copying the cookie will not lift the \
-                 block; tracked in https://github.com/thanegill/pinboard-sync/issues/78."
+                 block; tracked in https://github.com/thanegill/pinboard-sync/issues/{block_issue}."
             ))),
             Some(EdgePage::NetworkPolicy) => SourceError::Halted(Halt::Reauth(format!(
                 "{reauth} (Reddit answered with its \"network policy\" page, which it \
@@ -489,8 +512,8 @@ async fn reddit_body(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EdgePage {
     /// "You've been blocked by network security" (since 2026-10-20, redlib-org/redlib#591,
-    /// thanegill/pinboard-sync#78): served to a request carrying a *valid* cookie, so no
-    /// credential change lifts it.
+    /// thanegill/pinboard-sync#78, and for `/api/info` since 2026-11-09, #89): served to a
+    /// request carrying a *valid* cookie, so no credential change lifts it.
     NetworkSecurity,
     /// "whoa there, pardner! Your request has been blocked due to a network policy":
     /// served for a junk cookie or bearer token as well as for blocked IP ranges, so it
@@ -523,11 +546,14 @@ fn edge_page(status: reqwest::StatusCode, content_type: &str, body: &str) -> Opt
 /// Decode a Reddit JSON response into `T`, over [`reddit_body`]'s status handling.
 async fn decode_reddit_json<T: DeserializeOwned>(
     resp: reqwest::Response,
-    what: &str,
+    request: RedditRequest,
     cookie: Option<&SessionCookie>,
 ) -> Result<T, SourceError> {
-    let body = reddit_body(resp, what, cookie).await?;
-    Ok(serde_json::from_str(&body).with_context(|| format!("parsing {what} response"))?)
+    let body = reddit_body(resp, request, cookie).await?;
+    Ok(
+        serde_json::from_str(&body)
+            .with_context(|| format!("parsing {} response", request.what))?,
+    )
 }
 
 #[cfg(test)]

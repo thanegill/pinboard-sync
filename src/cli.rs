@@ -1,5 +1,5 @@
-//! The command line: clap's `Cli` and every subcommand's arguments, and the conversions
-//! from them into the overrides the job builders and cleanup passes resolve settings from.
+//! The command line: clap's types, and their conversions into the overrides settings
+//! resolve from. Doc comments on clap types are the `--help` text.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -32,16 +32,14 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Parse the process's arguments as `Parser::parse` does, exiting with clap's usage
-    /// error on a bad command line, a flag given on both sides of a subcommand included.
+    /// The process's arguments through [`parse_with`], exiting with clap's usage error.
     pub fn parse_args() -> Cli {
         parse_with(Cli::command(), std::env::args_os()).unwrap_or_else(|error| error.exit())
     }
 }
 
-/// Parse `argv` against `command`, [`Cli::command`] or a test's variant of it, refusing a
-/// flag given on the command line at more than one level, before a subcommand and after
-/// it. `-v` is the exception: it counts at every level, so `-v sync -vv` is `-vvv`.
+/// Parse `argv` against `command`, refusing a flag given at more than one level. `-v`
+/// counts at every level instead, so `-v sync -vv` is `-vvv`.
 pub fn parse_with<T: Into<OsString> + Clone>(
     command: clap::Command,
     argv: impl IntoIterator<Item = T>,
@@ -60,10 +58,9 @@ pub fn parse_with<T: Into<OsString> + Clone>(
     Ok(cli)
 }
 
-/// `command` with each of its global args declared at every level instead, so that each
-/// level's matches hold only what was given there. clap copies a global's value to every
-/// level, which hides where it was given and keeps only the `-v` count of the deepest level
-/// that had any.
+/// `command` with its global args declared at every level, so each level's matches hold
+/// only what was given there: clap copies a global to every level, hiding where it was
+/// given and keeping only the deepest `-v` count.
 fn with_globals_at_every_level(command: clap::Command) -> clap::Command {
     fn declare(command: clap::Command, args: &[clap::Arg]) -> clap::Command {
         args.iter()
@@ -81,8 +78,7 @@ fn with_globals_at_every_level(command: clap::Command) -> clap::Command {
     command.mut_subcommands(|subcommand| declare(subcommand, &globals))
 }
 
-/// The matches of each level the command line reached: the top level, then each
-/// subcommand in turn.
+/// The matches of each level the command line reached, top first.
 fn levels_of(matches: &ArgMatches) -> Vec<&ArgMatches> {
     std::iter::successors(Some(matches), |level| {
         level.subcommand().map(|(_, next)| next)
@@ -90,9 +86,8 @@ fn levels_of(matches: &ArgMatches) -> Vec<&ArgMatches> {
     .collect()
 }
 
-/// Refuse a flag the command line gives at two levels, such as `--dry-run` before a
-/// subcommand and after it, or `--config` at the top and on a source: neither has a
-/// reason to win. The error is clap's, with the deepest subcommand's usage.
+/// Refuse a flag given at two levels (`--dry-run` before and after a subcommand): neither
+/// has a reason to win. The error is clap's, with the deepest subcommand's usage.
 fn refuse_flags_given_twice(
     command: &mut clap::Command,
     matches: &ArgMatches,
@@ -112,12 +107,10 @@ fn refuse_flags_given_twice(
     Err(deepest.error(ErrorKind::ArgumentConflict, message))
 }
 
-/// The complaint about the first long flag given at two of the levels along `names`, the
-/// subcommand path `matches` took, or `None`. A value from the environment or a default is
-/// not a placement, so `PINBOARD_SYNC_ON_AUTH_FAILURE`, which backs the per-source
-/// `--on-auth-failure`, beside the top-level flag is fine. A counted flag (`-v`) adds up
-/// instead, and `--all` is two different flags, every source's accounts before a source
-/// and that source's after it, so the run refuses the pair with its own message.
+/// The error for the first long flag given at two levels along `names`, or `None`. An env
+/// value or default is not a placement, so `PINBOARD_SYNC_ON_AUTH_FAILURE`, behind the
+/// per-source flag, beside the top-level one is fine. `-v` adds up, and `--all` is two
+/// flags (every source, or one source's accounts), a pair the run refuses itself.
 fn flag_given_twice(
     command: &clap::Command,
     matches: &ArgMatches,
@@ -222,8 +215,7 @@ pub enum BackupTarget {
     Pinboard(PinboardBackupArgs),
 }
 
-// Backing up a source never contacts Pinboard, so none of the source targets take a
-// Pinboard token -- the one place `backup` deliberately diverges from `sync`/`cleanup`.
+// Backing up a source never contacts Pinboard, so no source target takes a Pinboard token.
 
 #[derive(Args)]
 pub struct RedditBackupArgs {
@@ -472,9 +464,8 @@ pub struct DateFlags {
 }
 
 impl DateFlags {
-    /// Take each date flag from whichever side of the source subcommand gave it: before
-    /// it (on `CleanupCmd`) or after it (this value). The command line refuses both.
-    /// Mirrors sync's `SyncOverrides::with_top_level_hook`.
+    /// Each date flag from whichever side of the source subcommand gave it: before
+    /// (`top_overrides`) or after (`self`). The command line refuses both.
     #[must_use]
     pub fn with_top_level(self, top_overrides: &DateFlags) -> DateFlags {
         DateFlags {
@@ -548,8 +539,7 @@ pub struct RedditCleanupArgs {
     pub dry_run: bool,
 }
 
-/// The date-setting flags a sync invocation supplies. `stale_to_now` is cleanup-only, so it
-/// is always `None` here.
+/// A sync's date flags; `stale_to_now` is cleanup-only.
 impl From<&SyncFlags> for DateFlags {
     fn from(flags: &SyncFlags) -> Self {
         DateFlags {
@@ -560,9 +550,8 @@ impl From<&SyncFlags> for DateFlags {
     }
 }
 
-// `backup` reuses the sync job builders (and so the whole secret ladder), but supplies
-// only the credentials and the auth hook: every other override affects a *write* to
-// Pinboard, which backup never performs.
+// `backup` reuses the sync job builders, supplying only credentials and the hook: every
+// other override is for a write, which backup never makes.
 
 impl From<RedditBackupArgs> for SyncOverrides {
     fn from(args: RedditBackupArgs) -> Self {

@@ -82,6 +82,77 @@ impl RedditSession {
             None => req,
         }
     }
+
+    /// Follow `username`'s saved listing's `after` cursor, handing each page's entries to
+    /// `on_page`, until the listing ends, `on_page` breaks (caught up), the cursor loops
+    /// back, or [`MAX_SAVED_PAGES`] is reached.
+    async fn walk_saved(
+        &self,
+        username: &str,
+        sink: &mut RawSink,
+        mut on_page: impl FnMut(Vec<RedditListingEntry>) -> ControlFlow<()>,
+    ) -> Result<(), SourceError> {
+        let endpoint = format!("{}/user/{username}/saved.json", self.base);
+        let mut after: Option<String> = None;
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut page: u32 = 0;
+
+        loop {
+            page += 1;
+            if page > MAX_SAVED_PAGES {
+                warn!(
+                    "reddit saved for '{username}': hit the {MAX_SAVED_PAGES}-page cap; \
+                     stopping (some saved items may be missing)"
+                );
+                sink.mark_truncated(format!(
+                    "reddit saved listing stopped at the {MAX_SAVED_PAGES}-page cap"
+                ));
+                break;
+            }
+            if page > 1 {
+                crate::http::sleep(REQUEST_PAUSE).await;
+            }
+            let after_ref = after.as_deref();
+            let resp = self
+                .http
+                .send("saved listing", || {
+                    let mut req = self
+                        .http
+                        .get(&endpoint)
+                        .query(&[("limit", SAVED_PAGE_SIZE), ("raw_json", "1")]);
+                    if let Some(a) = after_ref {
+                        req = req.query(&[("after", a)]);
+                    }
+                    self.with_cookie(req)
+                })
+                .await?;
+            let body = reddit_body(resp, "saved listing", self.cookie.as_ref()).await?;
+            sink.push(PRIMARY_STREAM, RawKind::Json, &body);
+            let listing: RedditListing =
+                serde_json::from_str(&body).context("parsing saved listing response")?;
+            let got = listing.data.children.len();
+            if on_page(listing.data.children).is_break() {
+                debug!("reddit saved for '{username}': page {page} has nothing new; stopping");
+                break;
+            }
+
+            match listing.data.after {
+                Some(a) if got > 0 => {
+                    if !visited.insert(a.clone()) {
+                        warn!(
+                            "reddit saved for '{username}': 'after' cursor looped back to \
+                             {a}; stopping"
+                        );
+                        break;
+                    }
+                    after = Some(a);
+                }
+                _ => break,
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Reads a user's saved listing, for `sync` and `backup`.
@@ -149,84 +220,13 @@ impl RedditClient {
         sink: &mut RawSink,
     ) -> Result<Vec<RedditListingEntry>, SourceError> {
         let mut out: Vec<RedditListingEntry> = Vec::new();
-        self.walk_saved(sink, |page| {
-            out.extend(page);
-            ControlFlow::Continue(())
-        })
-        .await?;
+        self.session
+            .walk_saved(&self.username, sink, |page| {
+                out.extend(page);
+                ControlFlow::Continue(())
+            })
+            .await?;
         Ok(out)
-    }
-
-    /// Follow the saved listing's `after` cursor, handing each page's entries to
-    /// `on_page`, until the listing ends, `on_page` breaks (caught up), the cursor loops
-    /// back, or [`MAX_SAVED_PAGES`] is reached.
-    async fn walk_saved(
-        &self,
-        sink: &mut RawSink,
-        mut on_page: impl FnMut(Vec<RedditListingEntry>) -> ControlFlow<()>,
-    ) -> Result<(), SourceError> {
-        let username = &self.username;
-        let session = &self.session;
-        let endpoint = format!("{}/user/{username}/saved.json", session.base);
-        let mut after: Option<String> = None;
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut page: u32 = 0;
-
-        loop {
-            page += 1;
-            if page > MAX_SAVED_PAGES {
-                warn!(
-                    "reddit saved for '{username}': hit the {MAX_SAVED_PAGES}-page cap; \
-                     stopping (some saved items may be missing)"
-                );
-                sink.mark_truncated(format!(
-                    "reddit saved listing stopped at the {MAX_SAVED_PAGES}-page cap"
-                ));
-                break;
-            }
-            if page > 1 {
-                crate::http::sleep(REQUEST_PAUSE).await;
-            }
-            let after_ref = after.as_deref();
-            let resp = session
-                .http
-                .send("saved listing", || {
-                    let mut req = session
-                        .http
-                        .get(&endpoint)
-                        .query(&[("limit", SAVED_PAGE_SIZE), ("raw_json", "1")]);
-                    if let Some(a) = after_ref {
-                        req = req.query(&[("after", a)]);
-                    }
-                    session.with_cookie(req)
-                })
-                .await?;
-            let body = reddit_body(resp, "saved listing", session.cookie.as_ref()).await?;
-            sink.push(PRIMARY_STREAM, RawKind::Json, &body);
-            let listing: RedditListing =
-                serde_json::from_str(&body).context("parsing saved listing response")?;
-            let got = listing.data.children.len();
-            if on_page(listing.data.children).is_break() {
-                debug!("reddit saved for '{username}': page {page} has nothing new; stopping");
-                break;
-            }
-
-            match listing.data.after {
-                Some(a) if got > 0 => {
-                    if !visited.insert(a.clone()) {
-                        warn!(
-                            "reddit saved for '{username}': 'after' cursor looped back to \
-                             {a}; stopping"
-                        );
-                        break;
-                    }
-                    after = Some(a);
-                }
-                _ => break,
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -279,19 +279,20 @@ impl Source for RedditClient {
         let synced_keys = self.synced_keys(existing);
         let mut entry_count = 0;
         let mut drafts = Vec::new();
-        self.walk_saved(&mut RawSink::disabled(), |page| {
-            let page_len = page.len();
-            entry_count += page_len;
-            let page_drafts = self.shape(page);
-            let caught_up = page_is_caught_up(page_len, &page_drafts, &synced_keys);
-            drafts.extend(page_drafts);
-            if caught_up {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        })
-        .await?;
+        self.session
+            .walk_saved(&self.username, &mut RawSink::disabled(), |page| {
+                let page_len = page.len();
+                entry_count += page_len;
+                let page_drafts = self.shape(page);
+                let caught_up = page_is_caught_up(page_len, &page_drafts, &synced_keys);
+                drafts.extend(page_drafts);
+                if caught_up {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .await?;
         not_all_dropped(entry_count, drafts)
     }
 }

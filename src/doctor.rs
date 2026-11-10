@@ -13,8 +13,8 @@ use crate::jobs::{
 use crate::source::{Source, SourceError};
 use crate::stdout::outln;
 
-/// Validate the Pinboard token and every configured account's credentials by
-/// fetching each source. Prints a ✓/✗ line per check; exits non-zero if any failed.
+/// Check the Pinboard token and every account's credentials by fetching each, a ✓/✗ line
+/// per check, failing if any did.
 pub async fn run_doctor(config: &Config) -> Result<()> {
     let mut failed = 0usize;
 
@@ -26,15 +26,12 @@ pub async fn run_doctor(config: &Config) -> Result<()> {
         }
     }
 
-    // Only when a directory is configured: a machine that never runs `backup` shouldn't
-    // fail `doctor` over it. Checked here so a misconfigured StateDirectory surfaces now
-    // rather than as a quiet failure in the journal at the next timer firing.
+    // Only when configured: a machine that never runs `backup` mustn't fail over it. Here,
+    // a bad StateDirectory shows now rather than at the next timer firing.
     if let Some(dir) = &config.backup.directory {
         match backup::probe_writable(Path::new(dir)) {
             Ok(backup::DirProbe::Writable) => outln!("✓ backup — {dir} is writable"),
-            // Not yet created is healthy: `backup` makes it on its first run, and only a
-            // typo'd or unwritable *parent* is a real problem. Failing here would red-flag
-            // a correct config that simply hasn't run yet.
+            // `backup` creates it on its first run; only a bad parent is a problem.
             Ok(backup::DirProbe::WillBeCreated) => {
                 outln!("✓ backup — {dir} will be created on the first run");
             }
@@ -57,8 +54,7 @@ pub async fn run_doctor(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Probe each configured account by fetching its source; returns the count that
-/// failed. Reuses the normal job builders, so it exercises the real auth path.
+/// Fetch each configured account through the real job builders, returning how many failed.
 async fn check_accounts<A: SourceAccount>(overrides: &SyncOverrides, config: &Config) -> usize {
     let source = A::SOURCE;
     let accounts = A::configured(config);

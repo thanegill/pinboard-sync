@@ -1,6 +1,5 @@
-//! The `--on-auth-failure` hook: which command a run resolves (flag/env -> account ->
-//! `[defaults.<source>]` -> `[hooks]`), and firing it, only when a source says a
-//! credential needs re-authenticating.
+//! The `--on-auth-failure` hook: which command a run resolves, and firing it when a source
+//! says a credential needs re-authenticating.
 
 use std::path::Path;
 
@@ -10,21 +9,17 @@ use crate::config::Config;
 use crate::jobs::SourceAccount;
 use crate::source::{Halt, SourceError};
 
-/// `PINBOARD_SYNC_ON_AUTH_FAILURE`, for every run with no per-source `--on-auth-failure`
-/// flag to carry it: `sync --all`, `backup --all` and `cleanup`. clap binds the variable to
-/// the per-source flags only, so an explicit flag outranks it, and `sync`'s top-level flag,
-/// which `with_top_level_hook` prefers when given, outranks both; these runs read it here.
-/// The NixOS module sets the hook only through this variable, so without it the service's
-/// runs would never fire it.
+/// `PINBOARD_SYNC_ON_AUTH_FAILURE`, for the runs with no per-source `--on-auth-failure` to
+/// carry it: `sync --all`, `backup --all` and `cleanup`. clap binds it to the per-source
+/// flags only. The NixOS module sets the hook only through it, so without this the
+/// service's runs would never fire it.
 pub fn on_auth_failure_from_env() -> Option<String> {
     crate::secrets::env_var("PINBOARD_SYNC_ON_AUTH_FAILURE").filter(|v| !v.is_empty())
 }
 
-/// Map a `SourceError` to an `anyhow::Error`, firing the auth-failure hook when
-/// re-authentication is required.
-///
-/// Only [`Halt::Reauth`] fires it: no credential change clears a rate limit or an edge
-/// block, so firing the hook would send the operator after the wrong problem.
+/// `e` as an `anyhow::Error`, firing the hook for [`Halt::Reauth`] only: no credential
+/// change clears a rate limit or an edge block, so the hook would send the operator after
+/// the wrong problem.
 pub fn handle_source_err(e: SourceError, hook: Option<&str>) -> anyhow::Error {
     if let SourceError::Halted(Halt::Reauth(msg)) = &e {
         run_auth_failure_hook(hook, msg);
@@ -68,14 +63,10 @@ fn hook_shell(system_shell: &Path) -> &Path {
     }
 }
 
-/// The auth-failure hook for a `cleanup` run, resolved through a ladder of
-/// `PINBOARD_SYNC_ON_AUTH_FAILURE` -> account -> `[defaults.<source>]` -> `[hooks]`. The
-/// `cleanup` subcommands take no `--on-auth-failure` flag, so the env var is the top rung.
-///
-/// Reading the env var here is load-bearing, not a convenience: the NixOS module exports
-/// `onAuthFailure` *only* into the unit environment -- it never reaches the generated
-/// TOML -- and runs the `cleanup --all` timer with it. Resolving from config alone would
-/// leave the hook dead for the exact deployment it is meant to serve.
+/// The hook for a `cleanup` run: `PINBOARD_SYNC_ON_AUTH_FAILURE`, else the account's, the
+/// source default's or `[hooks]`. `cleanup` takes no `--on-auth-failure`, and the NixOS
+/// module exports the hook only into the unit environment, never the TOML, so from config
+/// alone the `cleanup --all` timer's hook would be dead.
 pub fn cleanup_hook<A: SourceAccount>(account: Option<&A>, config: &Config) -> Option<String> {
     A::hook(account, on_auth_failure_from_env(), config)
 }

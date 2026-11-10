@@ -109,6 +109,11 @@ All notable changes to this project are documented here. The format is based on
   point. It used to delete the duplicate if the block in that place started the same way,
   even when that was another link. A duplicate with three or more blank lines in a row
   before its cut is no longer refused on every run.
+- `cleanup` keeps a duplicate whose note would be cut inside a block, such as an
+  `HN Link:` line, when the bookmark it would merge into is stored cut at that point after
+  other blocks. It used to delete the duplicate if that stored cut started the same way. A
+  duplicate with three or more blank lines in a row before that point, in either note, is
+  no longer refused on every run.
 - `cleanup github` leaves a `github.com/<owner>/.git` bookmark alone, and any whose repo
   name is `.` or `..` once `.git` is dropped. It used to move them to the owner's
   profile or to GitHub's home page.

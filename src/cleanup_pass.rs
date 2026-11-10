@@ -1298,7 +1298,8 @@ fn holds_what_it_keeps<S: BookmarkStore>(
         .filter(|stored_text| note_text.starts_with(stored_text))
         .map(|_| stored_kept.whole_count());
     let stores = |block: &str, index: usize, kept_of_block: &str| {
-        let start_lost = |start: &str| !start.is_empty() && !held.holds_start(block, index, start);
+        let start_lost =
+            |start: &str| !start.is_empty() && !held.holds_start(&kept, index, block, start);
         let stored_in_place = stored_kept
             .block_at(index)
             .filter(|own| !held.holds(own))
@@ -1330,8 +1331,9 @@ fn holds_what_it_keeps<S: BookmarkStore>(
     let index = kept.whole_count();
     match kept.cut_block {
         Some(block) => {
-            held.holds_start(block, index, kept.cut)
-                || (!stores(block, index, kept.cut) && carried.holds_start(block, index, kept.cut))
+            held.holds_start(&kept, index, block, kept.cut)
+                || (!stores(block, index, kept.cut)
+                    && carried.holds_start(&kept, index, block, kept.cut))
         }
         // Cut from a note already cut there, so only this start of the block is known.
         // Blocks before it count in any order: a merge appends what its lead lacks.
@@ -1402,19 +1404,11 @@ impl<'n> Kept<'n> {
     }
 
     /// Whether it starts with `other`'s whole blocks, in any order and as many times each,
-    /// then a block that starts with `other`'s cut. Blank blocks don't count, as in
-    /// [`holds_block`]: a merge never appends one, and the lead's may sit anywhere.
+    /// then a block that starts with `other`'s cut, blank blocks aside ([`sorted_blocks`]).
     fn starts_like(&self, other: &Kept<'_>) -> bool {
-        let mut own: Vec<&str> = other
-            .whole_blocks()
-            .map(str::trim)
-            .filter(|block| !block.is_empty())
-            .collect();
+        let own = sorted_blocks(other.whole_blocks());
         let mut blocks = self.blocks().filter(|block| !block.is_empty());
-        let mut before: Vec<&str> = blocks.by_ref().take(own.len()).collect();
-        own.sort_unstable();
-        before.sort_unstable();
-        own == before
+        sorted_blocks(blocks.by_ref().take(own.len())) == own
             && blocks
                 .next()
                 .is_some_and(|block| block.starts_with(other.cut))
@@ -1425,20 +1419,38 @@ impl<'n> Kept<'n> {
         holds_block(self.whole, block)
     }
 
-    /// Whether it holds `block`, the note's block at `index`, up to the end of `fragment`,
-    /// a start of it: whole, or cut inside that same block no earlier. Its cut is that same
-    /// block when it was cut from it, or, when its own block isn't known whole, when it
-    /// falls at the same place in the note.
-    fn holds_start(&self, block: &str, index: usize, fragment: &str) -> bool {
+    /// Whether it holds `block`, `note`'s block at `index`, up to the end of `fragment`, a
+    /// start of it: whole, or cut inside that same block no earlier. Its cut is that same
+    /// block when it was cut from it, or, when its own block isn't known whole, when
+    /// `block` starts with its cut and its whole blocks are `note`'s before `index`, in any
+    /// order and as many times each, blank ones aside ([`sorted_blocks`]).
+    fn holds_start(&self, note: &Kept<'_>, index: usize, block: &str, fragment: &str) -> bool {
         if self.holds(block) {
             return true;
         }
-        let same_block = match self.cut_block {
+        if self.cut.is_empty() || !self.cut.starts_with(fragment) {
+            return false;
+        }
+        match self.cut_block {
             Some(own) => own == block,
-            None => self.whole_count() == index && block.starts_with(self.cut),
-        };
-        !self.cut.is_empty() && self.cut.starts_with(fragment) && same_block
+            None => {
+                block.starts_with(self.cut)
+                    && sorted_blocks(self.whole_blocks())
+                        == sorted_blocks(note.blocks().take(index))
+            }
+        }
     }
+}
+
+/// `blocks`, trimmed and sorted, less the blank ones, which take no place, as in
+/// [`holds_block`]: a merge never appends one, and the lead's may sit anywhere.
+fn sorted_blocks<'n>(blocks: impl Iterator<Item = &'n str>) -> Vec<&'n str> {
+    let mut blocks: Vec<&str> = blocks
+        .map(str::trim)
+        .filter(|block| !block.is_empty())
+        .collect();
+    blocks.sort_unstable();
+    blocks
 }
 
 /// The whole block of one of `sources` that `kept`, a cut note's kept text, was cut inside:

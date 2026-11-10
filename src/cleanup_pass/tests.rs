@@ -4121,6 +4121,38 @@ fn a_target_cut_of_an_unknown_block_is_not_kept_after_other_blocks() {
     ));
 }
 
+/// A target cut of an unknown block is the member's block in its place after the same
+/// blocks in any order, but each as many times as the member has it, and only when that
+/// block starts with the cut.
+#[test]
+fn a_target_cut_of_an_unknown_block_is_kept_after_the_same_blocks_in_any_order() {
+    let store = FakePinboard::trimming();
+    let holds = |held_before: &str, before: &str| {
+        let held = format!("{held_before}\n\nHN Link: https://news.ycomb{TRUNCATION_MARKER}");
+        let planned = format!("{before}\n\nHN Link: https://news.ycombinator.com/item?id=27");
+        let alone = format!("{before}\n\nHN Link: https://news.y{TRUNCATION_MARKER}");
+        holds_what_it_keeps(&store, &held, [&held, ""], "", &planned, &planned, &alone)
+    };
+    assert!(holds("b\n\na", "a\n\nb"));
+    assert!(
+        !holds("a\n\nb\n\nb", "a\n\na\n\nb"),
+        "a block held once does not stand for two"
+    );
+    assert!(
+        holds("a", "a\n\n"),
+        "a blank block, which no merge appends, takes no place"
+    );
+    assert!(holds("a\n\n", "a"), "nor does one the target holds");
+    assert!(holds("a ", "a"), "blocks compare trimmed");
+    let held = format!("a\n\nHN Link: https://news.ycomb{TRUNCATION_MARKER}");
+    let planned = "a\n\nHN Link: https://news.yahoo.com/x";
+    let alone = format!("a\n\nHN Link: https://news.y{TRUNCATION_MARKER}");
+    assert!(
+        !holds_what_it_keeps(&store, &held, [&held, ""], "", planned, planned, &alone),
+        "the member's block does not start with the target's cut"
+    );
+}
+
 /// A stored cut stays the member's own when its plan moves the block it was cut from to
 /// another place: the lead's plan carrying the block doesn't excuse losing the cut.
 #[test]

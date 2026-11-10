@@ -1,24 +1,15 @@
-//! Per-domain URL canonicalization rules for domains that are NOT sync sources (i.e.
-//! anything other than reddit/github/hackernews). [`crate::keys::url_key`] delegates
-//! here for hosts carrying a case- or query-significant identifier that its generic
-//! normalization would otherwise clobber: domains whose identity lives in the query
-//! string (dropping the query would collapse distinct resources), or in a
-//! case-sensitive path segment (lowercasing the path would).
+//! Dedup-key rules for non-source domains whose identity [`crate::keys::url_key`] would
+//! clobber, in the query it drops or a case-sensitive path it lowercases.
 
 use url::Url;
 
-/// For a non-source domain whose identity a plain host+path key would clobber, the
-/// suffix to append so distinct resources don't collapse to one key. Two cases:
-/// - Identity in the query string, which `url_key` drops (e.g. YouTube `watch?v=AAA`
-///   vs `watch?v=BBB`): append the case-sensitive query value.
-/// - Identity in a case-sensitive path segment, which `url_key` lowercases (e.g. the
-///   `youtu.be/<id>` short link, whose 11-char base64url video id is case-sensitive):
-///   append the original-case path so `youtu.be/AbC` and `youtu.be/abc` stay distinct.
+/// The suffix that keeps distinct resources apart under a host+path key:
+/// - YouTube `watch?v=AAA`: the case-sensitive query value;
+/// - the `youtu.be/<id>` short link: the original-case id.
 ///
-/// `None` for domains where dropping the query and lowercasing the path is the right
-/// canonicalization (tracking params, GitHub `?tab=`/`Owner/Repo`, ...). `host` and
-/// `path` are as normalized by `url_key` (path lowercased, trailing slash trimmed);
-/// `url` is the original, so case can be recovered from it.
+/// `None` where dropping the query and lowercasing the path is right (tracking params,
+/// GitHub `?tab=`). `host` and `path` are as `url_key` normalized them; `url` is the
+/// original, for its case.
 pub fn dedup_key_suffix(host: &str, path: &str, url: &Url) -> Option<String> {
     if crate::urls::host_matches(host, "youtube.com") && path == "/watch" {
         let id = youtube_video_id(url)?;
@@ -33,8 +24,7 @@ pub fn dedup_key_suffix(host: &str, path: &str, url: &Url) -> Option<String> {
     None
 }
 
-/// The `v` value from a YouTube `watch` URL's query, case-sensitively (video ids are
-/// case-sensitive). `None` if absent.
+/// A YouTube `watch` URL's case-sensitive `v`.
 fn youtube_video_id(url: &Url) -> Option<String> {
     url.query_pairs()
         .find(|(key, _)| key == "v")

@@ -1,8 +1,6 @@
-//! The dedup keys: how each source keys a URL, so `sync` can tell a draft from a bookmark
-//! already on Pinboard. Each source's scheme is a [`UrlKey`] type carrying only what it
-//! needs ([`GitHubKeys`], [`RedditKeys`], [`HackerNewsKeys`]), built on the generic
-//! host+path [`url_key`]. A key must survive `cleanup`'s canonicalization, or `sync`
-//! re-adds what `cleanup` moved.
+//! How each source keys a URL, so `sync` can tell a draft from a bookmark already on
+//! Pinboard: a [`UrlKey`] type per source, built on the host+path [`url_key`]. A key must
+//! survive `cleanup`'s canonicalization, or `sync` re-adds what `cleanup` moved.
 
 use url::Url;
 
@@ -13,13 +11,10 @@ use crate::reddit::model::unwrap_over18;
 use crate::source::{DedupKey, UrlKey};
 use crate::urls::{host_matches, UrlExt};
 
-/// A host+path dedup key for a URL: scheme and query/fragment dropped, host lowercased
-/// (by the `url` crate), path lowercased with any trailing slash removed -- e.g.
-/// `https://GitHub.com/Owner/Repo/?tab=x` -> `github.com/owner/repo`. Dropping the query
-/// is deliberate canonicalization; the exception is a non-source domain whose identity
-/// lives in the query string (e.g. YouTube `watch?v=...`), for which
-/// [`crate::domains::dedup_key_suffix`] appends a query-derived suffix so distinct
-/// resources don't collapse to one key. Returns `None` for a URL without a host.
+/// A host+path key: no scheme, query or fragment, the path lowercased without its trailing
+/// slash (`https://GitHub.com/Owner/Repo/?tab=x` -> `github.com/owner/repo`), plus
+/// [`crate::domains::dedup_key_suffix`]'s suffix for a domain whose identity this would
+/// lose. `None` for a URL without a host.
 pub fn url_key(url: &Url) -> Option<String> {
     let host = url.host_str()?;
     let path = url.path().trim_end_matches('/').to_ascii_lowercase();
@@ -30,14 +25,12 @@ pub fn url_key(url: &Url) -> Option<String> {
     Some(key)
 }
 
-/// GitHub's key: [`url_key`], gated to github.com hosts, with the `www.` alias folded onto
-/// the bare host, empty path segments dropped, and a repo root read as its [`repo_path`],
-/// so its `.git` suffixes are dropped too. Those are the forms `cleanup github`
-/// canonicalizes to `github.com/owner/repo`, so a bookmark keys the same before and after
-/// it does. A gist root keys by its id alone (`gist.github.com/<id>`), so its owner-less
-/// form matches the `gist.github.com/<owner>/<id>` form cleanup moves it to. Anything else
-/// (a deep link, an owner's page, another subdomain), which cleanup never moves, keeps its
-/// host and path less its empty segments, so `o//r/issues/5` keys as `o/r/issues/5` does.
+/// GitHub's key: [`url_key`] on github.com hosts, `www.` folded onto the bare host, empty
+/// segments dropped, and a repo root read as its [`repo_path`], `.git` suffixes and all:
+/// the forms `cleanup github` canonicalizes, so a bookmark keys the same before and after.
+/// A gist root keys by its id alone (`gist.github.com/<id>`), matching the
+/// `gist.github.com/<owner>/<id>` form cleanup moves it to. Anything else, which cleanup
+/// never moves, keeps its host and path less empty segments (`o//r/x` keys as `o/r/x`).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GitHubKeys;
 
@@ -63,13 +56,11 @@ impl UrlKey for GitHubKeys {
     }
 }
 
-/// Reddit's key: the path, lowercased, with query/fragment and trailing slash removed, or
-/// `None` off Reddit and for the bare root. Only the path is used, so the same post saved
-/// under any Reddit host (`old.`/`www.`/`m.`) maps to the same key. A Reddit host is
-/// reddit.com, a subdomain of it, or one of `domains`, the `reddit_domain`s of the
-/// accounts in play: a mirror outside reddit.com counts too, since that is where sync
-/// writes its account's bookmarks. An `over18` interstitial keys as its `dest`, the URL
-/// `cleanup reddit` unwraps it to.
+/// Reddit's key: the lowercased path without its trailing slash, so a post keys the same on
+/// any Reddit host, or `None` off Reddit and for the bare root. A Reddit host is
+/// reddit.com, a subdomain, or one of `domains`, the accounts' `reddit_domain`s: sync
+/// writes to a mirror outside reddit.com too. An `over18` interstitial keys as its `dest`,
+/// as `cleanup reddit` unwraps it.
 #[derive(Debug, Clone, Default)]
 pub struct RedditKeys {
     domains: Vec<String>,
@@ -104,15 +95,13 @@ impl UrlKey for RedditKeys {
     }
 }
 
-/// HackerNews' key, shared by a draft and a stored bookmark at the same URL. An HN item
-/// permalink keys on its id (`hn:<id>`), even as a story's article URL (a meta post),
-/// since a host+path key drops the id query. An article on Reddit or GitHub keys as that
-/// source's scheme does, so it still matches once `cleanup reddit` or `cleanup github` has
-/// moved it to its canonical URL. Any other article falls back to the host+path key.
+/// HackerNews' key. An HN item permalink keys on its id (`hn:<id>`), even as a meta post's
+/// article URL, since a host+path key drops the id query. An article on Reddit or GitHub
+/// keys as that source does, so it still matches after `cleanup reddit` or `cleanup github`
+/// moves it; any other falls back to [`url_key`].
 ///
-/// Reddit's `over18` interstitial keys as its `dest`, which `cleanup reddit` unwraps it
-/// to, and the bare Reddit root, which [`RedditKeys`] leaves unkeyed, keys as `/`, the
-/// path cleanup keeps when it moves it onto the account's domain.
+/// An `over18` interstitial keys as its `dest`, and the bare Reddit root, which
+/// [`RedditKeys`] leaves unkeyed, as `/`, the path cleanup keeps when it moves it.
 #[derive(Debug, Clone, Default)]
 pub struct HackerNewsKeys {
     reddit: RedditKeys,
@@ -120,8 +109,7 @@ pub struct HackerNewsKeys {
 }
 
 impl HackerNewsKeys {
-    /// Keys an article on Reddit by `reddit`, whose domains are the configured Reddit
-    /// accounts' `reddit_domain`s.
+    /// Keys a Reddit article by `reddit`, on the accounts' `reddit_domain`s.
     pub fn new(reddit: RedditKeys) -> Self {
         Self {
             reddit,

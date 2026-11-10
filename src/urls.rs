@@ -2,8 +2,8 @@
 
 use url::Url;
 
-/// Whether `host` is `domain` or a subdomain of it (`*.domain`). `host` is assumed
-/// already lowercased (as [`Url::host_str`] returns it for http(s)); `domain` must be too.
+/// Whether `host` is `domain` or a subdomain of it. Both must be lowercase, as
+/// [`Url::host_str`] returns an http(s) host.
 pub fn host_matches(host: &str, domain: &str) -> bool {
     host == domain
         || host
@@ -11,10 +11,8 @@ pub fn host_matches(host: &str, domain: &str) -> bool {
             .is_some_and(|rest| rest.ends_with('.'))
 }
 
-/// Extension methods on [`Url`] shared across the sources.
 pub trait UrlExt {
-    /// Whether the URL's host is `domain` or a `*.domain` subdomain -- the "is this URL
-    /// one I manage?" test used by the per-source bookmark filters.
+    /// Whether the host is `domain` or a subdomain of it.
     fn host_is(&self, domain: &str) -> bool;
 }
 

@@ -44,11 +44,9 @@ mod merge;
 
 use merge::{holds_block, incumbent_of, merge_bookmarks};
 
-/// What a pass decided about one bookmark. [`Plan::Unchanged`] and [`Plan::Skipped`]
-/// both mean "write nothing", but they say opposite things about the *source*: the
-/// first is an answer from it, the second is a bookmark the pass never asked about.
-/// Only the first is evidence the source is reachable, which is what lets the driver
-/// tell one dead link apart from an outage.
+/// What a pass decided about one bookmark. [`Plan::Unchanged`] and [`Plan::Skipped`] both
+/// write nothing, but only the first is an answer from the source, so only it shows the
+/// source is reachable: that is how the driver tells one dead link from an outage.
 #[derive(Debug, PartialEq, Eq)]
 #[expect(
     clippy::large_enum_variant,
@@ -59,8 +57,8 @@ pub enum Plan {
     Bookmark(Bookmark),
     /// The source answered, and nothing about this bookmark needs to change.
     Unchanged,
-    /// Not this pass's bookmark -- a deep link, a foreign URL, a locally-filtered case.
-    /// No lookup was made, so this says nothing about whether the source is up.
+    /// Not this pass's bookmark (a deep link, a foreign URL): no lookup was made, so it
+    /// says nothing about whether the source is up.
     Skipped,
 }
 
@@ -84,65 +82,56 @@ pub trait CleanupPass {
     /// [`SourceError::Other`] is a per-item failure: logged and counted, and the pass goes
     /// on. [`SourceError::Halted`] stops the pass, since every remaining lookup fails too.
     ///
-    /// A plan's `timestamp` is only the candidate source date: the driver resolves the
-    /// final date with the pass's [`DateOpts`] and takes `public`/`read_later` from the
-    /// stored bookmark, ignoring the plan's (a merged group's record follows
-    /// [`merge_bookmarks`]'s rules over its members' stored flags). The driver skips a plan
-    /// that matches `bookmark`, so a pass need not check for changes itself.
+    /// A plan's `timestamp` is only the candidate source date, which the driver resolves
+    /// with the pass's [`DateOpts`]; `public`/`read_later` come from the stored bookmark
+    /// (for a merge, by [`merge_bookmarks`]'s rules). The driver skips a plan that matches
+    /// `bookmark`, so a pass needn't check for changes.
     async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError>;
 }
 
-/// What one pass did. `plan_failed` (a link the source would not answer for) and
-/// `write_failed` (the destination refusing a write) are kept apart because they mean
-/// different things. `must_use`: [`PassOutcome::into_result`] is the one place the exit
-/// code is decided, so dropping an outcome discards every failure it recorded.
+/// What one pass did, `plan_failed` (the source not answering) kept apart from
+/// `write_failed` (the store refusing a write). `must_use`: [`PassOutcome::into_result`]
+/// decides the exit code, so dropping an outcome drops its failures.
 #[must_use]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PassOutcome {
     /// Bookmarks written, or in a dry run that would be.
     pub changed: usize,
-    /// In a dry run, the per-bookmark preview lines as printed (not the closing tally),
-    /// kept so tests can assert on what an operator reads before a real run.
+    /// In a dry run, the per-bookmark preview lines as printed, less the closing tally, so
+    /// tests can assert on what an operator reads before a real run.
     pub preview: Vec<String>,
-    /// Rewrites this pass declined to make: a target that must not be written at all (see
-    /// [`Refusal`]), or a plan held back over visibility, over a note its merge would cut
-    /// off, or over a write too long to send. Not a failure, but work that did not happen,
-    /// so it is reported. Counted per *group* for an untouchable target, unless a cycle of
-    /// moves wrote over a member (a failed write), and per *plan* for one held back, unless
-    /// its group is refused whole, so it counts abandoned writes, not bookmarks, and none
-    /// twice. A write the store refuses as too long, whole up front
-    /// ([`BookmarkStore::can_write`]) or when sent, counts here too, as one more, besides
-    /// the plans already held back from its group.
+    /// Rewrites declined, reported though not a failure: a target that must not be written
+    /// ([`Refusal`]), or a plan held back over visibility, a cut note or a write too long
+    /// to send. It counts abandoned writes, none twice: one per untouchable group, unless a
+    /// cycle of moves wrote over a member (a failed write), and one per held-back plan,
+    /// unless its group is refused whole. A write refused as too long, up front
+    /// ([`BookmarkStore::can_write`]) or when sent, adds one besides its held-back plans.
     pub refused: usize,
-    /// Bookmarks the source gave an answer for -- the evidence that it is reachable.
-    /// Excludes [`Plan::Skipped`], which never asked it anything.
+    /// Bookmarks the source answered for ([`Plan::Bookmark`] or [`Plan::Unchanged`], never
+    /// [`Plan::Skipped`]): the evidence that it is reachable.
     pub reached: usize,
     /// Bookmarks whose `plan` failed to read the source.
     pub plan_failed: usize,
     /// Bookmarks whose write to the store failed, or whose record a cycle of moves wrote
     /// over before their own move could land.
     pub write_failed: usize,
-    /// Set when the source told us to stop partway. [`PassOutcome::into_result`] hands it
-    /// back as [`SourceError::Halted`], so the `cleanup` command can tell a dead credential
-    /// from a quota or an edge block.
+    /// Set when the source stopped the pass. [`PassOutcome::into_result`] hands it back as
+    /// [`SourceError::Halted`], so `cleanup` tells a dead credential from a quota or block.
     pub halted: Option<Halt>,
 }
 
 /// Why a rewrite was left in place rather than written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refusal {
-    /// The target holds a record this pass could not read -- a failed lookup, or one a halt
-    /// stopped it short of -- so what is stored there may be stale.
+    /// The target holds a record the pass couldn't read (a failed lookup, or one a halt
+    /// stopped it short of), so what is stored there may be stale.
     Unreadable,
-    /// The target holds a bookmark whose own rewrite was refused, so it never moved and its
-    /// URL is still occupied. A visibility mismatch or a note a merge would cut off reaches
-    /// the driver this way: the reason the mover stayed is logged where it is actionable,
-    /// at the point of refusal, and what the *next* group needs to know is only that the
-    /// URL is still taken.
+    /// The target holds a bookmark whose own rewrite was refused, so it never moved. A plan
+    /// held back over visibility or a cut note lands here too: its reason is logged where
+    /// it was refused, and the next group needs to know only that the URL is still taken.
     OccupiedByRefused,
-    /// The target holds a bookmark whose own rewrite was attempted and *failed*, so it is
-    /// still there. Distinct from [`Refusal::OccupiedByRefused`] because the operator's
-    /// problem is different: something is wrong with the writes, not with the plan.
+    /// The target holds a bookmark whose own rewrite *failed*: apart from
+    /// [`Refusal::OccupiedByRefused`], since the writes, not the plan, are the problem.
     WriteFailed,
     /// The target holds a bookmark whose own rewrite the store refused as too long
     /// ([`crate::bookmark::WriteOutcome::too_long`]), so it is still there.
@@ -161,20 +150,19 @@ impl std::fmt::Display for Refusal {
 }
 
 impl PassOutcome {
-    /// The run's verdict. A link that could not be looked up does not fail the run: it is
-    /// logged and skipped, so one dead URL can't wedge a scheduled service. A [`Halt`], a
-    /// failed write, or a majority of failed lookups (`plan_failed > reached.max(1)`) do.
+    /// The run's verdict. A failed lookup alone is logged and skipped, so one dead URL
+    /// can't wedge a scheduled service; a [`Halt`], a failed write, or a majority of failed
+    /// lookups (`plan_failed > reached.max(1)`) fails it.
     ///
-    /// The majority, not "every lookup", because permanent per-item conditions arrive as
+    /// A majority, not every lookup, since permanent per-item conditions arrive as
     /// [`Plan`]s, leaving `plan_failed` to post-retry 5xx, network trouble and unlabelled
-    /// throttling. The `max(1)` floor keeps one failed lookup survivable for a pass that
-    /// looks up only one or two bookmarks, like the discussion-link pass. Returns
-    /// [`SourceError`] so the `cleanup` command fires the auth-failure hook for a halted
-    /// credential, and only for that.
+    /// throttling. The `max(1)` keeps one failure survivable for a pass of one or two, like
+    /// the discussion-link pass. It returns a [`SourceError`], so `cleanup` fires the hook
+    /// for a dead credential, and only for that.
     pub fn into_result(self) -> Result<(), SourceError> {
         if let Some(halt) = self.halted {
-            // Why we stopped is the headline, but it must not bury what else went wrong
-            // before it: those counts are the only record once this returns.
+            // The halt leads, but the message must still carry the other failures: these
+            // counts are their only record.
             let mut also = Vec::new();
             if self.plan_failed > 0 {
                 also.push(format!("{} lookup(s)", self.plan_failed));
@@ -211,13 +199,11 @@ impl PassOutcome {
     }
 }
 
-/// Combine the verdicts of a cleanup's two passes, each of which reached its own so that
-/// neither can vouch for the other. Each is given as `(name, verdict)`. When both failed,
-/// both are reported: one leads and the other follows after `; and for <name>: `. The
-/// first pass leads unless the second outranks it. A dead credential outranks any other
-/// halt, because the outer error is the one whose variant survives, and the variant is
-/// what decides the auth-failure hook. Any halt outranks an ordinary failure, since why a
-/// pass stopped is the headline.
+/// Combine two passes' `(name, verdict)`s, each reached on its own so neither vouches for
+/// the other. Both failures are reported, the one that doesn't lead after
+/// `; and for <name>: `. The first leads unless the second outranks it: a dead credential
+/// outranks any other halt, since only the outer variant survives to decide the hook, and
+/// any halt an ordinary failure, since why a pass stopped is the headline.
 pub fn two_pass_verdict(
     (first_name, first): (&str, Result<(), SourceError>),
     (second_name, second): (&str, Result<(), SourceError>),
@@ -244,15 +230,14 @@ pub fn two_pass_verdict(
     })
 }
 
-/// Run `pass` over `bookmarks` as the module doc describes; under the store's dry-run,
-/// print what would change instead. `bookmarks` is already filtered to the source and holds
-/// each URL once, as [`AccountState::snapshot`] returns them. `noun` names the source in
-/// the scan log. Never fails outright: every failure, a dead credential included, is
-/// tallied into the returned [`PassOutcome`].
+/// Run `pass` over `bookmarks`, the source's slice with each URL once, as
+/// [`AccountState::snapshot`] gives it; in a dry run, print what would change. `noun` names
+/// the source in the log. Never fails outright: every failure, a dead credential included,
+/// is tallied into the [`PassOutcome`].
 ///
-/// Residency is asked of `store`, whose view covers the *whole* account and reflects what
-/// earlier passes of this run wrote: a plan can target a URL outside its own filter (an HN
-/// story rewritten to its article), and `cleanup --all` runs three sources on one account.
+/// Residency is asked of `store`, whose view covers the whole account as earlier passes
+/// left it: a plan can target a URL outside its filter (an HN story moved to its article),
+/// and `cleanup --all` runs three sources on one account.
 pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     store: &S,
     bookmarks: &[Bookmark],
@@ -286,11 +271,9 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     }
     .hold_back(&mut groups);
 
-    // The URLs a planned write still owns. A rewrite's old URL is never deleted when it is
-    // one of these, because that write's record will live there and deleting it would
-    // clobber it. Settled *after* the hold-backs: a group every member was held back from
-    // owns nothing, and leaving its key here would strand a bookmark moving away from that
-    // URL at both its old and new URL, silently and for good.
+    // The URLs a planned write still owns, whose old record a rewrite never deletes. After
+    // the hold-backs: an emptied group owns nothing, and keeping its key would leave a
+    // bookmark moving away from it at both URLs for good.
     let targets: HashSet<&Url> = group_order
         .iter()
         .filter(|key| !groups[*key].is_empty())
@@ -308,34 +291,28 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
 
     for key in &group_order {
         let group = groups.remove(*key).expect("key came from group_order");
-        // Each plan held back from this group is one write abandoned, unless the group is
-        // refused whole: then they are part of the one write the refusal abandons.
+        // One abandoned write per held-back plan, unless the group is refused whole.
         let held_here = held_back.get(*key).copied().unwrap_or(0);
-        // A group every plan was held back from has nothing left to refuse or write, and
-        // refusing it too would count those plans twice. This is also what guarantees
-        // `write_merge` a member to lead.
+        // Nothing left to refuse or write; refusing it would count its plans twice. This
+        // also guarantees `write_merge` a member to lead.
         if group.is_empty() {
             writer.outcome.refused += held_here;
             continue;
         }
-        // The target must not be written, so leave the rewriting bookmark(s) at their old
-        // URLs. Separate from the `targets` delete-guard -- that protects a URL some *plan*
-        // writes to, this one a URL no plan may land on.
+        // Unlike the `targets` delete-guard, this protects a URL no plan may land on.
         if let Some(reason) = untouchable.get(key) {
             writer.skip_group(key, &group, *reason, held_here);
             continue;
         }
         writer.outcome.refused += held_here;
-        // Pinboard keys on URL, so anything already stored at the target joins the group
-        // rather than being replaced by it.
+        // Pinboard keys on URL, so what is stored at the target joins the group.
         let resident = residents.get(key);
         let stranded = match (resident, &group[..]) {
             (None, [Member { stored, planned }]) => writer.write_single(stored, planned).await,
             _ => writer.write_merge(key, &group, resident).await,
         };
-        // A failed or refused write left its bookmarks where they were, so a later group
-        // heading for one of their URLs would overwrite it. Protect them and re-close the
-        // refusal set, over the groups after this one only.
+        // A failed or refused write left its bookmarks in place, where a later group would
+        // overwrite them: protect them and re-close the refusals over the groups left.
         if !stranded.is_empty() {
             for (url, reason) in stranded {
                 untouchable.entry(url).or_insert(reason);
@@ -359,8 +336,8 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     outcome
 }
 
-/// One member of a collision group, the planned bookmarks heading for one target URL: its
-/// stored record and its plan. A group holds its members in snapshot order.
+/// One of the plans heading for a target URL, with its stored record. A group holds its
+/// members in snapshot order.
 #[derive(Clone, Copy)]
 struct Member<'p> {
     stored: &'p Bookmark,
@@ -373,18 +350,16 @@ struct PlannedPair<'b> {
     planned: Bookmark,
 }
 
-/// Phase 1's result: each planned bookmark beside its stored record, and the URLs whose
-/// record this pass could not establish.
+/// The plans beside their stored records, and the URLs the pass couldn't read.
 struct Planned<'b> {
     pairs: Vec<PlannedPair<'b>>,
-    /// A lookup failed there, or a halt stopped the pass short of it. Nothing may be
-    /// written there at all. Owned rather than borrowed because the fixpoint grows it from
-    /// the group keys.
+    /// Where a lookup failed or a halt stopped short: nothing may be written there. Owned,
+    /// since the fixpoint grows it.
     untouchable: HashMap<Url, Refusal>,
 }
 
-/// Plan every bookmark, tallying `reached`, `plan_failed` and `halted` into `outcome`, and
-/// resolve each plan's date and privacy flags against its stored record.
+/// Plan every bookmark, tallying `reached`, `plan_failed` and `halted`, and resolve each
+/// plan's date and privacy flags against its stored record.
 async fn plan_all<'b, C: CleanupPass>(
     bookmarks: &'b [Bookmark],
     dates: DateOpts,
@@ -405,10 +380,9 @@ async fn plan_all<'b, C: CleanupPass>(
                 continue;
             }
             Ok(Plan::Skipped) => continue,
-            // Every remaining lookup would fail the same way, so stop planning, but fall
-            // through to write the plans already made rather than discard them. This one
-            // and everything after it goes unplanned, so protect all of them: a record we
-            // never looked at must not be written over.
+            // Every later lookup would fail too: stop, but still write the plans made. A
+            // record never looked at must not be written over, so protect this one and
+            // every one after it.
             Err(SourceError::Halted(halt)) => {
                 outcome.halted = Some(halt);
                 untouchable.extend(
@@ -418,9 +392,7 @@ async fn plan_all<'b, C: CleanupPass>(
                 );
                 break;
             }
-            // Log and skip a single failed plan so the rest of the pass still runs. Its
-            // end-state is unknown, which makes it as untouchable as a skipped one: another
-            // bookmark rewriting onto its URL would clobber the record.
+            // The pass goes on. Its end-state is unknown, so no rewrite may land on it.
             Err(e @ SourceError::Other(_)) => {
                 outcome.plan_failed += 1;
                 untouchable.insert(bookmark.url.clone(), Refusal::Unreadable);
@@ -431,8 +403,7 @@ async fn plan_all<'b, C: CleanupPass>(
 
         planned.timestamp = dates.cleanup_date(planned.timestamp, now, bookmark.timestamp);
 
-        // Privacy flags are never re-shaped by cleanup: take them from the stored
-        // bookmark so a plan can't silently flip them.
+        // Cleanup never re-shapes privacy, so a plan can't flip it.
         planned.public = bookmark.public;
         planned.read_later = bookmark.read_later;
 
@@ -464,14 +435,13 @@ fn group_by_target<'p>(
     (group_order, groups)
 }
 
-/// The groups in the order they are written: each after the group that moves its target's
-/// occupant away, so a URL is vacated before a record lands on it, and a move that fails
-/// leaves its record where [`propagate_refusals`] can still protect it. Otherwise
-/// first-appearance order, which keeps a dry run's preview deterministic.
+/// The groups in write order: each after the group moving its target's occupant away, so a
+/// URL is vacated before a record lands on it, and a failed move leaves its record where
+/// [`propagate_refusals`] still protects it. Otherwise first-appearance order, so a dry
+/// run's preview is deterministic.
 ///
-/// A cycle, such as two bookmarks swapping URLs, has no safe order: one of its writes lands
-/// on a record that has not left yet and is lost if a later write in the cycle fails or is
-/// refused as too long.
+/// A cycle, such as a swap, has no safe order: one write lands on a record not yet moved,
+/// which is lost if a later write in the cycle fails or is refused as too long.
 fn write_order<'p>(
     first_appearance: &[&'p Url],
     groups: &HashMap<&'p Url, Vec<Member<'p>>>,
@@ -498,12 +468,10 @@ fn write_order<'p>(
     order
 }
 
-/// Every group's resident, resolved once, before any write. A resident is a record the live
-/// view holds at a group's target that this pass neither planned (a bookmark is never a
-/// resident of its own plan -- merging with itself would resurrect what the plan removed)
-/// nor failed to read. Precomputing is equivalent to looking each up lazily: group keys are
-/// distinct, and every URL a write deletes was planned, so no write can change a record
-/// read here.
+/// Every group's resident, before any write: the live view's record at its target that the
+/// pass neither planned nor failed to read. A bookmark is never a resident of its own plan:
+/// merging its stored record back in would resurrect what the plan removed. Reading them up
+/// front is safe: group keys are distinct, and a write deletes only planned URLs.
 fn residents_of<'p, S: AccountState>(
     store: &S,
     pairs: &[PlannedPair<'_>],
@@ -542,10 +510,9 @@ struct HeldBack<'p> {
 }
 
 impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
-    /// Every hold-back, in order, each building on the groups the ones before it left, once
-    /// each group with no record staying is led, where one exists, by a mover that can be
-    /// sent: visibility, then cut notes, then writes that can't be sent. Returns how many
-    /// plans each target lost.
+    /// After leading each group with no record staying with a sendable mover where it has
+    /// one, runs each hold-back on the groups the last left: visibility, cut notes, then
+    /// writes that can't be sent. Returns how many plans each target lost.
     fn hold_back(mut self, groups: &mut HashMap<&'p Url, Vec<Member<'p>>>) -> HashMap<Url, usize> {
         self.lead_with_a_sendable_mover(groups);
         self.hold_back_visibility_mismatches(groups);
@@ -557,17 +524,13 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
     /// Drop from each group the plans that disagree about visibility with what stays at its
     /// target, marking each one's own URL occupied.
     ///
-    /// A merge fuses the members' notes and tags into one record, so a bookmark may only
-    /// join when it agrees with the record that stays there about who may read it. Widening
-    /// would publish a private member's annotation; narrowing would unshare a bookmark the
-    /// user chose to share. Neither is ours to decide, so the disagreeing bookmark drops
-    /// out of the group and stays where it is.
+    /// A merge fuses notes and tags, so a bookmark joins only when it agrees with the
+    /// record that stays about who may read it: widening would publish a private note,
+    /// narrowing unshare a shared bookmark, and neither is ours to decide.
     ///
-    /// Only that bookmark, not the whole group: the record that stays usually has a plan of
-    /// its own, which has nothing to do with the mover's visibility, and blocking that too
-    /// would let one mismatched duplicate freeze an unrelated bookmark's cleanup for good.
-    /// Settled ahead of the fixpoint, because a refused mover keeps its own URL occupied
-    /// exactly like a group refused for an unreadable target.
+    /// Only that bookmark drops out, not its group: blocking the record that stays would
+    /// let one mismatched duplicate freeze an unrelated bookmark's cleanup for good. Before
+    /// the fixpoint, since a refused mover keeps its URL occupied as a refused group does.
     fn hold_back_visibility_mismatches(&mut self, groups: &mut HashMap<&'p Url, Vec<Member<'p>>>) {
         let residents = self.residents;
         let mut held_back: Vec<HeldBack> = Vec::new();
@@ -576,12 +539,9 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
                 continue;
             }
             let members = &groups[key];
-            // What the joining plans have to agree with. A record that stays at the target
-            // sets it. With none -- a target nothing occupies, or one whose occupant is
-            // itself moving away -- there is nothing to defer to, so the plans need only
-            // agree with *each other*; when they don't, no member may write, because
-            // merging would then pick a visibility on the user's behalf with nothing to
-            // justify the choice.
+            // The record that stays sets the visibility. With none (an empty target, or an
+            // occupant moving away) the plans must agree with each other, or none writes: a
+            // merge would pick a visibility with nothing to justify it.
             let staying = residents
                 .get(key)
                 .map(|resident| resident.public)
@@ -655,12 +615,11 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
     /// ([`Merge::would_lose`]), and the leading note keeps all it would keep on its own:
     /// other members' tags take room from the note too.
     ///
-    /// Absorbing a member deletes it, and leaving its URL to another group writes over it,
-    /// so either way the text the cut lost would be gone; a cut leading note loses its tail
-    /// for good. Built up one member at a time so that a member adding nothing is never
-    /// held back for another's sake. Settled before any write, like the visibility
-    /// hold-backs, so that the fixpoint closes over it and the outcome doesn't depend on
-    /// write order, a cycle of moves included.
+    /// Absorbing a member deletes it, and another group may write over its URL, so text the
+    /// cut lost would be gone either way; a cut leading note loses its tail for good. Built
+    /// up one member at a time, so a member that adds nothing is never held back for
+    /// another's sake. Before any write, so the fixpoint closes over it and the outcome is
+    /// order-free, a cycle of moves included.
     fn hold_back_cut_notes(&mut self, groups: &mut HashMap<&'p Url, Vec<Member<'p>>>) {
         let (store, residents) = (self.store, self.residents);
         for key in self.group_order {
@@ -714,9 +673,8 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
     }
 
     /// Hold back the plans the store could never send ([`BookmarkStore::can_write`]),
-    /// marking each one's own URL occupied. Such a write is too long even with no note, so
-    /// the store would refuse it anyway, but only once the writes before it had landed, a
-    /// cycle of moves' included, and unseen by a dry run.
+    /// marking each one's URL occupied: the store would refuse them anyway, but only after
+    /// the writes before them, a cycle of moves' included, and unseen by a dry run.
     ///
     /// A merge is built up from its lead as in [`Self::hold_back_cut_notes`], holding back
     /// each member whose joining would make it unsendable, so a duplicate can't freeze the
@@ -781,11 +739,11 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
         }
     }
 
-    /// Put first, in each group with no record staying at its target, the first mover the
-    /// store could send alone ([`BookmarkStore::can_write`]). Whichever mover comes first
-    /// leads such a merge, with its title, so without this one that can never be sent would
-    /// take every other mover down with it, and which did would depend on snapshot order;
-    /// behind a sendable lead it may still join. Runs first: the hold-backs build on a lead.
+    /// Put first, in each group with no record staying, the first mover the store could
+    /// send alone ([`BookmarkStore::can_write`]). The first mover leads, so an unsendable
+    /// one would otherwise take the rest down with it, and which did would depend on
+    /// snapshot order; behind a sendable lead it may still join. Runs first: the hold-backs
+    /// build on a lead.
     fn lead_with_a_sendable_mover(&self, groups: &mut HashMap<&'p Url, Vec<Member<'p>>>) {
         for key in self.group_order {
             let members = groups.get_mut(key).expect("key came from group_order");
@@ -879,20 +837,18 @@ fn kept_text<S: BookmarkStore>(store: &S, note: &str) -> String {
 /// write mode and the tally the writes go into.
 struct GroupWriter<'s, 'p, S> {
     store: &'s S,
-    /// A rewrite's old URL is never deleted when it is one of these, because that write's
-    /// record will live there.
+    /// URLs a write's record will live at, so a rewrite never deletes them.
     targets: HashSet<&'p Url>,
-    /// The URLs a write of this pass has landed on. A bookmark stored at one of them before
-    /// the pass, and still planned to move, was written over by a cycle of moves.
+    /// The URLs this pass has written: a bookmark stored at one and still planned to move
+    /// was written over by a cycle of moves.
     written: HashSet<Url>,
     mode: WriteMode,
     outcome: PassOutcome,
 }
 
 impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
-    /// Count and log a write the store refused as too long, whose members were stored at
-    /// `stored`: a refusal, unless an earlier write of a cycle of moves already wrote over
-    /// one of them, whose record is then lost.
+    /// Tally a write refused as too long, its members stored at `stored`: a refusal, unless
+    /// a cycle of moves already wrote over one of them, whose record is then lost.
     fn tally_too_long<'u>(&mut self, what: &str, stored: impl IntoIterator<Item = &'u Url>) {
         match self.written_over(stored) {
             None => {
@@ -909,9 +865,8 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
         }
     }
 
-    /// The URLs among `stored`, a group's members' stored URLs, that a write of this pass
-    /// already landed on, space-separated: a cycle of moves wrote over their records, so a
-    /// group that then does not write loses them. `None` when there are none.
+    /// The URLs among `stored` this pass already wrote, space-separated, or `None`: a cycle
+    /// of moves wrote over them, so a group that then doesn't write loses them.
     fn written_over<'u>(&self, stored: impl IntoIterator<Item = &'u Url>) -> Option<String> {
         let lost: Vec<&str> = stored
             .into_iter()
@@ -921,10 +876,9 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
         (!lost.is_empty()).then(|| lost.join(" "))
     }
 
-    /// Count and log a group whose target must not be written, with `held` plans held back
-    /// from it: one refusal, which covers those plans too, unless a cycle of moves already
-    /// wrote over a member's record ([`Self::written_over`]). That record is lost, so the
-    /// group is a failed write, and each held-back plan is a refusal of its own.
+    /// Tally a group whose target must not be written, `held` plans held back from it: one
+    /// refusal covering them, unless a cycle of moves wrote over a member
+    /// ([`Self::written_over`]); then it is a failed write, and each held plan a refusal.
     fn skip_group(&mut self, key: &Url, group: &[Member<'_>], reason: Refusal, held: usize) {
         let Some(lost) = self.written_over(group.iter().map(|member| &member.stored.url)) else {
             self.refuse_group(key, reason);
@@ -942,8 +896,7 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
     fn refuse_group(&mut self, key: &Url, reason: Refusal) {
         self.outcome.refused += 1;
         warn!("skipping cleanup write to {key}: {reason}");
-        // Also on stdout: a dry run is a preview, and work the real run would refuse is
-        // part of what the operator is previewing.
+        // A refusal is part of what a dry run previews.
         if self.mode.is_dry_run() {
             emit_preview(
                 &mut self.outcome.preview,
@@ -953,11 +906,10 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
         }
     }
 
-    /// Write a lone plan with nothing stored at its target: skip it when it would store
-    /// nothing new ([`stores_nothing_new`]), else rewrite it (deleting the old URL when it
-    /// moved and no other plan targets it) and tally the result. Returns the stored URLs a
-    /// write left occupied, for the caller to protect, each with why: empty unless it
-    /// failed or the store refused it as too long.
+    /// Write a lone plan with nothing stored at its target, unless it stores nothing new
+    /// ([`stores_nothing_new`]), deleting the old URL when it moved and no other plan
+    /// targets it. Returns the stored URLs a failed or too-long write left occupied, with
+    /// why, for the caller to protect.
     async fn write_single(
         &mut self,
         original: &Bookmark,
@@ -970,8 +922,6 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
         let changes = original.diff(&fitted);
         warn_if_cut(self.store, planned, &fitted);
         let planned = &fitted;
-        // Delete the old URL only when it changed and no other planned write targets it;
-        // otherwise that write's record lives there and must not be removed.
         let delete_old = planned.url != original.url && !self.targets.contains(&original.url);
 
         if self.mode.is_dry_run() {
@@ -981,10 +931,8 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
             emit_preview(&mut self.outcome.preview, &original.url, lines);
         }
 
-        // Always through the store, dry run included: it is what withholds the network, and
-        // it is also what advances the view a later pass previews from. `planned` carries
-        // the stored `public`/`read_later` and the driver-resolved `timestamp`, so it's the
-        // complete write model.
+        // Through the store even in a dry run: it withholds the network, and advances the
+        // view a later pass previews from.
         let write = self
             .store
             .apply_update(planned, delete_old.then_some(&original.url))
@@ -1007,9 +955,7 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
                 );
                 Vec::new()
             }
-            // The rewrite can half-apply just as a merge can: the record landed at the new
-            // URL and only the old-URL delete failed. Count the change that really
-            // happened, and don't name the old URL as the thing that went wrong.
+            // Half-applied: the record landed and only the old URL's delete failed.
             Some(e) if write.wrote => {
                 self.outcome.changed += 1;
                 self.outcome.write_failed += 1;
@@ -1025,13 +971,10 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
         }
     }
 
-    /// Field-merge a group -- with the record staying at its target, if any -- into one
-    /// record, write it, and delete the absorbed URLs, so a later run sees a single
-    /// bookmark at the target and converges. When the merge would store nothing new over
-    /// the record stored there ([`stores_nothing_new`]), only the absorbed URLs are
-    /// deleted, and with none the group is skipped. Returns the stored URLs a write left
-    /// occupied, for the caller to protect, each with why: empty unless the write failed or
-    /// the store refused it as too long.
+    /// Field-merge a group, with any record staying at its target, write it and delete the
+    /// absorbed URLs, so a later run sees one bookmark and converges. A merge storing
+    /// nothing new ([`stores_nothing_new`]) only deletes, and with nothing to absorb is
+    /// skipped. Returns the stored URLs a failed or too-long write left occupied, with why.
     async fn write_merge(
         &mut self,
         key: &Url,
@@ -1046,8 +989,7 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
         } = merge_members(self.store, key, group, resident);
         let target = &fitted.url;
 
-        // Absorbed URLs to delete: an original that is neither the target nor another
-        // planned write's target (deleting the latter would clobber that write's record).
+        // Never the target or another write's target, whose record that would clobber.
         let mut old_urls: Vec<&Url> = Vec::new();
         for Member { stored, .. } in group {
             if stored.url != *target && !self.targets.contains(&stored.url) {
@@ -1055,8 +997,8 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
             }
         }
 
-        // Nothing to do when the merge reproduces what is already stored at the target and
-        // there is nothing to absorb, or a converged state would rewrite itself every run.
+        // Nothing to write or absorb: returning keeps a converged state from rewriting
+        // itself every run.
         if !rewrite && old_urls.is_empty() {
             return Vec::new();
         }
@@ -1098,8 +1040,7 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
             self.written.insert(target.clone());
         }
         match write.error {
-            // Nothing was written or absorbed, so every member is still at its own URL, as
-            // after a failed write.
+            // Nothing was written or absorbed: every member is still at its URL.
             None if write.too_long => {
                 self.tally_too_long(
                     &format!("not merging into {target}"),
@@ -1116,10 +1057,8 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
                 debug!("{done} {target} <- [{}]", absorbed.join(" "));
                 Vec::new()
             }
-            // Half-applied: the merged record is at the target, written or already there,
-            // and an absorbed URL survived. Count the change when the account did change,
-            // as the rewrite path does, and name what is actually wrong, since "merging
-            // into {target} failed" would send the operator after a record that is fine.
+            // Half-applied: the record is at the target and an absorbed URL survived. Name
+            // that, not the merge, or the operator chases a record that is fine.
             Some(e) if write.wrote => {
                 if rewrite || !write.deleted.is_empty() {
                     self.outcome.changed += 1;
@@ -1129,9 +1068,8 @@ impl<S: BookmarkStore> GroupWriter<'_, '_, S> {
                 error!("{done} {target} but {stranded} absorbed URL(s) remain: {e:#}");
                 Vec::new()
             }
-            // Nothing was written and nothing absorbed, so every member is still at its own
-            // URL. Every member, not `old_urls`: that list deliberately excludes URLs
-            // another group targets, which are precisely the ones in danger here.
+            // Every member, not `old_urls`, which leaves out the URLs other groups target:
+            // exactly the ones in danger now.
             Some(e) => {
                 self.outcome.write_failed += 1;
                 error!("merging into {target}: {e:#}");
@@ -1150,14 +1088,12 @@ struct Merge<'p> {
     merged: Bookmark,
     /// `merged` as the store would keep it: what a rewrite writes.
     fitted: Bookmark,
-    /// Whether writing `fitted` would store anything new. When it wouldn't, the record
-    /// stored at the target stays as it is.
+    /// Whether writing `fitted` stores anything new; if not, the stored record stays.
     rewrite: bool,
     /// The record stored at the target: the resident, or the incumbent's stored record.
     stored_at_target: Option<&'p Bookmark>,
-    /// The stored URL of the member whose note the merge starts from when no record stays
-    /// at the target. The merge is fitted against its stored record, as a lone rewrite of
-    /// it is.
+    /// With no record staying, the member whose note the merge starts from: the merge is
+    /// fitted against its stored record, as a lone rewrite of it would be.
     base: Option<&'p Url>,
     /// The note of the record that leads the merge: the resident's stored note, or the
     /// incumbent's or base's plan.
@@ -1407,11 +1343,8 @@ fn merge_members<'p, S: BookmarkStore>(
     members: &[Member<'p>],
     resident: Option<&'p Bookmark>,
 ) -> Merge<'p> {
-    // The record that stays at this URL: an unplanned resident, else the member already
-    // stored here. Whichever it is leads the merge, so its title and note are the base the
-    // others extend. For an incumbent that is its *plan*, not its stored record -- the plan
-    // is this pass's intended end-state for it, and merging its stored record back in would
-    // resurrect exactly what the plan removed. Only the survivor is lifted out of the rest.
+    // The record that stays leads: the resident, else the member stored here, whose *plan*
+    // leads, since merging its stored record back in would resurrect what the plan removed.
     let (survivor, lifted) = match resident {
         Some(resident) => (Some(resident), None),
         None => match incumbent_of(members, key) {
@@ -1436,25 +1369,20 @@ fn merge_members<'p, S: BookmarkStore>(
     let rest: Vec<&Bookmark> = movers.map(|member| member.planned).collect();
     let mut merged = merge_bookmarks(lead, &rest);
     if let Some(survivor) = survivor {
-        // The survivor's own record-level state survives the merge's field rules: it is the
-        // bookmark that stays here, and cleanup never re-shapes those (see `plan_all`). Its
-        // date in particular must not shift to a mover's under `merge_bookmarks`'s
-        // earliest-wins rule, which is meant for two plans -- with dating off, nothing may
-        // re-date a bookmark at all. `public` needs no such restore: a group only reaches
-        // this point when every member matches it, so the all()-rule can't change it.
+        // The survivor keeps its own flags and date over the merge's rules: cleanup never
+        // re-shapes them, and with dating off nothing may re-date a bookmark. `public`
+        // already matches every member, so the all()-rule can't change it.
         merged.read_later = survivor.read_later;
-        // `None` means the stored date was absent or wouldn't parse, and writing it back
-        // omits `dt` entirely -- under `replace=yes` Pinboard then re-dates the record to
-        // now. Keep the earliest date the merge found instead of losing the record's age.
+        // With no stored date, an undated write would make Pinboard date it now: keep the
+        // earliest the merge found.
         merged.timestamp = survivor.timestamp.or(merged.timestamp);
     }
-    // The *stored* record at the target, which for an incumbent is not the plan that led
-    // the merge: the merge is fitted against it, and compared with it.
+    // The stored record, not the incumbent's plan: what the merge is fitted against.
     let stored_at_target = resident.or_else(|| lifted.map(|at| members[at].stored));
     let fitted_from = stored_at_target.or(base.map(|member| member.stored));
     let fitted = fit_plan(store, fitted_from, &merged);
-    // A merge that stores nothing new only absorbs: rewriting the target would store
-    // nothing, and would cut a whole note there longer than a write allows.
+    // A merge that stores nothing new only absorbs: rewriting would store nothing, and cut
+    // a whole note longer than a write allows.
     let rewrite =
         !stored_at_target.is_some_and(|stored| stores_nothing_new(store, stored, &fitted));
     Merge {
@@ -1468,12 +1396,11 @@ fn merge_members<'p, S: BookmarkStore>(
     }
 }
 
-/// `planned` as `store` would keep it. When the store would cut the plan's note down to
-/// part of the stored one, as when a plan appends to a whole note just under the limit,
-/// writing it would only shorten the stored note and keep none of the plan's text. Then the
-/// rest of the plan goes over the stored note instead, itself fitted, so it stays whole
-/// when it still fits beside the plan's other fields. A note the store drops whole, with
-/// no room left for even the cut marker, is such a cut too, keeping nothing.
+/// `planned` as `store` would keep it. When the cut would leave only part of the stored
+/// note (a plan appending to a note just under the limit), writing it would shorten the
+/// stored note and keep none of the plan's text, so the plan's other fields go over the
+/// stored note instead, fitted, whole if it still fits beside them. A note dropped whole,
+/// with no room even for the cut marker, counts as such a cut.
 fn fit_plan<S: BookmarkStore>(
     store: &S,
     stored: Option<&Bookmark>,
@@ -1503,17 +1430,14 @@ fn fit_plan<S: BookmarkStore>(
     })
 }
 
-/// Whether writing `fitted`, a plan from [`fit_plan`], would store nothing that writing
-/// `stored` back wouldn't: both, fitted, differ in nothing a write changes. That covers a
-/// plan identical to the stored record, a note already stored cut (a cut note fits as it
-/// is), and a change that lies wholly past the cut, which a write would lose while cutting
-/// a whole note the user saved for nothing.
+/// Whether writing `fitted`, from [`fit_plan`], stores nothing that writing `stored` back
+/// wouldn't: an identical plan, a note already stored cut, or a change wholly past the cut,
+/// which a write would lose while cutting a whole note for nothing.
 fn stores_nothing_new<S: BookmarkStore>(store: &S, stored: &Bookmark, fitted: &Bookmark) -> bool {
     store.fit(stored.clone()).diff(fitted).is_empty()
 }
 
-/// Log that `fitted`, about to be written, cuts `planned`'s note to fit the request URL.
-/// The store's own warning can't see it, since it is handed the note already cut.
+/// Log that `fitted` cuts `planned`'s note: the store, handed it already cut, can't.
 fn warn_if_cut<S: BookmarkStore>(store: &S, planned: &Bookmark, fitted: &Bookmark) {
     warn_note_cut(store, &planned.url, &planned.note, &fitted.note);
 }
@@ -1527,15 +1451,13 @@ fn emit_preview(kept: &mut Vec<String>, url: &Url, lines: impl IntoIterator<Item
     }
 }
 
-/// Close `untouchable` under "a group whose target is untouchable doesn't move, so its
-/// members keep their own URLs occupied". Iterated to a fixpoint because each refusal can
-/// occupy the URL that refuses the next, which is what makes the result independent of the
-/// order groups are written in.
+/// Close `untouchable` under "a refused group's members keep their URLs occupied", to a
+/// fixpoint, since each refusal can occupy the URL that refuses the next: that makes the
+/// result independent of write order.
 ///
-/// Called once before any write, and again after each write that did not land -- that
-/// strands its group exactly as a refusal does, and leaving that un-propagated is worse
-/// than not protecting the stranded record at all: it refuses a group whose own members
-/// are then left unprotected in turn, trading one lost record for several.
+/// Called before any write and after each write that didn't land, which strands its group
+/// as a refusal does. Skipping that is worse than no protection: it refuses a group whose
+/// own members are then left unprotected, one lost record for several.
 fn propagate_refusals(
     group_order: &[&Url],
     groups: &HashMap<&Url, Vec<Member<'_>>>,

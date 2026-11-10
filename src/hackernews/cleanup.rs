@@ -175,8 +175,8 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         let Some(item) = self.items.get(&url_id) else {
             return Ok(Plan::Skipped);
         };
-        // Re-derive the bookmark from the fresh item (url/title/note/date), then preserve
-        // the stored bookmark's existing tags and privacy on the re-write.
+        // Re-derive the bookmark from the fresh item (url/title/note/date), keeping the
+        // stored bookmark's tags.
         let Some(mut new) = item
             .clone()
             .into_draft(self.config, &HackerNewsKeys::default())
@@ -187,8 +187,6 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         let mut tags = bookmark.tags.clone();
         tags.push_all(&new.tags);
         new.tags = tags;
-        new.public = bookmark.public;
-        new.read_later = bookmark.read_later;
         // Keep the user's stored note, but make sure the regenerated `HN Link:`
         // back-link survives the re-shape (append it once, never duplicated).
         let generated_link = generated_hn_link(&new.note).map(str::to_string);

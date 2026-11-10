@@ -10,8 +10,7 @@ use serde_json::json;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// An expired token during the pass has to reach the caller as `Halt::Reauth`, or the
-/// `cleanup` command cannot tell it apart from any other failure and the auth-failure
+/// An expired token mid-pass must reach the caller as `Halt::Reauth`, or the auth-failure
 /// hook never fires.
 #[tokio::test]
 async fn cleanup_surfaces_an_expired_token_as_reauth() {
@@ -44,8 +43,7 @@ async fn cleanup_surfaces_an_expired_token_as_reauth() {
     );
 }
 
-/// End to end: a rate limit part-way through stops the pass rather than spending a
-/// doomed request on every remaining bookmark, while keeping the work already done.
+/// A rate limit stops the pass rather than spend a doomed request on each bookmark left.
 #[tokio::test]
 async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
     let server = MockServer::start().await;
@@ -69,10 +67,8 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
         )
         .mount(&server)
         .await;
-    // The point of the test: this one must never be requested. An unmounted path
-    // would not prove it -- wiremock answers those with a 404, which `repo()` reads as
-    // a deleted repo and skips silently -- so assert zero calls explicitly. The
-    // expectation is checked when the server drops.
+    // Never requested. Unmounted would not prove it: wiremock's 404 reads as a deleted
+    // repo, skipped silently.
     Mock::given(method("GET"))
         .and(path("/repos/never/looked"))
         .respond_with(ResponseTemplate::new(200))
@@ -102,7 +98,6 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
         .unwrap_err();
 
     assert!(err.to_string().contains("rate limit"), "{err}");
-    // The repo read before the limit is still rewritten -- the work isn't thrown away.
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].url, "https://github.com/new/name");
@@ -110,8 +105,7 @@ async fn cleanup_stops_at_a_rate_limit_and_keeps_what_it_did() {
 
 #[tokio::test]
 async fn cleanup_survives_a_permanently_blocked_repo() {
-    // A DMCA-blocked repo answers 451 forever, so the run must still succeed on the
-    // strength of the repos it *could* read.
+    // A DMCA-blocked repo answers 451 forever, and must not wedge the run.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/blocked/repo"))
@@ -151,7 +145,6 @@ async fn cleanup_survives_a_permanently_blocked_repo() {
         .await
         .expect("one dead repo must not fail the whole run");
 
-    // The readable repo was still cleaned up.
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].url, "https://github.com/new/name");
@@ -159,7 +152,6 @@ async fn cleanup_survives_a_permanently_blocked_repo() {
 
 #[tokio::test]
 async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
-    // The repo was renamed old/name -> new/name, and its language changed.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/old/name"))
@@ -193,7 +185,6 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
     assert_eq!(updated[0].description, "new/name");
     // Hand-written notes are kept: only a note in the tool's shape is rebuilt.
     assert_eq!(updated[0].extended, "notes");
-    // Language tag refreshed (python -> rust), base + user tags kept.
     assert!(
         updated[0].tags.contains(&"lang:rust".to_string()),
         "{:?}",
@@ -214,7 +205,6 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
         "{:?}",
         updated[0].tags
     );
-    // Old URL deleted after the rewrite.
     assert_eq!(
         pinboard.deleted.borrow().as_slice(),
         &strings(&["https://github.com/old/name"])
@@ -233,8 +223,7 @@ async fn cleanup_leaves_deep_links_untouched() {
         }
     }
 
-    // No mocks: a lookup of any of these would 404 (and any rewrite would show up
-    // as an update), so an empty updated/deleted set proves they were skipped.
+    // No mocks: a lookup would 404, so nothing updated or deleted proves they were skipped.
     let server = MockServer::start().await;
     let pinboard = FakePinboard {
         all: vec![
@@ -264,8 +253,6 @@ async fn cleanup_leaves_deep_links_untouched() {
 
 #[tokio::test]
 async fn cleanup_canonicalizes_non_canonical_repo_root() {
-    // A repo-root URL with a .git suffix and trailing slash canonicalizes to the
-    // bare owner/repo root.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/Owner/Repo"))
@@ -294,7 +281,6 @@ async fn cleanup_canonicalizes_non_canonical_repo_root() {
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].url, "https://github.com/Owner/Repo");
-    // The non-canonical original was deleted after the rewrite.
     assert_eq!(
         pinboard.deleted.borrow().as_slice(),
         &strings(&["https://github.com/Owner/Repo.git/"])
@@ -303,8 +289,7 @@ async fn cleanup_canonicalizes_non_canonical_repo_root() {
 
 #[tokio::test]
 async fn cleanup_folds_www_host_onto_github_com() {
-    // A www.github.com repo root is the same site as github.com: it is looked up
-    // (owner/repo) and rewritten to the bare host, the old www URL deleted.
+    // www.github.com is the same site, so its repo root is looked up and rewritten.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/Owner/Repo"))
@@ -341,8 +326,7 @@ async fn cleanup_folds_www_host_onto_github_com() {
 
 #[tokio::test]
 async fn cleanup_rewrites_notes_only_to_retrofit_the_blockquote() {
-    // URL, title, and tags are already current; only the notes are stale (an old
-    // unwrapped description). The extended_changed guard must still trigger a write.
+    // Only the notes are stale, an unwrapped description, which alone must trigger a write.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/repos/o/r"))
@@ -372,7 +356,6 @@ async fn cleanup_rewrites_notes_only_to_retrofit_the_blockquote() {
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].extended, "<blockquote>A thing</blockquote>");
-    // Nothing else changed, so no delete (URL is unchanged).
     assert!(
         pinboard.deleted.borrow().is_empty(),
         "{:?}",
@@ -590,10 +573,9 @@ async fn cleanup_settles_after_one_run() {
 
 #[tokio::test]
 async fn cleanup_settles_after_merging_a_renamed_star_into_an_hn_story() {
-    // The star is stored under the repo's old name and the HN story under its new one, so
-    // the rename makes them collide and the driver field-merges them. The merged record
-    // then carries the base tag, which must not make the next run take over the HN title
-    // or, under `use_post_date`, its date.
+    // The rename merges a star under the old name into the HN story under the new one. The
+    // base tag the merge carries must not make the next run take over the HN title or,
+    // under `use_post_date`, its date.
     let server = MockServer::start().await;
     let renamed = json!({ "full_name": "new/name", "html_url": "https://github.com/new/name",
                           "description": "Renamed", "language": "Rust" });
@@ -633,8 +615,7 @@ async fn cleanup_settles_after_merging_a_renamed_star_into_an_hn_story() {
         stale_to_now: false,
     };
 
-    // The story either already sits at the new name, so the merge keeps its record, or
-    // moves too (from a non-canonical old URL), so neither record is kept as is.
+    // The story already sits at the new name, or moves there too from a non-canonical URL.
     for story_url in [
         "https://github.com/new/name",
         "https://www.github.com/old/name.git",
@@ -884,7 +865,6 @@ async fn cleanup_with_gists_off_leaves_gists_alone() {
     assert_eq!(stored, seed);
 }
 
-/// The starred gists are read only when there is a gist to plan.
 #[tokio::test]
 async fn cleanup_without_gist_bookmarks_reads_no_gists() {
     let server = MockServer::start().await;
@@ -998,9 +978,8 @@ async fn cleanup_canonicalizes_a_synced_gist_and_refreshes_what_sync_wrote() {
     assert_eq!(second_writes, 0, "settles after one run");
 }
 
-/// A gist saved by hand and tagged like a star, as one might have before sync wrote
-/// gists, is not a synced gist: the inherited `github-star` is not the gist's marker, so
-/// only its URL is canonicalized.
+/// The inherited `github-star` is not a gist's marker, so a hand-saved gist tagged with it
+/// only has its URL canonicalized.
 #[tokio::test]
 async fn cleanup_leaves_a_hand_saved_gist_tagged_like_a_star_as_it_was() {
     let server = MockServer::start().await;
@@ -1222,8 +1201,7 @@ async fn a_dead_token_on_the_repos_skips_the_gists() {
     );
 }
 
-/// A dead token on the lookup of a gist that isn't starred halts the gist pass as a
-/// re-auth, as one on a repo lookup does.
+/// A dead token looking up an unstarred gist halts as one on a repo lookup does.
 #[tokio::test]
 async fn a_dead_token_on_a_gist_lookup_is_a_reauth() {
     let server = MockServer::start().await;
@@ -1266,7 +1244,7 @@ async fn a_dead_token_on_the_gists_is_a_reauth_even_after_failed_repos() {
     }
     mount_starred(&server, ResponseTemplate::new(401)).await;
     let pinboard = FakePinboard {
-        // Two failed lookups and none answered: a majority, which fails the repo pass.
+        // Two failed lookups, none answered: a majority, failing the repo pass.
         all: vec![
             stored_at("https://github.com/o/r"),
             stored_at("https://github.com/o/s"),

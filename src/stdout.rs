@@ -21,6 +21,7 @@ pub fn write(text: impl AsRef<[u8]>) -> io::Result<()> {
     clippy::unnecessary_wraps,
     reason = "keeps the signature of the non-test write it stands in for"
 )]
+#[expect(clippy::print_stdout, reason = "libtest captures only `print!`")]
 pub fn write(text: impl AsRef<[u8]>) -> io::Result<()> {
     let text = String::from_utf8_lossy(text.as_ref());
     if !crate::test_support::capture_stdout(&text) {

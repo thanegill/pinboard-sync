@@ -144,17 +144,13 @@ pub trait Source: UrlKey {
     /// All saveable items as drafts, newest first.
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError>;
 
-    /// [`Source::fetch`] for `sync`, which already holds the destination's bookmarks:
-    /// a source may use `existing` to stop paging once it reaches items already synced.
-    /// What it returns still goes through the caller's dedup, so it may include items in
-    /// `existing`. By default, the full fetch.
+    /// [`Source::fetch`] for `sync`, which already holds the destination's bookmarks: a
+    /// source uses `existing` to stop paging once it reaches items already synced. What
+    /// it returns still goes through the caller's dedup, so it may include some of them.
     async fn fetch_incremental(
         &self,
         existing: &[Bookmark],
-    ) -> Result<Vec<BookmarkDraft>, SourceError> {
-        let _ = existing;
-        self.fetch().await
-    }
+    ) -> Result<Vec<BookmarkDraft>, SourceError>;
 }
 
 /// Whether a page of `page_len` source items, shaped into `page_drafts`, would give

@@ -296,6 +296,11 @@ impl Source for FakeReddit {
             .filter_map(|it| it.into_draft(&cfg))
             .collect())
     }
+
+    /// The full fetch: the fake has no pages to stop at.
+    async fn fetch_incremental(&self, _: &[Bookmark]) -> Result<Vec<BookmarkDraft>, SourceError> {
+        self.fetch().await
+    }
 }
 
 impl UrlKey for FakeReddit {

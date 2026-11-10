@@ -1,5 +1,4 @@
-//! Minimal Pinboard API client: `posts/add`, `posts/all`, and `posts/delete`,
-//! with rate limiting and transient-failure retries (see [`crate::http`]).
+//! The Pinboard client: `posts/add`, `posts/all` and `posts/delete`, paced and retried.
 
 use std::cell::Cell;
 use std::time::Duration;
@@ -22,46 +21,40 @@ const PINBOARD_BASE: &str = "https://api.pinboard.in/v1";
 
 /// The wait between `posts/add` calls, a 414's retry included (Pinboard asks for ~3s).
 pub const RATE_LIMIT: Duration = Duration::from_secs(3);
-/// 5 tries, each retry waiting at least the ~3s Pinboard asks for between calls.
+/// 5 tries, each retry waiting at least the ~3s Pinboard asks for.
 const BACKOFF: LinearBackoff = LinearBackoff::new(5, RATE_LIMIT);
 
-/// `posts/add` is a GET, so every field -- notably `extended` (the notes) -- rides in
-/// the request URL, and `extended` is trimmed to keep the whole URL, scheme and host
-/// included, percent-encoded as sent, within this many bytes, when the other fields leave
-/// room under it (else see [`PinboardClient::fit_extended`]). Other fields are never
-/// trimmed. The margin under [`PINBOARD_URL_LIMIT`] absorbs a small change on Pinboard's
-/// side; a 414 that still comes back is [`OnTooLong`]'s call.
+/// The budget `extended` (the notes) is trimmed to: `posts/add` is a GET, so this is the
+/// whole encoded URL, scheme and host included. Other fields are never trimmed; when they
+/// alone are over it, see [`PinboardClient::fit_extended`]. The margin under
+/// [`PINBOARD_URL_LIMIT`] absorbs a small change on Pinboard's side, and [`OnTooLong`]
+/// decides a 414 anyway.
 const MAX_URL_BYTES: usize = 8100;
-/// The longest `posts/add` URL Pinboard takes, in encoded bytes, scheme and host included:
-/// its nginx caps the request line, and a URL of 8201 bytes passed while one of 8202 got
-/// `414 URI Too Long` (measured 2026-11-04).
+/// The longest `posts/add` URL Pinboard takes, encoded, scheme and host included: its nginx
+/// caps the request line (8201 bytes passed and 8202 got a 414, measured 2026-11-04).
 pub(crate) const PINBOARD_URL_LIMIT: usize = 8201;
-/// The 414 retry never tries a budget below this: it stops there and surfaces the 414.
+/// The 414 retry's floor: below it, the 414 is returned.
 const MIN_URL_BYTES: usize = 500;
-/// Appended to a trimmed `extended` so the truncation is visible in the bookmark.
+/// Ends a trimmed `extended`, so the cut shows in the bookmark.
 pub(crate) const TRUNCATION_MARKER: &str = "… [truncated]";
 
-/// What `posts/add` does when Pinboard answers `414 URI Too Long` anyway.
+/// What `posts/add` does on a 414 anyway.
 #[derive(Clone, Copy)]
 enum OnTooLong {
-    /// Halve the budget and retry ([`halved`]): a new bookmark has nothing stored to
-    /// lose, so a shorter note beats none.
+    /// Halve the budget and retry ([`halved`]): a new bookmark has nothing stored to lose.
     Halve,
-    /// Write nothing: rewriting a stored bookmark with a note shorter than `fit` keeps
-    /// would cut text the store had accepted, and a merge judged against the longer note
-    /// would then delete what it absorbed.
+    /// Write nothing: a note shorter than `fit` keeps would cut text the store accepted,
+    /// and a merge judged against the longer note would then delete what it absorbed.
     Refuse,
 }
 
-/// The budget the 414 retry tries after `budget`, or `None` when half of it would be
-/// below [`MIN_URL_BYTES`].
+/// Half of `budget`, or `None` below [`MIN_URL_BYTES`].
 fn halved(budget: usize) -> Option<usize> {
     let half = budget / 2;
     (half >= MIN_URL_BYTES).then_some(half)
 }
 
-/// What `post_add` does when it gives up the write to `url` without sending it (again),
-/// for the reason `why`.
+/// `post_add` giving up the write to `url`, unsent, for `why`.
 fn unfittable(url: &Url, why: &str, too_long: OnTooLong) -> Result<Update> {
     match too_long {
         OnTooLong::Refuse => {
@@ -81,8 +74,7 @@ struct AddResponse {
 }
 
 impl AddResponse {
-    /// `Ok` when Pinboard reports the call `done`, else an error quoting its result code
-    /// as `what` failing, through [`redacted_error`].
+    /// `Ok` when Pinboard reports `done`, else [`redacted_error`] of `what` and the code.
     fn into_result(self, what: &str, auth_token: &str) -> Result<()> {
         if self.result_code == "done" {
             return Ok(());
@@ -91,9 +83,7 @@ impl AddResponse {
     }
 }
 
-/// A bookmark exactly as `posts/all` returns it -- the Pinboard wire shape, with its
-/// space-joined tag string, ISO-8601 `time`, and `"yes"/"no"` flags. Converted to the
-/// service-agnostic [`Bookmark`] on read (see the `TryFrom` impl below); nothing outside
+/// A bookmark as `posts/all` returns it, converted to [`Bookmark`] on read; nothing outside
 /// this module handles the wire form.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PinboardBookmark {
@@ -103,10 +93,10 @@ pub struct PinboardBookmark {
     pub description: String,
     #[serde(default)]
     pub extended: String,
-    /// Space-separated tag string.
+    /// Space-separated.
     #[serde(default)]
     pub tags: String,
-    /// Creation timestamp (ISO 8601).
+    /// ISO 8601.
     #[serde(default)]
     pub time: String,
     #[serde(default)]
@@ -124,10 +114,8 @@ pub struct UnparseableHref {
 }
 
 impl TryFrom<PinboardBookmark> for Bookmark {
-    /// Fails only when the wire `href` doesn't parse as a URL; `all()` skips (and warns
-    /// on) such entries. A non-empty `time` that won't parse is *not* fatal: it becomes
-    /// `timestamp: None` (logged) so the bookmark stays in the set sync dedups against --
-    /// dropping it would make sync re-add the URL and reset its date/title/tags/notes.
+    /// Fails only on an unparseable `href`. An unparseable `time` becomes `None` (logged)
+    /// instead: dropping the bookmark would make sync re-add the URL and reset its fields.
     type Error = UnparseableHref;
     fn try_from(b: PinboardBookmark) -> Result<Self, Self::Error> {
         let url = match Url::parse(&b.url) {
@@ -169,10 +157,10 @@ pub struct PinboardClient {
     auth_token: String,
     /// The pause between successive `posts/add` writes.
     rate_limit: Duration,
-    /// Set once the first write has happened, so [`Self::pace`] spaces only *successive*
-    /// writes. A `Cell` is enough: the futures aren't `Send`, so it stays on one thread.
+    /// Set by the first write, so [`Self::pace`] spaces only later ones. The futures aren't
+    /// `Send`, so a `Cell` is enough.
     wrote: Cell<bool>,
-    /// API base, e.g. `https://api.pinboard.in/v1`.
+    /// e.g. `https://api.pinboard.in/v1`.
     base: String,
 }
 
@@ -209,8 +197,8 @@ impl PinboardClient {
         format!("{}/{path}", self.base)
     }
 
-    /// Pinboard asks for ~3s between `posts/add` calls, so pause before each one after the
-    /// first, a 414's retry included: a failed attempt still hit the API, so it counts.
+    /// Pause before each `posts/add` after the first, a 414's retry included: a failed
+    /// attempt still hit the API.
     async fn pace(&self) {
         if self.wrote.get() {
             crate::http::sleep(self.rate_limit).await;
@@ -227,12 +215,10 @@ impl PinboardClient {
         Ok(wire_to_bookmarks(wire))
     }
 
-    /// `posts/add` with `replace=yes`, mapping a domain [`Bookmark`] to the Pinboard
-    /// parameters (`public`/`read_later` -> `shared`/`toread`, `timestamp` -> `dt`). A set
-    /// `timestamp` sets the bookmark time. `extended` is trimmed if needed to keep the GET
-    /// URL under [`MAX_URL_BYTES`], or [`PINBOARD_URL_LIMIT`] when the other fields leave
-    /// it no room under the budget; what a 414 does is `too_long`'s call. Nothing is sent
-    /// when the URL is over the limit even with no note ([`unfittable`]).
+    /// `posts/add` with `replace=yes`, `public`/`read_later` as `shared`/`toread` and
+    /// `timestamp` as `dt`, and `extended` trimmed to fit ([`Self::fitted_note`]); a 414 is
+    /// `too_long`'s call. Nothing is sent ([`unfittable`]) when the URL is over the limit
+    /// even with no note.
     async fn post_add(&self, b: &Bookmark, too_long: OnTooLong) -> Result<Update> {
         if let Err(too_long_to_send) = self.can_write(b) {
             let why = format!(
@@ -248,7 +234,6 @@ impl PinboardClient {
         let endpoint = self.url("posts/add");
         let measured_without_note = self.measured(b, |fixed| self.add_url_len(fixed, ""));
 
-        // Transient errors (network/429/5xx) are handled by `RetryingClient::send`.
         let mut budget = MAX_URL_BYTES;
         loop {
             self.pace().await;
@@ -292,19 +277,15 @@ impl PinboardClient {
                 .await
                 .context("parsing Pinboard posts/add response")?;
             parsed.into_result("Pinboard posts/add failed", &self.auth_token)?;
-            // Warn once the trim is final, not inside the retry: a note Pinboard keeps
-            // rejecting is re-trimmed at each halved budget, and warning per attempt reads
-            // like several different notes were cut. Worth saying at all because the stored
-            // note is now not the one the caller wrote. `cleanup` hands over notes `fit`
-            // already cut and says so itself, so this never fires for them.
+            // Once the trim is final: a warning per halved budget would read like several
+            // notes were cut. `cleanup` warns itself of notes `fit` already cut.
             warn_note_cut(self, &b.url, &b.note, &extended);
             return Ok(Update::Written);
         }
     }
 
-    /// Every `posts/add` param except `extended`: these are never trimmed, and set the
-    /// budget `extended` has to fit within. `tags` and `dt` are `b`'s, rendered for the
-    /// wire; with no `dt` the param is left out.
+    /// Every `posts/add` param except `extended`, none of them trimmed. `tags` and `dt` are
+    /// `b`'s, rendered; with no `dt` the param is left out.
     fn add_params<'a>(
         &'a self,
         b: &'a Bookmark,
@@ -332,11 +313,9 @@ impl PinboardClient {
         self.measured(b, |fixed| self.fit_extended(fixed, &b.note, budget))
     }
 
-    /// `measure` applied to `b`'s [`Self::add_params`] as the budget counts them: with a
-    /// `dt` even when `b` has none. Every `dt` is the same length, so the trim doesn't
-    /// depend on whether the write dates the bookmark. Without that, a note `sync` trimmed
-    /// undated would trim differently once `cleanup` writes it back with the date Pinboard
-    /// gave it, and be rewritten for that alone.
+    /// `measure` applied to `b`'s [`Self::add_params`] with a `dt` even when `b` has none,
+    /// so a note `sync` trimmed undated trims the same once `cleanup` writes it back dated,
+    /// and isn't rewritten for that alone.
     fn measured<T>(&self, b: &Bookmark, measure: impl FnOnce(&[(&str, &str)]) -> T) -> T {
         let tags = b.tags.joined();
         let dt = b
@@ -346,8 +325,8 @@ impl PinboardClient {
         measure(&self.add_params(b, &tags, Some(&dt)))
     }
 
-    /// Byte length of the `posts/add` URL that sends `b` with no note, as sent: with no
-    /// `dt` when `b` has none.
+    /// Byte length of the `posts/add` URL sending `b` with no note, as sent (no `dt` when
+    /// `b` has none).
     fn sent_without_note(&self, b: &Bookmark) -> usize {
         let tags = b.tags.joined();
         let dt = b.timestamp.and_then(crate::timefmt::to_pinboard_dt);
@@ -365,12 +344,10 @@ impl PinboardClient {
             .map_or(usize::MAX, |r| r.url().as_str().len())
     }
 
-    /// Trim `extended` so the encoded `posts/add` URL stays within `budget` bytes.
-    /// Returns `extended` unchanged when the full request already fits; otherwise the
-    /// largest char-boundary prefix that fits, with [`TRUNCATION_MARKER`] appended.
-    /// `fixed` is every other param (measured alongside, but never trimmed). When `fixed`
-    /// alone is over `budget`, the note is fitted to [`PINBOARD_URL_LIMIT`] instead, and
-    /// dropped when not even the marker fits under it.
+    /// `extended` trimmed so the encoded `posts/add` URL with `fixed` stays within
+    /// `budget`: unchanged when it fits, else the longest char-boundary prefix that fits
+    /// with [`TRUNCATION_MARKER`]. When `fixed` alone is over `budget`, the note is fitted
+    /// to [`PINBOARD_URL_LIMIT`] instead, and dropped when not even the marker fits.
     fn fit_extended(&self, fixed: &[(&str, &str)], extended: &str, budget: usize) -> String {
         let url_len = |ext: &str| self.add_url_len(fixed, ext);
         let room = if url_len("") > budget {
@@ -383,9 +360,7 @@ impl PinboardClient {
             return extended.to_string();
         }
 
-        // Binary-search the char-boundary offsets for the longest prefix that, with
-        // the marker appended, still fits. (URL-encoding expands bytes unevenly, so we
-        // measure rather than compute a byte budget.)
+        // Measured, not computed: percent-encoding expands bytes unevenly.
         let boundaries: Vec<usize> = extended
             .char_indices()
             .map(|(i, _)| i)
@@ -396,9 +371,8 @@ impl PinboardClient {
         });
         let best = fitting.checked_sub(1).map_or(0, |last| boundaries[last]);
 
-        // Trim only when the marked result is actually shorter than the note, so a note
-        // barely over budget isn't replaced by a longer, fabricated "[truncated]" note,
-        // unless the note is over Pinboard's limit too.
+        // A note barely over budget isn't replaced by a longer marked one, unless it is
+        // over Pinboard's limit too.
         if best + TRUNCATION_MARKER.len() >= extended.len()
             && url_len(extended) <= PINBOARD_URL_LIMIT
         {
@@ -412,9 +386,7 @@ impl PinboardClient {
         }
     }
 
-    /// GET `posts/all` with the given `meta` flag (`"yes"` includes each entry's
-    /// `meta`/`hash`), retrying transient failures. Shared by [`Self::all`], which parses
-    /// the JSON, and [`Self::export_all`], which returns the body verbatim.
+    /// GET `posts/all`; `meta = "yes"` adds each entry's `meta`/`hash`.
     async fn get_posts_all(&self, meta: &str) -> Result<reqwest::Response> {
         let params = [
             ("auth_token", self.auth_token.as_str()),
@@ -424,8 +396,7 @@ impl PinboardClient {
         self.get_with_backoff(&self.url("posts/all"), &params).await
     }
 
-    /// GET a Pinboard endpoint, retrying transient failures (network errors,
-    /// HTTP 429, 5xx) with backoff. Errors on a non-success final status.
+    /// GET a Pinboard endpoint, failing on a non-success final status.
     async fn get_with_backoff(
         &self,
         url: &str,
@@ -441,8 +412,7 @@ impl PinboardClient {
         Ok(resp)
     }
 
-    /// The error for a non-success response from `endpoint` (no query string), quoting
-    /// the body only through [`redacted_error`].
+    /// The [`redacted_error`] for a non-success response from `endpoint` (no query).
     async fn status_error(&self, endpoint: &str, resp: reqwest::Response) -> anyhow::Error {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -453,16 +423,14 @@ impl PinboardClient {
         )
     }
 
-    /// Fetch the raw `posts/all` JSON body verbatim (with `meta=yes`), for backups. Unlike
-    /// [`Self::all`], this neither parses nor filters -- it returns exactly what Pinboard
-    /// sends, preserving `meta`/`hash` and any entries `all` would skip.
+    /// The `posts/all` body verbatim (with `meta=yes`), for backups: unparsed, so it keeps
+    /// any entry [`Self::all`] would skip.
     pub async fn export_all(&self) -> Result<String> {
         let resp = self.get_posts_all("yes").await?;
         resp.text().await.context("reading Pinboard posts/all body")
     }
 
-    /// Construct a client pointed at an arbitrary API base, for tests. No inter-write
-    /// pacing so `net_tests` don't sleep.
+    /// A client on another API base, for tests, with no pacing.
     #[cfg(test)]
     pub fn with_base_url(auth_token: String, base: String) -> Result<Self> {
         Self::build(auth_token, Duration::ZERO, base, client_builder())
@@ -485,16 +453,11 @@ impl PinboardClient {
 }
 
 impl BackupSource for PinboardClient {
-    /// Pinboard is a backup target like any source, and like them it fetches **once**:
-    /// `posts/all` is rate-limited to one call per five minutes, far longer than the
-    /// retry budget, so a second call inside one run would 429 and fail the target. The
-    /// `meta=yes` body is both the raw half and the input to the parsed half, which is
-    /// also what makes the two describe the same instant.
+    /// One `posts/all` call feeds both halves, so they describe one instant: the endpoint
+    /// allows one call per five minutes, so a second would 429 and fail the target.
     async fn dump(&self) -> Result<BackupDump, SourceError> {
         let body = self.export_all().await?;
-        // Not `?`: a body that parses as JSON but no longer matches the wire shape (a
-        // renamed `href`, say) is exactly when the raw half is worth keeping, so the
-        // failure rides along in `records` and the raw file is still written.
+        // Not `?`: a shape break (a renamed `href`) is when the raw half is most needed.
         let records = serde_json::from_str::<Vec<PinboardBookmark>>(&body)
             .context("parsing Pinboard posts/all")
             .map(|wire| {
@@ -517,8 +480,8 @@ impl BackupSource for PinboardClient {
 }
 
 impl BookmarkStore for PinboardClient {
-    /// An `item not found` answering a retry counts as done: the attempt before it may have
-    /// deleted the bookmark and lost the response. On a first attempt it is an error.
+    /// An `item not found` answering a retry is done: the lost attempt may have deleted it.
+    /// On a first attempt it is an error.
     async fn delete(&self, url: &Url) -> Result<()> {
         let params = [
             ("url", url.as_str()),
@@ -571,17 +534,15 @@ impl BookmarkStore for PinboardClient {
     }
 }
 
-/// [`error_with_body`] for text from a Pinboard response, which could echo the request
-/// line and the token in it. The token is redacted from the whole text first, so neither
-/// the error nor the debug-logged body carries it, and the excerpt's cut can't leave half
-/// a token behind.
+/// [`error_with_body`] for Pinboard response text, which can echo the request line and its
+/// token. The token is redacted from the whole text first, so neither the error nor its
+/// debug log carries it, and the cut can't leave half of it.
 fn redacted_error(what: &str, text: &str, auth_token: &str) -> anyhow::Error {
     error_with_body(what, &redact_token(text, auth_token), &[])
 }
 
-/// `text` with every occurrence of the `user:SECRET` token, and of its `SECRET` alone
-/// (which also covers the token percent-encoded as `user%3ASECRET`), replaced, as is any
-/// `auth_token=` value (a quoted request line cut short mid-token). Nothing else changes.
+/// `text` with the `user:SECRET` token and its `SECRET` alone (which also covers
+/// `user%3ASECRET`) replaced, and any `auth_token=` value (a request line cut mid-token).
 fn redact_token(text: &str, auth_token: &str) -> String {
     let secret = auth_token
         .split_once(':')
@@ -610,10 +571,8 @@ fn redact_auth_token_values(text: &str) -> String {
     redacted
 }
 
-/// Convert wire bookmarks to the domain type, skipping (and warning on) any whose `href`
-/// doesn't parse as a URL rather than aborting the whole run for one bad entry. An
-/// unparseable `time` is not fatal -- the conversion keeps the bookmark with no timestamp
-/// (see `Bookmark::try_from`) so it stays in the set sync dedups against.
+/// The domain bookmarks, skipping (with a warning) any whose `href` doesn't parse, rather
+/// than failing the run.
 fn wire_to_bookmarks(wire: Vec<PinboardBookmark>) -> Vec<Bookmark> {
     wire.into_iter()
         .filter_map(|b| {

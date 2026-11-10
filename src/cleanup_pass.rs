@@ -275,15 +275,16 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     let (first_appearance, mut groups) = group_by_target(&pairs);
     let group_order = write_order(&first_appearance, &groups);
     let residents = residents_of(store, &pairs, &group_order, &untouchable);
-    let held_back = hold_back(
+    let held_back = HoldBacks {
         store,
-        &group_order,
-        &mut groups,
-        &residents,
-        &mut untouchable,
+        group_order: &group_order,
+        residents: &residents,
+        untouchable: &mut untouchable,
         mode,
-        &mut outcome,
-    );
+        outcome: &mut outcome,
+        held_from: HashMap::new(),
+    }
+    .hold_back(&mut groups);
 
     // The URLs a planned write still owns. A rewrite's old URL is never deleted when it is
     // one of these, because that write's record will live there and deleting it would
@@ -517,416 +518,348 @@ fn residents_of<'p, S: AccountState>(
         .collect()
 }
 
-/// Every hold-back, in order, each building on the groups the ones before it left, once
-/// each group with no record staying is led, where one exists, by a mover that can be
-/// sent: visibility, then cut notes, then writes that can't be sent. Returns how many plans
-/// each target lost.
-fn hold_back<'p, S: BookmarkStore>(
-    store: &S,
-    group_order: &[&'p Url],
-    groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
-    residents: &HashMap<&'p Url, Bookmark>,
-    untouchable: &mut HashMap<Url, Refusal>,
+/// The hold-back phases' shared state: the store and the groups' residents they read, the
+/// refusals they mark, the preview they add to and how many plans each target lost.
+struct HoldBacks<'h, 'p, S> {
+    store: &'h S,
+    group_order: &'h [&'p Url],
+    residents: &'h HashMap<&'p Url, Bookmark>,
+    untouchable: &'h mut HashMap<Url, Refusal>,
     mode: WriteMode,
-    outcome: &mut PassOutcome,
-) -> HashMap<Url, usize> {
-    lead_with_a_sendable_mover(store, group_order, groups, residents, untouchable);
-    let mut held_back = HashMap::new();
-    let each = [
-        hold_back_visibility_mismatches(group_order, groups, residents, untouchable, mode, outcome),
-        hold_back_cut_notes(
-            store,
-            group_order,
-            groups,
-            residents,
-            untouchable,
-            mode,
-            outcome,
-        ),
-        hold_back_unwritable(
-            store,
-            group_order,
-            groups,
-            residents,
-            untouchable,
-            mode,
-            outcome,
-        ),
-    ];
-    for (key, count) in each.into_iter().flatten() {
-        *held_back.entry(key).or_default() += count;
-    }
-    held_back
+    outcome: &'h mut PassOutcome,
+    held_from: HashMap<Url, usize>,
 }
 
-/// A plan [`hold_back_visibility_mismatches`] drops from its group.
+/// A plan [`HoldBacks::hold_back_visibility_mismatches`] drops from its group.
 struct HeldBack<'p> {
     /// The held-back bookmark's stored URL, which it keeps.
     mover: Url,
     target: &'p Url,
     mover_public: bool,
-    /// Whether the record staying at `target` is public, or `None` when nothing stays
-    /// there and the plans heading for it disagreed with each other.
+    /// Whether the record staying at `target` is public, or `None` when nothing stays there
+    /// and the plans heading for it disagreed with each other.
     staying: Option<bool>,
 }
 
-/// Drop from each group the plans that disagree about visibility with what stays at its
-/// target, marking each one's own URL occupied, and return how many each target lost.
-///
-/// A merge fuses the members' notes and tags into one record, so a bookmark may only join
-/// when it agrees with the record that stays there about who may read it. Widening would
-/// publish a private member's annotation; narrowing would unshare a bookmark the user chose
-/// to share. Neither is ours to decide, so the disagreeing bookmark drops out of the group
-/// and stays where it is.
-///
-/// Only that bookmark, not the whole group: the record that stays usually has a plan of
-/// its own, which has nothing to do with the mover's visibility, and blocking that too
-/// would let one mismatched duplicate freeze an unrelated bookmark's cleanup for good.
-/// Settled ahead of the fixpoint, because a refused mover keeps its own URL occupied
-/// exactly like a group refused for an unreadable target.
-fn hold_back_visibility_mismatches<'p>(
-    group_order: &[&'p Url],
-    groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
-    residents: &HashMap<&'p Url, Bookmark>,
-    untouchable: &mut HashMap<Url, Refusal>,
-    mode: WriteMode,
-    outcome: &mut PassOutcome,
-) -> HashMap<Url, usize> {
-    let mut held_from: HashMap<Url, usize> = HashMap::new();
-    let mut held_back: Vec<HeldBack> = Vec::new();
-    for key in group_order {
-        if untouchable.contains_key(*key) {
-            continue;
-        }
-        let members = &groups[key];
-        // What the joining plans have to agree with. A record that stays at the target sets
-        // it. With none -- a target nothing occupies, or one whose occupant is itself
-        // moving away -- there is nothing to defer to, so the plans need only agree with
-        // *each other*; when they don't, no member may write, because merging would then
-        // pick a visibility on the user's behalf with nothing to justify the choice.
-        let staying = residents
-            .get(key)
-            .map(|resident| resident.public)
-            .or_else(|| incumbent_of(members, key).map(|at| members[at].planned.public));
-        let agreed = match staying {
-            Some(public) => Some(public),
-            None => members
-                .first()
-                .map(|member| member.planned.public)
-                .filter(|first| members.iter().all(|m| m.planned.public == *first)),
-        };
-        let members = groups.get_mut(key).expect("key came from group_order");
-        let (kept, refused): (Vec<_>, Vec<_>) = match agreed {
-            Some(public) => members
-                .iter()
-                .copied()
-                .partition(|member| member.planned.public == public),
-            None => (Vec::new(), members.clone()),
-        };
-        if refused.is_empty() {
-            continue;
-        }
-        held_back.extend(refused.iter().map(|member| HeldBack {
-            mover: member.stored.url.clone(),
-            target: key,
-            mover_public: member.planned.public,
-            staying,
-        }));
-        *members = kept;
+impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
+    /// Every hold-back, in order, each building on the groups the ones before it left, once
+    /// each group with no record staying is led, where one exists, by a mover that can be
+    /// sent: visibility, then cut notes, then writes that can't be sent. Returns how many
+    /// plans each target lost.
+    fn hold_back(mut self, groups: &mut HashMap<&'p Url, Vec<Member<'p>>>) -> HashMap<Url, usize> {
+        self.lead_with_a_sendable_mover(groups);
+        self.hold_back_visibility_mismatches(groups);
+        self.hold_back_cut_notes(groups);
+        self.hold_back_unwritable(groups);
+        self.held_from
     }
-    for HeldBack {
-        mover,
-        target,
-        mover_public,
-        staying,
-    } in held_back
-    {
-        *held_from.entry(target.clone()).or_default() += 1;
-        let describe = |public| if public { "public" } else { "private" };
-        match staying {
-            Some(staying) => warn!(
-                "not merging {mover} into {target}: it is {}, but {target} is {}",
-                describe(mover_public),
-                describe(staying)
-            ),
-            None => warn!(
-                "not merging {mover} into {target}: the bookmarks moving there disagree \
-                 about whether it should be public, and nothing is stored at {target} to \
-                 settle it"
-            ),
+
+    /// Drop from each group the plans that disagree about visibility with what stays at its
+    /// target, marking each one's own URL occupied.
+    ///
+    /// A merge fuses the members' notes and tags into one record, so a bookmark may only
+    /// join when it agrees with the record that stays there about who may read it. Widening
+    /// would publish a private member's annotation; narrowing would unshare a bookmark the
+    /// user chose to share. Neither is ours to decide, so the disagreeing bookmark drops
+    /// out of the group and stays where it is.
+    ///
+    /// Only that bookmark, not the whole group: the record that stays usually has a plan of
+    /// its own, which has nothing to do with the mover's visibility, and blocking that too
+    /// would let one mismatched duplicate freeze an unrelated bookmark's cleanup for good.
+    /// Settled ahead of the fixpoint, because a refused mover keeps its own URL occupied
+    /// exactly like a group refused for an unreadable target.
+    fn hold_back_visibility_mismatches(&mut self, groups: &mut HashMap<&'p Url, Vec<Member<'p>>>) {
+        let residents = self.residents;
+        let mut held_back: Vec<HeldBack> = Vec::new();
+        for key in self.group_order {
+            if self.untouchable.contains_key(*key) {
+                continue;
+            }
+            let members = &groups[key];
+            // What the joining plans have to agree with. A record that stays at the target
+            // sets it. With none -- a target nothing occupies, or one whose occupant is
+            // itself moving away -- there is nothing to defer to, so the plans need only
+            // agree with *each other*; when they don't, no member may write, because
+            // merging would then pick a visibility on the user's behalf with nothing to
+            // justify the choice.
+            let staying = residents
+                .get(key)
+                .map(|resident| resident.public)
+                .or_else(|| incumbent_of(members, key).map(|at| members[at].planned.public));
+            let agreed = match staying {
+                Some(public) => Some(public),
+                None => members
+                    .first()
+                    .map(|member| member.planned.public)
+                    .filter(|first| members.iter().all(|m| m.planned.public == *first)),
+            };
+            let members = groups.get_mut(key).expect("key came from group_order");
+            let (kept, refused): (Vec<_>, Vec<_>) = match agreed {
+                Some(public) => members
+                    .iter()
+                    .copied()
+                    .partition(|member| member.planned.public == public),
+                None => (Vec::new(), members.clone()),
+            };
+            if refused.is_empty() {
+                continue;
+            }
+            held_back.extend(refused.iter().map(|member| HeldBack {
+                mover: member.stored.url.clone(),
+                target: key,
+                mover_public: member.planned.public,
+                staying,
+            }));
+            *members = kept;
         }
-        if mode.is_dry_run() {
-            let reason = match staying {
-                Some(staying) => {
-                    format!("would merge into {target}, which is {}", describe(staying))
-                }
-                None => format!(
-                    "would merge into {target} with bookmarks that disagree about visibility"
+        for HeldBack {
+            mover,
+            target,
+            mover_public,
+            staying,
+        } in held_back
+        {
+            let describe = |public| if public { "public" } else { "private" };
+            let (why, preview_tail) = match staying {
+                Some(staying) => (
+                    format!(
+                        "it is {}, but {target} is {}",
+                        describe(mover_public),
+                        describe(staying)
+                    ),
+                    format!(", which is {}", describe(staying)),
+                ),
+                None => (
+                    format!(
+                        "the bookmarks moving there disagree about whether it should be \
+                         public, and nothing is stored at {target} to settle it"
+                    ),
+                    " with bookmarks that disagree about visibility".to_string(),
                 ),
             };
-            emit_preview(
-                &mut outcome.preview,
+            self.hold_back_mover(
                 &mover,
-                [preview::detail(format!("(refused: {reason})"))],
+                target,
+                &why,
+                &preview_tail,
+                Refusal::OccupiedByRefused,
             );
         }
-        // The mover didn't move, so its own URL is still occupied and no other rewrite may
-        // land there.
-        untouchable
-            .entry(mover)
-            .or_insert(Refusal::OccupiedByRefused);
     }
-    held_from
-}
 
-/// Drop from each merging group the members that would make the merge lose text, marking
-/// each one's own URL occupied, and return how many each target lost. The merge is built up
-/// from the record that leads it, adding the others in merge order and keeping each only
-/// when, with it, what the target will hold still has all of the note a lone rewrite of
-/// each member would keep, short of plan text the member doesn't store that the leading
-/// plan has too ([`Merge::would_lose`]), and the leading note keeps all it would keep on
-/// its own: other members' tags take room from the note too.
-///
-/// Absorbing a member deletes it, and leaving its URL to another group writes over it, so
-/// either way the text the cut lost would be gone; a cut leading note loses its tail for
-/// good. Built up one member at a time so that a member adding nothing is never held back
-/// for another's sake. Settled before any write, like the visibility hold-backs, so that
-/// the fixpoint closes over it and the outcome doesn't depend on write order, a cycle of
-/// moves included.
-fn hold_back_cut_notes<'p, S: BookmarkStore>(
-    store: &S,
-    group_order: &[&'p Url],
-    groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
-    residents: &HashMap<&'p Url, Bookmark>,
-    untouchable: &mut HashMap<Url, Refusal>,
-    mode: WriteMode,
-    outcome: &mut PassOutcome,
-) -> HashMap<Url, usize> {
-    let mut held_from: HashMap<Url, usize> = HashMap::new();
-    for key in group_order {
-        if untouchable.contains_key(*key) {
-            continue;
-        }
-        let resident = residents.get(key);
-        let members = groups.get_mut(key).expect("key came from group_order");
-        // A lone plan with nothing stored at its target is a rewrite, which loses nothing
-        // a rewrite of it alone wouldn't.
-        if members.is_empty() || (resident.is_none() && members.len() == 1) {
-            continue;
-        }
-        let lead = lead_of(members, key, resident.is_some());
-        let mut merging: Vec<Member<'p>> = lead.map(|at| vec![members[at]]).unwrap_or_default();
-        let lead_note = kept_text(store, merge_members(store, key, &merging, resident).kept());
-        let mut held: Vec<Url> = Vec::new();
-        for (at, member) in members.iter().enumerate() {
-            if Some(at) == lead {
+    /// Drop from each merging group the members that would make the merge lose text,
+    /// marking each one's own URL occupied. The merge is built up from the record that
+    /// leads it, adding the others in merge order and keeping each only when, with it, what
+    /// the target will hold still has all of the note a lone rewrite of each member would
+    /// keep, short of plan text the member doesn't store that the leading plan has too
+    /// ([`Merge::would_lose`]), and the leading note keeps all it would keep on its own:
+    /// other members' tags take room from the note too.
+    ///
+    /// Absorbing a member deletes it, and leaving its URL to another group writes over it,
+    /// so either way the text the cut lost would be gone; a cut leading note loses its tail
+    /// for good. Built up one member at a time so that a member adding nothing is never
+    /// held back for another's sake. Settled before any write, like the visibility
+    /// hold-backs, so that the fixpoint closes over it and the outcome doesn't depend on
+    /// write order, a cycle of moves included.
+    fn hold_back_cut_notes(&mut self, groups: &mut HashMap<&'p Url, Vec<Member<'p>>>) {
+        let (store, residents) = (self.store, self.residents);
+        for key in self.group_order {
+            if self.untouchable.contains_key(*key) {
                 continue;
             }
-            merging.push(*member);
-            let merge = merge_members(store, key, &merging, resident);
-            let (why, preview) = if merge.would_lose(store, member) {
-                (
-                    "its note would not all fit there, and merging it would lose the rest",
-                    "which has no room for its note",
-                )
-            } else if merging.iter().any(|other| merge.would_lose(store, other))
-                || !kept_text(store, merge.kept()).starts_with(&lead_note)
-            {
-                (
-                    "merging it would cut the note of a bookmark merging there",
-                    "cutting a note there",
-                )
-            } else {
+            let resident = residents.get(key);
+            let members = groups.get_mut(key).expect("key came from group_order");
+            // A lone plan with nothing stored at its target is a rewrite, which loses
+            // nothing a rewrite of it alone wouldn't.
+            if members.is_empty() || (resident.is_none() && members.len() == 1) {
                 continue;
-            };
-            merging.pop();
-            *held_from.entry((*key).clone()).or_default() += 1;
-            warn!("not merging {} into {key}: {why}", member.stored.url);
-            if mode.is_dry_run() {
-                emit_preview(
-                    &mut outcome.preview,
-                    &member.stored.url,
-                    [preview::detail(format!(
-                        "(refused: would merge into {key}, {preview})"
-                    ))],
-                );
             }
-            untouchable
-                .entry(member.stored.url.clone())
-                .or_insert(Refusal::OccupiedByRefused);
-            held.push(member.stored.url.clone());
-        }
-        members.retain(|member| !held.contains(&member.stored.url));
-    }
-    held_from
-}
-
-/// Hold back the plans the store could never send ([`BookmarkStore::can_write`]), marking
-/// each one's own URL occupied, and return how many each target lost. Such a write is too
-/// long even with no note, so the store would refuse it anyway, but only once the writes
-/// before it had landed, a cycle of moves' included, and unseen by a dry run.
-///
-/// A merge is built up from its lead as in [`hold_back_cut_notes`], holding back each
-/// member whose joining would make it unsendable, so a duplicate can't freeze the cleanup
-/// of the record that stays. A group whose lead can't be sent even alone, or a lone plan
-/// that can't, is emptied, counting one refused write. Settled last, once the other
-/// hold-backs have fixed what each group merges, and before the fixpoint, like them.
-fn hold_back_unwritable<'p, S: BookmarkStore>(
-    store: &S,
-    group_order: &[&'p Url],
-    groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
-    residents: &HashMap<&'p Url, Bookmark>,
-    untouchable: &mut HashMap<Url, Refusal>,
-    mode: WriteMode,
-    outcome: &mut PassOutcome,
-) -> HashMap<Url, usize> {
-    let mut held_from: HashMap<Url, usize> = HashMap::new();
-    for key in group_order {
-        if untouchable.contains_key(*key) {
-            continue;
-        }
-        let resident = residents.get(key);
-        let members = groups.get_mut(key).expect("key came from group_order");
-        if members.is_empty() {
-            continue;
-        }
-        let sendable = |merging: &[Member<'p>]| {
-            let merge = merge_members(store, key, merging, resident);
-            if !merge.rewrite {
-                return Ok(());
-            }
-            store.can_write(&merge.fitted)
-        };
-        let mut held: Vec<Url> = Vec::new();
-        let lead = lead_of(members, key, resident.is_some());
-        let mut merging: Vec<Member<'p>> = lead.map(|at| vec![members[at]]).unwrap_or_default();
-        let lead_sendable = match (resident, &members[..]) {
-            (None, [Member { stored, planned }]) => {
-                let fitted = fit_plan(store, Some(stored), planned);
-                if stores_nothing_new(store, stored, &fitted) {
-                    Ok(())
-                } else {
-                    store.can_write(&fitted)
+            let lead = lead_of(members, key, resident.is_some());
+            let mut merging: Vec<Member<'p>> = lead.map(|at| vec![members[at]]).unwrap_or_default();
+            let lead_note = kept_text(store, merge_members(store, key, &merging, resident).kept());
+            let mut held: Vec<Url> = Vec::new();
+            for (at, member) in members.iter().enumerate() {
+                if Some(at) == lead {
+                    continue;
                 }
+                merging.push(*member);
+                let merge = merge_members(store, key, &merging, resident);
+                let (why, preview_tail) = if merge.would_lose(store, member) {
+                    (
+                        "its note would not all fit there, and merging it would lose the rest",
+                        ", which has no room for its note",
+                    )
+                } else if merging.iter().any(|other| merge.would_lose(store, other))
+                    || !kept_text(store, merge.kept()).starts_with(&lead_note)
+                {
+                    (
+                        "merging it would cut the note of a bookmark merging there",
+                        ", cutting a note there",
+                    )
+                } else {
+                    continue;
+                };
+                merging.pop();
+                self.hold_back_mover(
+                    &member.stored.url,
+                    key,
+                    why,
+                    preview_tail,
+                    Refusal::OccupiedByRefused,
+                );
+                held.push(member.stored.url.clone());
             }
-            _ => sendable(&merging),
-        };
-        if let Err(why) = lead_sendable {
-            refuse_unwritable(key, members, why, untouchable, mode, outcome);
-            held_from.insert((*key).clone(), 1);
-            continue;
+            members.retain(|member| !held.contains(&member.stored.url));
         }
-        for (at, member) in members.iter().enumerate() {
-            if Some(at) == lead {
+    }
+
+    /// Hold back the plans the store could never send ([`BookmarkStore::can_write`]),
+    /// marking each one's own URL occupied. Such a write is too long even with no note, so
+    /// the store would refuse it anyway, but only once the writes before it had landed, a
+    /// cycle of moves' included, and unseen by a dry run.
+    ///
+    /// A merge is built up from its lead as in [`Self::hold_back_cut_notes`], holding back
+    /// each member whose joining would make it unsendable, so a duplicate can't freeze the
+    /// cleanup of the record that stays. A group whose lead can't be sent even alone, or a
+    /// lone plan that can't, is emptied, counting one refused write. Settled last, once the
+    /// other hold-backs have fixed what each group merges, and before the fixpoint.
+    fn hold_back_unwritable(&mut self, groups: &mut HashMap<&'p Url, Vec<Member<'p>>>) {
+        let (store, residents) = (self.store, self.residents);
+        for key in self.group_order {
+            if self.untouchable.contains_key(*key) {
                 continue;
             }
-            merging.push(*member);
-            let Err(why) = sendable(&merging) else {
+            let resident = residents.get(key);
+            let members = groups.get_mut(key).expect("key came from group_order");
+            if members.is_empty() {
                 continue;
+            }
+            let sendable = |merging: &[Member<'p>]| {
+                let merge = merge_members(store, key, merging, resident);
+                if !merge.rewrite {
+                    return Ok(());
+                }
+                store.can_write(&merge.fitted)
             };
-            merging.pop();
-            hold_back_unsendable(key, member, why, untouchable, mode, outcome);
-            *held_from.entry((*key).clone()).or_default() += 1;
-            held.push(member.stored.url.clone());
+            let mut held: Vec<Url> = Vec::new();
+            let lead = lead_of(members, key, resident.is_some());
+            let mut merging: Vec<Member<'p>> = lead.map(|at| vec![members[at]]).unwrap_or_default();
+            let lead_sendable = match (resident, &members[..]) {
+                (None, [Member { stored, planned }]) => {
+                    let fitted = fit_plan(store, Some(stored), planned);
+                    if stores_nothing_new(store, stored, &fitted) {
+                        Ok(())
+                    } else {
+                        store.can_write(&fitted)
+                    }
+                }
+                _ => sendable(&merging),
+            };
+            if let Err(why) = lead_sendable {
+                self.refuse_unwritable(key, members, why);
+                continue;
+            }
+            for (at, member) in members.iter().enumerate() {
+                if Some(at) == lead {
+                    continue;
+                }
+                merging.push(*member);
+                let Err(why) = sendable(&merging) else {
+                    continue;
+                };
+                merging.pop();
+                self.hold_back_mover(
+                    &member.stored.url,
+                    key,
+                    &format!("the merge would be {UNWRITABLE} ({why})"),
+                    &format!(", {UNWRITABLE}"),
+                    Refusal::TooLong,
+                );
+                held.push(member.stored.url.clone());
+            }
+            members.retain(|member| !held.contains(&member.stored.url));
         }
-        members.retain(|member| !held.contains(&member.stored.url));
     }
-    held_from
+
+    /// Put first, in each group with no record staying at its target, the first mover the
+    /// store could send alone ([`BookmarkStore::can_write`]). Whichever mover comes first
+    /// leads such a merge, with its title, so without this one that can never be sent would
+    /// take every other mover down with it, and which did would depend on snapshot order;
+    /// behind a sendable lead it may still join. Runs first: the hold-backs build on a lead.
+    fn lead_with_a_sendable_mover(&self, groups: &mut HashMap<&'p Url, Vec<Member<'p>>>) {
+        for key in self.group_order {
+            let members = groups.get_mut(key).expect("key came from group_order");
+            if self.untouchable.contains_key(*key)
+                || self.residents.contains_key(key)
+                || members.len() < 2
+                || incumbent_of(members, key).is_some()
+            {
+                continue;
+            }
+            let sendable_alone = members.iter().position(|member| {
+                let alone = merge_members(self.store, key, std::slice::from_ref(member), None);
+                self.store.can_write(&alone.fitted).is_ok()
+            });
+            if let Some(at) = sendable_alone {
+                members[..=at].rotate_right(1);
+            }
+        }
+    }
+
+    /// Hold `mover` back from its merge at `target` for `why`, counting it against the
+    /// target and previewing `preview_tail` after the target's URL, and mark its own URL
+    /// occupied for `reason`: it didn't move, so no other rewrite may land there.
+    fn hold_back_mover(
+        &mut self,
+        mover: &Url,
+        target: &Url,
+        why: &str,
+        preview_tail: &str,
+        reason: Refusal,
+    ) {
+        *self.held_from.entry(target.clone()).or_default() += 1;
+        warn!("not merging {mover} into {target}: {why}");
+        if self.mode.is_dry_run() {
+            emit_preview(
+                &mut self.outcome.preview,
+                mover,
+                [preview::detail(format!(
+                    "(refused: would merge into {target}{preview_tail})"
+                ))],
+            );
+        }
+        self.untouchable.entry(mover.clone()).or_insert(reason);
+    }
+
+    /// Log, preview and empty `members`, a group whose leading write to `key` could never
+    /// be sent (`why`), counting one refused write and marking each member's URL occupied.
+    fn refuse_unwritable(&mut self, key: &Url, members: &mut Vec<Member<'_>>, why: TooLongToSend) {
+        let from: Vec<&str> = members
+            .iter()
+            .map(|member| member.stored.url.as_str())
+            .collect();
+        warn!(
+            "skipping cleanup write to {key} from {}: {UNWRITABLE} ({why})",
+            from.join(" ")
+        );
+        if self.mode.is_dry_run() {
+            emit_preview(
+                &mut self.outcome.preview,
+                key,
+                [preview::detail(format!("(refused: {UNWRITABLE})"))],
+            );
+        }
+        *self.held_from.entry(key.clone()).or_default() += 1;
+        for member in members.drain(..) {
+            self.untouchable
+                .entry(member.stored.url.clone())
+                .or_insert(Refusal::TooLong);
+        }
+    }
 }
 
-/// Put first, in each group with no record staying at its target, the first mover the
-/// store could send alone ([`BookmarkStore::can_write`]). Whichever mover comes first leads
-/// such a merge, with its title, so without this one that can never be sent would take
-/// every other mover down with it, and which did would depend on snapshot order; behind a
-/// sendable lead it may still join. Settled first, before the hold-backs build on a lead.
-fn lead_with_a_sendable_mover<'p, S: BookmarkStore>(
-    store: &S,
-    group_order: &[&'p Url],
-    groups: &mut HashMap<&'p Url, Vec<Member<'p>>>,
-    residents: &HashMap<&'p Url, Bookmark>,
-    untouchable: &HashMap<Url, Refusal>,
-) {
-    for key in group_order {
-        let members = groups.get_mut(key).expect("key came from group_order");
-        if untouchable.contains_key(*key)
-            || residents.contains_key(key)
-            || members.len() < 2
-            || incumbent_of(members, key).is_some()
-        {
-            continue;
-        }
-        let sendable_alone = members.iter().position(|member| {
-            let alone = merge_members(store, key, std::slice::from_ref(member), None);
-            store.can_write(&alone.fitted).is_ok()
-        });
-        if let Some(at) = sendable_alone {
-            members[..=at].rotate_right(1);
-        }
-    }
-}
-
-/// Why [`hold_back_unwritable`] refuses a write.
+/// Why [`HoldBacks::hold_back_unwritable`] refuses a write.
 const UNWRITABLE: &str = "too long for Pinboard even with no note";
-
-/// Log and preview `member`, held back from its merge at `key` as too long to send (`why`),
-/// and mark its own URL occupied.
-fn hold_back_unsendable(
-    key: &Url,
-    member: &Member<'_>,
-    why: TooLongToSend,
-    untouchable: &mut HashMap<Url, Refusal>,
-    mode: WriteMode,
-    outcome: &mut PassOutcome,
-) {
-    warn!(
-        "not merging {} into {key}: the merge would be {UNWRITABLE} ({why})",
-        member.stored.url
-    );
-    if mode.is_dry_run() {
-        emit_preview(
-            &mut outcome.preview,
-            &member.stored.url,
-            [preview::detail(format!(
-                "(refused: would merge into {key}, {UNWRITABLE})"
-            ))],
-        );
-    }
-    untouchable
-        .entry(member.stored.url.clone())
-        .or_insert(Refusal::TooLong);
-}
-
-/// Log, preview and empty `members`, a group whose leading write to `key` could never be
-/// sent (`why`), marking each member's own URL occupied.
-fn refuse_unwritable(
-    key: &Url,
-    members: &mut Vec<Member<'_>>,
-    why: TooLongToSend,
-    untouchable: &mut HashMap<Url, Refusal>,
-    mode: WriteMode,
-    outcome: &mut PassOutcome,
-) {
-    let from: Vec<&str> = members
-        .iter()
-        .map(|member| member.stored.url.as_str())
-        .collect();
-    warn!(
-        "skipping cleanup write to {key} from {}: {UNWRITABLE} ({why})",
-        from.join(" ")
-    );
-    if mode.is_dry_run() {
-        emit_preview(
-            &mut outcome.preview,
-            key,
-            [preview::detail(format!("(refused: {UNWRITABLE})"))],
-        );
-    }
-    for member in members.drain(..) {
-        untouchable
-            .entry(member.stored.url.clone())
-            .or_insert(Refusal::TooLong);
-    }
-}
 
 /// The index among `members` of the one that leads their merge at `key`: none when a
 /// resident leads, else the incumbent, else the first.

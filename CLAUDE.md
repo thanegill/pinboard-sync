@@ -61,6 +61,12 @@ check: the sandbox has no network. An advisory `ignore` in `deny.toml` carries i
 reason. CI runs zizmor online, with the job's token, so it also checks that each pinned
 action SHA belongs to its repository and has no known advisory (`--offline` skips both).
 
+[`dependabot-auto-merge.yml`](.github/workflows/dependabot-auto-merge.yml) turns on
+auto-merge for a Dependabot PR bumping actions or crates by a semver patch or minor
+version, with every bumped version Cargo-compatible and none a pre-release, so it merges
+once master's required checks pass; a major bump, a flake input or a fetch-metadata bump
+waits for a review, as does any update whose versions it can't read.
+
 **A release is a bump PR, then a tag; CI never pushes to master.** Running
 `scripts/prepare-release.sh X.Y.Z` opens the PR that bumps Cargo.toml and Cargo.lock and
 moves the changelog's `[Unreleased]` items under `[X.Y.Z]`. Once it merges, pushing the

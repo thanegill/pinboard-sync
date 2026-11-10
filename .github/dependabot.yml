@@ -6,7 +6,11 @@
 # a commit) at least a week old, so one pulled within days never lands. html5ever and
 # markup5ever_rcdom are ignored and bumped by hand: they must stay on the versions htmd
 # uses, and an htmd update that moves to a newer one, even a compatible update, fails
-# cargo-deny's duplicate ban (deny.toml) until they are bumped in its PR.
+# cargo-deny's duplicate ban (deny.toml) until they are bumped in its PR. Auto-merge
+# (workflows/dependabot-auto-merge.yml) merges a patch or minor bump to actions or
+# crates, with every bumped version Cargo-compatible and none a pre-release, once
+# master's required checks pass; a major bump, every flake input and fetch-metadata's
+# own bump wait for a review, as does any update whose versions it can't read.
 version: 2
 updates:
   - package-ecosystem: github-actions

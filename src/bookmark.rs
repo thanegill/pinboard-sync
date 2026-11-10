@@ -1,9 +1,6 @@
-//! The service-agnostic bookmark domain type. [`Bookmark`] is what the `cleanup`
-//! driver reads (from Pinboard) and plans an end-state in, independent of any service's
-//! wire format: tags split out, the creation time as a real [`OffsetDateTime`], and the
-//! flags as plain `bool`s. The Pinboard wire shape it's converted from (`TryFrom`) lives
-//! next to the client in [`crate::pinboard::PinboardBookmark`]; the formatting back to
-//! Pinboard fields happens at the write boundary in `pinboard::post_add`.
+//! The service-agnostic [`Bookmark`], the [`BookmarkStore`] port and the run's live view of
+//! the account. Pinboard's wire shape stays with its client
+//! ([`crate::pinboard::PinboardBookmark`]), converted on read and in `pinboard::post_add`.
 
 use std::collections::HashMap;
 
@@ -14,35 +11,30 @@ use url::Url;
 
 use crate::tags::Tags;
 
-/// A bookmark in service-agnostic domain form. The field names are the domain's
-/// (`title`/`note`/`public`/`read_later`), not Pinboard's wire names
-/// (`description`/`extended`/`shared`/`toread` -- those stay on
-/// [`PinboardBookmark`](crate::pinboard::PinboardBookmark)). The URL is a parsed [`Url`],
-/// so consumers don't re-parse it.
+/// A bookmark, with domain field names (`title`, `note`, `public`, `read_later`) for
+/// Pinboard's `description`, `extended`, `shared` and `toread`, and a parsed [`Url`], so
+/// nothing re-parses it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bookmark {
     pub url: Url,
     pub title: String,
     pub note: String,
     pub tags: Tags,
-    /// Creation time, or `None` when none was set (an empty wire `time`) or a non-empty
-    /// `time` that won't parse (logged on read). It stays `None` rather than dropping the
-    /// whole bookmark so the record remains visible to sync's dedup set (see the `TryFrom`
-    /// impl below).
+    /// Creation time, or `None` when unset or unparseable: the bookmark is kept, so sync's
+    /// dedup still sees it.
     pub timestamp: Option<OffsetDateTime>,
-    /// Whether the bookmark is public (Pinboard's `shared=yes`).
+    /// Pinboard's `shared=yes`.
     pub public: bool,
-    /// Whether the bookmark is queued to read (Pinboard's `toread=yes`).
+    /// Pinboard's `toread=yes`.
     pub read_later: bool,
 }
 
 impl Bookmark {
-    /// The written fields where `new` differs from `self` (the stored bookmark), each as a
-    /// `(label, rendered new value)` pair for the cleanup dry-run; empty when a write would
-    /// change nothing, so `cleanup` skips the bookmark. `timestamp` compares by instant.
-    /// `public` and `read_later` are not compared: the cleanup driver makes them match
-    /// before it diffs (see `cleanup_pass::HoldBacks::hold_back_visibility_mismatches` and
-    /// `cleanup_pass::merge_members`).
+    /// The written fields where `new` differs from the stored `self`, for the dry run as
+    /// `(label, new value)`; empty means `cleanup` skips it. `timestamp` compares by
+    /// instant. `public` and `read_later` aren't compared: the driver makes them match
+    /// first, in `cleanup_pass::HoldBacks::hold_back_visibility_mismatches` and
+    /// `cleanup_pass::merge_members`, before any diff is taken.
     pub fn diff(&self, new: &Bookmark) -> Vec<(&'static str, String)> {
         let mut changes = Vec::new();
         if new.url != self.url {
@@ -68,23 +60,18 @@ impl Bookmark {
     }
 }
 
-/// The bookmark-store writes the sync/cleanup loops depend on. Abstracted from the concrete
-/// Pinboard client so those loops can be exercised with an in-memory fake. A write takes a
-/// whole [`Bookmark`]; the client maps it to the Pinboard `posts/add` parameters at the
-/// boundary (see `pinboard::post_add`). Reading the account is not part of the port: a run
-/// reads `posts/all` once, through `PinboardClient::all`, before any loop starts.
+/// The writes the sync and cleanup loops make. Reading is not part of it: a run reads
+/// `posts/all` once, through `PinboardClient::all`, before any loop starts.
 pub trait BookmarkStore {
-    /// Add a new bookmark. A `None` `timestamp` lets Pinboard default the date to now.
+    /// Add a new bookmark; a `None` `timestamp` lets Pinboard date it now.
     async fn add(&self, b: &Bookmark) -> Result<()>;
     /// Re-add an existing bookmark with normalized fields, as [`Self::fit`] keeps it, or
     /// write nothing when the store refuses it as too long.
     async fn update(&self, b: &Bookmark) -> Result<Update>;
-    /// Delete a bookmark by URL.
     async fn delete(&self, url: &Url) -> Result<()>;
 
-    /// `b` as a write would store it: the Pinboard client trims a note too long for the
-    /// request URL. The cleanup driver diffs in this form, so a note already stored trimmed
-    /// reads as unchanged rather than rewritten, and trimmed again, every run.
+    /// `b` as a write would store it, its note cut to fit the request URL. The driver diffs
+    /// in this form, so a note stored cut reads as unchanged, not rewritten every run.
     fn fit(&self, b: Bookmark) -> Bookmark;
 
     /// The part [`Self::fit`] kept of `note`, when `note` ends in the store's cut marker;
@@ -94,16 +81,13 @@ pub trait BookmarkStore {
     /// and carries none.
     fn kept_of_cut<'n>(&self, note: &'n str) -> Option<&'n str>;
 
-    /// Whether a write of `b` can be sent at all: [`TooLongToSend`] when it is too long for
-    /// the store even with no note, which [`Self::update`] refuses as [`Update::TooLong`]
-    /// and [`Self::add`] fails, unsent. The cleanup driver asks before any write, so such a
-    /// plan is refused up front.
+    /// Whether a write of `b` can be sent: [`TooLongToSend`] when too long even with no
+    /// note, which [`Self::update`] refuses as [`Update::TooLong`] and [`Self::add`] fails.
+    /// The driver asks before any write, to refuse such a plan up front.
     fn can_write(&self, b: &Bookmark) -> Result<(), TooLongToSend>;
 
-    /// The cleanup re-write step: `update` the bookmark, then `delete` the old URL when it
-    /// changed (`old_url`), unless the store refused the write
-    /// ([`WriteOutcome::too_long`]). Any inter-write pacing is the store's own concern (the
-    /// Pinboard client spaces its `posts/add` calls internally).
+    /// `update` the bookmark, then `delete` `old_url`, unless the write was refused
+    /// ([`WriteOutcome::too_long`]). Pacing is the store's concern.
     async fn apply_update(&self, update: &Bookmark, old_url: Option<&Url>) -> WriteOutcome {
         match self
             .update(update)
@@ -126,14 +110,9 @@ pub trait BookmarkStore {
         outcome
     }
 
-    /// Write a merged bookmark that absorbs one or more colliding bookmarks: `update` the
-    /// merged record at its URL, then `delete` every absorbed `old_urls` entry that isn't
-    /// the merge target. Deleting the absorbed URLs is what makes a later cleanup run see a
-    /// single bookmark at the target and converge.
-    ///
-    /// A failed delete does not abandon the rest: the absorbed URLs are independent, and
-    /// stopping early strands duplicate records the store could have cleared. A write the
-    /// store refused deletes nothing ([`WriteOutcome::too_long`]).
+    /// `update` the merged record, then delete each absorbed `old_urls` entry but the
+    /// target, so a later run sees one bookmark and converges. A failed delete doesn't stop
+    /// the independent rest. A refused write deletes nothing ([`WriteOutcome::too_long`]).
     async fn apply_merge(&self, update: &Bookmark, old_urls: &[&Url]) -> WriteOutcome {
         match self
             .update(update)
@@ -146,9 +125,8 @@ pub trait BookmarkStore {
         }
     }
 
-    /// The deleting half of [`Self::apply_merge`]: `delete` every `old_urls` entry that
-    /// isn't `target`, whose record already is the merged one. On its own it is a merge
-    /// whose write would store nothing new, so the outcome counts the record as written.
+    /// The deleting half of [`Self::apply_merge`], for a merge that stores nothing new: the
+    /// record at `target` already is the merged one, so it counts as written.
     async fn apply_absorb(&self, target: &Url, old_urls: &[&Url]) -> WriteOutcome {
         let mut outcome = WriteOutcome::wrote();
         for old in old_urls {
@@ -166,9 +144,8 @@ pub trait BookmarkStore {
     }
 }
 
-/// A write too long for the store to send even with no note: the length of its request URL
-/// without the note, and the store's limit on it, both in bytes. Its `Display` names no
-/// request URL, only the two lengths.
+/// A write too long to send even with no note: its request URL's length without the note
+/// and the limit, in bytes. `Display` gives only the lengths, never the URL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TooLongToSend {
     pub without_note: usize,
@@ -185,9 +162,8 @@ impl std::fmt::Display for TooLongToSend {
     }
 }
 
-/// Say that a write to `url` stores `to`, as `store` fits it, in place of the note `from`:
-/// trimmed, or dropped when it keeps none of it (the cut marker alone, or nothing). Silent
-/// when they match.
+/// Warn that a write to `url` stores `to` in place of the note `from`: trimmed, or dropped
+/// when it keeps none of it. Silent when they match.
 pub fn warn_note_cut<S: BookmarkStore>(store: &S, url: &Url, from: &str, to: &str) {
     if to == from {
         return;
@@ -212,25 +188,22 @@ pub fn warn_note_cut<S: BookmarkStore>(store: &S, url: &Url, from: &str, to: &st
 pub enum Update {
     /// Stored, with the note as [`BookmarkStore::fit`] keeps it.
     Written,
-    /// Refused as too long, as Pinboard answers a `posts/add` URL over its limit with a
-    /// 414, or as the client refuses one that is over that limit even with no note:
-    /// nothing was written. Storing a shorter note instead would cut text the bookmark
-    /// already holds.
+    /// Refused as too long, by a 414 or by the client up front: nothing was written. A
+    /// shorter note instead would cut text the bookmark already holds.
     TooLong,
 }
 
-/// What a write actually accomplished. Not a `Result<()>`, because a merge whose
-/// `posts/add` landed but whose delete failed has changed the account, and a caller that
-/// tracks the account's state has to be able to tell that apart from "nothing happened".
+/// What a write accomplished. Not a `Result<()>`: a merge whose write landed and whose
+/// delete failed changed the account, which a caller must tell from "nothing happened".
 #[must_use]
 #[derive(Debug, Default)]
 pub struct WriteOutcome {
     /// The record is at its URL: written there, or already there for an absorb.
     pub wrote: bool,
-    /// The store refused the write as too long ([`Update::TooLong`]): nothing was
+    /// The store refused the write as too long ([`Update::TooLong`]), so nothing was
     /// written or deleted.
     pub too_long: bool,
-    /// URLs the store confirmed it removed -- a subset of those asked for.
+    /// URLs the store confirmed it removed.
     pub deleted: Vec<Url>,
     /// The first failure, if any. Later deletes are still attempted.
     pub error: Option<anyhow::Error>,
@@ -262,9 +235,7 @@ impl WriteOutcome {
         match result {
             Ok(()) => self.deleted.push(url.clone()),
             Err(e) => {
-                // Only the first error is carried out, since the caller reports one -- but
-                // the later ones are separate failures with their own causes, so log them
-                // here rather than letting them vanish.
+                // The caller reports one error, so log each later one here.
                 if self.error.is_none() {
                     self.error = Some(e);
                 } else {
@@ -275,16 +246,12 @@ impl WriteOutcome {
     }
 }
 
-/// The account as a run currently believes it to be: seeded once from `posts/all` and
-/// updated as passes write and delete, so a later pass never plans against -- or merges
-/// with -- a record an earlier one already changed.
-///
-/// `cleanup --all` fetches `posts/all` once and runs github, then reddit, then hackernews,
-/// each of which writes; a plain snapshot leaves the later two reasoning about a state that
-/// no longer exists. Order is preserved because a merge takes its lead's note verbatim, so
-/// which bookmark leads has to be stable rather than a `HashMap`'s iteration order.
+/// The account as the run believes it to be: seeded from `posts/all` and updated as passes
+/// write, so no pass plans against or merges with a record an earlier one changed.
+/// `cleanup --all` runs three writing passes over one read. Ordered, since a merge takes
+/// its lead's note verbatim, so which bookmark leads must be stable.
 pub struct AccountView {
-    /// Insertion order, so a URL that is re-written keeps its original position.
+    /// Insertion order: a rewritten URL keeps its place.
     order: Vec<Url>,
     by_url: HashMap<Url, Bookmark>,
 }
@@ -296,9 +263,7 @@ impl AccountView {
             by_url: HashMap::with_capacity(bookmarks.len()),
         };
         for bookmark in bookmarks {
-            // Two wire rows can normalize onto one parsed `Url` (`posts/all` isn't
-            // deduped). Keeping the first and saying so beats silently losing one, which
-            // would hide it from every pass's slice.
+            // Two wire rows can parse to one `Url`: keep the first and say so.
             if let Some(kept) = view.by_url.get(&bookmark.url) {
                 warn!(
                     "pinboard returned {} more than once; keeping the first ({})",
@@ -322,8 +287,7 @@ impl AccountView {
         self.order.iter().filter_map(|url| self.by_url.get(url))
     }
 
-    /// Record that `bookmark` now occupies its URL. A URL already present keeps its
-    /// position, so a re-written bookmark doesn't jump to the end of the order.
+    /// Record that `bookmark` occupies its URL, keeping an existing URL's place.
     pub fn insert(&mut self, bookmark: &Bookmark) {
         if !self.by_url.contains_key(&bookmark.url) {
             self.order.push(bookmark.url.clone());
@@ -331,9 +295,8 @@ impl AccountView {
         self.by_url.insert(bookmark.url.clone(), bookmark.clone());
     }
 
-    /// Record that nothing occupies `url` any more. Drops it from the order too: leaving
-    /// a tombstone there would let a later `insert` of the same URL append a second entry
-    /// and yield the bookmark twice.
+    /// Record that nothing occupies `url`, dropping it from the order too: a tombstone
+    /// would let a later `insert` of it yield the bookmark twice.
     pub fn remove(&mut self, url: &Url) {
         self.by_url.remove(url);
         self.order.retain(|ordered| ordered != url);
@@ -375,15 +338,12 @@ impl WriteMode {
     }
 }
 
-/// The cleanup driver's read side of the account. Separate from [`BookmarkStore`] because
-/// only the driver needs it, and it must answer from the run's live view rather than a
-/// fetch. The write mode lives here rather than being passed alongside so the driver's
-/// preview cannot disagree with what the store actually does.
+/// The cleanup driver's read side of the account, from the live view, not a fetch. The
+/// write mode lives here, so the preview can't disagree with what the store does.
 pub trait AccountState {
     /// The bookmark stored at `url` right now, if any.
     fn resident(&self, url: &Url) -> Option<Bookmark>;
-    /// Every bookmark `keep` accepts, in `posts/all` order, as the run's live view holds it
-    /// now: what an earlier pass of the run wrote is already reflected.
+    /// Every bookmark `keep` accepts, in `posts/all` order, as earlier passes left it.
     fn snapshot(&self, keep: impl Fn(&Bookmark) -> bool) -> Vec<Bookmark>;
     /// Whether writes are sent, or only previewed.
     fn write_mode(&self) -> WriteMode;
@@ -391,15 +351,11 @@ pub trait AccountState {
 
 /// A [`BookmarkStore`] that keeps an [`AccountView`] in step with what it writes.
 ///
-/// Every write goes through here, so there is no separate bookkeeping call for a caller
-/// to forget -- and because [`BookmarkStore::apply_update`], [`BookmarkStore::apply_merge`]
-/// and [`BookmarkStore::apply_absorb`] are default methods built from `update` and
-/// `delete`, intercepting just those two covers all three.
+/// Every write goes through it, so there is no bookkeeping to forget; intercepting `update`
+/// and `delete` covers the `apply_*` defaults built on them.
 ///
-/// In a dry run the view is still updated but nothing reaches the network: a preview has to
-/// show the same set of changes a real run would make, including the ones a later pass only
-/// makes because an earlier one already wrote. A write Pinboard refuses as too long is the
-/// one it can't foresee.
+/// A dry run still updates the view, without the network, so its preview shows what a real
+/// run would do, a later pass's changes included. A 414 is the one thing it can't foresee.
 pub struct CleanupStore<'a, P> {
     inner: &'a P,
     view: std::cell::RefCell<AccountView>,

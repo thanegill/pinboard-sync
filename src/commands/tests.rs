@@ -160,9 +160,8 @@ fn top_level_all_threads_on_auth_failure_into_the_hook() {
 
 #[test]
 fn sync_all_falls_back_to_on_auth_failure_env_when_flag_absent() {
-    // The NixOS service runs `sync --all` with the hook supplied only via
-    // `PINBOARD_SYNC_ON_AUTH_FAILURE`. The top-level flag doesn't bind that env,
-    // so the `--all` arm must read it directly or the hook silently never fires.
+    // The NixOS service supplies the hook only through `PINBOARD_SYNC_ON_AUTH_FAILURE`,
+    // which the top-level flag doesn't bind, so the `--all` arm must read it.
     let _env = crate::secrets::FakeSecretEnv::set(&[("PINBOARD_SYNC_ON_AUTH_FAILURE", "env-hook")]);
     let plan = build_sync_plan(parse_sync(&["--all"]), &one_reddit_account()).expect("plans");
     assert_eq!(plan.jobs[0].hook.as_deref(), Some("env-hook"));
@@ -170,9 +169,8 @@ fn sync_all_falls_back_to_on_auth_failure_env_when_flag_absent() {
 
 #[test]
 fn top_level_on_auth_failure_reaches_single_source_hook() {
-    // `--on-auth-failure` placed before the source subcommand must reach the
-    // job just like the `--all` path; the overrides from the source args alone only see the
-    // per-source flag.
+    // Placed before the source, the flag must still reach the job: the source args alone
+    // only see the per-source flag.
     let mut cmd = parse_sync(&[
         "--on-auth-failure",
         "top-hook",
@@ -240,8 +238,6 @@ fn top_level_use_post_date_reaches_single_source_cleanup() {
 
 #[test]
 fn per_source_cleanup_date_flag_falls_back_when_no_top_level() {
-    // A flag placed after the source subcommand still applies when the
-    // top-level `dates` is empty.
     let mut cmd = parse_cleanup(&["reddit", "alice", "--use-post-date=false"]);
     assert_eq!(cmd.dates.use_post_date, None);
     let args = reddit_cleanup_args(&mut cmd);
@@ -262,9 +258,8 @@ fn source_dry_run(source: &CleanupSource) -> bool {
 
 #[test]
 fn top_level_dry_run_reaches_single_source_cleanup() {
-    // `--dry-run` placed before the source subcommand must make the pass dry, even
-    // though the per-source args default `dry_run` to false: honoring only
-    // `args.dry_run` would make a `--dry-run` before the subcommand write for real.
+    // Honoring only `args.dry_run`, false by default, would make a `--dry-run` before the
+    // subcommand write for real.
     for name in ["reddit", "github", "hackernews"] {
         let cmd = parse_cleanup(&["--dry-run", name]);
         assert!(cmd.dry_run, "top-level --dry-run parsed for {name}");
@@ -283,7 +278,6 @@ fn top_level_dry_run_reaches_single_source_cleanup() {
 
 #[test]
 fn per_source_dry_run_still_applies_without_top_level() {
-    // A `--dry-run` placed after the source subcommand still makes the pass dry.
     let cmd = parse_cleanup(&["github", "--dry-run"]);
     assert!(!cmd.dry_run);
     let source = cmd.source.expect("a source subcommand");
@@ -376,7 +370,7 @@ fn backup_accepts_out_before_or_after_the_target() {
         "x"
     ])
     .is_err());
-    // Pinboard is a target now, not a positional path.
+    // Pinboard is a target, not a positional path.
     assert!(matches!(
         parse_backup(&["pinboard"]).target,
         Some(BackupTarget::Pinboard(_))
@@ -498,9 +492,8 @@ fn skipped_labels(skipped: &[SkippedTarget]) -> Vec<&str> {
     skipped.iter().map(|target| target.label.as_str()).collect()
 }
 
-/// One account that can't be built (a github account with no token) must not cost the
-/// rest of `backup --all` its snapshot: the others are still planned, and the run
-/// records the failure in the manifest and exits non-zero.
+/// One account that can't be built must not cost the rest of `backup --all` its snapshot;
+/// the run records the failure in the manifest and exits non-zero.
 #[tokio::test]
 async fn backup_all_backs_up_the_rest_when_one_account_cannot_be_built() {
     let mut config = Config {
@@ -519,8 +512,7 @@ async fn backup_all_backs_up_the_rest_when_one_account_cannot_be_built() {
     assert_eq!(labels, ["reddit[alice]", "pinboard"]);
     assert_eq!(skipped_labels(&plan.skipped), ["github[default]"]);
 
-    // The planned jobs are dropped so nothing is contacted: what is under test is how
-    // the run accounts for the target it could not build.
+    // No jobs, so nothing is contacted: only the unbuilt target's accounting is under test.
     let scratch = crate::test_support::scratch_dir("backup-skipped-account");
     let dir = scratch.path().join("snapshot");
     let result = back_up(Vec::new(), plan.skipped, &dir, WriteMode::Live).await;
@@ -705,8 +697,6 @@ fn a_reddit_cleanup_client_carries_the_username_for_its_fallback() {
     assert_eq!(username_of(None).as_deref(), Some("bob"));
 }
 
-/// A Reddit pass with no `/api/info` step still runs: it moves a reddit.com bookmark onto
-/// the account's domain.
 #[tokio::test]
 async fn a_reddit_cleanup_without_post_info_still_normalizes_urls() {
     let overrides = RedditCleanupOverrides {
@@ -736,8 +726,7 @@ async fn a_reddit_cleanup_without_post_info_still_normalizes_urls() {
     );
 }
 
-/// Each `sync <source>`'s own flags, the write and dating flags and `--dry-run` included,
-/// reach the overrides its jobs are built from.
+/// Includes the write and dating flags and `--dry-run`.
 #[test]
 fn sync_source_flags_reach_the_overrides() {
     let overrides = |source: &str, credential: &[&str]| {

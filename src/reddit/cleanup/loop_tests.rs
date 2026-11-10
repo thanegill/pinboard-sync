@@ -17,7 +17,7 @@ fn opts() -> RedditCleanupOpts {
     }
 }
 
-/// Dating on, with a cap so large the (old) test post is always "within" it.
+/// Dating on, with a cap so large the old test post is always within it.
 const DATED: DateOpts = DateOpts {
     use_post_date: true,
     max_age_days: 1_000_000,
@@ -35,7 +35,6 @@ fn bookmark(url: &str, title: &str, tags: &str) -> Bookmark {
 #[tokio::test]
 async fn normalizes_url_tags_nsfw_and_title() {
     let pinboard = FakePinboard {
-        // Carries notes + metadata that cleanup must preserve across the re-add.
         all: vec![Bookmark {
             title: "Reddit - Dive into anything".into(),
             note: "original notes".into(),
@@ -82,12 +81,10 @@ async fn normalizes_url_tags_nsfw_and_title() {
         "{:?}",
         updated[0].tags
     );
-    // Notes, privacy, to-read, and the original creation time are preserved.
     assert_eq!(updated[0].extended, "original notes");
     assert!(updated[0].shared);
     assert!(updated[0].toread);
     assert_eq!(updated[0].dt, "2023-11-14T22:13:20Z");
-    // URL changed, so the old one is deleted.
     assert_eq!(
         *pinboard.deleted.borrow(),
         strings(&["https://www.reddit.com/r/NEWS/comments/abc/x/"])
@@ -96,9 +93,8 @@ async fn normalizes_url_tags_nsfw_and_title() {
 
 #[tokio::test]
 async fn marks_nsfw_with_configured_tag_not_literal_nsfw() {
-    // With reddit.tag_nsfw = "adult", cleanup must apply the configured marker (as
-    // sync does), never a second literal "nsfw". The www host forces a URL rewrite so
-    // the write is emitted; the post has no marker yet, so cleanup adds one.
+    // Cleanup applies the configured marker, as sync does, never a literal "nsfw". The www
+    // host forces a rewrite, so the write is seen.
     let pinboard = FakePinboard {
         all: vec![bookmark(
             "https://www.reddit.com/r/NEWS/comments/abc/x/",
@@ -174,8 +170,8 @@ async fn a_fixed_title_is_the_raw_api_title() {
 
 #[tokio::test]
 async fn configured_nsfw_tag_is_idempotent() {
-    // A post already carrying the configured "adult" marker (what sync wrote) and
-    // otherwise normalized must not be rewritten to add a duplicate/literal marker.
+    // A post carrying the configured marker sync wrote, and otherwise normalized, must not
+    // be rewritten to add a literal one.
     let pinboard = FakePinboard {
         all: vec![bookmark(
             "https://old.reddit.com/r/NEWS/comments/abc/x/",
@@ -215,10 +211,8 @@ async fn configured_nsfw_tag_is_idempotent() {
 
 #[tokio::test]
 async fn preserves_markup_in_stored_title() {
-    // A non-placeholder stored title carrying angle brackets / tag-like text is kept
-    // verbatim through cleanup, not stripped as HTML -- the deliberate tradeoff of
-    // treating every title as plain text. The www host still forces a rewrite so an
-    // update is emitted.
+    // Every title is plain text, so tag-like text is kept, not stripped as HTML. The www
+    // host forces a rewrite, so the write is seen.
     let pinboard = FakePinboard {
         all: vec![bookmark(
             "https://www.reddit.com/r/rust/comments/a/x/",
@@ -239,9 +233,7 @@ async fn preserves_markup_in_stored_title() {
 
 #[tokio::test]
 async fn keeps_entity_text_in_a_stored_title() {
-    // A stored title is already plain text: one that reads `&amp;` (literally, or left
-    // by an older double-encoding) is kept as it is rather than decoded a step further
-    // on every run.
+    // A stored title is plain text, so `&amp;` in one is kept, not decoded again each run.
     let pinboard = FakePinboard {
         all: vec![
             bookmark(
@@ -271,7 +263,6 @@ async fn keeps_entity_text_in_a_stored_title() {
 
 #[tokio::test]
 async fn dates_bookmark_by_created_utc_when_use_post_date() {
-    // An already-normalized bookmark: only the date should change.
     let pinboard = FakePinboard {
         all: vec![bookmark(
             "https://old.reddit.com/r/rust/comments/a/x/",
@@ -289,7 +280,6 @@ async fn dates_bookmark_by_created_utc_when_use_post_date() {
         )],
         ..Default::default()
     };
-    // A huge cap so the (old) post is always "within" it; nsfw/titles off.
     let opts = RedditCleanupOpts {
         dates: DATED,
         mark_nsfw: false,
@@ -312,9 +302,8 @@ async fn dates_bookmark_by_created_utc_when_use_post_date() {
 
 #[tokio::test]
 async fn strips_self_link_notes_from_a_self_post() {
-    // An older sync left an empty self-post's notes as a link back to its own
-    // permalink. No /api/info this run (nsfw/titles off), so the string-based
-    // self-link drop applies. The URL is already normalized, so only the notes change.
+    // Notes linking back to the self-post's own permalink. With no /api/info, the
+    // string-based self-link drop applies.
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "A real title".into(),
@@ -342,7 +331,6 @@ async fn strips_self_link_notes_from_a_self_post() {
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].extended, "");
-    // URL was already normalized, so nothing is deleted.
     assert!(
         pinboard.deleted.borrow().is_empty(),
         "{:?}",
@@ -352,8 +340,7 @@ async fn strips_self_link_notes_from_a_self_post() {
 
 #[tokio::test]
 async fn keeps_external_link_notes_on_a_link_post() {
-    // A link post's notes hold the external URL -- not the bookmark's own
-    // permalink -- so cleanup must preserve them while rewriting the host.
+    // A link post's notes hold the external URL, not its own permalink, so they stay.
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "A real title".into(),
@@ -389,9 +376,7 @@ async fn keeps_external_link_notes_on_a_link_post() {
 
 #[tokio::test]
 async fn retrofits_self_post_notes_with_blockquote() {
-    // Already normalized except for the notes: an old unwrapped selftext. With
-    // /api/info present, the rebuild wraps the authoritative selftext in a
-    // <blockquote>; ext_changed triggers the write.
+    // Only the notes are stale, an unwrapped selftext, which /api/info rebuilds wrapped.
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "A real title".into(),
@@ -421,7 +406,6 @@ async fn retrofits_self_post_notes_with_blockquote() {
         updated[0].extended,
         "<blockquote>the body text</blockquote>"
     );
-    // Notes-only change: URL unchanged, so nothing is deleted.
     assert!(
         pinboard.deleted.borrow().is_empty(),
         "{:?}",
@@ -431,10 +415,8 @@ async fn retrofits_self_post_notes_with_blockquote() {
 
 #[tokio::test]
 async fn preserves_hand_written_note_on_a_self_post() {
-    // A manually-saved self-post carries a hand-written annotation that is neither the
-    // authoritative rebuild nor the raw selftext. Even with /api/info present, cleanup
-    // must not clobber it with the <blockquote>-wrapped selftext. The www host forces a
-    // URL rewrite so an update is still emitted and we can observe the preserved note.
+    // A hand-written note, neither the rebuild nor the raw selftext, survives even with
+    // /api/info. The www host forces a rewrite, so the kept note is seen.
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "A real title".into(),
@@ -540,9 +522,8 @@ async fn keeps_a_note_that_only_starts_like_the_rebuild_or_a_cut_of_it() {
 
 #[tokio::test]
 async fn retrofits_empty_note_from_authoritative_selftext() {
-    // A self-post saved with no notes gets the authoritative selftext, wrapped in a
-    // <blockquote> -- an empty stored note is recognizably tool-shaped, so the rebuild
-    // fills it in. The www host forces the URL rewrite that carries the write.
+    // An empty stored note is the tool's to fill, so the rebuild does. The www host forces
+    // the rewrite that carries the write.
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "A real title".into(),
@@ -575,9 +556,8 @@ async fn retrofits_empty_note_from_authoritative_selftext() {
 
 #[tokio::test]
 async fn leaves_comment_notes_untouched() {
-    // A comment bookmark: /api/info only returns the parent *post* (post_fullname keys
-    // by t3), never the comment body, so the comment's notes must be left as-is -- the
-    // post's selftext must not leak into the comment's notes.
+    // /api/info returns a comment's parent post, never its body, so the post's selftext
+    // must not leak into the comment's notes.
     let stored = "Thread: https://old.reddit.com/r/rust/comments/a/x/\n\nmy comment";
     let pinboard = FakePinboard {
         all: vec![Bookmark {
@@ -602,7 +582,6 @@ async fn leaves_comment_notes_untouched() {
         .await
         .unwrap();
 
-    // Nothing changed (notes preserved, URL/title/tags already current), so no write.
     assert!(
         pinboard.updated.borrow().is_empty(),
         "{:?}",
@@ -612,9 +591,8 @@ async fn leaves_comment_notes_untouched() {
 
 #[tokio::test]
 async fn use_post_date_leaves_comment_timestamp_untouched() {
-    // A comment bookmark under `use_post_date`: /api/info is keyed by the parent post
-    // (post_fullname -> t3), so its `created_utc` is the *thread* creation time, not the
-    // comment's. That must not be applied to the comment -- its stored date stays.
+    // /api/info is keyed by the parent post, so its `created_utc` dates the thread, not the
+    // comment, and must not be applied.
     let pinboard = FakePinboard {
         all: vec![Bookmark {
             title: "Parent title".into(),
@@ -645,8 +623,7 @@ async fn use_post_date_leaves_comment_timestamp_untouched() {
         .await
         .unwrap();
 
-    // Only the date could have changed, and the fix keeps the comment's own date, so
-    // nothing is written. Without the guard the thread's created_utc would leak in.
+    // Only the date could have changed, so no write means the comment kept its own date.
     assert!(
         pinboard.updated.borrow().is_empty(),
         "{:?}",
@@ -1084,9 +1061,8 @@ async fn dry_run_writes_nothing() {
 
 #[tokio::test]
 async fn an_expired_cookie_surfaces_as_reauth_not_a_flattened_error() {
-    // `cleanup reddit` reads `/api/info` for NSFW/title/date data, and an expired
-    // reddit_session fails it. The variant has to survive to the caller, or the
-    // auth-failure hook can never fire for cleanup the way it does for sync.
+    // An expired cookie fails `/api/info`, and the variant must survive to the caller or
+    // the auth-failure hook never fires for cleanup.
     let pinboard = FakePinboard {
         all: vec![bookmark(
             "https://www.reddit.com/r/rust/comments/abc/x/",
@@ -1262,7 +1238,6 @@ async fn a_refused_cookie_at_the_saved_listing_surfaces_as_reauth() {
 
 #[tokio::test]
 async fn logs_and_skips_a_failing_update_then_continues() {
-    // Two bookmarks that both need a URL rewrite; the first one's update fails.
     let pinboard = FakePinboard {
         all: vec![
             bookmark("https://www.reddit.com/r/rust/comments/a/x/", "T", "reddit"),
@@ -1280,12 +1255,10 @@ async fn logs_and_skips_a_failing_update_then_continues() {
         ..opts()
     };
 
-    // The run reports failure (non-zero exit)...
     let err = run(&pinboard.cleanup_store(), Some(&reddit), &opts)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("1 bookmark(s) failed"), "{err}");
-    // ...but the second bookmark was still updated despite the first failing.
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert_eq!(
@@ -1504,8 +1477,8 @@ async fn a_comment_missing_from_the_lookup_adds_nothing_and_does_not_fail() {
 }
 
 /// One cleanup run over `seed`, returning how many bookmarks it wrote and the account as
-/// Pinboard then stores it. Tags round-trip as Pinboard keeps them (space-joined on
-/// write, whitespace-split on read), which is what drops an empty tag.
+/// Pinboard then stores it. Tags round-trip space-joined and whitespace-split, which drops
+/// an empty tag.
 async fn run_and_store(
     seed: Vec<Bookmark>,
     reddit: Option<&FakeReddit>,

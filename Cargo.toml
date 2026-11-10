@@ -26,6 +26,33 @@ allow_attributes = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
+# Restriction picks the code already meets, so it keeps meeting them: no stub that panics,
+# no `process::exit` that skips destructors, no `for` over a hash map or set, whose order
+# is unspecified, `foo.rs` beside `foo/` rather than `foo/mod.rs`, and the plainer form of
+# the rest. A serde struct keeps `{}` with an `#[expect]`: as `struct X;` it no longer
+# parses from an empty table.
+allow_attributes_without_reason = "warn"
+empty_structs_with_brackets = "warn"
+exit = "warn"
+get_unwrap = "warn"
+if_then_some_else_none = "warn"
+infinite_loop = "warn"
+iter_over_hash_type = "warn"
+large_include_file = "warn"
+lossy_float_literal = "warn"
+mem_forget = "warn"
+mod_module_files = "warn"
+needless_raw_strings = "warn"
+pathbuf_init_then_push = "warn"
+redundant_type_annotations = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+string_add = "warn"
+tests_outside_test_module = "warn"
+try_err = "warn"
+unimplemented = "warn"
+unreachable = "warn"
+unused_result_ok = "warn"
+verbose_file_reads = "warn"
 
 [[bin]]
 name = "pinboard-sync"

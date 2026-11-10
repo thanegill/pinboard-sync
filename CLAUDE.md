@@ -38,7 +38,14 @@ in `_typos.toml`, a dependency cargo-machete can't see used in `ignored` under
 **Prefer a lint to a rule here.** A rule that can be checked mechanically goes in
 `Cargo.toml`'s `[lints.clippy]`, `clippy.toml` (`disallowed-methods`, `-types`, `-macros`),
 a test or a CI check, with `#[expect(..., reason = "...")]` at a legitimate exception;
-CLAUDE.md keeps only what none of those can catch.
+CLAUDE.md keeps only what none of those can catch; these house rules are lints already:
+
+- Command output goes through [`src/stdout.rs`](src/stdout.rs) and messages through `log`:
+  `print_stdout`, `print_stderr`, and `disallowed-methods` on `io::stdout` and `io::stderr`.
+- The command line is parsed by `cli::parse_with`: `disallowed-methods`.
+- Clients start from `http::client_builder()` (timeouts, h2 pings): `disallowed-methods`,
+  which can't see `Client::default()` or `ClientBuilder::default()`, so call neither.
+- A test's directory comes from `test_support::scratch_dir`: `disallowed-methods`.
 
 ## Cleanup
 
@@ -120,7 +127,7 @@ cookie (#78), so it must not fire the hook.
   On Linux native-tls is OpenSSL, which [`nix/package.nix`](nix/package.nix) provides.
 - **`native-tls-alpn` is load-bearing too**: the edge 403s a ClientHello with no ALPN
   ([#78](https://github.com/thanegill/pinboard-sync/issues/78)); header case and order are
-  not the cause. Build every client from `http::client_builder()`.
+  not the cause.
 - **The Nix package build skips `net_tests`**, since the sandbox forbids sockets, so a test
   outside a `net_tests` module must stay hermetic or it fails only under `nix flake check`.
   Reproduce a build-only proptest failure with
@@ -133,15 +140,8 @@ cookie (#78), so it must not fire the hook.
 - **Tests never read the real environment**: `secrets::env_var` sees only what a
   `secrets::FakeSecretEnv` guard sets, and `std::env::set_var` silently has no effect. Parse
   with `test_support::parse_cli`, which drops clap's `env` fallbacks.
-- **A test that touches the filesystem takes its directory from
-  `test_support::scratch_dir`**; a fixed path under `temp_dir()` collides with a concurrent
-  `cargo test` (another worktree, the Nix build).
 - **Nix sees only git-tracked files**: when dev-shell `cargo` passes but `nix flake check`
   says `file not found`, `git add` the new file, or add it to
   [`nix/package.nix`](nix/package.nix)'s fileset if it is outside `src/`.
-- **Command output goes through [`src/stdout.rs`](src/stdout.rs), never `println!`**, which
-  panics on a closed pipe (`config example | head`).
-- **Parse the command line through `cli::parse_with`, never `Parser::parse`**, which would
-  let a flag given at two levels through.
 - **`SyncSource`, `CleanupSource` and `BackupTarget` spell their variants `Github` and
   `Hackernews`, not `GitHub`/`HackerNews`**: clap derives the subcommand names from them.

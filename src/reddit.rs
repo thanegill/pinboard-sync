@@ -247,6 +247,48 @@ impl RedditClient {
             ..self
         }
     }
+
+    /// Fetch all saved items, newest first, following `after` pagination (Reddit caps any
+    /// listing at ~1000).
+    async fn fetch_saved(&self) -> Result<Vec<RedditListingEntry>, SourceError> {
+        self.fetch_saved_capturing(&mut RawSink::disabled()).await
+    }
+
+    /// [`fetch_saved`](Self::fetch_saved), pushing each response body to `sink` as it
+    /// arrives so `backup` gets the verbatim listing out of the same traversal.
+    async fn fetch_saved_capturing(
+        &self,
+        sink: &mut RawSink,
+    ) -> Result<Vec<RedditListingEntry>, SourceError> {
+        self.session.read_saved(&self.username, sink).await
+    }
+
+    /// Shape saved entries into drafts. A non-empty listing that yields zero drafts is an
+    /// error, not an empty success: it means every entry was dropped (e.g. a renamed
+    /// required subfield that still deserializes as `None`), which would otherwise make
+    /// `sync` exit 0 having imported nothing.
+    fn drafts_from(
+        &self,
+        entries: Vec<RedditListingEntry>,
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        let entry_count = entries.len();
+        not_all_dropped(entry_count, self.shape(entries))
+    }
+
+    /// The drafts `entries` make, skipping (with a warning) any that make none.
+    fn shape(&self, entries: Vec<RedditListingEntry>) -> Vec<BookmarkDraft> {
+        entries
+            .into_iter()
+            .filter_map(|e| e.into_saved_item(&self.config.domain))
+            .filter_map(|it| it.into_draft(&self.config))
+            .collect()
+    }
+
+    /// Built per use from `config.domain`, the one place the account's own domain lives.
+    fn keys(&self) -> RedditKeys {
+        let domains = own_then_configured(&self.config.domain, &self.reddit_domains);
+        RedditKeys::new(domains)
+    }
 }
 
 /// Looks posts up by fullname via `/api/info.json`, for `cleanup reddit`, and reads
@@ -263,23 +305,6 @@ impl RedditInfoClient {
             session: RedditSession::new(Some(cookie), REDDIT_BASE.to_string())?,
             username,
         })
-    }
-}
-
-impl RedditClient {
-    /// Fetch all saved items, newest first, following `after` pagination (Reddit caps any
-    /// listing at ~1000).
-    async fn fetch_saved(&self) -> Result<Vec<RedditListingEntry>, SourceError> {
-        self.fetch_saved_capturing(&mut RawSink::disabled()).await
-    }
-
-    /// [`fetch_saved`](Self::fetch_saved), pushing each response body to `sink` as it
-    /// arrives so `backup` gets the verbatim listing out of the same traversal.
-    async fn fetch_saved_capturing(
-        &self,
-        sink: &mut RawSink,
-    ) -> Result<Vec<RedditListingEntry>, SourceError> {
-        self.session.read_saved(&self.username, sink).await
     }
 }
 
@@ -374,29 +399,6 @@ impl Source for RedditClient {
     }
 }
 
-impl RedditClient {
-    /// Shape saved entries into drafts. A non-empty listing that yields zero drafts is an
-    /// error, not an empty success: it means every entry was dropped (e.g. a renamed
-    /// required subfield that still deserializes as `None`), which would otherwise make
-    /// `sync` exit 0 having imported nothing.
-    fn drafts_from(
-        &self,
-        entries: Vec<RedditListingEntry>,
-    ) -> Result<Vec<BookmarkDraft>, SourceError> {
-        let entry_count = entries.len();
-        not_all_dropped(entry_count, self.shape(entries))
-    }
-
-    /// The drafts `entries` make, skipping (with a warning) any that make none.
-    fn shape(&self, entries: Vec<RedditListingEntry>) -> Vec<BookmarkDraft> {
-        entries
-            .into_iter()
-            .filter_map(|e| e.into_saved_item(&self.config.domain))
-            .filter_map(|it| it.into_draft(&self.config))
-            .collect()
-    }
-}
-
 /// `drafts`, unless `entry_count` saved entries made none at all: see
 /// [`RedditClient::drafts_from`].
 fn not_all_dropped(
@@ -439,14 +441,6 @@ impl UrlKey for RedditClient {
 
     fn synced_keys(&self, existing: &[Bookmark]) -> HashSet<DedupKey> {
         self.keys().synced_keys(existing)
-    }
-}
-
-impl RedditClient {
-    /// Built per use from `config.domain`, the one place the account's own domain lives.
-    fn keys(&self) -> RedditKeys {
-        let domains = own_then_configured(&self.config.domain, &self.reddit_domains);
-        RedditKeys::new(domains)
     }
 }
 

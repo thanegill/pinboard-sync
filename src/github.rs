@@ -517,25 +517,7 @@ impl GitHubClient {
             .with_context(|| format!("parsing {label} response"))?;
         Ok(Some(found))
     }
-}
 
-impl Source for GitHubClient {
-    async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
-        self.fetch_capturing(None, &mut RawSink::disabled()).await
-    }
-
-    /// Stars and gists list newest first, so each stream stops paging at its first page
-    /// that would give `sync` nothing to write.
-    async fn fetch_incremental(
-        &self,
-        existing: &[Bookmark],
-    ) -> Result<Vec<BookmarkDraft>, SourceError> {
-        self.fetch_capturing(Some(&self.synced_keys(existing)), &mut RawSink::disabled())
-            .await
-    }
-}
-
-impl GitHubClient {
     /// [`Source::fetch`], pushing each page body to `sink` as it arrives so `backup` gets
     /// the verbatim responses -- including the ~75 repo fields [`GitHubStarredRepo`]
     /// doesn't keep -- out of the same traversal. With `synced_keys`, each stream stops at
@@ -708,6 +690,22 @@ impl GitHubClient {
             }
         }
         Ok(())
+    }
+}
+
+impl Source for GitHubClient {
+    async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
+        self.fetch_capturing(None, &mut RawSink::disabled()).await
+    }
+
+    /// Stars and gists list newest first, so each stream stops paging at its first page
+    /// that would give `sync` nothing to write.
+    async fn fetch_incremental(
+        &self,
+        existing: &[Bookmark],
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        self.fetch_capturing(Some(&self.synced_keys(existing)), &mut RawSink::disabled())
+            .await
     }
 }
 

@@ -255,25 +255,7 @@ impl HackerNewsClient {
             ..self
         }
     }
-}
 
-impl Source for HackerNewsClient {
-    async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
-        self.fetch_capturing(None, &mut RawSink::disabled()).await
-    }
-
-    /// Favorites list newest first, so each stream stops paging at its first page that
-    /// would give `sync` nothing to write.
-    async fn fetch_incremental(
-        &self,
-        existing: &[Bookmark],
-    ) -> Result<Vec<BookmarkDraft>, SourceError> {
-        self.fetch_capturing(Some(&self.synced_keys(existing)), &mut RawSink::disabled())
-            .await
-    }
-}
-
-impl HackerNewsClient {
     /// [`Source::fetch`], pushing the scraped favorites pages and every Algolia response
     /// to `sink` so `backup` gets both verbatim out of the same traversal. With
     /// `synced_keys`, each stream stops at its first page with nothing new, and items are
@@ -317,6 +299,22 @@ impl HackerNewsClient {
                     .map(|draft| (id, draft))
             })
             .collect()
+    }
+}
+
+impl Source for HackerNewsClient {
+    async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
+        self.fetch_capturing(None, &mut RawSink::disabled()).await
+    }
+
+    /// Favorites list newest first, so each stream stops paging at its first page that
+    /// would give `sync` nothing to write.
+    async fn fetch_incremental(
+        &self,
+        existing: &[Bookmark],
+    ) -> Result<Vec<BookmarkDraft>, SourceError> {
+        self.fetch_capturing(Some(&self.synced_keys(existing)), &mut RawSink::disabled())
+            .await
     }
 }
 

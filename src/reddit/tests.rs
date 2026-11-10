@@ -332,7 +332,7 @@ fn every_entry_point_names_a_bare_cookie() {
     )
     .unwrap();
     assert_eq!(sent(&sync.session), named);
-    let cleanup = RedditInfoClient::new(configured("bare-value\n")).unwrap();
+    let cleanup = RedditInfoClient::new(configured("bare-value\n"), None).unwrap();
     assert_eq!(sent(&cleanup.session), named);
 }
 

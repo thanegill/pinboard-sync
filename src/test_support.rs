@@ -21,8 +21,8 @@ use crate::config::SyncLimit;
 use crate::keys::RedditKeys;
 use crate::pinboard::{PinboardBookmark, PinboardClient, PINBOARD_URL_LIMIT};
 use crate::reddit::model::{RedditConfig, RedditListingEntry};
-use crate::reddit::PostInfo;
-use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
+use crate::reddit::{InfoAnswer, PostInfo};
+use crate::source::{BookmarkDraft, DedupKey, Halt, Source, SourceError, UrlKey};
 use crate::sync::{prepare_new_drafts, write_drafts, JobSettings};
 use crate::tags::Tags;
 use crate::timefmt::DateOpts;
@@ -267,8 +267,22 @@ pub struct FakeReddit {
     /// What `/api/info` knows; `info` returns the entries for the fullnames it is asked.
     pub info: Vec<RedditListingEntry>,
     /// When set, `info` fails with it instead of answering -- for exercising the
-    /// expired-cookie path that has to reach the auth-failure hook.
+    /// expired-cookie path that has to reach the auth-failure hook. A [`Halt::Blocked`]
+    /// is answered as the block, after the `info` entries asked for, as the real client
+    /// answers a block on a later batch.
     pub info_error: Option<SourceError>,
+    /// When set, reading the saved listing fails with it.
+    pub saved_error: Option<SourceError>,
+    /// No username is configured, so the saved listing can't be read.
+    pub no_username: bool,
+}
+
+/// A copy of `error`, which isn't `Clone`.
+fn copy_of(error: &SourceError) -> SourceError {
+    match error {
+        SourceError::Halted(halt) => halt.clone().into(),
+        SourceError::Other(e) => SourceError::Other(anyhow::anyhow!("{e}")),
+    }
 }
 
 impl Source for FakeReddit {
@@ -291,11 +305,14 @@ impl UrlKey for FakeReddit {
 }
 
 impl PostInfo for FakeReddit {
-    async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError> {
-        match &self.info_error {
-            Some(SourceError::Halted(halt)) => Err(halt.clone().into()),
-            Some(SourceError::Other(e)) => Err(SourceError::Other(anyhow::anyhow!("{e}"))),
-            None => Ok(self
+    async fn info(&self, fullnames: &[String]) -> Result<InfoAnswer, SourceError> {
+        let blocked = match &self.info_error {
+            Some(SourceError::Halted(Halt::Blocked(block))) => Some(block.clone()),
+            Some(error) => return Err(copy_of(error)),
+            None => None,
+        };
+        Ok(InfoAnswer {
+            entries: self
                 .info
                 .iter()
                 .filter(|entry| {
@@ -306,8 +323,19 @@ impl PostInfo for FakeReddit {
                         .is_some_and(|name| fullnames.contains(name))
                 })
                 .cloned()
-                .collect()),
+                .collect(),
+            blocked,
+        })
+    }
+
+    async fn saved(&self) -> Option<Result<Vec<RedditListingEntry>, SourceError>> {
+        if self.no_username {
+            return None;
         }
+        Some(match &self.saved_error {
+            Some(error) => Err(copy_of(error)),
+            None => Ok(self.saved.clone()),
+        })
     }
 }
 
@@ -593,14 +621,22 @@ pub async fn assert_cleanup_changes_nothing(
     account: Vec<Bookmark>,
     cleanup: impl AsyncFnOnce(&CleanupStore<'_, FakePinboard>) -> Result<(), SourceError>,
 ) {
+    let complained = cleanup_writes_nothing(account, cleanup).await;
+    assert!(complained.is_empty(), "{complained:#?}");
+}
+
+/// [`assert_cleanup_changes_nothing`] short of the check on what it logs: returns the
+/// warnings and errors instead.
+pub async fn cleanup_writes_nothing(
+    account: Vec<Bookmark>,
+    cleanup: impl AsyncFnOnce(&CleanupStore<'_, FakePinboard>) -> Result<(), SourceError>,
+) -> Vec<String> {
     let pinboard = FakePinboard {
         all: account,
         ..FakePinboard::trimming()
     };
     let (result, logs) = capturing_logs(cleanup(&pinboard.cleanup_store())).await;
     result.unwrap();
-    let complained = complaints(&logs);
-    assert!(complained.is_empty(), "{complained:#?}");
     let updated = pinboard.updated.borrow();
     assert!(
         updated.is_empty(),
@@ -617,6 +653,7 @@ pub async fn assert_cleanup_changes_nothing(
         "{:?}",
         pinboard.deleted.borrow()
     );
+    complaints(&logs).into_iter().map(String::from).collect()
 }
 
 /// Parse `argv` as the binary does, but with no flag falling back to an environment

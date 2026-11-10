@@ -289,6 +289,20 @@ run still can't).
   `use_post_date`) cleanup does not contact Reddit, needs no cookie, and adds only
   `reddit-comment`.
 
+  Since 2026-11-09 ([#89](https://github.com/thanegill/pinboard-sync/issues/89)),
+  Reddit's edge answers `/api/info` with its "blocked by network security" page even
+  with a valid cookie. When it does, cleanup reads the account's saved listing instead,
+  which needs the account's `username` (or `$REDDIT_USERNAME`, or its `_FILE` form). A
+  post still in the listing gets every fix above from it. A comment gets its tags when
+  it is in the listing, and its NSFW and title fixes when its thread is, since those
+  come from the thread. A bookmark the listing covers neither way is cleaned up like one
+  of a deleted post: its URL and tags are normalized, and its title, notes and date stay
+  as they are. The run exits 0 and logs one warning, every time, that quotes the block
+  and says how many bookmarks took their metadata from the saved listing and how many
+  got URL-only normalization. It still fails when the saved listing can't be read
+  either, or when no username is set, and a refused cookie runs the auth-failure hook as
+  usual, whichever read refused it.
+
 - **GitHub** (`cleanup github`) — canonicalizes repo bookmark URLs to
   `https://github.com/<owner>/<repo>` (forcing https, lowercasing the host, dropping a
   `.git` suffix, trailing slash, and any query/fragment); deeper links like `/tree/...`
@@ -524,7 +538,7 @@ multiple accounts of one source. All three accept the per-account override keys
 | Key | Sources | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `name` | all | string | — | Selector for `sync <source> <name>`. Falls back to `username` for Reddit and HackerNews; GitHub has no username, so its accounts need a `name`. |
-| `username` | reddit, hackernews | string | — | Whose saves/favorites to read. HackerNews favorites are public; Reddit needs the cookie too. |
+| `username` | reddit, hackernews | string | — | Whose saves/favorites to read. HackerNews favorites are public; Reddit needs the cookie too. `cleanup reddit` reads the saves in place of a blocked `/api/info`. |
 | `cookie` / `cookie_file` | reddit | string / path | — | `reddit_session` cookie, bare or as `reddit_session=…`, or a file holding it. |
 | `token` / `token_file` | github | string / path | — | Personal access token, or a file holding it. |
 | `on_auth_failure` | reddit, github | string | — | Per-account override of `[hooks].on_auth_failure`. |

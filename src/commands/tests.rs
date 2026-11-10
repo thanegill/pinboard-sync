@@ -680,6 +680,31 @@ fn reddit_cleanup_overrides_default_runs_every_fix() {
     assert!(reddit.client.is_some(), "the fixes read /api/info");
 }
 
+/// The `/api/info` client reads the saved listing of the username the account or the
+/// environment sets, the one the fallback for a blocked `/api/info` needs.
+#[test]
+fn a_reddit_cleanup_client_carries_the_username_for_its_fallback() {
+    let username_of = |username: Option<&str>| {
+        let account = RedditAccount {
+            cookie: Some("reddit_session=x".into()),
+            username: username.map(String::from),
+            ..RedditAccount::default()
+        };
+        let reddit = RedditCleanup::build(
+            Some(&account),
+            RedditCleanupOverrides::default(),
+            crate::test_support::NO_DATING,
+            &Config::default(),
+        )
+        .expect("builds");
+        reddit.client.unwrap().username().map(String::from)
+    };
+    assert_eq!(username_of(Some("alice")).as_deref(), Some("alice"));
+    assert_eq!(username_of(None), None);
+    let _env = crate::secrets::FakeSecretEnv::set(&[("REDDIT_USERNAME", "bob")]);
+    assert_eq!(username_of(None).as_deref(), Some("bob"));
+}
+
 /// A Reddit pass with no `/api/info` step still runs: it moves a reddit.com bookmark onto
 /// the account's domain.
 #[tokio::test]

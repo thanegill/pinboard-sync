@@ -3,10 +3,15 @@
 //! they are on another configured account's, normalizes tags, and -- using Reddit's
 //! `/api/info` for authoritative data -- marks NSFW posts, replaces generic placeholder
 //! titles, and backfills the author, flair and media-type tags sync writes.
+//!
+//! While Reddit's edge blocks `/api/info` (#89), the saved listing stands in for it: the
+//! bookmarks it covers get the same fixes from the same entries, and the rest only what
+//! needs no metadata, as a post `/api/info` no longer knows does.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
+use log::warn;
 
 use crate::bookmark::{AccountState, Bookmark, BookmarkStore};
 use crate::cleanup_pass::{run_pass, CleanupPass, Plan};
@@ -14,10 +19,12 @@ use crate::config::own_then_configured;
 use crate::htmltext::collapse_whitespace;
 use crate::keys::RedditKeys;
 use crate::reddit::model::{
-    cased_subreddit, created_at, unwrap_over18, RedditConfig, RedditKind, RedditSavedItem,
+    cased_subreddit, created_at, unwrap_over18, RedditConfig, RedditKind, RedditListingEntry,
+    RedditSavedItem,
 };
 use crate::reddit::PostInfo;
-use crate::source::{DedupKey, SourceError, UrlKey};
+use crate::secrets::SecretSpec;
+use crate::source::{DedupKey, Halt, SourceError, UrlKey};
 use crate::tags::Tags;
 use crate::timefmt::DateOpts;
 use crate::urls::{host_matches, UrlExt};
@@ -223,13 +230,10 @@ impl<S: BookmarkStore> CleanupPass for RedditCleanupPass<'_, S> {
             tags.push(&owner.nsfw);
         }
 
-        let own_fullname = if is_comment_url(&new_url) {
+        if is_comment_url(&new_url) {
             tags.push(&owner.comment);
-            comment_fullname(&new_url)
-        } else {
-            post_fullname(&new_url)
-        };
-        if let Some(item) = own_fullname.and_then(|f| self.info.items.get(&f)) {
+        }
+        if let Some(item) = own_fullname(&new_url).and_then(|f| self.info.items.get(&f)) {
             for detail in item.detail_tags(owner) {
                 if !tags.iter().any(|t| t.starts_with(detail.family)) {
                     tags.push(&detail.tag);
@@ -293,7 +297,9 @@ impl<S: BookmarkStore> CleanupPass for RedditCleanupPass<'_, S> {
 
 /// Batch-fetch `over_18` + `title` + `created_utc` + the rebuilt notes for every post
 /// referenced by the bookmarks, and each post and comment bookmark's own entry for its
-/// tags. Empty unless [`RedditCleanupOpts::needs_post_info`].
+/// tags, from `/api/info`, or from the saved listing for what `/api/info` left unanswered
+/// when Reddit's edge blocked it ([`fall_back_to_saved`]). Empty unless
+/// [`RedditCleanupOpts::needs_post_info`].
 async fn fetch_post_info<R: PostInfo>(
     reddit: Option<&R>,
     opts: &RedditCleanupOpts,
@@ -310,8 +316,7 @@ async fn fetch_post_info<R: PostInfo>(
     let fullnames: Vec<String> = bookmarks
         .iter()
         .flat_map(|bookmark| {
-            let url = normalize_url(&bookmark.url, &opts.config.domain)
-                .unwrap_or_else(|| bookmark.url.clone());
+            let url = lookup_url(bookmark, opts);
             [post_fullname(&url), comment_fullname(&url)]
         })
         .flatten()
@@ -322,7 +327,13 @@ async fn fetch_post_info<R: PostInfo>(
         return Ok(info);
     }
 
-    let entries = reddit.info(&fullnames).await?;
+    let answer = reddit.info(&fullnames).await?;
+    let entries = match answer.blocked {
+        None => answer.entries,
+        Some(block) => {
+            fall_back_to_saved(reddit, block, &fullnames, answer.entries, bookmarks, opts).await?
+        }
+    };
     for entry in entries {
         if let (RedditKind::Post, Some(name)) = (entry.kind, entry.fields.name.clone()) {
             // Rebuild the notes from authoritative data the same way sync does, so the
@@ -346,6 +357,88 @@ async fn fetch_post_info<R: PostInfo>(
         }
     }
     Ok(info)
+}
+
+/// The URL a bookmark is looked up by.
+fn lookup_url(bookmark: &Bookmark, opts: &RedditCleanupOpts) -> Url {
+    normalize_url(&bookmark.url, &opts.config.domain).unwrap_or_else(|| bookmark.url.clone())
+}
+
+/// `answered`, what `/api/info` said before Reddit's edge blocked it with `block`, and the
+/// saved listing's entries for the `fullnames` it returned no entry for, logging how many
+/// bookmarks each covered: a bookmark counts for the listing when it supplied either of its
+/// post's and comment's entries. The saved listing failing fails the pass with its own
+/// error, so a refused cookie still fires the hook; with no username to read it by, the
+/// pass fails with the block.
+async fn fall_back_to_saved<R: PostInfo>(
+    reddit: &R,
+    block: String,
+    fullnames: &[String],
+    answered: Vec<RedditListingEntry>,
+    bookmarks: &[Bookmark],
+    opts: &RedditCleanupOpts,
+) -> Result<Vec<RedditListingEntry>, SourceError> {
+    let Some(saved) = reddit.saved().await else {
+        warn!(
+            "{block} No Reddit username is set ({}), so the saved listing can't stand in \
+             for it.",
+            SecretSpec::REDDIT_USERNAME.settings_without_flag()
+        );
+        return Err(Halt::Blocked(block).into());
+    };
+    let saved = saved.inspect_err(|_| {
+        warn!("{block} Reading the saved listing in its place failed too.");
+    })?;
+
+    let from_info: HashSet<String> = answered
+        .iter()
+        .filter_map(|entry| entry.fields.name.clone())
+        .collect();
+    let unanswered: HashSet<&str> = fullnames
+        .iter()
+        .map(String::as_str)
+        .filter(|fullname| !from_info.contains(*fullname))
+        .collect();
+    let from_saved: Vec<RedditListingEntry> = saved
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .fields
+                .name
+                .as_deref()
+                .is_some_and(|name| unanswered.contains(name))
+        })
+        .collect();
+    let saved_names: HashSet<String> = from_saved
+        .iter()
+        .filter_map(|entry| entry.fields.name.clone())
+        .collect();
+
+    let (mut by_info, mut by_saved, mut url_only) = (0, 0, 0);
+    for bookmark in bookmarks {
+        let url = lookup_url(bookmark, opts);
+        let names: Vec<String> = [post_fullname(&url), comment_fullname(&url)]
+            .into_iter()
+            .flatten()
+            .collect();
+        if names.iter().any(|name| saved_names.contains(name)) {
+            by_saved += 1;
+        } else if names.iter().any(|name| from_info.contains(name)) {
+            by_info += 1;
+        } else if !names.is_empty() {
+            url_only += 1;
+        }
+    }
+    let before_block = if by_info > 0 {
+        format!(", after /api/info answered for {by_info}")
+    } else {
+        String::new()
+    };
+    warn!(
+        "{block} The saved listing stood in for it: {by_saved} bookmark(s) took their \
+         metadata from it and {url_only} got URL-only normalization{before_block}."
+    );
+    Ok(answered.into_iter().chain(from_saved).collect())
 }
 
 /// For each post or comment stored on more than one host once each copy has its
@@ -443,6 +536,16 @@ fn is_comment_url(url: &Url) -> bool {
     // `Url::path` excludes any query/fragment.
     // post -> [id, slug]; comment -> [id, slug, comment-id].
     rest.split('/').filter(|s| !s.is_empty()).count() >= 3
+}
+
+/// The fullname of what `url` is about: the comment's for a comment permalink, else the
+/// post's.
+fn own_fullname(url: &Url) -> Option<String> {
+    if is_comment_url(url) {
+        comment_fullname(url)
+    } else {
+        post_fullname(url)
+    }
 }
 
 /// The comment fullname (`t1_<id>`) from a comment permalink's third segment after

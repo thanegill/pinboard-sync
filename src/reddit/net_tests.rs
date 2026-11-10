@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::{
-    assert_cleanup_changes_nothing, strings, synced_account, titles, ROUND_TRIP_DATINGS,
+    cleanup_writes_nothing, strings, synced_account, titles, ROUND_TRIP_DATINGS,
 };
 use serde_json::json;
 use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
@@ -306,7 +306,7 @@ async fn fetch_saved_maps_a_block_page_to_blocked() {
 }
 
 #[tokio::test]
-async fn info_maps_a_block_page_to_blocked() {
+async fn info_answers_a_block_page_as_the_block() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/info.json"))
@@ -315,11 +315,47 @@ async fn info_maps_a_block_page_to_blocked() {
         .mount(&server)
         .await;
     let client = info_client(&server, "reddit_session=secret");
-    let err = client.info(&strings(&["t3_a"])).await.unwrap_err();
-    let SourceError::Halted(Halt::Blocked(message)) = err else {
-        panic!("got {err:?}");
-    };
+    let answer = client.info(&strings(&["t3_a"])).await.unwrap();
+    assert!(answer.entries.is_empty(), "{answer:?}");
+    let message = answer.blocked.unwrap();
+    assert!(
+        message.starts_with("api/info returned 403 Forbidden"),
+        "{message}"
+    );
     assert!(message.contains("pinboard-sync/issues/89."), "{message}");
+}
+
+#[tokio::test]
+async fn info_keeps_the_batches_answered_before_a_block() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/info.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": null, "children": [
+                { "kind": "t3", "data": { "name": "t3_0", "subreddit": "rust",
+                  "permalink": "/r/rust/comments/0/x/", "title": "A" } }
+            ] }
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/info.json"))
+        .respond_with(block_page())
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = info_client(&server, "reddit_session=secret");
+    let fullnames: Vec<String> = (0..=2 * INFO_BATCH).map(|n| format!("t3_{n}")).collect();
+    let (answer, waits) = crate::http::recording_waits(client.info(&fullnames)).await;
+    let answer = answer.unwrap();
+    assert_eq!(answer.entries.len(), 1, "{answer:?}");
+    assert!(answer.blocked.is_some(), "{answer:?}");
+    assert_eq!(waits, [REQUEST_PAUSE], "no batch is sent after the block");
 }
 
 #[tokio::test]
@@ -337,7 +373,7 @@ async fn info_sends_a_bare_cookie_value_as_reddit_session() {
         .await;
 
     let client = info_client(&server, "bare-value");
-    let entries = client.info(&strings(&["t3_a"])).await.unwrap();
+    let entries = client.info(&strings(&["t3_a"])).await.unwrap().entries;
     assert!(entries.is_empty(), "{entries:?}");
 }
 
@@ -360,7 +396,7 @@ async fn info_sends_cookie_and_returns_entries() {
         .await;
 
     let client = info_client(&server, "reddit_session=secret");
-    let entries = client.info(&strings(&["t3_a"])).await.unwrap();
+    let entries = client.info(&strings(&["t3_a"])).await.unwrap().entries;
     assert_eq!(entries.len(), 1);
     assert!(entries[0].fields.over_18);
 }
@@ -381,7 +417,7 @@ async fn info_pauses_only_between_batches() {
     let client = info_client(&server, "reddit_session=secret");
     let fullnames: Vec<String> = (0..250).map(|n| format!("t3_{n}")).collect();
     let (entries, waits) = crate::http::recording_waits(client.info(&fullnames)).await;
-    let entries = entries.unwrap();
+    let entries = entries.unwrap().entries;
     assert!(entries.is_empty(), "{entries:?}");
     assert_eq!(
         waits, [REQUEST_PAUSE; 2],
@@ -424,7 +460,7 @@ fn reddit_client(server: &MockServer) -> RedditClient {
 
 /// A client for `/api/info` lookups on `server`, sending `cookie`.
 fn info_client(server: &MockServer, cookie: &str) -> RedditInfoClient {
-    RedditInfoClient::with_base_url(Some(cookie.into()), server.uri())
+    RedditInfoClient::with_base_url(Some(cookie.into()), Some("psophis"), server.uri())
 }
 
 /// Pinboard already holds the second page's save, so that page has nothing new.
@@ -729,7 +765,18 @@ fn round_trip_configs() -> [RedditConfig; 2] {
 
 #[tokio::test]
 async fn cleanup_leaves_what_sync_wrote_as_it_is() {
-    use crate::reddit::cleanup::{run, RedditCleanupOpts};
+    Box::pin(assert_cleanup_leaves_what_sync_wrote(false)).await;
+}
+
+/// The saved listing stands in for a blocked `/api/info` well enough that cleanup still
+/// leaves sync's bookmarks alone, the comment's included, though its thread isn't saved.
+#[tokio::test]
+async fn cleanup_leaves_what_sync_wrote_as_it_is_while_api_info_is_blocked() {
+    Box::pin(assert_cleanup_leaves_what_sync_wrote(true)).await;
+}
+
+async fn assert_cleanup_leaves_what_sync_wrote(api_info_blocked: bool) {
+    use crate::reddit::cleanup::RedditCleanupOpts;
 
     #[expect(
         clippy::cast_precision_loss,
@@ -750,23 +797,23 @@ async fn cleanup_leaves_what_sync_wrote_as_it_is() {
                     "kind": "Listing",
                     "data": { "after": null, "children": saves }
                 })))
-                .expect(1)
+                .expect(if api_info_blocked { 2 } else { 1 })
                 .mount(&server)
                 .await;
-            Mock::given(method("GET"))
-                .and(path("/api/info.json"))
-                .respond_with(RedditInfoAnswers(known.clone()))
-                .expect(1)
-                .mount(&server)
-                .await;
+            let info_mock = Mock::given(method("GET")).and(path("/api/info.json"));
+            let info_mock = if api_info_blocked {
+                info_mock.respond_with(block_page())
+            } else {
+                info_mock.respond_with(RedditInfoAnswers(known.clone()))
+            };
+            info_mock.expect(1).mount(&server).await;
             let mut client = RedditClient::with_base_url(
                 Some("reddit_session=secret".into()),
                 "psophis",
                 server.uri(),
             );
             client.config = config.clone();
-            let info =
-                RedditInfoClient::with_base_url(Some("reddit_session=secret".into()), server.uri());
+            let info = info_client(&server, "reddit_session=secret");
 
             let account = synced_account(&client, dates).await;
             assert_eq!(account.len(), saves.len(), "{} {dates:?}", config.domain);
@@ -777,10 +824,360 @@ async fn cleanup_leaves_what_sync_wrote_as_it_is() {
                 dates,
                 configured: vec![config.clone()],
             };
-            assert_cleanup_changes_nothing(account, async |store| {
-                run(store, Some(&info), &opts).await
-            })
+            let complained = Box::pin(cleanup_writes_nothing(account, async |store| {
+                run_cleanup(store, &info, &opts).await.0
+            }))
             .await;
+            if api_info_blocked {
+                let [fallback] = complained.as_slice() else {
+                    panic!("{complained:#?}");
+                };
+                assert!(
+                    fallback.contains(&format!(
+                        "{} bookmark(s) took their metadata from it and 0 got URL-only",
+                        saves.len()
+                    )),
+                    "{fallback}"
+                );
+            } else {
+                assert!(complained.is_empty(), "{complained:#?}");
+            }
         }
     }
+}
+
+/// `cleanup reddit` over `store`, its pauses recorded, boxed for its size.
+async fn run_cleanup<S: crate::bookmark::BookmarkStore + crate::bookmark::AccountState>(
+    store: &S,
+    client: &RedditInfoClient,
+    opts: &crate::reddit::cleanup::RedditCleanupOpts,
+) -> (Result<(), SourceError>, Vec<Duration>) {
+    crate::http::recording_waits(Box::pin(crate::reddit::cleanup::run(
+        store,
+        Some(client),
+        opts,
+    )))
+    .await
+}
+
+/// Answers `/api/info.json` with Reddit's network-security block page `hits` times.
+async fn mount_info_block(server: &MockServer, hits: u64) {
+    Mock::given(method("GET"))
+        .and(path("/api/info.json"))
+        .respond_with(block_page())
+        .expect(hits)
+        .mount(server)
+        .await;
+}
+
+/// Mounts `psophis`'s saved listing as one page of `children`, expecting `hits` reads.
+async fn mount_saved(server: &MockServer, children: &[serde_json::Value], hits: u64) {
+    Mock::given(method("GET"))
+        .and(path("/user/psophis/saved.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "kind": "Listing",
+            "data": { "after": null, "children": children }
+        })))
+        .expect(hits)
+        .mount(server)
+        .await;
+}
+
+/// A saved NSFW self post with a placeholder-titled bookmark, and an unrelated save.
+fn fallback_saves() -> Vec<serde_json::Value> {
+    vec![
+        json!({ "kind": "t3", "data": {
+            "name": "t3_abc", "subreddit": "NEWS", "permalink": "/r/NEWS/comments/abc/x/",
+            "title": "Real Title", "url": "https://www.reddit.com/r/NEWS/comments/abc/x/",
+            "is_self": true, "selftext": "Body text", "over_18": true, "author": "alice" } }),
+        json!({ "kind": "t3", "data": {
+            "name": "t3_other", "subreddit": "rust", "permalink": "/r/rust/comments/other/z/",
+            "title": "Other" } }),
+    ]
+}
+
+/// The bookmark [`fallback_saves`] covers, and one it doesn't, carrying a hand-written
+/// note, visibility, to-read and a date that a URL-only rewrite must keep.
+fn fallback_account() -> Vec<Bookmark> {
+    use crate::test_support::stored_at;
+    vec![
+        Bookmark {
+            title: "Reddit - Dive into anything".into(),
+            tags: crate::tags::Tags::parse("reddit"),
+            ..stored_at("https://www.reddit.com/r/NEWS/comments/abc/x/")
+        },
+        Bookmark {
+            title: "Reddit - Dive into anything".into(),
+            note: "my own note".into(),
+            tags: crate::tags::Tags::parse("reddit mine"),
+            timestamp: crate::timefmt::parse_rfc3339("2023-11-14T22:13:20Z"),
+            public: true,
+            read_later: true,
+            ..stored_at("https://www.reddit.com/r/rust/comments/zzz/y/")
+        },
+    ]
+}
+
+fn fallback_opts() -> crate::reddit::cleanup::RedditCleanupOpts {
+    crate::reddit::cleanup::RedditCleanupOpts {
+        mark_nsfw: true,
+        fix_titles: true,
+        config: RedditConfig::default(),
+        dates: crate::test_support::NO_DATING,
+        configured: Vec::new(),
+    }
+}
+
+const FALLBACK_COOKIE: &str = "reddit_session=FALLBACK-SECRET";
+
+#[tokio::test]
+async fn a_blocked_api_info_falls_back_to_the_saved_listing() {
+    use crate::test_support::{capturing_logs, listing_entry, warnings, FakePinboard};
+
+    let server = MockServer::start().await;
+    mount_info_block(&server, 1).await;
+    mount_saved(&server, &fallback_saves(), 1).await;
+    let pinboard = FakePinboard {
+        all: fallback_account(),
+        ..Default::default()
+    };
+    let client = info_client(&server, FALLBACK_COOKIE);
+
+    let ((result, waits), logs) = capturing_logs(run_cleanup(
+        &pinboard.cleanup_store(),
+        &client,
+        &fallback_opts(),
+    ))
+    .await;
+
+    result.unwrap();
+    assert_eq!(
+        waits,
+        [REQUEST_PAUSE],
+        "one pause, before the saved listing"
+    );
+    let updated = pinboard.updated.borrow();
+    let written = |url: &str| updated.iter().find(|u| u.url == url).unwrap();
+
+    let covered = written("https://old.reddit.com/r/NEWS/comments/abc/x/");
+    assert_eq!(covered.description, "Real Title");
+    let saved_note = listing_entry("t3", fallback_saves()[0]["data"].clone())
+        .fields
+        .post_note();
+    assert_eq!(covered.extended, saved_note);
+    for tag in ["nsfw", "author:reddit:alice", "subreddit:news", "reddit"] {
+        assert!(
+            covered.tags.contains(&tag.to_string()),
+            "{:?}",
+            covered.tags
+        );
+    }
+
+    let url_only = written("https://old.reddit.com/r/rust/comments/zzz/y/");
+    assert_eq!(url_only.description, "Reddit - Dive into anything");
+    assert_eq!(url_only.extended, "my own note");
+    assert!(url_only.shared && url_only.toread, "{url_only:?}");
+    assert_eq!(url_only.dt, "2023-11-14T22:13:20Z");
+    assert_eq!(
+        url_only.tags,
+        strings(&["mine", "reddit", "subreddit:rust"])
+    );
+    assert_eq!(updated.len(), 2, "{updated:#?}");
+
+    let [fallback] = warnings(&logs)[..] else {
+        panic!("{logs:#?}");
+    };
+    assert!(
+        fallback.starts_with("WARN api/info returned 403 Forbidden"),
+        "{fallback}"
+    );
+    assert!(
+        fallback.contains("https://github.com/thanegill/pinboard-sync/issues/89"),
+        "{fallback}"
+    );
+    assert!(
+        fallback.ends_with(
+            "The saved listing stood in for it: 1 bookmark(s) took their metadata from it \
+             and 1 got URL-only normalization."
+        ),
+        "{fallback}"
+    );
+    for line in &logs {
+        assert!(!line.contains("FALLBACK-SECRET"), "{line}");
+    }
+}
+
+#[tokio::test]
+async fn a_dry_run_previews_the_fallback_and_writes_nothing() {
+    use crate::test_support::{capturing_stdout, FakePinboard};
+
+    let server = MockServer::start().await;
+    mount_info_block(&server, 1).await;
+    mount_saved(&server, &fallback_saves(), 1).await;
+    let pinboard = FakePinboard {
+        all: fallback_account(),
+        ..Default::default()
+    };
+    let client = info_client(&server, FALLBACK_COOKIE);
+
+    let ((result, _), out) = capturing_stdout(run_cleanup(
+        &pinboard.dry_cleanup_store(),
+        &client,
+        &fallback_opts(),
+    ))
+    .await;
+
+    result.unwrap();
+    assert!(pinboard.updated.borrow().is_empty());
+    assert!(pinboard.deleted.borrow().is_empty());
+    assert!(out.contains("title -> Real Title"), "{out}");
+    assert!(
+        out.contains("https://old.reddit.com/r/rust/comments/zzz/y/"),
+        "{out}"
+    );
+    assert!(out.contains("2 bookmark(s) would change."), "{out}");
+}
+
+#[tokio::test]
+async fn a_blocked_saved_listing_still_fails_the_pass() {
+    use crate::test_support::{capturing_logs, warnings, FakePinboard};
+
+    let server = MockServer::start().await;
+    mount_info_block(&server, 1).await;
+    Mock::given(method("GET"))
+        .and(path("/user/psophis/saved.json"))
+        .respond_with(block_page())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let pinboard = FakePinboard {
+        all: fallback_account(),
+        ..Default::default()
+    };
+    let client = info_client(&server, FALLBACK_COOKIE);
+
+    let ((result, _), logs) = capturing_logs(run_cleanup(
+        &pinboard.cleanup_store(),
+        &client,
+        &fallback_opts(),
+    ))
+    .await;
+
+    let err = result.unwrap_err();
+    let SourceError::Halted(Halt::Blocked(message)) = &err else {
+        panic!("got {err:?}");
+    };
+    assert!(
+        message.starts_with("saved listing returned 403"),
+        "{message}"
+    );
+    assert!(pinboard.updated.borrow().is_empty());
+    let [warning] = warnings(&logs)[..] else {
+        panic!("{logs:#?}");
+    };
+    assert!(
+        warning.ends_with("Reading the saved listing in its place failed too."),
+        "{warning}"
+    );
+}
+
+#[tokio::test]
+async fn a_block_on_a_later_batch_keeps_the_answers_before_it() {
+    use crate::test_support::{capturing_logs, stored_at, warnings, FakePinboard};
+
+    let id = |n: usize| format!("p{n:03}");
+    let post = |n: usize, title: &str| {
+        json!({ "kind": "t3", "data": {
+            "name": format!("t3_{}", id(n)), "subreddit": "rust",
+            "permalink": format!("/r/rust/comments/{}/x/", id(n)), "title": title } })
+    };
+    let server = MockServer::start().await;
+    let known: Vec<serde_json::Value> = (0..=INFO_BATCH).map(|n| post(n, "From info")).collect();
+    Mock::given(method("GET"))
+        .and(path("/api/info.json"))
+        .respond_with(RedditInfoAnswers(known))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_info_block(&server, 1).await;
+    mount_saved(
+        &server,
+        &[post(0, "From saved"), post(INFO_BATCH, "From saved")],
+        1,
+    )
+    .await;
+    let pinboard = FakePinboard {
+        all: (0..=INFO_BATCH)
+            .map(|n| Bookmark {
+                title: "Reddit - Dive into anything".into(),
+                ..stored_at(&format!(
+                    "https://old.reddit.com/r/rust/comments/{}/x/",
+                    id(n)
+                ))
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let client = info_client(&server, FALLBACK_COOKIE);
+    let opts = crate::reddit::cleanup::RedditCleanupOpts {
+        mark_nsfw: false,
+        ..fallback_opts()
+    };
+
+    let ((result, _), logs) =
+        capturing_logs(run_cleanup(&pinboard.cleanup_store(), &client, &opts)).await;
+
+    result.unwrap();
+    let updated = pinboard.updated.borrow();
+    let title_of = |n: usize| {
+        let url = format!("https://old.reddit.com/r/rust/comments/{}/x/", id(n));
+        updated
+            .iter()
+            .find(|u| u.url == url)
+            .map(|u| u.description.clone())
+    };
+    assert_eq!(title_of(0).as_deref(), Some("From info"));
+    assert_eq!(title_of(INFO_BATCH).as_deref(), Some("From saved"));
+    let [fallback] = warnings(&logs)[..] else {
+        panic!("{logs:#?}");
+    };
+    assert!(
+        fallback.ends_with(&format!(
+            "1 bookmark(s) took their metadata from it and 0 got URL-only normalization, \
+             after /api/info answered for {INFO_BATCH}."
+        )),
+        "{fallback}"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_cookie_at_api_info_does_not_fall_back() {
+    use crate::test_support::FakePinboard;
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/info.json"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("denied"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_saved(&server, &fallback_saves(), 0).await;
+    let pinboard = FakePinboard {
+        all: fallback_account(),
+        ..Default::default()
+    };
+    let client = info_client(&server, FALLBACK_COOKIE);
+
+    let err = run_cleanup(&pinboard.cleanup_store(), &client, &fallback_opts())
+        .await
+        .0
+        .unwrap_err();
+
+    assert!(
+        matches!(err, SourceError::Halted(Halt::Reauth(_))),
+        "got {err:?}"
+    );
+    assert!(pinboard.updated.borrow().is_empty());
 }

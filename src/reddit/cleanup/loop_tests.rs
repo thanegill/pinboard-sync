@@ -2,7 +2,8 @@ use super::*;
 use crate::pinboard::TRUNCATION_MARKER;
 use crate::source::Halt;
 use crate::test_support::{
-    listing_entry, stored_at, strings, tag_list, FakePinboard, FakeReddit, NO_DATING,
+    capturing_logs, listing_entry, stored_at, strings, tag_list, warnings, FakePinboard,
+    FakeReddit, NO_DATING,
 };
 use serde_json::json;
 
@@ -1109,7 +1110,7 @@ async fn an_expired_cookie_surfaces_as_reauth_not_a_flattened_error() {
 }
 
 #[tokio::test]
-async fn an_api_info_block_stays_a_block() {
+async fn an_api_info_block_with_no_username_to_fall_back_on_stays_a_block() {
     // The variant must survive so the `cleanup` command withholds the hook, which no
     // cookie change would make useful for a block.
     let pinboard = FakePinboard {
@@ -1121,17 +1122,142 @@ async fn an_api_info_block_stays_a_block() {
         ..Default::default()
     };
     let reddit = FakeReddit {
-        info_error: Some(SourceError::Halted(Halt::Blocked("edge block".into()))),
+        info_error: Some(SourceError::Halted(Halt::Blocked("edge block.".into()))),
+        no_username: true,
         ..Default::default()
     };
 
-    let err = run(&pinboard.cleanup_store(), Some(&reddit), &opts())
-        .await
-        .unwrap_err();
+    let (result, logs) =
+        capturing_logs(run(&pinboard.cleanup_store(), Some(&reddit), &opts())).await;
+    let err = result.unwrap_err();
     assert!(
-        matches!(&err, SourceError::Halted(Halt::Blocked(m)) if m == "edge block"),
+        matches!(&err, SourceError::Halted(Halt::Blocked(m)) if m == "edge block."),
         "expected the block unchanged, got {err:?}"
     );
+    assert_eq!(
+        warnings(&logs),
+        [
+            "WARN edge block. No Reddit username is set ($REDDIT_USERNAME, \
+             $REDDIT_USERNAME_FILE, or the config's `username`), so the saved listing can't \
+             stand in for it."
+        ]
+    );
+}
+
+/// A blocked `/api/info` hands the saved listing's entries to the planner for the
+/// fullnames it gave none for, never over one it gave, and the rest get URL-only plans.
+#[tokio::test]
+async fn a_blocked_api_info_plans_from_the_saved_listing() {
+    let pinboard = FakePinboard {
+        all: vec![
+            bookmark(
+                "https://www.reddit.com/r/rust/comments/saved/x/",
+                "Reddit - Dive into anything",
+                "reddit",
+            ),
+            bookmark(
+                "https://www.reddit.com/r/rust/comments/gone/y/",
+                "Reddit - Dive into anything",
+                "reddit",
+            ),
+            bookmark(
+                "https://www.reddit.com/r/rust/comments/thread/z/cmt/",
+                "Reddit - Dive into anything",
+                "reddit",
+            ),
+            bookmark(
+                "https://www.reddit.com/r/rust/comments/answered/w/",
+                "Reddit - Dive into anything",
+                "reddit",
+            ),
+        ],
+        ..Default::default()
+    };
+    let post = |id: &str, title: &str, over_18: bool| {
+        listing_entry(
+            "t3",
+            json!({ "name": format!("t3_{id}"), "subreddit": "rust", "title": title,
+                    "permalink": format!("/r/rust/comments/{id}/x/"), "over_18": over_18 }),
+        )
+    };
+    let reddit = FakeReddit {
+        info_error: Some(SourceError::Halted(Halt::Blocked("edge block.".into()))),
+        info: vec![post("answered", "Info Title", false)],
+        saved: vec![
+            post("saved", "Saved Title", true),
+            post("thread", "Thread", true),
+            post("answered", "Listing Title", true),
+        ],
+        ..Default::default()
+    };
+
+    let (result, logs) =
+        capturing_logs(run(&pinboard.cleanup_store(), Some(&reddit), &opts())).await;
+
+    result.unwrap();
+    let updated = pinboard.updated.borrow();
+    let written = |url: &str| updated.iter().find(|u| u.url == url).unwrap();
+    let saved = written("https://old.reddit.com/r/rust/comments/saved/x/");
+    assert_eq!(saved.description, "Saved Title");
+    assert!(saved.tags.contains(&"nsfw".to_string()), "{:?}", saved.tags);
+    let gone = written("https://old.reddit.com/r/rust/comments/gone/y/");
+    assert_eq!(gone.description, "Reddit - Dive into anything");
+    assert!(!gone.tags.contains(&"nsfw".to_string()), "{:?}", gone.tags);
+    let comment = written("https://old.reddit.com/r/rust/comments/thread/z/cmt/");
+    assert_eq!(comment.description, "Thread");
+    assert!(
+        comment.tags.contains(&"nsfw".to_string()),
+        "{:?}",
+        comment.tags
+    );
+    let answered = written("https://old.reddit.com/r/rust/comments/answered/w/");
+    assert_eq!(answered.description, "Info Title");
+    assert!(
+        !answered.tags.contains(&"nsfw".to_string()),
+        "{:?}",
+        answered.tags
+    );
+    assert_eq!(
+        warnings(&logs),
+        [
+            "WARN edge block. The saved listing stood in for it: 2 bookmark(s) took their \
+             metadata from it and 1 got URL-only normalization, after /api/info answered \
+             for 1."
+        ]
+    );
+}
+
+/// The saved listing refusing the cookie in place of a blocked `/api/info` fails the pass
+/// as a re-auth, so the hook fires.
+#[tokio::test]
+async fn a_refused_cookie_at_the_saved_listing_surfaces_as_reauth() {
+    let pinboard = FakePinboard {
+        all: vec![bookmark(
+            "https://www.reddit.com/r/rust/comments/abc/x/",
+            "T",
+            "reddit",
+        )],
+        ..Default::default()
+    };
+    let reddit = FakeReddit {
+        info_error: Some(SourceError::Halted(Halt::Blocked("edge block.".into()))),
+        saved_error: Some(SourceError::Halted(Halt::Reauth("cookie expired".into()))),
+        ..Default::default()
+    };
+
+    let (result, logs) =
+        capturing_logs(run(&pinboard.cleanup_store(), Some(&reddit), &opts())).await;
+
+    let err = result.unwrap_err();
+    assert!(
+        matches!(&err, SourceError::Halted(Halt::Reauth(m)) if m == "cookie expired"),
+        "got {err:?}"
+    );
+    assert_eq!(
+        warnings(&logs),
+        ["WARN edge block. Reading the saved listing in its place failed too."]
+    );
+    assert!(pinboard.updated.borrow().is_empty());
 }
 
 #[tokio::test]

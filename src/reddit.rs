@@ -1,9 +1,10 @@
 //! The Reddit clients: [`RedditClient`] reads the user's private **saved listing**
 //! (`/user/<name>/saved.json`, for `sync`), and [`RedditInfoClient`] looks up post metadata
-//! via **`/api/info.json`** (for `cleanup`). Both run over the same transport -- a
-//! `reddit_session` cookie + native-tls, no OAuth app -- because Reddit's anti-bot edge
-//! refuses cookieless requests *and* rustls's TLS fingerprint. The cookie authenticates the
-//! saved listing, and the non-secret username picks whose saves to read.
+//! via **`/api/info.json`** (for `cleanup`), reading the saved listing in its place while
+//! Reddit's edge blocks it. Both run over the same transport -- a `reddit_session` cookie +
+//! native-tls, no OAuth app -- because Reddit's anti-bot edge refuses cookieless requests
+//! *and* rustls's TLS fingerprint. The cookie authenticates the saved listing, and the
+//! non-secret username picks whose saves to read.
 
 pub mod cleanup;
 pub mod cookie;
@@ -67,9 +68,27 @@ const API_INFO: RedditRequest = RedditRequest {
     block_issue: 89,
 };
 
-/// Reddit `/api/info` lookups by fullname (used by `cleanup` for `over_18` and the title).
+/// The Reddit reads `cleanup reddit` makes: `/api/info` lookups by fullname, for
+/// `over_18`, the title, the post date, the notes and the tags, and the saved listing that
+/// stands in for them while Reddit's edge blocks `/api/info` (#89).
 pub trait PostInfo {
-    async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError>;
+    /// Look `fullnames` up. Reddit's edge blocking a batch with its network-security page
+    /// ends the lookups without an error: the answer holds the batches before it and the
+    /// block.
+    async fn info(&self, fullnames: &[String]) -> Result<InfoAnswer, SourceError>;
+
+    /// Every item in the saved listing, or `None` when no username names whose to read.
+    async fn saved(&self) -> Option<Result<Vec<RedditListingEntry>, SourceError>>;
+}
+
+/// What `/api/info` answered.
+#[derive(Debug, Default)]
+pub struct InfoAnswer {
+    /// The entries found, from every batch it answered.
+    pub entries: Vec<RedditListingEntry>,
+    /// The [`Halt::Blocked`] message of the batch Reddit's edge blocked, which ended the
+    /// lookups.
+    pub blocked: Option<String>,
 }
 
 /// What both Reddit clients send over: native-tls, no redirects, and the session cookie.
@@ -101,6 +120,23 @@ impl RedditSession {
             Some(cookie) => req.header(reqwest::header::COOKIE, &cookie.header),
             None => req,
         }
+    }
+
+    /// Every item in `username`'s saved listing, newest first, following `after` pagination
+    /// (Reddit caps any listing at ~1000), pushing each response body to `sink` as it
+    /// arrives.
+    async fn read_saved(
+        &self,
+        username: &str,
+        sink: &mut RawSink,
+    ) -> Result<Vec<RedditListingEntry>, SourceError> {
+        let mut out: Vec<RedditListingEntry> = Vec::new();
+        self.walk_saved(username, sink, |page| {
+            out.extend(page);
+            ControlFlow::Continue(())
+        })
+        .await?;
+        Ok(out)
     }
 
     /// Follow `username`'s saved listing's `after` cursor, handing each page's entries to
@@ -213,15 +249,19 @@ impl RedditClient {
     }
 }
 
-/// Looks posts up by fullname via `/api/info.json`, for `cleanup reddit`.
+/// Looks posts up by fullname via `/api/info.json`, for `cleanup reddit`, and reads
+/// `username`'s saved listing in its place while Reddit's edge blocks it.
 pub struct RedditInfoClient {
     session: RedditSession,
+    /// Whose saved listing to read, if a username is configured.
+    username: Option<String>,
 }
 
 impl RedditInfoClient {
-    pub fn new(cookie: ConfiguredSecret) -> anyhow::Result<Self> {
+    pub fn new(cookie: ConfiguredSecret, username: Option<String>) -> anyhow::Result<Self> {
         Ok(Self {
             session: RedditSession::new(Some(cookie), REDDIT_BASE.to_string())?,
+            username,
         })
     }
 }
@@ -239,21 +279,14 @@ impl RedditClient {
         &self,
         sink: &mut RawSink,
     ) -> Result<Vec<RedditListingEntry>, SourceError> {
-        let mut out: Vec<RedditListingEntry> = Vec::new();
-        self.session
-            .walk_saved(&self.username, sink, |page| {
-                out.extend(page);
-                ControlFlow::Continue(())
-            })
-            .await?;
-        Ok(out)
+        self.session.read_saved(&self.username, sink).await
     }
 }
 
 impl PostInfo for RedditInfoClient {
     /// Batch-fetch Thing data by fullname via `/api/info.json`, [`INFO_BATCH`] per
-    /// request. Returns the entries that exist.
-    async fn info(&self, fullnames: &[String]) -> Result<Vec<RedditListingEntry>, SourceError> {
+    /// request. Answers with the entries that exist.
+    async fn info(&self, fullnames: &[String]) -> Result<InfoAnswer, SourceError> {
         let session = &self.session;
         let mut out: Vec<RedditListingEntry> = Vec::new();
         let endpoint = format!("{}/api/info.json", session.base);
@@ -274,10 +307,34 @@ impl PostInfo for RedditInfoClient {
                 })
                 .await?;
             let listing: RedditListing =
-                decode_reddit_json(resp, API_INFO, session.cookie.as_ref()).await?;
+                match decode_reddit_json(resp, API_INFO, session.cookie.as_ref()).await {
+                    Ok(listing) => listing,
+                    Err(SourceError::Halted(Halt::Blocked(block))) => {
+                        return Ok(InfoAnswer {
+                            entries: out,
+                            blocked: Some(block),
+                        });
+                    }
+                    Err(err) => return Err(err),
+                };
             out.extend(listing.data.children);
         }
-        Ok(out)
+        Ok(InfoAnswer {
+            entries: out,
+            blocked: None,
+        })
+    }
+
+    /// The saved listing, read over the `/api/info` session after one [`REQUEST_PAUSE`],
+    /// since it follows a lookup.
+    async fn saved(&self) -> Option<Result<Vec<RedditListingEntry>, SourceError>> {
+        let username = self.username.as_deref()?;
+        crate::http::sleep(REQUEST_PAUSE).await;
+        Some(
+            self.session
+                .read_saved(username, &mut RawSink::disabled())
+                .await,
+        )
     }
 }
 
@@ -585,11 +642,22 @@ impl RedditClient {
 
 #[cfg(test)]
 impl RedditInfoClient {
-    /// Test constructor looking posts up on a mock server.
-    pub(crate) fn with_base_url(cookie: Option<String>, base: String) -> Self {
+    /// Test constructor looking posts up, and reading `username`'s saved listing, on a mock
+    /// server.
+    pub(crate) fn with_base_url(
+        cookie: Option<String>,
+        username: Option<&str>,
+        base: String,
+    ) -> Self {
         Self {
             session: RedditSession::with_base_url(cookie, base),
+            username: username.map(String::from),
         }
+    }
+
+    /// Whose saved listing the client reads in place of a blocked `/api/info`.
+    pub(crate) fn username(&self) -> Option<&str> {
+        self.username.as_deref()
     }
 }
 

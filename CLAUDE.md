@@ -257,7 +257,7 @@ failed write followed by a full page of newer successes is never retried, and a 
 items all reached Pinboard another way stops the read early.
 
 **Sources:** Reddit ([`reddit.rs`](src/reddit.rs) — cookie-authenticated
-`saved.json`/`api/info.json`, plus the `PostInfo` port for cleanup;
+`saved.json`/`api/info.json`, plus the `PostInfo` port for cleanup (with its #89 fallback);
 [`model.rs`](src/reddit/model.rs) shapes bookmarks and tags), GitHub
 ([`github.rs`](src/github.rs) — `/user/starred`, `sort=created&direction=desc` pinned
 because the incremental read depends on newest-starred-first, then unless `gists = false`
@@ -319,9 +319,10 @@ without putting values in the unit environment, so never add a `$VAR`-only secre
 **A message names the setting a secret came from, never the value.** Each secret is one
 `SecretSpec`, whose `resolve` returns a `secrets::ConfiguredSecret` naming the setting for
 every Reddit cookie warning, re-auth message and GitHub token error; a list of the settings
-a secret can come from is built with `SecretSpec::settings`, never by hand. The env rungs
-sit above every account's own value, so `jobs::warn_shared_env_secrets` warns once per
-source when one would apply to several accounts, using the resolver's own acceptance check.
+a secret can come from is built with `SecretSpec::settings` (or `settings_without_flag`, for
+a command that doesn't take the flag), never by hand. The env rungs sit above every
+account's own value, so `jobs::warn_shared_env_secrets` warns once per source when one would
+apply to several accounts, using the resolver's own acceptance check.
 
 **`sync`, `backup` and `cleanup <source> [account]` select one account** (by name, else the
 first, else an implicit CLI/env account). `sync` and `backup` also take a per-source `--all`
@@ -361,15 +362,15 @@ the "blocked by network security" page, a Reddit redirect to `/login`, GitHub 40
 `--on-auth-failure` hook and exits non-zero; `SourceError::Other` (transient/parse) doesn't.
 HackerNews never re-auths. **`cleanup` fires it too**, for every re-auth-capable read:
 GitHub's `repo()` mid-pass (via `Halt`), GitHub's `fetch_stars()` for star dates, and
-Reddit's `/api/info`, whose expired cookie is by far the most common case. That is why the
-three `cleanup` entry points return `Result<(), SourceError>` rather than `anyhow::Result`:
-flattening the variant would lose the hook. [`src/hook.rs`](src/hook.rs)'s
-`handle_source_err` is the single place the hook is fired; `cleanup` resolves the command
-through `PINBOARD_SYNC_ON_AUTH_FAILURE` → account → `[defaults.<source>]` → `[hooks]` (it
-has no `--on-auth-failure` flag). **Reading that env var is load-bearing**:
-[`nix/module.nix`](nix/module.nix) exports `onAuthFailure` only into the unit environment,
-never the generated TOML, and runs the `cleanup --all` timer with it, so resolving from
-config alone would leave the hook dead where it matters most.
+Reddit's `/api/info`, whose expired cookie is by far the most common case, or the saved
+listing read in its place while it is blocked. That is why the three `cleanup` entry points
+return `Result<(), SourceError>` rather than `anyhow::Result`: flattening the variant would
+lose the hook. [`src/hook.rs`](src/hook.rs)'s `handle_source_err` is the single place the
+hook is fired; `cleanup` resolves the command through `PINBOARD_SYNC_ON_AUTH_FAILURE` →
+account → `[defaults.<source>]` → `[hooks]` (it has no `--on-auth-failure` flag). **Reading
+that env var is load-bearing**: [`nix/module.nix`](nix/module.nix) exports `onAuthFailure`
+only into the unit environment, never the generated TOML, and runs the `cleanup --all` timer
+with it, so resolving from config alone would leave the hook dead where it matters most.
 
 **Every client sends through its `http::RetryingClient`** ([`src/http.rs`](src/http.rs),
 whose item docs give the mechanics), with its `LinearBackoff` fixed where the client is
@@ -420,7 +421,15 @@ handling (no hook; a pass halts via `Halt::Blocked`) but keeps its own variant s
 message names a block, which no reset is known to lift; each `RedditRequest` names the issue
 its message links (#78 for the saved listing, #89 for `/api/info`). A 401/403 whose body is
 cut off mid-read is `Other`, since without the whole page a block and a refused cookie look
-alike.
+alike. **`cleanup reddit` outlives an `/api/info` block** (#89): `PostInfo::info` answers a
+blocked batch as `InfoAnswer::blocked`, keeping the batches before it, and
+`fall_back_to_saved` reads the saved listing once, through the same `walk_saved`, for the
+fullnames it returned no entry for. The same entries go through the same conversion, so the
+planner can't tell the two sources apart, and a bookmark neither covers gets the plan a
+deleted post gets. The run exits 0 with one WARN giving the counts. It still fails, with the
+saved listing's own error, when that read fails (so a refused cookie still fires the hook),
+and with the block when no username is set. `reached` is unchanged: the Reddit planner never
+fails per item, and a failed read fails the pass before any plan, the fallback's included.
 
 **The Reddit clients never follow a redirect.** Reddit answers a request without a session
 it accepts with a 302 to `/login`, and following it can land on a login page that answers

@@ -7,26 +7,21 @@ use super::Member;
 use crate::bookmark::Bookmark;
 use crate::tags::Tags;
 
-/// The index within `members` of the group's *incumbent*: the member whose stored URL is
-/// already the group's target. It is the record that stays at that URL, so it plays the
-/// same role a resident does -- its plan leads the merge, and its own reading state and
-/// date survive the merge's field rules. A resident is by definition unplanned, so a group
-/// has at most one of the two, and being inside the pass's slice is an implementation
-/// detail that must not decide whether a bookmark is protected.
+/// The index in `members` of the *incumbent*, the member already stored at the target. It
+/// is the record that stays, as a resident would be: its plan leads, and its reading state
+/// and date survive the merge. A group has at most one of the two, since a resident is by
+/// definition unplanned, and whether the occupant is inside the pass's slice must not
+/// decide whether it is protected.
 pub(super) fn incumbent_of(members: &[Member<'_>], target: &Url) -> Option<usize> {
     members
         .iter()
         .position(|member| member.stored.url == *target)
 }
 
-/// Field-merge the PLANNED bookmarks of a collision group, `lead` then `rest` (all sharing
-/// `lead`'s URL, in stable order), into one bookmark. Tags are an order-preserving union
-/// (first occurrence wins, case-sensitive, empty tags dropped as by `Tags::push_all`);
-/// the note is `lead`'s verbatim, extended with whichever blank-line-separated blocks of
-/// the rest it doesn't already hold; title is the first non-empty; timestamp the earliest
-/// present. Privacy never widens: the merge is `public` only if every merged member is
-/// public (a single private member keeps it private), and `read_later` if any member is, so
-/// a merge can never republish a private bookmark as public.
+/// Field-merge the plans of a collision group, `lead` then `rest`, into one bookmark: tags
+/// an ordered, case-sensitive union; the note `lead`'s verbatim plus the rest's blank-line
+/// blocks it lacks; the first non-empty title; the earliest timestamp. Privacy never
+/// widens: `public` only if every member is, `read_later` if any is.
 pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
     let group = || std::iter::once(lead).chain(rest.iter().copied());
     let url = lead.url.clone();
@@ -36,15 +31,11 @@ pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
         tags.push_all(&b.tags);
     }
 
-    // The first member's note is the base, carried byte for byte: it is the record that
-    // stays, and its spacing is the user's. Later members contribute only the
-    // blank-line-separated blocks the base doesn't already have. Blocks are compared
-    // trimmed so re-merging an already-merged note is a no-op even when the base ends in a
-    // newline, which otherwise re-splits as a block the plain comparison can't recognise --
-    // and any group whose old URL is never absorbed re-merges every run. A note long enough
-    // that `PinboardClient::fit_extended` trims it comes back as a fragment no block
-    // matches, so the cut blocks are re-appended here; the driver fits the merged record
-    // before diffing it, which almost always trims them off again.
+    // The lead's note is carried byte for byte: its spacing is the user's. Blocks compare
+    // trimmed, so re-merging settles even when the base ends in a newline; a group whose
+    // old URL is never absorbed re-merges every run. A cut note's fragment matches no
+    // block, so its cut blocks come back here, and the driver's fit almost always trims
+    // them off again.
     let mut note = lead.note.clone();
     for b in rest {
         for block in b.note.split("\n\n") {
@@ -54,9 +45,7 @@ pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
             if !note.is_empty() {
                 note.push_str("\n\n");
             }
-            // The raw block, not the trimmed candidate: its indentation is the user's
-            // writing (a 4-space Markdown code block, say), and Pinboard renders the note
-            // as markup. Only the *comparison* trims.
+            // Untrimmed: its indentation (a Markdown code block) is the user's writing.
             note.push_str(block);
         }
     }

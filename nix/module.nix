@@ -15,9 +15,7 @@ let
     "hackernews"
   ];
 
-  # Per-credential `*File` options: each maps a nullable-path option to the systemd
-  # credential name (loaded into the tmpfs credentials dir under a transient DynamicUser)
-  # and the `<VAR>_FILE` env var the binary reads the trimmed value from.
+  # Each `*File` option's systemd credential and the `<VAR>_FILE` variable naming it.
   credentialFiles = [
     {
       option = "pinboardTokenFile";
@@ -49,27 +47,19 @@ let
 
   escapeSpecifiers = lib.replaceStrings [ "%" ] [ "%%" ];
 
-  # Honor a per-account `enable` (default true) in each source's account array: drop
-  # the disabled accounts and strip the `enable` key (the binary's config rejects
-  # unknown fields), so the plain `sync --all` / `cleanup --all` run covers exactly the
-  # enabled accounts.
+  # Drop accounts with `enable = false` and strip the key, which the binary rejects.
   pruneAccounts =
     accounts: map (a: removeAttrs a [ "enable" ]) (lib.filter (a: a.enable or true) accounts);
 
   tomlFormat = pkgs.formats.toml { };
-  # Non-secret settings rendered to the store and passed via --config. Secrets are
-  # NOT placed here (it lands in the world-readable nix store): they come from the
-  # `environmentFile` (a sops-nix rendered template) or the per-credential `*File`
-  # options (systemd `LoadCredential`).
+  # Rendered to the world-readable store, so it must never hold a secret.
   configSettings =
     cfg.settings
     // lib.mapAttrs (_: pruneAccounts) (lib.filterAttrs (name: _: lib.elem name sources) cfg.settings);
   configFile = tomlFormat.generate "pinboard-sync.toml" cfg.renderedSettings;
 
-  # The credential paths the rendered config supplies itself (`[pinboard]` `token_file`,
-  # an enabled reddit `cookie_file` or github `token_file`), which count toward the
-  # credentials assertion. The binary opens them as the DynamicUser, so the assertion
-  # can't tell whether they are readable (see the `settings` description).
+  # Credential paths in the rendered config. They count toward the credentials
+  # assertion, which can't tell whether the DynamicUser can read them.
   settingsCredentialFiles =
     lib.optional (
       (configSettings.pinboard.token_file or null) != null
@@ -79,25 +69,20 @@ let
       ++ map (a: a.token_file or null) (configSettings.github or [ ])
     );
 
-  # `backup` needs the Pinboard token specifically (not just any source credential), so
-  # it's asserted separately from the general credentials check below.
+  # `backup` needs the Pinboard token itself, not just any credential.
   pinboardTokenConfigured =
     cfg.environmentFile != null
     || cfg.pinboardTokenFile != null
     || (configSettings.pinboard.token_file or null) != null;
 
-  # The service runs as a transient `DynamicUser`, which can only write to its own
-  # `StateDirectory`. `backup.directory` must live under this dir; the snapshot is then
-  # retrievable by root (the state dir sits under the 0700 `/var/lib/private`).
+  # Must match the backup unit's `StateDirectory`, its only persistent writable path.
   stateDir = "/var/lib/pinboard-sync";
 
-  # A hardened oneshot service + timer running `pinboard-sync <args>` on `schedule`. The
-  # unit environment holds only the config path, the hook and `<VAR>_FILE` paths under
-  # `%d` (the unit's credentials directory); credential values come from
-  # `environmentFile`, `LoadCredential` or a `settings` `*_file` path, never the nix
-  # store. systemd also expands specifiers in `EnvironmentFile=` and `LoadCredential=`,
-  # so every user-supplied value doubles its `%`. `extraServiceConfig` is merged last,
-  # over the hardening.
+  # A hardened oneshot service and timer running `pinboard-sync <args>`. The unit
+  # environment holds the config path, the hook and `<VAR>_FILE` paths, never a
+  # credential value. systemd also expands specifiers in `EnvironmentFile=` and
+  # `LoadCredential=`, so every user value doubles its `%`. `extraServiceConfig` is
+  # merged last, over the hardening.
   mkService =
     {
       description,
@@ -172,28 +157,19 @@ in
         }
       '';
       description = ''
-        Non-secret config rendered to a TOML file and passed via `--config`. Mirrors
-        the config schema (`[pinboard]`, `[hooks]`, and per-source account arrays),
-        minus secrets — never put tokens/cookies here, as the file lands in the
-        world-readable Nix store. Provide those via `environmentFile`, the
-        per-credential `*File` options below, or as sops-nix `*_file` *paths* inside
-        account tables (paths are not secret).
+        Config file contents (`[pinboard]`, `[hooks]` and the per-source account
+        arrays), rendered to TOML and passed via `--config`. The file lands in the
+        world-readable Nix store, so never put a token or cookie here: use
+        `environmentFile`, a `*File` option, or a `*_file` path in the config.
 
-        Caveat for the in-table `*_file` form (`[pinboard].token_file`, a reddit
-        account `cookie_file`, a github account `token_file`): the binary opens that
-        path itself, running as the service's transient `DynamicUser`, so the secret
-        it points at must be *readable by that user* (e.g. a sops-nix secret with
-        `mode = "0444"`, or an owning group the service belongs to). A default
-        `0400`/root-owned secret is unreadable this way: the config still builds and
-        the assertions still pass, but every timer fire fails to read it and surfaces
-        as a missing-credential error. This differs from `environmentFile` and the
-        dedicated `*File` options below, which systemd reads *as root* (via
-        `EnvironmentFile`/`LoadCredential`) before dropping privileges — for a
-        root-owned `0400` sops secret, prefer those.
+        The binary opens a `*_file` path in the config (`[pinboard].token_file`, a
+        reddit `cookie_file`, a github `token_file`) as the service's `DynamicUser`, so
+        that user must be able to read it (e.g. a sops-nix secret with `mode = "0444"`,
+        or a group the service is in). A root-owned `0400` secret passes the assertions
+        but fails every run with a missing-credential error. systemd reads
+        `environmentFile` and the `*File` options as root; use those for such a secret.
 
-        Each account may carry `enable = false` (default `true`) to keep it in the
-        config but leave it out of the sync/cleanup runs; the flag is stripped before
-        the config is rendered.
+        An account with `enable = false` stays here but is left out of every run.
       '';
     };
 
@@ -203,10 +179,7 @@ in
       defaultText = lib.literalMD "`settings` with disabled accounts dropped and `enable` stripped";
       internal = true;
       readOnly = true;
-      description = ''
-        `settings` exactly as rendered to the `--config` file: disabled accounts dropped
-        and each account's `enable` flag stripped.
-      '';
+      description = "`settings` as rendered to the `--config` file.";
     };
 
     sync = {
@@ -227,10 +200,7 @@ in
         type = lib.types.str;
         default = "weekly";
         example = "*-*-* 03:00:00";
-        description = ''
-          systemd OnCalendar schedule for the cleanup timer (default: weekly). Only
-          used when `cleanup.enable = true`.
-        '';
+        description = "systemd OnCalendar schedule for the cleanup timer.";
       };
     };
 
@@ -240,27 +210,19 @@ in
         type = lib.types.str;
         default = "daily";
         example = "*-*-* 04:00:00";
-        description = ''
-          systemd OnCalendar schedule for the backup timer (default: daily). Only used
-          when `backup.enable = true`.
-        '';
+        description = "systemd OnCalendar schedule for the backup timer.";
       };
       directory = lib.mkOption {
         type = lib.types.str;
         default = "${stateDir}/backup";
         description = ''
-          Directory the snapshot is written to. Holds `raw/` (each service's API
-          responses verbatim, including everything the parsed read path drops),
-          `normalized/` (the same items as domain bookmarks), and `manifest.json`.
+          Where the snapshot is written: `raw/` (API responses, every field kept),
+          `normalized/` and `manifest.json`. Each run overwrites the last snapshot in
+          place and prunes nothing. Back this path up elsewhere to keep history.
 
-          Each run **replaces** the previous snapshot in place — there are no timestamped
-          run directories and nothing is pruned, so point a real backup tool at this path
-          if you want history.
-
-          Must live under `${stateDir}` — the service runs as a transient `DynamicUser`
-          and can only write to its `StateDirectory`. The snapshot is readable by root
-          (retrieve it with a root-run job); the state dir sits under the 0700
-          `/var/lib/private`.
+          Must be under `${stateDir}`, the only path the service's `DynamicUser` can
+          write. Only root can read the snapshot, since the state directory sits under
+          the 0700 `/var/lib/private`.
         '';
       };
     };
@@ -272,24 +234,22 @@ in
         "''${lib.getExe pkgs.curl} -fsS -d \"pinboard-sync needs re-authentication: $PINBOARD_SYNC_AUTH_ERROR\" https://ntfy.sh/YOUR-LONG-RANDOM-TOPIC"
       '';
       description = ''
-        Shell command run when a source needs re-authentication (e.g. an expired
-        Reddit cookie). Runs via `/bin/sh -c` with `PINBOARD_SYNC_AUTH_ERROR` and
-        `PINBOARD_SYNC_EVENT` in the environment. Exported as
-        `PINBOARD_SYNC_ON_AUTH_FAILURE`. The example posts to ntfy.sh, whose topics
-        are public: anyone who knows the name can read them, so pick a long random one.
+        Shell command run when a source needs re-authentication (e.g. an expired Reddit
+        cookie), via `/bin/sh -c` with `PINBOARD_SYNC_AUTH_ERROR` and
+        `PINBOARD_SYNC_EVENT` set. Exported as `PINBOARD_SYNC_ON_AUTH_FAILURE`, which
+        overrides any `on_auth_failure` in `settings`. ntfy.sh topics are public: pick a
+        long random one.
 
-        Any hook, whether set here or through `settings` (`[hooks]`,
-        `[defaults.<source>]` or an account's `on_auth_failure`), inherits the unit's
-        sandbox. Its `PATH` holds only the NixOS service defaults (coreutils,
-        findutils, grep, sed, systemd), so call any other program by its store path.
-        Only IPv4/IPv6 sockets are allowed, so a tool that talks over a local socket
-        (`systemctl`, `logger`, D-Bus) fails.
+        Any hook, here or in `settings`, runs in the unit's sandbox. `PATH` holds only
+        the NixOS service defaults (coreutils, findutils, grep, sed, systemd), so call
+        other programs by store path. Only IPv4/IPv6 sockets are allowed, so anything
+        using a local socket (`systemctl`, `logger`, D-Bus) fails.
 
-        On a host without `/bin/sh` (the bashless profile), the hook falls back to
-        `sh` from `PATH`, which has none by default. Add a non-bash package that
-        provides `bin/sh` (e.g. `pkgs.busybox`; `pkgs.dash` ships only `bin/dash`) to
-        the `path` of each enabled unit: `systemd.services.pinboard-sync`,
-        `pinboard-sync-cleanup` and `pinboard-sync-backup`.
+        On a host without `/bin/sh` (the bashless profile), the hook runs `sh` from
+        `PATH`, which has none by default. Add a package providing `bin/sh` (e.g.
+        `pkgs.busybox`; `pkgs.dash` has only `bin/dash`) to the `path` of each enabled
+        unit: `systemd.services.pinboard-sync`, `pinboard-sync-cleanup` and
+        `pinboard-sync-backup`.
       '';
     };
 
@@ -298,15 +258,11 @@ in
       default = null;
       example = "/run/secrets/rendered/pinboard-sync-env";
       description = ''
-        Systemd `EnvironmentFile` providing every credential the configured
-        source(s) need — `PINBOARD_TOKEN`, `REDDIT_USERNAME`/`REDDIT_COOKIE`,
-        `GITHUB_TOKEN`, `HN_USERNAME` (or their `_FILE` variants). Read by systemd as
-        root, so it works with the hardened `DynamicUser` and a sops-nix rendered
-        template, keeping everything out of the nix store.
-
-        For per-secret sops-nix files, prefer the individual `*File` options below —
-        each loads one secret via systemd `LoadCredential`, so you don't have to
-        render a combined env template.
+        systemd `EnvironmentFile` with the credentials the sources need:
+        `PINBOARD_TOKEN`, `REDDIT_USERNAME`, `REDDIT_COOKIE`, `GITHUB_TOKEN` and
+        `HN_USERNAME`, or their `_FILE` forms. systemd reads it as root, so a
+        root-owned sops-nix template works. With one sops-nix file per secret, the
+        `*File` options need no template.
       '';
     };
 
@@ -315,10 +271,10 @@ in
       default = null;
       example = "/run/secrets/pinboard-token";
       description = ''
-        Path to a file containing the Pinboard API token (`username:TOKEN`). Loaded
-        into the unit's credentials directory via systemd `LoadCredential` and read by
-        the binary through `PINBOARD_TOKEN_FILE`, so the value never enters the unit
-        environment or the nix store. Works with the hardened `DynamicUser`.
+        File holding the Pinboard API token (`username:TOKEN`). systemd loads it as root
+        with `LoadCredential`, keeping the value out of the unit environment and the Nix
+        store. The binary reads it through `PINBOARD_TOKEN_FILE`, which beats a
+        `*_file` in `settings`.
       '';
     };
 
@@ -326,10 +282,7 @@ in
       type = lib.types.nullOr lib.types.path;
       default = null;
       example = "/run/secrets/reddit-username";
-      description = ''
-        Path to a file containing the Reddit username. Loaded via systemd
-        `LoadCredential` and read through `REDDIT_USERNAME_FILE`.
-      '';
+      description = "File holding the Reddit username, loaded like `pinboardTokenFile`.";
     };
 
     redditCookieFile = lib.mkOption {
@@ -337,9 +290,8 @@ in
       default = null;
       example = "/run/secrets/reddit-cookie";
       description = ''
-        Path to a file containing the Reddit session cookie, either its bare value
-        or `reddit_session=<value>` (matching `REDDIT_COOKIE` in `.env.example`).
-        Loaded via systemd `LoadCredential` and read through `REDDIT_COOKIE_FILE`.
+        File holding the Reddit session cookie, bare or as `reddit_session=<value>`,
+        loaded like `pinboardTokenFile`.
       '';
     };
 
@@ -347,49 +299,39 @@ in
       type = lib.types.nullOr lib.types.path;
       default = null;
       example = "/run/secrets/github-token";
-      description = ''
-        Path to a file containing the GitHub personal access token. Loaded via systemd
-        `LoadCredential` and read through `GITHUB_TOKEN_FILE`.
-      '';
+      description = "File holding the GitHub personal access token, loaded like `pinboardTokenFile`.";
     };
 
     hnUsernameFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
       example = "/run/secrets/hn-username";
-      description = ''
-        Path to a file containing the HackerNews username. Loaded via systemd
-        `LoadCredential` and read through `HN_USERNAME_FILE`.
-      '';
+      description = "File holding the HackerNews username, loaded like `pinboardTokenFile`.";
     };
   };
 
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        # sync/cleanup always write to the Pinboard destination, so a resolvable Pinboard
-        # token is required regardless of which source credentials are set; otherwise the
-        # service enables and then fails on every timer fire with a missing-token error.
+        # sync and cleanup always write to Pinboard, so without a token every run fails.
         assertion =
           pinboardTokenConfigured
           && (cfg.environmentFile != null || setCredentialFiles != [ ] || settingsCredentialFiles != [ ]);
-        message = "services.pinboard-sync: a Pinboard token is required — set `pinboardTokenFile`, `environmentFile` (with PINBOARD_TOKEN), or `[pinboard].token_file`. Provide source credentials the same way (or as `*_file` paths in the config account tables).";
+        message = "services.pinboard-sync: a Pinboard token is required: set `pinboardTokenFile`, `environmentFile` (with PINBOARD_TOKEN), or `[pinboard].token_file`. Provide source credentials the same way, or as `*_file` paths in the config's account tables.";
       }
       {
         assertion = !cfg.backup.enable || pinboardTokenConfigured;
-        message = "services.pinboard-sync: backup.enable needs a Pinboard token — set `pinboardTokenFile`, `environmentFile` (with PINBOARD_TOKEN), or `[pinboard].token_file`. The timer runs `backup --all`, which covers the Pinboard account as well as the sources; without a token it would run but silently omit Pinboard, so this is required rather than warned about. (Backing up a *source* on its own, e.g. `backup reddit`, needs no Pinboard token.)";
+        message = "services.pinboard-sync: backup.enable needs a Pinboard token: set `pinboardTokenFile`, `environmentFile` (with PINBOARD_TOKEN), or `[pinboard].token_file`. Without one, the timer's `backup --all` leaves the Pinboard account out of every snapshot and fails every run.";
       }
       {
         assertion = !cfg.backup.enable || lib.hasPrefix "${stateDir}/" cfg.backup.directory;
-        message = "services.pinboard-sync: backup.directory must be under ${stateDir} — the service runs as a transient DynamicUser and can only write to its StateDirectory.";
+        message = "services.pinboard-sync: backup.directory must be under ${stateDir}, the only path the service's DynamicUser can write.";
       }
     ];
 
     systemd = {
       services = {
-        # `--config` (PINBOARD_SYNC_CONFIG) is in the environment, so the verb is all that's
-        # needed; `--all` runs every account left in the generated config (disabled
-        # accounts were pruned above).
+        # PINBOARD_SYNC_CONFIG supplies `--config`; `--all` runs every enabled account.
         pinboard-sync = lib.mkIf cfg.sync.enable (mkService {
           description = "Sync saved/favorited items to Pinboard";
           schedule = cfg.sync.schedule;
@@ -408,13 +350,10 @@ in
           ];
         });
 
-        # `StateDirectory` gives the hardened service its one writable location
-        # (`/var/lib/pinboard-sync`), which `backup.directory` is asserted to live under.
         pinboard-sync-backup = lib.mkIf cfg.backup.enable (mkService {
           description = "Back up every source and the Pinboard account to disk";
           schedule = cfg.backup.schedule;
-          # `--out` tops the directory resolution tier, so this option wins over any
-          # `settings.backup.directory` in the rendered config.
+          # `--out` wins over any `settings.backup.directory`.
           args = [
             "backup"
             "--all"
@@ -425,8 +364,7 @@ in
         });
       };
 
-      # Fire a missed run on next boot (the machine may be asleep/off at the scheduled
-      # instant, especially for the weekly cleanup).
+      # Catch up at boot on a run missed while the host was off.
       timers = {
         pinboard-sync = lib.mkIf cfg.sync.enable {
           timerConfig.Persistent = true;

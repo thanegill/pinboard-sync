@@ -6,10 +6,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
 async fn cleanup_merges_a_story_into_a_separately_saved_article() {
-    // The story's article is *also* saved on its own, with the user's own notes and
-    // tags. Pinboard holds one record per URL, so the end state has to be a single
-    // bookmark: merge rather than either overwriting the user's record or leaving the
-    // redundant item bookmark behind forever.
+    // The story's article is also saved on its own. Pinboard holds one record per URL, so
+    // merge rather than overwrite the user's record or leave the item bookmark behind.
     let algolia = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/search"))
@@ -64,8 +62,7 @@ async fn cleanup_merges_a_story_into_a_separately_saved_article() {
     assert_eq!(updated.len(), 1);
     let written = &updated[0];
     assert_eq!(written.url, "https://example.com/x");
-    // The user's own title survives -- the resident is the first participant in the
-    // merge, and the first non-empty title wins.
+    // The resident leads the merge, so the user's own title wins.
     assert_eq!(written.description, "My saved article");
     assert!(
         written.extended.contains("hand written notes"),
@@ -77,7 +74,6 @@ async fn cleanup_merges_a_story_into_a_separately_saved_article() {
         written.tags.contains(&"hackernews".to_string()),
         "{written:?}"
     );
-    // ...and the now-redundant HN item bookmark is absorbed, so the pass converges.
     assert_eq!(
         *pinboard.deleted.borrow(),
         strings(&["https://news.ycombinator.com/item?id=42"])
@@ -125,13 +121,11 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].url, "https://example.com/x");
     assert_eq!(updated[0].description, "Cool");
-    // Existing tags are preserved and augmented.
     assert!(
         updated[0].tags.contains(&"mine".to_string()),
         "{:?}",
         updated[0].tags
     );
-    // The old HN item URL is deleted after the rewrite.
     assert_eq!(
         pinboard.deleted.borrow().as_slice(),
         &strings(&["https://news.ycombinator.com/item?id=42"])
@@ -140,7 +134,6 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
 
 #[tokio::test]
 async fn cleanup_preserves_existing_note_on_text_post() {
-    // A text post (no url): the bookmark URL already is the HN permalink.
     let algolia = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/search"))
@@ -180,8 +173,7 @@ async fn cleanup_preserves_existing_note_on_text_post() {
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
-    // URL unchanged (in-place); the author/special-type tags are added, but the note
-    // the user wrote is kept verbatim rather than replaced by the reconstructed one.
+    // The tags are added, but the user's note is kept rather than rebuilt.
     assert_eq!(updated[0].url, "https://news.ycombinator.com/item?id=7");
     assert_eq!(updated[0].extended, stored_note);
     assert!(
@@ -198,8 +190,7 @@ async fn cleanup_preserves_existing_note_on_text_post() {
 
 #[tokio::test]
 async fn link_discussions_adds_hn_link_to_tagged_article() {
-    // The URL search returns a matching HN story id; the item batch (unused
-    // here) would hit the same path, so the matcher keys on restrictSearch...
+    // The item batch hits the same path, so this matches on the URL search's parameter.
     let algolia = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/search"))
@@ -239,8 +230,6 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
 
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
-    // URL unchanged (in-place), notes gain the HN link, marker tag swapped for
-    // the base HN tag, existing tags kept.
     assert_eq!(updated[0].url, "https://example.com/x");
     assert!(
         updated[0].tags.contains(&"hackernews".to_string()),
@@ -311,10 +300,8 @@ async fn link_discussions_searches_only_tagged_articles() {
     );
 }
 
-/// Two `find-hn` articles and, unless `with_item` is false, one HN story bookmark whose
-/// rewrite to its article Pinboard refuses. Algolia answers the item batch but fails
-/// every URL search, so the link pass fails its lookups in the majority. Returns what
-/// `run` reports, with `--link-discussions` on.
+/// Two `find-hn` articles and, if `with_item`, an HN story whose rewrite Pinboard refuses.
+/// Algolia fails every URL search, so the link pass fails most lookups. Returns the error.
 async fn run_with_failing_lookups(with_item: bool) -> String {
     let algolia = MockServer::start().await;
     Mock::given(method("GET"))
@@ -361,9 +348,8 @@ async fn run_with_failing_lookups(with_item: bool) -> String {
     format!("{:#}", result.expect_err("the run fails"))
 }
 
-/// The item pass, which plans from a prefetched batch and so cannot fail a lookup, must
-/// not vouch for the discussion-link pass: its lookups failing in the majority fail the
-/// run on their own.
+/// The item pass plans from a prefetched batch and can't fail a lookup, so it must not
+/// vouch for the link pass.
 #[tokio::test]
 async fn cleanup_fails_when_only_the_link_pass_fails() {
     let error = run_with_failing_lookups(false).await;
@@ -465,8 +451,7 @@ async fn link_discussions_looks_past_a_non_numeric_object_id() {
     assert!(!planned.note.contains("script"), "{}", planned.note);
 }
 
-/// An article with no HN discussion is still an answer from Algolia, so the link pass
-/// reports it as `Unchanged` (counted in `PassOutcome::reached`), not `Skipped`.
+/// No discussion is still an answer: `Unchanged`, which counts as reached, not `Skipped`.
 #[tokio::test]
 async fn link_pass_counts_an_article_without_a_discussion_as_an_answer() {
     let algolia = MockServer::start().await;

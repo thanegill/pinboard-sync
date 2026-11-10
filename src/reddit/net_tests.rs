@@ -196,6 +196,8 @@ async fn fetch_errors_when_a_non_empty_listing_yields_no_drafts() {
     let client = reddit_client(&server);
     let result = client.fetch().await;
     assert!(matches!(result, Err(SourceError::Other(_))), "{result:?}");
+    let result = client.fetch_incremental(&[]).await;
+    assert!(matches!(result, Err(SourceError::Other(_))), "{result:?}");
 }
 
 #[tokio::test]

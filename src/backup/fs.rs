@@ -42,6 +42,10 @@ pub(super) fn write_atomically(path: &Path, body: &str) -> Result<()> {
             Ok(())
         })
         .inspect_err(|_| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a temp left behind is harmless; the write's error is the one to report"
+            )]
             let _ = std::fs::remove_file(&tmp);
         })
 }
@@ -93,7 +97,9 @@ fn create_new_temp(
             }
         }
     }
-    Err(last_err.expect("loop ran at least once"))
+    #[expect(clippy::expect_used, reason = "`TEMP_FILE_ATTEMPTS` is not zero")]
+    let last_err = last_err.expect("loop ran at least once");
+    Err(last_err)
         .with_context(|| format!("creating a unique backup temp file in {}", dir.display()))
 }
 
@@ -110,6 +116,10 @@ fn write_backup_tmp(tmp: &Path, file: &mut std::fs::File, body: &str) -> Result<
 /// Best-effort fsync of the directory so the rename itself survives a crash.
 fn sync_dir(dir: &Path) {
     if let Ok(handle) = std::fs::File::open(dir) {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "best effort: the rename has already landed"
+        )]
         let _ = handle.sync_all();
     }
 }

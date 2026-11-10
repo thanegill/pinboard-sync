@@ -208,6 +208,10 @@ impl FromStr for SyncLimit {
         match text.trim() {
             "auto" => Ok(Self::Auto),
             "all" => Ok(Self::All),
+            #[expect(
+                clippy::map_err_ignore,
+                reason = "the accepted values say more than why a number didn't parse"
+            )]
             count => count
                 .parse::<NonZeroUsize>()
                 .map(Self::Max)

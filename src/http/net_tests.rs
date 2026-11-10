@@ -199,6 +199,10 @@ async fn h2c_server(replies: Vec<H2Reply>) -> (std::net::SocketAddr, Arc<AtomicU
                         H2Reply::Reset(reason) => respond.send_reset(reason),
                         H2Reply::Abort => {
                             conn.abrupt_shutdown(h2::Reason::INTERNAL_ERROR);
+                            #[expect(
+                                clippy::let_underscore_must_use,
+                                reason = "the connection closing, however it ends, is the wait"
+                            )]
                             let _ = std::future::poll_fn(|cx| conn.poll_closed(cx)).await;
                             return;
                         }
@@ -208,6 +212,10 @@ async fn h2c_server(replies: Vec<H2Reply>) -> (std::net::SocketAddr, Arc<AtomicU
                         H2Reply::OkThenHang => {
                             drop(respond.send_response(ok(), true));
                             let flush = std::future::poll_fn(|cx| conn.poll_closed(cx));
+                            #[expect(
+                                clippy::let_underscore_must_use,
+                                reason = "a flush that closes or times out both end the wait"
+                            )]
                             let _ = tokio::time::timeout(Duration::from_millis(50), flush).await;
                             std::future::pending::<()>().await;
                         }
@@ -513,6 +521,10 @@ async fn a_body_that_stalls_does_not_count_against_its_host() {
         socket
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
             .unwrap();
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "a release or a dropped sender both end the hold"
+        )]
         let _ = held.recv();
     });
     let http = short_read_timeout_client();
@@ -609,6 +621,10 @@ async fn a_body_that_stalls_times_out_without_its_url() {
         socket
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
             .unwrap();
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "a release or a dropped sender both end the hold"
+        )]
         let _ = held.recv();
     });
     let http = short_read_timeout_client();
@@ -685,6 +701,10 @@ async fn client_builder_times_a_silent_server_out_at_the_read_timeout() {
             socket.read_exact(&mut byte).unwrap();
             head.push(byte[0]);
         }
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "a release or a dropped sender both end the hold"
+        )]
         let _ = held.recv();
     });
     let http = client_builder().no_proxy().build().unwrap();

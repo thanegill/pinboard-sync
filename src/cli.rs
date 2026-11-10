@@ -99,6 +99,10 @@ fn refuse_flags_given_twice(
     let Some(message) = flag_given_twice(command, matches, &names) else {
         return Ok(());
     };
+    #[expect(
+        clippy::expect_used,
+        reason = "`names` is the subcommand path clap matched"
+    )]
     let deepest = names.iter().fold(command, |command, name| {
         command
             .find_subcommand_mut(name)
@@ -138,9 +142,15 @@ fn flag_given_twice(
             first_level.insert(arg.get_id(), depth);
         }
         if let Some(name) = names.get(depth) {
-            level_command = level_command
+            #[expect(
+                clippy::expect_used,
+                clippy::unwrap_in_result,
+                reason = "`names` is the subcommand path clap matched"
+            )]
+            let next = level_command
                 .find_subcommand(name)
                 .expect("clap matched this subcommand");
+            level_command = next;
         }
     }
     None

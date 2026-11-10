@@ -8,7 +8,7 @@ use log::warn;
 use serde::Deserialize;
 use url::Url;
 
-use super::{HackerNewsItem, HackerNewsItemId, HackerNewsItemKind};
+use super::{HackerNewsItem, HackerNewsItemId, HackerNewsItemKind, NotHnItemId};
 use crate::backup::{RawKind, RawSink, PRIMARY_STREAM};
 use crate::http::RetryingClient;
 use crate::keys::url_key;
@@ -175,7 +175,7 @@ impl AlgoliaClient {
             }
             let id = &h.object_id;
             id.parse()
-                .map_err(|_| {
+                .map_err(|NotHnItemId| {
                     warn!(
                         "hn algolia url search for {url}: ignoring a hit with the non-numeric \
                          objectID {id:?}"

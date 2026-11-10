@@ -347,6 +347,10 @@ impl From<u64> for HackerNewsItemId {
 /// and the `HN Link:` note.
 impl std::str::FromStr for HackerNewsItemId {
     type Err = NotHnItemId;
+    #[expect(
+        clippy::map_err_ignore,
+        reason = "past the digit check, an empty or overflowing id is not an item id either"
+    )]
     fn from_str(id: &str) -> Result<Self, Self::Err> {
         if !id.bytes().all(|b| b.is_ascii_digit()) {
             return Err(NotHnItemId);
@@ -381,6 +385,10 @@ impl TryFrom<&Url> for HackerNewsItemId {
 
 /// The item's discussion permalink, which always parses: the id sits in the query.
 impl From<&HackerNewsItemId> for Url {
+    #[expect(
+        clippy::expect_used,
+        reason = "an id is only digits, which always parse"
+    )]
     fn from(id: &HackerNewsItemId) -> Self {
         Url::parse(&format!("{HN_BASE}/item?id={}", id.0))
             .expect("HN item permalink is a valid URL")

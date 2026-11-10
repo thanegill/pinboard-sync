@@ -290,6 +290,10 @@ pub async fn run_pass<S: BookmarkStore + AccountState, C: CleanupPass>(
     propagate_refusals(&group_order, &groups, &mut untouchable);
 
     for key in &group_order {
+        #[expect(
+            clippy::expect_used,
+            reason = "`group_order` holds each key of `groups` once"
+        )]
         let group = groups.remove(*key).expect("key came from group_order");
         // One abandoned write per held-back plan, unless the group is refused whole.
         let held_here = held_back.get(*key).copied().unwrap_or(0);
@@ -437,6 +441,10 @@ fn group_by_target<'p>(
 
 /// The members of the group at `key`, which must be a key of `groups`, as every
 /// [`write_order`] key is.
+#[expect(
+    clippy::expect_used,
+    reason = "`group_order` holds only keys of `groups`"
+)]
 fn members_at<'g, 'p>(
     groups: &'g mut HashMap<&'p Url, Vec<Member<'p>>>,
     key: &Url,
@@ -1371,9 +1379,13 @@ fn merge_members<'p, S: BookmarkStore>(
     } else {
         None
     };
+    #[expect(
+        clippy::expect_used,
+        reason = "every caller passes a resident or at least one member"
+    )]
     let lead = survivor
         .or(base.map(|member| member.planned))
-        .expect("run_pass skips an empty group");
+        .expect("a resident or at least one member");
     let lead_note = lead.note.clone();
     let rest: Vec<&Bookmark> = movers.map(|member| member.planned).collect();
     let mut merged = merge_bookmarks(lead, &rest);

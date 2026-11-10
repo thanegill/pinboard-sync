@@ -43,6 +43,10 @@ use config::Config;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "a missing, unreadable or malformed `.env` is ignored"
+    )]
     let _ = dotenvy::dotenv();
     let cli = Cli::parse_args();
     init_logging(cli.verbose);
@@ -292,6 +296,10 @@ mod tests {
     fn check_config_text(text: &str) -> Result<String> {
         let dir = crate::test_support::scratch_dir("config-check");
         let path = dir.path().join("pinboard-sync.toml");
+        #[expect(
+            clippy::unwrap_in_result,
+            reason = "a failed scratch write must not pass for a config error"
+        )]
         std::fs::write(&path, text).unwrap();
         check_config(&path)
     }

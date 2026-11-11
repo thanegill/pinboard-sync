@@ -366,9 +366,14 @@ impl PinboardClient {
             .map(|(i, _)| i)
             .chain(std::iter::once(extended.len()))
             .collect();
+        #[expect(clippy::string_slice, reason = "`cut` is one of `boundaries`")]
         let fitting = boundaries.partition_point(|&cut| {
             url_len(&format!("{}{}", &extended[..cut], TRUNCATION_MARKER)) <= room
         });
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "`partition_point` is at most the length"
+        )]
         let best = fitting.checked_sub(1).map_or(0, |last| boundaries[last]);
 
         // A note barely over budget isn't replaced by a longer marked one, unless it is
@@ -378,6 +383,7 @@ impl PinboardClient {
         {
             return extended.to_owned();
         }
+        #[expect(clippy::string_slice, reason = "`best` is 0 or one of `boundaries`")]
         let marked = format!("{}{}", &extended[..best], TRUNCATION_MARKER);
         if url_len(&marked) <= PINBOARD_URL_LIMIT {
             marked
@@ -565,7 +571,12 @@ fn redact_auth_token_values(text: &str) -> String {
         if value_len > 0 {
             redacted.push_str(REDACTED);
         }
-        rest = &value_onward[value_len..];
+        #[expect(
+            clippy::string_slice,
+            reason = "`value_len` is where `find` matched, or the end"
+        )]
+        let after_value = &value_onward[value_len..];
+        rest = after_value;
     }
     redacted.push_str(rest);
     redacted

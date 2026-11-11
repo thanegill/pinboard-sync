@@ -1,3 +1,8 @@
+#![expect(
+    clippy::string_slice,
+    reason = "a test's slice off a char boundary fails the test, as indexing may in tests"
+)]
+
 use super::*;
 use crate::github::gists::GistPostDate;
 use crate::pinboard::TRUNCATION_MARKER;

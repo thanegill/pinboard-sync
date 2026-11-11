@@ -46,6 +46,10 @@ macro_rules! outln {
 pub(crate) use outln;
 
 #[doc(hidden)]
+#[expect(
+    clippy::panic,
+    reason = "`outln!` fails as `println!` does, minus a closed pipe"
+)]
 pub fn line(line: fmt::Arguments<'_>) {
     if let Err(e) = write(format!("{line}\n")) {
         panic!("failed printing to stdout: {e}");

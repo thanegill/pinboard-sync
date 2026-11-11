@@ -1,3 +1,8 @@
+#![expect(
+    clippy::string_slice,
+    reason = "a test's slice off a char boundary fails the test, as indexing may in tests"
+)]
+
 use super::*;
 use crate::test_support::{
     cleanup_writes_nothing, strings, synced_account, titles, ROUND_TRIP_DATINGS,

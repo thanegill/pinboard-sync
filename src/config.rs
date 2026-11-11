@@ -431,6 +431,7 @@ fn without_unexpected_value(message: &str) -> String {
         let (unexpected, expected) = rest
             .rfind(", expected ")
             .map_or((rest, ""), |at| rest.split_at(at));
+        #[expect(clippy::string_slice, reason = "`at` is where `find` matched")]
         let kind = [" `", " \""]
             .iter()
             .filter_map(|quote| unexpected.find(quote))
@@ -442,6 +443,10 @@ fn without_unexpected_value(message: &str) -> String {
 }
 
 /// The 1-based line and character column of byte `offset` in `text`.
+#[expect(
+    clippy::string_slice,
+    reason = "both cuts are char boundaries: a floored offset, and just past a `\\n`"
+)]
 fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
     let before = &text[..text.floor_char_boundary(offset)];
     let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);

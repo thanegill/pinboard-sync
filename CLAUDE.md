@@ -89,10 +89,6 @@ root may be another source's bookmark, like an HN story, or one a rename merged 
 array and `config::Account` impl to `config.rs`, and implement `SourceAccount`
 ([`src/jobs.rs`](src/jobs.rs)), the one trait `sync`, `backup` and `doctor` use.
 
-**GitHub's `/user/starred` read pins `sort=created&direction=desc`** (`github::STARS`): the
-incremental read stops at the first caught-up page, which is only right
-newest-starred-first, so the order must not rest on the API's default.
-
 ## Secrets, errors and the hook
 
 **A secret is read only through a `SecretSpec`**, not `secrets::env_var` or clap's `env`:

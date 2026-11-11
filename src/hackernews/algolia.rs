@@ -98,7 +98,7 @@ impl AlgoliaClient {
 
     /// A client on another API base, for tests.
     #[cfg(test)]
-    pub(crate) fn with_base_url(base: String) -> Self {
+    pub fn with_base_url(base: String) -> Self {
         Self::build(base).unwrap()
     }
 

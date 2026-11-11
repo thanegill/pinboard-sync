@@ -332,7 +332,7 @@ impl std::fmt::Display for HackerNewsItemId {
 
 impl HackerNewsItemId {
     /// `hn:<id>`, the key a favorited item dedups on however its bookmark is stored.
-    pub(crate) fn dedup_key(&self) -> DedupKey {
+    pub fn dedup_key(&self) -> DedupKey {
         format!("hn:{self}").into()
     }
 }
@@ -419,7 +419,7 @@ fn special_type(title: &str) -> Option<String> {
 
 #[cfg(test)]
 impl HackerNewsClient {
-    pub(crate) fn with_base_urls(
+    pub fn with_base_urls(
         username: String,
         config: HackerNewsConfig,
         base: String,

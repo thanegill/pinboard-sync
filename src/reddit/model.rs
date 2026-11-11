@@ -125,7 +125,7 @@ impl RedditEntryFields {
     /// A post's notes, for sync and cleanup alike: its `selftext` in a literal
     /// `<blockquote>`; nothing for an empty self-post, whose `url` is the bookmark's own;
     /// else a link post's `url`, bare.
-    pub(crate) fn post_note(&self) -> String {
+    pub fn post_note(&self) -> String {
         match self.selftext.as_deref().unwrap_or_default() {
             "" if self.is_self => String::new(),
             "" => self.url.clone().unwrap_or_default(),
@@ -321,7 +321,7 @@ impl RedditSavedItem {
 
     /// The author, flair and media-type tags, each with its family's prefix: `cleanup`
     /// backfills a family only when the stored bookmark has none of it.
-    pub(crate) fn detail_tags<'c>(&self, cfg: &'c RedditConfig) -> Vec<DetailTag<'c>> {
+    pub fn detail_tags<'c>(&self, cfg: &'c RedditConfig) -> Vec<DetailTag<'c>> {
         let mut families: Vec<DetailTag<'c>> = Vec::new();
         let mut push = |family: &'c str, value: &str| {
             families.extend(prefixed(family, value).map(|tag| DetailTag { family, tag }));

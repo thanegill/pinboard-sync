@@ -587,7 +587,7 @@ impl RedditSession {
 #[cfg(test)]
 impl RedditClient {
     /// Test constructor reading `username`'s saved listing from a mock server.
-    pub(crate) fn with_base_url(cookie: Option<String>, username: &str, base: String) -> Self {
+    pub fn with_base_url(cookie: Option<String>, username: &str, base: String) -> Self {
         Self {
             session: RedditSession::with_base_url(cookie, base),
             username: username.into(),
@@ -601,11 +601,7 @@ impl RedditClient {
 impl RedditInfoClient {
     /// Test constructor looking posts up, and reading `username`'s saved listing, on a mock
     /// server.
-    pub(crate) fn with_base_url(
-        cookie: Option<String>,
-        username: Option<&str>,
-        base: String,
-    ) -> Self {
+    pub fn with_base_url(cookie: Option<String>, username: Option<&str>, base: String) -> Self {
         Self {
             session: RedditSession::with_base_url(cookie, base),
             username: username.map(String::from),
@@ -613,7 +609,7 @@ impl RedditInfoClient {
     }
 
     /// Whose saved listing the client reads in place of a blocked `/api/info`.
-    pub(crate) fn username(&self) -> Option<&str> {
+    pub fn username(&self) -> Option<&str> {
         self.username.as_deref()
     }
 }

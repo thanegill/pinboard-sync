@@ -699,7 +699,7 @@ const TEST_TOKEN_SOURCE: &str = "$GITHUB_TOKEN_FILE";
 #[cfg(test)]
 impl GitHubConfig {
     /// The defaults with the gists off, for a test that mocks only the stars.
-    pub(crate) fn stars_only() -> Self {
+    pub fn stars_only() -> Self {
         let mut config = Self::default();
         config.gists.enabled = false;
         config
@@ -708,7 +708,7 @@ impl GitHubConfig {
 
 #[cfg(test)]
 impl GitHubClient {
-    pub(crate) fn with_base_url(token: String, config: GitHubConfig, base: String) -> Self {
+    pub fn with_base_url(token: String, config: GitHubConfig, base: String) -> Self {
         let token = ConfiguredSecret {
             value: token,
             source: TEST_TOKEN_SOURCE,

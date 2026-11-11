@@ -38,7 +38,7 @@ in `_typos.toml`, a dependency cargo-machete can't see used in `ignored` under
 **Prefer a lint to a rule here.** A rule that can be checked mechanically goes in
 `Cargo.toml`'s `[lints.clippy]`, `clippy.toml` (`disallowed-methods`, `-types`, `-macros`),
 a test or a CI check, with `#[expect(..., reason = "...")]` at a legitimate exception;
-CLAUDE.md keeps only what none of those can catch; these house rules are lints already:
+CLAUDE.md keeps only what none of those can catch; these house rules are checked already:
 
 - Command output goes through [`src/stdout.rs`](src/stdout.rs) and messages through `log`:
   `print_stdout`, `print_stderr`, and `disallowed-methods` on `io::stdout` and `io::stderr`.
@@ -46,6 +46,9 @@ CLAUDE.md keeps only what none of those can catch; these house rules are lints a
 - Clients start from `http::client_builder()` (timeouts, h2 pings): `disallowed-methods`,
   which can't see `Client::default()` or `ClientBuilder::default()`, so call neither.
 - A test's directory comes from `test_support::scratch_dir`: `disallowed-methods`.
+- reqwest uses native-tls with ALPN, since Reddit's edge 403s rustls's TLS fingerprint and
+  a ClientHello with no ALPN (#78): `deny.toml` bans the `rustls` crate, and
+  `http::net_tests::client_hello_offers_alpn_h2_and_http1` checks the ALPN.
 
 ## Cleanup
 
@@ -122,12 +125,6 @@ cookie (#78), so it must not fire the hook.
 
 ## Gotchas
 
-- **native-tls, not rustls** (`Cargo.toml`'s `reqwest` comment). Reddit's anti-bot edge 403s
-  rustls's TLS fingerprint; every test is offline, so only production would catch a switch.
-  On Linux native-tls is OpenSSL, which [`nix/package.nix`](nix/package.nix) provides.
-- **`native-tls-alpn` is load-bearing too**: the edge 403s a ClientHello with no ALPN
-  ([#78](https://github.com/thanegill/pinboard-sync/issues/78)); header case and order are
-  not the cause.
 - **The Nix package build skips `net_tests`**, since the sandbox forbids sockets, so a test
   outside a `net_tests` module must stay hermetic or it fails only under `nix flake check`.
   Reproduce a build-only proptest failure with

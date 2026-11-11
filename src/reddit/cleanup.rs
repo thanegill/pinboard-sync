@@ -1,12 +1,11 @@
-//! `cleanup` subcommand: normalize existing Reddit bookmarks in a Pinboard account.
-//! Rewrites URLs to the account's `reddit_domain` (unwrapping `over18` redirects) unless
-//! they are on another configured account's, normalizes tags, and -- using Reddit's
-//! `/api/info` for authoritative data -- marks NSFW posts, replaces generic placeholder
-//! titles, and backfills the author, flair and media-type tags sync writes.
+//! `cleanup reddit`: moves a bookmark to the account's `reddit_domain` (unwrapping
+//! `over18`) unless it is on another configured account's, normalizes its tags, and from
+//! `/api/info` marks NSFW posts, fixes placeholder titles and backfills the author, flair
+//! and media-type tags sync writes.
 //!
-//! While Reddit's edge blocks `/api/info` (#89), the saved listing stands in for it: the
-//! bookmarks it covers get the same fixes from the same entries, and the rest only what
-//! needs no metadata, as a post `/api/info` no longer knows does.
+//! While Reddit's edge blocks `/api/info` (#89), the saved listing stands in: the bookmarks
+//! it covers get the same fixes from the same entries, and the rest only what needs no
+//! metadata, as for a post `/api/info` no longer knows.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -33,21 +32,19 @@ use url::Url;
 pub struct RedditCleanupOpts {
     pub mark_nsfw: bool,
     pub fix_titles: bool,
-    /// The account's tag vocabulary and domain, the same ones `sync` writes with: a
-    /// reddit.com URL on no configured account's domain is moved to `domain`, and `nsfw`
-    /// is the NSFW marker tag (empty disables it).
+    /// The account's tags and domain, the ones `sync` writes with: a reddit.com URL on no
+    /// configured account's domain moves to `domain`.
     pub config: RedditConfig,
-    /// Whether and how to re-date bookmarks by the source post date.
     pub dates: DateOpts,
-    /// Every configured account's config, in config order. A bookmark already on one of
-    /// their domains is left there (see [`RedditCleanupOpts::natural_url`]) and shaped with
-    /// that account's tags ([`RedditCleanupOpts::config_for`]).
+    /// Every configured account's config, in config order. A bookmark on one of their
+    /// domains stays there ([`Self::natural_url`]) and takes its account's tags
+    /// ([`Self::config_for`]), whichever account runs.
     pub configured: Vec<RedditConfig>,
 }
 
 impl RedditCleanupOpts {
     /// Whether the pass reads `/api/info`: for NSFW tagging, title fixing or
-    /// `use_post_date`. The notes retrofit and the tag backfill ride on that read.
+    /// `use_post_date`. The notes and tag backfill ride on that read.
     pub fn needs_post_info(&self) -> bool {
         self.mark_nsfw || self.fix_titles || self.dates.use_post_date
     }
@@ -57,15 +54,14 @@ impl RedditCleanupOpts {
         own_then_configured(&self.config, &self.configured).map(|account| account.domain.as_str())
     }
 
-    /// The config to shape a bookmark at `url` with: the account's own when `url` is on its
-    /// domain, else that of the first configured account whose domain it is on, else the
-    /// account's own. A bookmark stays on its owner's domain, so the host names its owner.
+    /// The config to shape a bookmark at `url` with: the first of [`Self::configs_on`],
+    /// else the account's own. A bookmark stays on its owner's domain, which names it.
     fn config_for(&self, url: &Url) -> &RedditConfig {
         self.configs_on(url).next().unwrap_or(&self.config)
     }
 
-    /// The account's own config, then every configured one, whose domain is `url`'s host:
-    /// the accounts that can shape a bookmark at `url`, depending on which one runs.
+    /// The account's own config, then every configured one, on `url`'s host: whichever
+    /// runs, one of these shapes the bookmark.
     fn configs_on<'s: 'u, 'u>(
         &'s self,
         url: &'u Url,
@@ -77,10 +73,10 @@ impl RedditCleanupOpts {
     }
 
     /// The bare tags [`normalize_tags`] keeps at `url` even when named like the subreddit
-    /// or the subreddit prefix: `owner`'s NSFW marker, which nothing re-adds without an
-    /// `/api/info` answer, and every tag an account that can shape the bookmark adds to it
-    /// bare (its base tags, NSFW marker and, on a comment, comment tag), which cleanup run
-    /// as that account adds back (the NSFW marker only with an `/api/info` answer).
+    /// or its prefix: `owner`'s NSFW marker, which nothing re-adds without an `/api/info`
+    /// answer, and every bare tag an account that can shape the bookmark adds (base tags,
+    /// NSFW marker and, on a comment, comment tag), which cleanup run as that account adds
+    /// back, the NSFW marker only with an `/api/info` answer.
     fn kept_tags<'s>(&'s self, url: &Url, owner: &'s RedditConfig) -> Vec<&'s str> {
         let is_comment = is_comment_url(url);
         let sharing = self.configs_on(url).flat_map(move |account| {
@@ -104,16 +100,14 @@ impl RedditCleanupOpts {
         })
     }
 
-    /// [`RedditKeys`] on every configured domain, as every account's sync keys a save.
+    /// [`RedditKeys`] on every configured domain, as each account's sync keys a save.
     fn reddit_keys(&self) -> RedditKeys {
         RedditKeys::new(self.domains())
     }
 
-    /// Where this pass moves `url` before collapsing copies: `over18` unwrapped, and a
-    /// reddit.com host rewritten to the account's domain unless it is already some
-    /// account's `reddit_domain`. A bookmark on another account's mirror stays put, so
-    /// that `cleanup` run as either account leaves it where it is instead of moving it
-    /// back and forth.
+    /// Where the pass moves `url` before collapsing copies: `over18` unwrapped, and a
+    /// reddit.com host moved to the account's domain unless it is some account's
+    /// `reddit_domain`, so passes run as different accounts never move it back and forth.
     fn natural_url(&self, url: &Url) -> Url {
         let unwrapped = unwrap_over18(url);
         if self.is_configured_host(&unwrapped) {
@@ -123,8 +117,7 @@ impl RedditCleanupOpts {
     }
 }
 
-/// The `cleanup reddit` choices that are not account settings: the cookie flag, and which
-/// `/api/info`-backed fixes to make.
+/// The `cleanup reddit` flags that aren't account settings.
 pub struct RedditCleanupOverrides {
     pub cookie: Option<String>,
     pub mark_nsfw: bool,
@@ -142,18 +135,15 @@ impl Default for RedditCleanupOverrides {
     }
 }
 
-/// Authoritative per-post data from `/api/info`.
+/// Per-post data from `/api/info`.
 struct RedditPostMeta {
     over_18: bool,
     title: Option<String>,
-    /// Post creation time (unix epoch seconds), for `use_post_date`.
+    /// Epoch seconds, for `use_post_date`.
     created_utc: Option<f64>,
-    /// The notes rebuilt from authoritative data -- the quoted body wrapped in a
-    /// `<blockquote>` (empty when there's nothing to quote). Used to retrofit existing
-    /// bookmarks to the shape `sync` writes.
+    /// The notes `sync` would write, to retrofit onto a bookmark the tool wrote.
     note: String,
-    /// The raw `selftext`, i.e. the rebuilt notes before the `<blockquote>` wrapping --
-    /// the shape an older sync wrote. Lets the retrofit recognize its own past output.
+    /// The `selftext` unquoted: a legacy shape of the tool's notes.
     selftext: String,
 }
 
@@ -162,8 +152,7 @@ struct RedditPostMeta {
 struct RedditInfo {
     /// Per-post data, keyed by `t3_` fullname.
     posts: HashMap<String, RedditPostMeta>,
-    /// Each post and comment shaped as `sync` shapes it, for the tags drawn from its own
-    /// data, keyed by `t3_`/`t1_` fullname.
+    /// Each post and comment as `sync` shapes it, for its own tags, keyed by fullname.
     items: HashMap<String, RedditSavedItem>,
 }
 
@@ -190,11 +179,10 @@ pub async fn run<S: BookmarkStore + AccountState, R: PostInfo>(
         .into_result()
 }
 
-/// Re-shapes one reddit bookmark: normalize the URL/tags, then apply the authoritative
-/// `/api/info` data (NSFW marker, placeholder-title replacement, post date, rebuilt notes,
-/// and the author/flair/media tags missing from the bookmark).
+/// Re-shapes one Reddit bookmark: its URL and tags, then the `/api/info` data (NSFW marker,
+/// placeholder title, post date, notes, and missing author/flair/media tags).
 struct RedditCleanupPass<'a, S> {
-    /// The store the pass writes to, which knows a note it stored cut.
+    /// Knows a note it stored cut.
     store: &'a S,
     info: RedditInfo,
     opts: &'a RedditCleanupOpts,
@@ -273,10 +261,8 @@ impl<S: BookmarkStore> CleanupPass for RedditCleanupPass<'_, S> {
             bookmark.note.clone()
         };
 
-        // `post` is keyed by the post fullname, so for a comment bookmark it is the
-        // *parent thread's* meta; its `created_utc` is the thread-creation time, not the
-        // comment's. Never re-date a comment by it -- leave a None candidate so the driver
-        // keeps the comment's stored timestamp (as with its notes above).
+        // For a comment `post` is the parent thread's, so its `created_utc` is not the
+        // comment's: a `None` candidate keeps the stored date.
         let timestamp = if is_comment_url(&new_url) {
             None
         } else {
@@ -295,11 +281,9 @@ impl<S: BookmarkStore> CleanupPass for RedditCleanupPass<'_, S> {
     }
 }
 
-/// Batch-fetch `over_18` + `title` + `created_utc` + the rebuilt notes for every post
-/// referenced by the bookmarks, and each post and comment bookmark's own entry for its
-/// tags, from `/api/info`, or from the saved listing for what `/api/info` left unanswered
-/// when Reddit's edge blocked it ([`fall_back_to_saved`]). Empty unless
-/// [`RedditCleanupOpts::needs_post_info`].
+/// The `/api/info` data for every post the bookmarks reference, and each bookmark's own
+/// entry for its tags, with the saved listing standing in for what a block left unanswered
+/// ([`fall_back_to_saved`]). Empty unless [`RedditCleanupOpts::needs_post_info`].
 async fn fetch_post_info<R: PostInfo>(
     reddit: Option<&R>,
     opts: &RedditCleanupOpts,
@@ -336,9 +320,6 @@ async fn fetch_post_info<R: PostInfo>(
     };
     for entry in entries {
         if let (RedditKind::Post, Some(name)) = (entry.kind, entry.fields.name.clone()) {
-            // Rebuild the notes from authoritative data the same way sync does, so the
-            // <blockquote> shaping retrofits onto existing bookmarks: selftext quoted,
-            // empty for an empty self-post, else the external URL.
             let selftext = entry.fields.selftext.clone().unwrap_or_default();
             let note = entry.fields.post_note();
             info.posts.insert(
@@ -364,12 +345,10 @@ fn lookup_url(bookmark: &Bookmark, opts: &RedditCleanupOpts) -> Url {
     normalize_url(&bookmark.url, &opts.config.domain).unwrap_or_else(|| bookmark.url.clone())
 }
 
-/// `answered`, what `/api/info` said before Reddit's edge blocked it with `block`, and the
-/// saved listing's entries for the `fullnames` it returned no entry for, logging how many
-/// bookmarks each covered: a bookmark counts for the listing when it supplied either of its
-/// post's and comment's entries. The saved listing failing fails the pass with its own
-/// error, so a refused cookie still fires the hook; with no username to read it by, the
-/// pass fails with the block.
+/// `answered`, what `/api/info` said before `block`, plus the saved listing's entries for
+/// the `fullnames` it left unanswered, logging how many bookmarks each covered. A failed
+/// listing read fails the pass with its own error, so a refused cookie still fires the
+/// hook; with no username to read it by, the pass fails with the block.
 async fn fall_back_to_saved<R: PostInfo>(
     reddit: &R,
     block: String,
@@ -441,10 +420,10 @@ async fn fall_back_to_saved<R: PostInfo>(
     Ok(answered.into_iter().chain(from_saved).collect())
 }
 
-/// For each post or comment stored on more than one host once each copy has its
-/// [`RedditCleanupOpts::natural_url`], the host the copies collapse onto, keyed by `keys`:
-/// the earliest account domain in config order, so the copies meet on one URL, where the
-/// driver merges them, whichever account cleanup runs as.
+/// For each post or comment still on several hosts after
+/// [`RedditCleanupOpts::natural_url`], the host its copies collapse onto: the earliest
+/// account domain in config order, so they meet on one URL, where the driver merges them,
+/// whichever account runs.
 fn collapse_hosts(
     bookmarks: &[Bookmark],
     opts: &RedditCleanupOpts,
@@ -477,17 +456,16 @@ fn collapse_hosts(
 
 // --- pure transforms ---------------------------------------------------------
 
-/// Normalize a Reddit bookmark URL: unwrap `over18/?dest=` redirects, then rewrite
-/// any reddit host to the configured `domain`. Returns `Some(new)` only if it changed.
+/// `url` with `over18` unwrapped and a reddit.com host moved to `domain`, or `None` when
+/// that changes nothing.
 pub fn normalize_url(url: &Url, domain: &str) -> Option<Url> {
     let unwrapped = unwrap_over18(url);
     let normalized = to_reddit_domain(&unwrapped, domain).unwrap_or(unwrapped);
     (normalized != *url).then_some(normalized)
 }
 
-/// Rewrite any reddit host (`reddit.com` or a `*.reddit.com` subdomain) to the
-/// configured `domain` (over https), preserving the rest of the URL. Returns `None`
-/// for a non-reddit host or one already equal to `domain`.
+/// `url` over https on `domain` when its host is reddit.com or a subdomain, and not
+/// `domain`, else `None`.
 fn to_reddit_domain(url: &Url, domain: &str) -> Option<Url> {
     let host = url.host_str()?;
     if !(host_matches(host, "reddit.com") && host != domain) {
@@ -507,7 +485,7 @@ fn with_host(url: &Url, host: &str) -> Option<Url> {
     Some(rewritten)
 }
 
-/// Extract the subreddit name from a Reddit URL's `/r/<sub>/` segment.
+/// The `<sub>` of `/r/<sub>/`.
 pub fn extract_subreddit(url: &Url) -> Option<String> {
     let (_, after) = url.path().split_once("/r/")?;
     let sub: String = after
@@ -517,29 +495,25 @@ pub fn extract_subreddit(url: &Url) -> Option<String> {
     (!sub.is_empty()).then_some(sub)
 }
 
-/// The post fullname (`t3_<id>`) from a permalink's `/comments/<id>/` segment.
-/// Works for both post and comment permalinks (comments inherit the post id).
+/// The post fullname (`t3_<id>`) of a post or comment permalink.
 pub fn post_fullname(url: &Url) -> Option<String> {
     let (_, after) = url.path().split_once("/comments/")?;
     let id: String = after.chars().take_while(|c| c.is_alphanumeric()).collect();
     (!id.is_empty()).then(|| format!("t3_{id}"))
 }
 
-/// Whether a reddit URL points at a comment (`/comments/<post>/<slug>/<comment>/`) rather
-/// than a post. Decides the `reddit-comment` tag, which fullname a bookmark's own tags come
-/// from, and skips the notes retrofit for comments, whose post-keyed data (see
-/// [`post_fullname`]) is the parent thread's.
+/// Whether `url` is a comment (`/comments/<post>/<slug>/<comment>/`). A comment gets the
+/// comment tag and its own fullname's tags, and no notes retrofit: its post-keyed data is
+/// the parent thread's.
 fn is_comment_url(url: &Url) -> bool {
     let Some((_, rest)) = url.path().split_once("/comments/") else {
         return false;
     };
-    // `Url::path` excludes any query/fragment.
     // post -> [id, slug]; comment -> [id, slug, comment-id].
     rest.split('/').filter(|s| !s.is_empty()).count() >= 3
 }
 
-/// The fullname of what `url` is about: the comment's for a comment permalink, else the
-/// post's.
+/// The comment's fullname for a comment permalink, else the post's.
 fn own_fullname(url: &Url) -> Option<String> {
     if is_comment_url(url) {
         comment_fullname(url)
@@ -548,8 +522,7 @@ fn own_fullname(url: &Url) -> Option<String> {
     }
 }
 
-/// The comment fullname (`t1_<id>`) from a comment permalink's third segment after
-/// `/comments/`, or `None` for a post permalink.
+/// A comment permalink's fullname (`t1_<id>`), or `None` for a post.
 fn comment_fullname(url: &Url) -> Option<String> {
     let (_, rest) = url.path().split_once("/comments/")?;
     let id = rest.split('/').filter(|s| !s.is_empty()).nth(2)?;
@@ -558,10 +531,9 @@ fn comment_fullname(url: &Url) -> Option<String> {
         .then(|| format!("t1_{id}"))
 }
 
-/// Normalize a bookmark's tags: ensure the base tags, derive `subreddit:<sub>` from
-/// the URL (casing per [`cased_subreddit`]), and strip bare/legacy/duplicate
-/// subreddit forms, except a bare one in `kept`. An empty base tag or prefix adds no
-/// tag, as in sync. Returns a sorted, de-duplicated list.
+/// The tags with the base tags ensured, the `subreddit:<sub>` tag derived from the URL
+/// ([`cased_subreddit`]), and other subreddit forms stripped, except a bare one in `kept`.
+/// An empty base tag or prefix adds nothing, as in sync. Sorted.
 pub fn normalize_tags<'e>(
     url: &Url,
     existing: impl IntoIterator<Item = &'e String>,
@@ -589,9 +561,7 @@ pub fn normalize_tags<'e>(
             raw.to_uppercase(),
         ];
         for form in &forms {
-            // Drop the bare subreddit tag in any case (but keep a `kept` one; a base tag
-            // named like the subreddit, e.g. r/reddit, comes back from `ensured`), and the
-            // legacy prefixed forms.
+            // A base tag named like the subreddit (r/reddit) comes back from `ensured`.
             if !kept.contains(&form.as_str()) {
                 set.remove(form);
             }
@@ -603,12 +573,9 @@ pub fn normalize_tags<'e>(
     set.into_iter().collect()
 }
 
-/// Whether a post bookmark's stored `note` is one the tool itself wrote -- so the
-/// authoritative `rebuilt` notes may safely replace it -- rather than a hand-written
-/// annotation to preserve. Recognized tool shapes: empty, the current rebuild or a cut of
-/// it (`kept_of_cut`, the part of `note` the store kept when it cut it, starts the
-/// rebuild), the raw `selftext` from before the `<blockquote>` retrofit, or a bare
-/// self-link an older sync left in an empty self-post.
+/// Whether a post's stored `note` is the tool's, so `rebuilt` may replace it, rather than
+/// the user's: empty, `rebuilt` or a cut of it (`kept_of_cut`, the part the store kept,
+/// starts `rebuilt`), or a legacy shape of the tool's, the bare `selftext` or a self-link.
 fn note_is_tool_generated(
     note: &str,
     kept_of_cut: Option<&str>,
@@ -625,10 +592,8 @@ fn note_is_tool_generated(
         || is_self_link_notes(note, url, keys)
 }
 
-/// Whether `notes` is nothing but a Reddit link to the same post as `url` -- the duplicated
-/// self-link older syncs wrote into empty self-posts' notes. Compared by `keys` (on every
-/// configured `reddit_domain`), so it matches across hosts/casing; non-Reddit notes (e.g.
-/// a link post's external URL) and free-text notes don't match and are left untouched.
+/// Whether `notes` is only a link to the post at `url`, by `keys`, so across hosts and
+/// case: the self-link the tool once wrote into an empty self-post.
 fn is_self_link_notes(notes: &str, url: &Url, keys: &RedditKeys) -> bool {
     let notes_key = Url::parse(notes.trim()).ok();
     let notes_key = notes_key

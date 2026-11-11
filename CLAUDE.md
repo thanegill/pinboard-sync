@@ -95,9 +95,9 @@ newest-starred-first, so the order must not rest on the API's default.
 
 ## Secrets, errors and the hook
 
-**Every secret keeps its `_FILE` form; never add a `$VAR`-only one**
-([`nix/module.nix`](nix/module.nix)). The NixOS service feeds sops-nix *paths* through
-`$VAR_FILE`, keeping values out of the unit environment.
+**A secret is read only through a `SecretSpec`**, not `secrets::env_var` or clap's `env`:
+its ladder has the `$VAR_FILE` rung through which [`nix/module.nix`](nix/module.nix) passes
+each systemd credential's *path*, keeping values out of the unit environment.
 
 **A message names the setting a secret came from, never its value**
 (`secrets::ConfiguredSecret`). A response body goes into an error only through

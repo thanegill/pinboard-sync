@@ -1,7 +1,6 @@
-//! In-memory fakes implementing the client ports ([`Source`], [`PostInfo`] and
-//! [`BookmarkStore`]) so the `sync` and `cleanup` loops can be tested without
-//! any network, plus per-test scratch directories, log capture and the sync-then-cleanup
-//! round trip. Compiled only under `#[cfg(test)]`.
+//! In-memory fakes of the ports ([`Source`], [`PostInfo`], [`BookmarkStore`]), so the loops
+//! run without a network, plus scratch directories, log and stdout capture, and the
+//! sync-then-cleanup round trip.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -150,10 +149,9 @@ pub fn scratch_dir(label: &str) -> TempDir {
         .unwrap()
 }
 
-/// The base URL of a local HTTP/1.1 server whose every response is cut off: it answers
-/// with `status` (e.g. `"200 OK"`), `content_type` and `body`, declares a
-/// `Content-Length` longer than `body`, and closes the connection. Binds a socket, so only
-/// a `net_tests` case may call it.
+/// The base URL of a local HTTP/1.1 server whose every response is cut off: `status`,
+/// `content_type` and `body` under a longer `Content-Length`, then a close. It binds a
+/// socket, so only a `net_tests` case may call it.
 pub fn truncated_body_server(
     status: &'static str,
     content_type: &'static str,
@@ -266,10 +264,8 @@ pub struct FakeReddit {
     pub saved: Vec<RedditListingEntry>,
     /// What `/api/info` knows; `info` returns the entries for the fullnames it is asked.
     pub info: Vec<RedditListingEntry>,
-    /// When set, `info` fails with it instead of answering -- for exercising the
-    /// expired-cookie path that has to reach the auth-failure hook. A [`Halt::Blocked`]
-    /// is answered as the block, after the `info` entries asked for, as the real client
-    /// answers a block on a later batch.
+    /// When set, `info` fails with it, as an expired cookie that must reach the hook. A
+    /// [`Halt::Blocked`] is answered as a block after the entries, as on a later batch.
     pub info_error: Option<SourceError>,
     /// When set, reading the saved listing fails with it.
     pub saved_error: Option<SourceError>,
@@ -372,18 +368,17 @@ pub struct UpdateCall {
     pub dt: String,
 }
 
-/// A call that actually changed the account, in call order, which is what the account can
-/// be rebuilt from. Unlike [`FakePinboard::deleted`], it leaves out a failed delete.
+/// A call that changed the account, to rebuild it from; unlike [`FakePinboard::deleted`],
+/// never a failed delete.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
     Write(Bookmark),
     Delete(Url),
 }
 
-/// Rebuild the account from `seed` plus the ops that landed. Deliberately a plain `Vec`
-/// rather than an [`crate::bookmark::AccountView`]: a replay built from the type under test
-/// would reproduce that type's own bug on both sides of the comparison and prove nothing.
-/// Assumes `seed` has no duplicate URLs, as `posts/all` normally does not.
+/// The account rebuilt from `seed` and the ops that landed. A plain `Vec`, not an
+/// [`crate::bookmark::AccountView`], whose bug would show on both sides of the comparison.
+/// Assumes `seed` holds each URL once.
 pub fn replay(seed: &[Bookmark], ops: &[Op]) -> Vec<Bookmark> {
     let mut account = seed.to_vec();
     for op in ops {
@@ -412,16 +407,14 @@ pub struct FakePinboard {
     pub fail_add_urls: HashSet<String>,
     /// URLs whose `update` should fail, to exercise cleanup log-and-skip behavior.
     pub fail_update_urls: HashSet<String>,
-    /// URLs whose `delete` should fail. A merge writes then deletes, so this is the only
-    /// way to reach the half-applied case where the write landed and an absorbed URL
-    /// survived.
+    /// URLs whose `delete` should fail: the only way to a half-applied merge, written but
+    /// with an absorbed URL left.
     pub fail_delete_urls: HashSet<String>,
     /// URLs whose `update` the store refuses as too long, as Pinboard answers a 414:
     /// nothing is written.
     pub too_long_urls: HashSet<String>,
-    /// URLs a write to which is too long to send at all, which [`BookmarkStore::can_write`]
-    /// says up front and `update` refuses as too long, as the client does a write over
-    /// Pinboard's limit even with no note.
+    /// URLs too long to send at all, even with no note: [`BookmarkStore::can_write`] says
+    /// so up front and `update` refuses them, as the client does.
     pub unwritable_urls: HashSet<String>,
     /// The successful writes and deletes, interleaved in call order -- see [`replay`].
     pub ops: RefCell<Vec<Op>>,
@@ -575,12 +568,10 @@ pub const ROUND_TRIP_DATINGS: [DateOpts; 3] = [
     },
 ];
 
-/// The account one `sync` run of `source` leaves on an empty account under `dates`, each
-/// bookmark read back as `posts/all` returns it. Written through a [`FakePinboard`] that
-/// trims notes, so a note too long for the request URL is stored cut, as the client cuts
-/// it; [`assert_cleanup_changes_nothing`] cleans up through one too. Pinboard dates a
-/// bookmark sent without a `dt` when it lands, so such a bookmark reads back dated to the
-/// run. Not modelled: Pinboard's own limits, such as a long title.
+/// The account one `sync` of `source` leaves under `dates`, read back as `posts/all`
+/// returns it: written through a note-trimming [`FakePinboard`], as is the cleanup in
+/// [`assert_cleanup_changes_nothing`], and an undated write dated to the run, as Pinboard
+/// does. Pinboard's own limits, such as a long title, aren't modelled.
 pub async fn synced_account<S: Source>(source: &S, dates: DateOpts) -> Vec<Bookmark> {
     let drafts = crate::http::recording_waits(source.fetch())
         .await
@@ -619,9 +610,8 @@ fn read_back(written: Bookmark, landed: OffsetDateTime) -> Bookmark {
     Bookmark::try_from(wire).unwrap()
 }
 
-/// Runs `cleanup` over `account` and asserts it changed nothing: no write, merge or delete,
-/// and no warning or error. The run forgives a lookup failing in the minority, which would
-/// leave that bookmark untouched and the test passing for the wrong reason.
+/// Run `cleanup` over `account` and assert it changed nothing and warned of nothing: the
+/// run forgives a minority of failed lookups, which would pass for the wrong reason.
 pub async fn assert_cleanup_changes_nothing(
     account: Vec<Bookmark>,
     cleanup: impl AsyncFnOnce(&CleanupStore<'_, FakePinboard>) -> Result<(), SourceError>,
@@ -661,9 +651,8 @@ pub async fn cleanup_writes_nothing(
     complaints(&logs).into_iter().map(String::from).collect()
 }
 
-/// Parse `argv` as the binary does, but with no flag falling back to an environment
-/// variable: clap reads the process environment at parse time, which a test must not
-/// depend on. `cli`'s tests pin which flags the environment backs.
+/// Parse `argv` as the binary does, but with no `env` fallback: clap reads the process
+/// environment, which a test must not depend on.
 pub fn parse_cli<T: Into<std::ffi::OsString> + Clone>(
     argv: impl IntoIterator<Item = T>,
 ) -> Result<crate::cli::Cli, clap::Error> {

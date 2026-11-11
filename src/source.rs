@@ -1,6 +1,5 @@
-//! The generic source port. Every service (Reddit, ...) implements [`Source`]:
-//! it yields [`BookmarkDraft`]s to write to Pinboard and maps an existing Pinboard
-//! URL back to a dedup key, so the sync loop stays service-agnostic.
+//! The source port: every service yields [`BookmarkDraft`]s and keys an existing Pinboard
+//! URL ([`UrlKey`]), so the sync loop is service-agnostic.
 
 use std::collections::HashSet;
 
@@ -19,8 +18,8 @@ pub enum SourceError {
 }
 
 /// Why a source can't go on: every remaining request would fail the same way, so a caller
-/// stops rather than spend requests collecting identical errors. Only [`Halt::Reauth`]
-/// fires the auth-failure hook, since no credential change clears a quota or an edge block.
+/// stops. Only [`Halt::Reauth`] fires the hook, since no credential change clears a quota
+/// or an edge block.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Halt {
     /// The service rejected the request (401/403); a credential needs refreshing.
@@ -29,8 +28,8 @@ pub enum Halt {
     /// The service is refusing further requests until a reset.
     #[error("rate limited: {0}")]
     RateLimited(String),
-    /// The service's edge refused the request as a matter of policy (Reddit's "blocked by
-    /// network security" page), whatever the credential. Waiting is not known to help.
+    /// The service's edge refused the request by policy, whatever the credential (Reddit's
+    /// "blocked by network security" page); waiting is not known to help.
     #[error("blocked: {0}")]
     Blocked(String),
 }
@@ -55,13 +54,9 @@ impl Halt {
 }
 
 impl SourceError {
-    /// Flatten into a plain `anyhow::Error`: a halt's message on its own (without the
-    /// variant's prefix) or the inner error unwrapped.
-    ///
-    /// Only once nothing needs the variant any more, such as after
-    /// `hook::handle_source_err` has decided on the hook. The variant is what decides
-    /// whether the `--on-auth-failure` hook fires, so flattening early silently loses that
-    /// hook -- don't reach for this to make a type mismatch go away.
+    /// A plain `anyhow::Error`: a halt's bare message, or the inner error. Only once
+    /// nothing needs the variant, as after `hook::handle_source_err`: flattening early
+    /// silently loses the hook.
     pub fn into_anyhow(self) -> anyhow::Error {
         match self {
             SourceError::Halted(halt) => anyhow::anyhow!(halt.message().to_string()),
@@ -70,23 +65,18 @@ impl SourceError {
     }
 }
 
-/// A bookmark ready to write to Pinboard, plus the key used to tell whether it is
-/// already present there. It's a [`Bookmark`] (the thing written) and the extra
-/// `dedup_key` that only matters before the write. Sources build `bookmark.public`/
-/// `read_later` `false` and set `bookmark.timestamp` to the source post date (when
-/// known); the sync loop stamps the resolved flags and applies the age cap before
-/// writing.
+/// A bookmark to write, with the key that tells whether it is already on Pinboard. A source
+/// leaves `public`/`read_later` false and sets the post date it knows; the sync loop stamps
+/// the flags and applies the age cap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BookmarkDraft {
-    /// The bookmark to write.
     pub bookmark: Bookmark,
     /// Key matched against existing Pinboard bookmarks via [`UrlKey::dedup_key`].
     pub dedup_key: DedupKey,
 }
 
-/// What `sync` matches a draft against the bookmarks already on Pinboard by: a source's
-/// [`UrlKey`] gives every URL for one item the same key, whatever its host alias, scheme or
-/// tracking query. Comparable only with other keys, so a URL or title can't pass for one.
+/// What `sync` matches a draft by: a source's [`UrlKey`] gives every URL of one item the
+/// same key, whatever its host alias, scheme or tracking query. Comparable only with keys.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DedupKey(String);
 

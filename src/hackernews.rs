@@ -1,8 +1,6 @@
-//! The HackerNews source: a user's public favorites. Scrapes the favorites pages
-//! (`/favorites?id=<user>` and `&comments=t`) for item IDs, then batch-reads their
-//! details from the Algolia HN search API. Favorited *stories* bookmark the linked
-//! article (with the HN discussion in the notes); favorited *comments* bookmark the
-//! HN permalink.
+//! The HackerNews source: a user's public favorites, scraped for item IDs and read from
+//! Algolia. A story bookmarks its article, with the discussion in the notes; a comment
+//! bookmarks its permalink.
 
 mod algolia;
 pub mod cleanup;
@@ -38,9 +36,7 @@ fn hn_link_line(url: impl std::fmt::Display) -> String {
     format!("{HN_LINK} {url}")
 }
 
-/// Tag vocabulary for HackerNews favorites. `tags` are applied to every bookmark
-/// (defaulting to `["hackernews"]`); the rest default to their built-in values, and
-/// an empty string disables that tag.
+/// The tags for HackerNews favorites; an empty one is disabled.
 #[derive(Debug, Clone)]
 pub struct HackerNewsConfig {
     pub tags: Vec<String>,
@@ -48,8 +44,8 @@ pub struct HackerNewsConfig {
     pub author_prefix: String,
     /// Prefix for the tag derived from a `Show/Ask/Tell/Launch HN:` title.
     pub special_prefix: String,
-    /// Marker tag for `cleanup --link-discussions`: bookmarks carrying it are
-    /// looked up on HN by URL and linked to their discussion.
+    /// Marks the bookmarks `cleanup --link-discussions` looks up on HN by URL, to link each
+    /// one found to its HN discussion.
     pub link_tag: String,
 }
 
@@ -79,7 +75,7 @@ struct HackerNewsItem {
     title: Option<String>,
     #[serde(default)]
     text: Option<String>,
-    /// Item creation time (unix epoch seconds), when known.
+    /// Epoch seconds.
     #[serde(default)]
     created_at: Option<i64>,
 }
@@ -114,12 +110,10 @@ impl std::fmt::Display for HackerNewsItemKind {
 }
 
 impl HackerNewsItem {
-    /// Shape the item into a Pinboard draft. Comments keep the HN permalink; stories
-    /// bookmark the linked article (HN discussion in the notes), falling back to the HN
-    /// permalink for text posts (Ask HN, etc.). `keys` keys the article.
+    /// The item's draft: a comment keeps its permalink, a story bookmarks its article, or
+    /// for a text post its permalink. `keys` keys the article.
     fn into_draft(self, cfg: &HackerNewsConfig, keys: &HackerNewsKeys) -> Option<BookmarkDraft> {
         let item_id = HackerNewsItemId::from(self.id);
-        // The HN discussion permalink (always valid -- the id sits in the query string).
         let hn_url = Url::from(&item_id);
         let is_comment = self.kind == HackerNewsItemKind::Comment;
 
@@ -171,16 +165,13 @@ impl HackerNewsItem {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| format!("HN: {} by {}", self.kind, self.by)),
         );
-        // The `HN Link:` line points at the discussion. For a text post the bookmark
-        // URL already *is* that permalink, so including it would duplicate the URL --
-        // skip it and let the notes carry just the post text.
+        // A text post's bookmark URL already is the discussion.
         let mut note = if article.is_some() {
             hn_link_line(&hn_url)
         } else {
             String::new()
         };
         if let Some(text) = self.text.filter(|s| !s.is_empty()) {
-            // Convert the raw Algolia HTML to Markdown, wrapped in a <blockquote>.
             let block = blockquote(&html_to_markdown(&text));
             note = if note.is_empty() {
                 block
@@ -219,7 +210,6 @@ pub struct HackerNewsClient {
     config: HackerNewsConfig,
     /// Keys favorites, with every configured Reddit account's domain as a Reddit host.
     keys: HackerNewsKeys,
-    /// HN site base (overridden in tests).
     base: String,
     /// Looks the favorited items up.
     algolia: AlgoliaClient,
@@ -246,8 +236,8 @@ impl HackerNewsClient {
         })
     }
 
-    /// The client keying an article on any of `domains` as Reddit's own dedup key does,
-    /// so it still matches once `cleanup reddit` has moved it onto that domain.
+    /// The client, keying an article on any of `domains` as Reddit's key does, so it still
+    /// matches once `cleanup reddit` moves it there.
     #[must_use]
     pub fn with_reddit_domains(self, domains: Vec<String>) -> Self {
         Self {
@@ -256,11 +246,9 @@ impl HackerNewsClient {
         }
     }
 
-    /// [`Source::fetch`], pushing the scraped favorites pages and every Algolia response
-    /// to `sink` so `backup` gets both verbatim out of the same traversal. With
-    /// `synced_keys`, each stream stops at its first page with nothing new, and items are
-    /// looked up page by page to tell; without, every page is read and the items are
-    /// looked up in batches at the end.
+    /// [`Source::fetch`], pushing the scraped pages and every Algolia response to `sink`.
+    /// With `synced_keys`, each stream stops at its first page with nothing new, looking
+    /// items up page by page to tell; without, items are looked up in batches at the end.
     async fn fetch_capturing(
         &self,
         synced_keys: Option<&HashSet<DedupKey>>,
@@ -277,7 +265,6 @@ impl HackerNewsClient {
         ids.extend(comments.ids);
         let mut drafts = stories.drafts;
         drafts.extend(comments.drafts);
-        // De-dup IDs while preserving order (newest first).
         let mut seen = HashSet::new();
         ids.retain(|id| seen.insert(id.clone()));
 
@@ -287,7 +274,7 @@ impl HackerNewsClient {
         Ok(ids.iter().filter_map(|id| drafts.remove(id)).collect())
     }
 
-    /// Each item shaped into its draft, keyed by id; items that make none are dropped.
+    /// Each item's draft, keyed by id.
     fn drafts_by_id(
         &self,
         items: HashMap<HackerNewsItemId, HackerNewsItem>,
@@ -332,11 +319,8 @@ impl UrlKey for HackerNewsClient {
     }
 }
 
-/// A HackerNews item id -- the `<n>` in a `news.ycombinator.com/item?id=<n>` URL. Held
-/// as a string (the favorites page scrapes it as text and Algolia's `objectID` filter
-/// takes it as text); built from a numeric id, parsed from scraped or searched text
-/// (`FromStr`), or parsed out of a URL (`TryFrom<&Url>`), and rendered back to the
-/// discussion permalink (`From<&Self> for Url`).
+/// A HackerNews item id, the `<n>` of `news.ycombinator.com/item?id=<n>`, held as the text
+/// both the scrape and Algolia's `objectID` filter use.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HackerNewsItemId(String);
 
@@ -347,8 +331,7 @@ impl std::fmt::Display for HackerNewsItemId {
 }
 
 impl HackerNewsItemId {
-    /// The key `sync` dedups a favorited HN item on: `hn:<id>`, matching however the
-    /// bookmark is stored.
+    /// `hn:<id>`, the key a favorited item dedups on however its bookmark is stored.
     pub(crate) fn dedup_key(&self) -> DedupKey {
         format!("hn:{self}").into()
     }
@@ -360,8 +343,8 @@ impl From<u64> for HackerNewsItemId {
     }
 }
 
-/// Parse a scraped or searched id, which must be all ASCII digits: it is interpolated into
-/// Algolia's `objectID:` filter and the `HN Link:` note, so anything else is refused.
+/// A scraped or searched id, all ASCII digits: it goes into Algolia's `objectID:` filter
+/// and the `HN Link:` note.
 impl std::str::FromStr for HackerNewsItemId {
     type Err = NotHnItemId;
     fn from_str(id: &str) -> Result<Self, Self::Err> {
@@ -372,8 +355,7 @@ impl std::str::FromStr for HackerNewsItemId {
     }
 }
 
-/// Parse the item id out of an HN `item?id=<n>` URL (host must be exactly
-/// `news.ycombinator.com`). `Err` for any non-HN-item URL.
+/// The id of a `news.ycombinator.com/item?id=<n>` URL, that host exactly.
 impl TryFrom<&Url> for HackerNewsItemId {
     type Error = NotHnItemUrl;
     fn try_from(url: &Url) -> Result<Self, Self::Error> {
@@ -397,8 +379,7 @@ impl TryFrom<&Url> for HackerNewsItemId {
     }
 }
 
-/// The HN discussion permalink for an item id (`news.ycombinator.com/item?id=<n>`). The
-/// id only ever sits in the query string, so this always parses.
+/// The item's discussion permalink, which always parses: the id sits in the query.
 impl From<&HackerNewsItemId> for Url {
     fn from(id: &HackerNewsItemId) -> Self {
         Url::parse(&format!("{HN_BASE}/item?id={}", id.0))
@@ -416,8 +397,7 @@ pub struct NotHnItemUrl;
 #[error("not a HackerNews item id")]
 pub struct NotHnItemId;
 
-/// The slug for a `Show/Ask/Tell/Launch HN:` title prefix (e.g. `Show HN:` ->
-/// `show-hn`), or `None` for ordinary titles.
+/// The slug of a `Show/Ask/Tell/Launch HN:` title prefix (`Show HN:` -> `show-hn`).
 fn special_type(title: &str) -> Option<String> {
     ["Show HN", "Ask HN", "Tell HN", "Launch HN"]
         .into_iter()

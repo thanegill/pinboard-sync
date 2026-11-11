@@ -18,8 +18,8 @@ use crate::keys::HackerNewsKeys;
 use crate::source::SourceError;
 use crate::timefmt::DateOpts;
 
-/// The `cleanup hackernews` choices that are not account settings. The default, which
-/// `cleanup --all` runs with, links no discussions: that is opt-in.
+/// The `cleanup hackernews` flags that aren't account settings. The default, which
+/// `cleanup --all` runs, links no discussions.
 #[derive(Default)]
 pub struct HackerNewsCleanupOverrides {
     pub link_discussions: bool,
@@ -31,17 +31,14 @@ pub struct HackerNewsCleanupOverrides {
 pub struct HackerNewsCleanupOpts {
     /// Also link `link_tag`-tagged article bookmarks to their HN discussion.
     pub link_discussions: bool,
-    /// Whether and how to re-date bookmarks by the source item's creation time.
     pub dates: DateOpts,
     /// The account's tag vocabulary `sync` writes with, and the `link_tag` marker.
     pub config: HackerNewsConfig,
 }
 
-/// Normalize existing `news.ycombinator.com/item?id=*` bookmarks: re-fetch each item and
-/// re-shape it (stories rewrite to the article URL, deleting the old HN URL;
-/// comments/text posts update in place), keeping existing tags, and the creation time
-/// unless `use_post_date` re-dates it. With `link_discussions`, then link each
-/// `link_tag`-tagged article bookmark to its discussion ([`link_discussions`]).
+/// Re-shape every HN item bookmark from a fresh read (a story moves to its article),
+/// keeping its tags, and its date unless `use_post_date` re-dates it. With
+/// `link_discussions` set, [`link_discussions`] then links tagged articles.
 pub async fn run<S: BookmarkStore + AccountState>(
     store: &S,
     client: &AlgoliaClient,
@@ -50,7 +47,6 @@ pub async fn run<S: BookmarkStore + AccountState>(
     let hackernews_bookmarks =
         store.snapshot(|bookmark| HackerNewsItemId::try_from(&bookmark.url).is_ok());
 
-    // Batch-fetch every referenced item once.
     let ids: Vec<HackerNewsItemId> = hackernews_bookmarks
         .iter()
         .filter_map(|bookmark| HackerNewsItemId::try_from(&bookmark.url).ok())
@@ -63,19 +59,14 @@ pub async fn run<S: BookmarkStore + AccountState>(
     };
     let items = run_pass(store, &hackernews_bookmarks, "HN", opts.dates, &pass).await;
 
-    // Each pass reaches its own verdict. Merging the tallies first would let this
-    // pass's bookmarks -- which are planned from prefetched items and so can never
-    // fail -- vouch for the discussion lookups, which are the only per-item network
-    // calls here and can fail on their own.
-    // Its candidates come from the view *after* the item pass wrote, so a bookmark that
-    // pass merged is re-planned from the merged record rather than from a stale copy.
+    // Each pass reaches its own verdict: this one plans from prefetched items, can't fail,
+    // and must not vouch for the discussion lookups. Those read the view after this pass
+    // wrote, so a merged bookmark is planned from the merged record.
     let links = if opts.link_discussions {
         Some(link_discussions(store, client, opts).await)
     } else {
         None
     };
-    // Both passes ran, so report both failures: letting the first `?` short-circuit
-    // would hide a wholesale failure of the second behind the first's message.
     two_pass_verdict(
         ("items", items.into_result()),
         (
@@ -85,18 +76,15 @@ pub async fn run<S: BookmarkStore + AccountState>(
     )
 }
 
-/// For each article bookmark tagged `link_tag`, look it up on HN by URL and, if it has a
-/// discussion, add `HN Link: <discussion>` to the notes and swap the marker tag for the
-/// base HN tags (update in place). Default-off (opt-in via `--link-discussions`) because
-/// it issues one Algolia query per tagged bookmark.
+/// Link each `link_tag`-tagged article to its HN discussion, if it has one. Opt-in: one
+/// Algolia query per tagged bookmark.
 async fn link_discussions<S: BookmarkStore + AccountState>(
     store: &S,
     client: &AlgoliaClient,
     opts: &HackerNewsCleanupOpts,
 ) -> PassOutcome {
-    // Read after the item pass, so a bookmark it merged into is seen as it now stands.
-    // A story merged onto a `link_tag`-tagged article carries that tag into the merged
-    // record, so this pass picks it up in the same run and the account settles in one.
+    // After the item pass: a story it merged onto a tagged article carries the tag, so this
+    // pass picks it up and the account settles in one run.
     let candidates = store.snapshot(|bookmark| {
         HackerNewsItemId::try_from(&bookmark.url).is_err()
             && bookmark.tags.has(&opts.config.link_tag)
@@ -108,10 +96,8 @@ async fn link_discussions<S: BookmarkStore + AccountState>(
     run_pass(store, &candidates, "HN discussion", opts.dates, &pass).await
 }
 
-/// The HN item id referenced by a note's `HN Link: <url>` back-link marker, if the note
-/// carries one whose URL is an HN item permalink. Sync writes this marker pointing at the
-/// bookmark's own discussion, so it identifies the true source item independently of the
-/// bookmark's URL.
+/// The item id in a note's `HN Link: <url>` marker. Sync points it at the bookmark's own
+/// discussion, so it names the source item whatever the bookmark's URL.
 fn hn_link_marker_id(note: &str) -> Option<HackerNewsItemId> {
     note.lines()
         .find_map(|line| line.trim().strip_prefix(HN_LINK))
@@ -119,8 +105,7 @@ fn hn_link_marker_id(note: &str) -> Option<HackerNewsItemId> {
         .and_then(|url| HackerNewsItemId::try_from(&url).ok())
 }
 
-/// Appends the `HN Link: <url>` back-link line to a note, skipping when the note already
-/// carries one. An empty note becomes the bare link.
+/// `note` with `hn_link` appended, unless it carries an `HN Link:` line already.
 fn ensure_hn_link_note(note: &str, hn_link: &str) -> String {
     if note.lines().any(is_hn_link_line) {
         note.to_string()
@@ -141,11 +126,8 @@ fn generated_hn_link(note: &str) -> Option<&str> {
     note.lines().find(|line| line.starts_with(HN_LINK))
 }
 
-/// Re-shapes one favorited HN item bookmark: re-fetch via Algolia and re-derive the
-/// draft (stories rewrite to the article URL; comments/text posts update in place),
-/// preserving existing tags, privacy, and any note the user added by hand. A stored
-/// note is kept verbatim, but the regenerated `HN Link:` back-link is appended to it
-/// when absent so a hand-annotated story doesn't lose its discussion link.
+/// Re-shapes one HN item bookmark from its fresh item, keeping its tags and any stored note
+/// verbatim, the `HN Link:` line appended when absent: an annotated story keeps its link.
 struct HackerNewsCleanupPass<'a> {
     items: HashMap<HackerNewsItemId, HackerNewsItem>,
     config: &'a HackerNewsConfig,
@@ -153,15 +135,11 @@ struct HackerNewsCleanupPass<'a> {
 
 impl CleanupPass for HackerNewsCleanupPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
-        // The pass is filtered to HN item URLs, so this matches.
         let Ok(url_id) = HackerNewsItemId::try_from(&bookmark.url) else {
             return Ok(Plan::Skipped);
         };
-        // A meta-post whose submitted article URL is itself an HN item permalink is
-        // stored AT that linked item's URL, but its note's `HN Link:` marker points at
-        // the meta-post's own discussion (a different id). Reading the URL as the item id
-        // would fetch and re-shape the *wrong* item (rewriting title/tags, and the URL if
-        // it's an external article), so leave such a bookmark untouched.
+        // A meta-post linking another item is stored at that item's URL, but its marker
+        // names its own discussion: the URL's id would re-shape the wrong item.
         if let Some(marker_id) = hn_link_marker_id(&bookmark.note) {
             if marker_id != url_id {
                 debug!(
@@ -187,8 +165,6 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         let mut tags = bookmark.tags.clone();
         tags.push_all(&new.tags);
         new.tags = tags;
-        // Keep the user's stored note, but make sure the regenerated `HN Link:`
-        // back-link survives the re-shape (append it once, never duplicated).
         let generated_link = generated_hn_link(&new.note).map(str::to_string);
         if !bookmark.note.is_empty() {
             new.note = match generated_link {
@@ -200,10 +176,8 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
     }
 }
 
-/// Links one `link_tag`-tagged article bookmark to its HN discussion: look it up by URL,
-/// add an `HN Link:` line to the notes, and swap the marker tag for the base HN tags.
-/// Always in-place -- the URL is unchanged and the planned `timestamp` is `None`, so the
-/// driver preserves the stored date regardless of the dating policy.
+/// Links one tagged article to its HN discussion: an `HN Link:` line, and the base tags for
+/// the marker. In place, with no `timestamp`, so the driver keeps the stored date.
 struct HackerNewsLinkPass<'a> {
     client: &'a AlgoliaClient,
     config: &'a HackerNewsConfig,
@@ -211,9 +185,8 @@ struct HackerNewsLinkPass<'a> {
 
 impl CleanupPass for HackerNewsLinkPass<'_> {
     async fn plan(&self, bookmark: &Bookmark) -> Result<Plan, SourceError> {
-        // Unlike the other passes' early exits, this one is an *answer* from Algolia --
-        // the search ran and the article simply has no discussion -- so it counts as
-        // having reached the source.
+        // Unlike other early exits, an answer: the search ran and found no discussion, so
+        // it counts as reached.
         let Some(id) = self.client.search_by_url(&bookmark.url).await? else {
             return Ok(Plan::Unchanged);
         };
@@ -223,7 +196,6 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
 
         let title = collapse_whitespace(&bookmark.title, " ");
 
-        // Drop the marker tag, add the base HN tags.
         let mut tags = bookmark.tags.clone();
         tags.retain(|t| *t != self.config.link_tag);
         tags.push_all(&self.config.tags);
@@ -233,7 +205,6 @@ impl CleanupPass for HackerNewsLinkPass<'_> {
             title,
             note,
             tags,
-            // No candidate source time -- the driver preserves the stored time.
             timestamp: None,
             public: bookmark.public,
             read_later: bookmark.read_later,

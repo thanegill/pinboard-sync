@@ -1,6 +1,5 @@
-//! The GitHub source: reads the authenticated user's starred repositories
-//! (`/user/starred`, token-authenticated) and, unless turned off, starred gists
-//! (`/gists/starred`), and shapes each into a Pinboard draft.
+//! The GitHub source: the token's starred repos (`/user/starred`) and, unless turned off,
+//! starred gists (`/gists/starred`), each shaped into a draft.
 
 pub mod cleanup;
 pub mod gists;
@@ -32,10 +31,8 @@ const GITHUB_API_BASE: &str = "https://api.github.com";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 /// The most items a GitHub listing returns per page; GitHub's default is 30.
 const PER_PAGE: &str = "100";
-/// Backstop against a malformed `Link: rel="next"` chain that never terminates.
-/// At [`PER_PAGE`] results per page this covers a million stars, far beyond any real
-/// account -- it is only a backstop against a `Link` header that increments forever; the
-/// per-page repeat case is caught by the `visited` guard.
+/// Backstop against a `Link: rel="next"` chain that never ends: a million stars at
+/// [`PER_PAGE`]. A repeating page is the `visited` guard's.
 const MAX_PAGES: u32 = 10_000;
 
 /// One `Link`-paged GitHub listing, walked by [`GitHubClient::walk`].
@@ -51,10 +48,9 @@ struct PagedStream {
     query: &'static [(&'static str, &'static str)],
 }
 
-/// `/user/starred`. The star+json media type makes each element `{ starred_at, repo }`,
-/// so each bookmark can be dated by when it was starred, and the sort is pinned rather
-/// than left to GitHub's default because the incremental read depends on
-/// newest-starred-first.
+/// `/user/starred`. The star+json media type adds each star's `starred_at`, to date its
+/// bookmark by. The sort is pinned, not left to GitHub's default: the incremental read
+/// depends on newest-starred-first.
 const STARS: PagedStream = PagedStream {
     label: "github starred",
     raw_stream: PRIMARY_STREAM,
@@ -67,8 +63,8 @@ const STARS: PagedStream = PagedStream {
     ],
 };
 
-/// `/gists/starred`. GitHub documents no sort order or sort parameter for it; the
-/// incremental read assumes newest-starred-first, as every other stream lists.
+/// `/gists/starred`, with no documented sort: the incremental read assumes
+/// newest-starred-first, as every other stream lists.
 const STARRED_GISTS: PagedStream = PagedStream {
     label: "github starred gists",
     raw_stream: "gists",
@@ -77,9 +73,7 @@ const STARRED_GISTS: PagedStream = PagedStream {
     query: &[("per_page", PER_PAGE)],
 };
 
-/// Tag vocabulary for GitHub stars. `tags` are applied to every bookmark
-/// (defaulting to `["github-star"]`); the prefixes default to their built-in values, and
-/// an empty string disables that tag.
+/// The tags for GitHub stars; an empty one is disabled.
 #[derive(Debug, Clone)]
 pub struct GitHubConfig {
     pub tags: Vec<String>,
@@ -104,7 +98,7 @@ impl Default for GitHubConfig {
     }
 }
 
-/// A starred repository, as returned by `/user/starred`.
+/// A starred repository, as `/user/starred` returns it.
 #[derive(Debug, Clone, Deserialize)]
 struct GitHubRepo {
     full_name: String,
@@ -117,8 +111,7 @@ struct GitHubRepo {
     language: Option<String>,
 }
 
-/// A `/user/starred` element when requested with the star+json media type: the repo
-/// plus the time the user starred it.
+/// A star+json `/user/starred` element: the repo and when it was starred.
 #[derive(Debug, Clone, Deserialize)]
 struct GitHubStarredRepo {
     starred_at: String,
@@ -126,8 +119,7 @@ struct GitHubStarredRepo {
 }
 
 impl GitHubStarredRepo {
-    /// Shape into a draft, dating it by the star time in UTC at whole seconds. `None` (with
-    /// a warning) if the repo's `html_url` doesn't parse.
+    /// The draft, dated by the star time at whole UTC seconds.
     fn into_draft(self, cfg: &GitHubConfig) -> Option<BookmarkDraft> {
         let starred_at = crate::timefmt::parse_rfc3339(&self.starred_at)
             .and_then(crate::timefmt::utc_whole_seconds);
@@ -135,9 +127,8 @@ impl GitHubStarredRepo {
     }
 }
 
-/// The owner and [`repo_name`] a repo-root path spells, from its segments: exactly two once
-/// empty segments are dropped, so `/owner//repo/` reads as `/owner/repo`. `None` for a path
-/// of any other length, or a last segment that names no repo.
+/// The owner and [`repo_name`] of a repo-root path: exactly two non-empty segments
+/// (`/owner//repo/` as `/owner/repo`), the last naming a repo.
 pub(crate) fn repo_path<'a>(
     segments: impl IntoIterator<Item = &'a str>,
 ) -> Option<(&'a str, &'a str)> {
@@ -151,10 +142,9 @@ pub(crate) fn repo_path<'a>(
     Some((owner, repo_name(last)?))
 }
 
-/// The repo name a repo-root URL's last path segment spells: the segment less every
-/// trailing `.git`, in any case, as `GitHubKeys`, which lowercases, does. `None` when that
-/// leaves no name, or a dot segment (`.` or `..`, raw or percent-encoded), which a URL
-/// parser drops, so a URL built from it names the owner or the site rather than a repo.
+/// The repo name a last path segment spells: less every trailing `.git`, any case, as
+/// `GitHubKeys` reads it. `None` for nothing left, or a dot segment (raw or
+/// percent-encoded), which a URL parser drops, naming the owner or site instead.
 fn repo_name(segment: &str) -> Option<&str> {
     let name = without_git_suffixes(segment);
     let is_dot_segment = matches!(
@@ -182,10 +172,8 @@ fn strip_git_suffix(segment: &str) -> Option<&str> {
 /// What sets a repo note's homepage line apart from the rest, which `cleanup` reads back.
 const HOMEPAGE_SEPARATOR: &str = "\n\nProject homepage: ";
 
-/// Build the Pinboard notes for a repo: the `description` wrapped in a `<blockquote>`
-/// (Pinboard renders HTML in the notes), with the project homepage appended outside the
-/// quote. Falls back to the repo URL when there's no description. Shared by sync and
-/// cleanup so both produce the same shape.
+/// A repo's notes, for sync and cleanup alike: the `description` in a `<blockquote>`, which
+/// Pinboard renders, else the repo URL, then the homepage outside the quote.
 fn github_note(description: Option<&str>, homepage: Option<&str>, html_url: &str) -> String {
     let mut note = match description.filter(|s| !s.is_empty()) {
         Some(desc) => blockquote(desc),
@@ -203,15 +191,13 @@ impl GitHubRepo {
         self.full_name.split('/').next().unwrap_or_default()
     }
 
-    /// Shape the repo into a Pinboard draft (no source date). Test-only convenience;
-    /// the production path dates each draft via [`GitHubStarredRepo::into_draft`].
+    /// The draft, undated; production dates it via [`GitHubStarredRepo::into_draft`].
     #[cfg(test)]
     fn into_draft(self, cfg: &GitHubConfig) -> Option<BookmarkDraft> {
         self.into_draft_with_date(cfg, None)
     }
 
-    /// Shape the repo into a Pinboard draft, carrying `post_date` (the star time). `None`
-    /// (with a warning) if `html_url` doesn't parse.
+    /// The draft dated `post_date`, or `None` (with a warning) if `html_url` doesn't parse.
     fn into_draft_with_date(
         self,
         cfg: &GitHubConfig,
@@ -257,16 +243,11 @@ impl GitHubRepo {
     }
 }
 
-/// The operator-facing explanation if `resp` is GitHub refusing us for rate limiting,
-/// else `None`.
-///
-/// Needed because GitHub answers *both* its primary and secondary rate limits with a
-/// `403` or a `429`, the same statuses a genuine permission denial uses -- so the status
-/// alone cannot tell them apart. The headers can: an exhausted primary quota zeroes
-/// `x-ratelimit-remaining` and dates the reset in `x-ratelimit-reset`, while a secondary
-/// limit carries `retry-after`. Getting this wrong in either direction is costly, so it
-/// matches only on those signatures: a false positive would stop a pass over an ordinary
-/// permission error, a false negative leaves the operator chasing a token problem.
+/// The explanation when a response is GitHub's rate limit, else `None`. Both limits answer
+/// `403` or `429`, as a permission denial does, so only the headers tell: an exhausted
+/// primary quota zeroes `x-ratelimit-remaining`, a secondary limit sends `retry-after`.
+/// Only those signatures match: a false positive stops a pass over a permission error, a
+/// false negative sends the operator after the token.
 fn rate_limit_message(
     status: reqwest::StatusCode,
     headers: &reqwest::header::HeaderMap,
@@ -285,8 +266,7 @@ fn rate_limit_message(
     };
 
     if let Some(retry_after) = header("retry-after") {
-        // RFC 7231 allows an HTTP-date here as well as delta-seconds, so only call it a
-        // duration once it parses as one.
+        // Either delta-seconds or an HTTP-date.
         return Some(match retry_after.parse::<u64>() {
             Ok(seconds) => format!("GitHub rate limit hit; retry after {seconds}s"),
             Err(_) => format!("GitHub rate limit hit; retry after {retry_after}"),
@@ -302,8 +282,7 @@ fn rate_limit_message(
             None => "GitHub rate limit exhausted".to_string(),
         });
     }
-    // A secondary limit need carry neither header -- the docs' guidance is then simply
-    // "wait at least one minute" -- so its error message is the only thing left to go on.
+    // A secondary limit may carry neither header, leaving only its message.
     if body.to_lowercase().contains("secondary rate limit") {
         return Some("GitHub secondary rate limit hit; wait a minute before retrying".to_string());
     }
@@ -313,13 +292,10 @@ fn rate_limit_message(
 /// Why a `/repos/{owner}/{name}` refusal will repeat on every run, for the warning, or
 /// `None` for one that may clear (a rate limit, an outage, an ordinary permission error).
 ///
-/// GitHub refuses a repo it has blocked with `451` under the DMCA, but with a `403` for a
-/// Terms of Service block; both carry the same `{"message": "Repository access blocked",
-/// "block": {...}}` body, and the `block` object is what tells the 403 apart from a
-/// permission denial. A repo of an organization enforcing SAML SSO, which the token isn't
-/// authorized for, answers `403` with the documented `X-GitHub-SSO: required; url=...`
-/// header; only the operator authorizing the token clears it, and a token stays valid for
-/// every other repo, so it is no reason to stop the pass.
+/// A blocked repo answers `451` (DMCA) or `403` (Terms of Service), both with a `block`
+/// object, which tells that 403 from a permission denial. An org enforcing SAML SSO the
+/// token isn't authorized for answers `403` with `X-GitHub-SSO: required`: only the
+/// operator clears it, and the token is valid elsewhere, so the pass goes on.
 fn permanent_refusal(
     status: reqwest::StatusCode,
     headers: &reqwest::header::HeaderMap,
@@ -350,10 +326,9 @@ fn permanent_refusal(
     blocked.then_some("is blocked (403)")
 }
 
-/// The body of a refused response to the `what` request. On a 403 or 429 whose headers
-/// don't already mark a rate limit, the body decides the refusal: a 403 may be a block,
-/// and either may be a secondary rate limit known only by its message, so [`read_body`]
-/// fails a cut-off one rather than letting it read as an ordinary refusal.
+/// The body of a refused response. On a 403 or 429 whose headers mark no rate limit the
+/// body decides (a block, or a secondary limit known by its message), so a cut-off one
+/// fails rather than reads as an ordinary refusal.
 async fn refusal_body(what: &str, resp: reqwest::Response) -> Result<String, SourceError> {
     let status = resp.status();
     let decides = (status == reqwest::StatusCode::FORBIDDEN
@@ -365,16 +340,14 @@ async fn refusal_body(what: &str, resp: reqwest::Response) -> Result<String, Sou
     .await?)
 }
 
-/// Reads a user's starred repos via a personal access token.
+/// Reads a user's stars and starred gists with a personal access token.
 pub struct GitHubClient {
     http: RetryingClient,
     config: GitHubConfig,
-    /// API base (overridden in tests).
     base: String,
     /// The setting the token came from, for messages; never the token itself.
     token_source: &'static str,
-    /// Only to [redact](crate::http::redact) it from a response body that is logged or
-    /// quoted.
+    /// Only to [redact](crate::http::redact) it from a logged or quoted body.
     token: String,
 }
 
@@ -386,8 +359,6 @@ impl GitHubClient {
     fn build(token: ConfiguredSecret, config: GitHubConfig, base: String) -> anyhow::Result<Self> {
         use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
 
-        // The auth/accept/version headers are constant for the client's lifetime, so
-        // set them (and the User-Agent GitHub requires) once as defaults.
         let mut auth =
             HeaderValue::from_str(&format!("Bearer {}", token.value)).with_context(|| {
                 format!(
@@ -428,10 +399,9 @@ impl GitHubClient {
         )))
     }
 
-    /// The error for an unsuccessful (non-401) response to the `what` request:
-    /// [`Halt::RateLimited`] when [`rate_limit_message`] recognises one, the read error
-    /// [`refusal_body`] returns for a body it needed whole, else the status with an excerpt
-    /// of the body, the token redacted.
+    /// The error for a failed non-401 response: [`Halt::RateLimited`] when
+    /// [`rate_limit_message`] says so, [`refusal_body`]'s read error, else the status with
+    /// an excerpt of the body, the token redacted.
     async fn refusal(&self, what: &str, resp: reqwest::Response) -> SourceError {
         let status = resp.status();
         let headers = resp.headers().clone();
@@ -456,10 +426,8 @@ impl GitHubClient {
             .into()
     }
 
-    /// Look up a repo via `/repos/{owner}/{name}` (the API follows renames and
-    /// transfers, returning the current name/URL). `None` if it is permanently
-    /// inaccessible -- deleted or private (404), or refused for good
-    /// ([`permanent_refusal`]: blocked, or behind SSO this token isn't authorized for).
+    /// A repo, following renames and transfers, or `None` when it is gone for good: a 404,
+    /// or a [`permanent_refusal`].
     async fn repo(&self, owner: &str, name: &str) -> Result<Option<GitHubRepo>, SourceError> {
         let endpoint = format!("{}/repos/{owner}/{name}", self.base);
         self.lookup(
@@ -471,8 +439,7 @@ impl GitHubClient {
         .await
     }
 
-    /// Look up a gist via `/gists/{id}`. `None` if it is permanently inaccessible: deleted
-    /// (404), or refused for good ([`permanent_refusal`]).
+    /// A gist, or `None` when gone for good: a 404, or a [`permanent_refusal`].
     async fn gist(&self, id: &str) -> Result<Option<GitHubGist>, SourceError> {
         let endpoint = format!("{}/gists/{id}", self.base);
         self.lookup(
@@ -484,9 +451,8 @@ impl GitHubClient {
         .await
     }
 
-    /// GET the `label` (`github repo`) at `endpoint`. `None` for a 404 or a
-    /// [`permanent_refusal`]; the latter is logged naming `subject` and what is `kept`,
-    /// since unlike a 404 the thing does still exist.
+    /// GET `endpoint`, `None` for a 404 or a [`permanent_refusal`]. A refusal is logged,
+    /// naming `subject` and what is `kept`: unlike a 404, the thing still exists.
     async fn lookup<T: serde::de::DeserializeOwned>(
         &self,
         label: &str,
@@ -518,11 +484,9 @@ impl GitHubClient {
         Ok(Some(found))
     }
 
-    /// [`Source::fetch`], pushing each page body to `sink` as it arrives so `backup` gets
-    /// the verbatim responses -- including the ~75 repo fields [`GitHubStarredRepo`]
-    /// doesn't keep -- out of the same traversal. With `synced_keys`, each stream stops at
-    /// its own first page with nothing new ([`page_is_caught_up`]). The stars come before
-    /// the gists, so a numeric `limit` writes the stars first.
+    /// [`Source::fetch`], pushing each page body to `sink`. With `synced_keys`, each stream
+    /// stops at its own first page with nothing new ([`page_is_caught_up`]). Stars come
+    /// first, so a numeric `limit` writes them first.
     async fn fetch_capturing(
         &self,
         synced_keys: Option<&HashSet<DedupKey>>,
@@ -551,8 +515,8 @@ impl GitHubClient {
         .await
     }
 
-    /// Every starred gist itself, keyed by its (lowercase) id, for `cleanup github` to plan
-    /// from with one paged read rather than a lookup per bookmark.
+    /// Every starred gist, keyed by lowercase id, so `cleanup github` plans from one read,
+    /// not a lookup per bookmark.
     async fn starred_gists(&self) -> Result<HashMap<String, GitHubGist>, SourceError> {
         let mut gists = HashMap::new();
         self.walk(
@@ -582,8 +546,8 @@ impl GitHubClient {
         .await
     }
 
-    /// [`Self::walk`] `stream`, shaping each element into a draft with `shape` and, with
-    /// `synced_keys`, stopping at the first page with nothing new ([`page_is_caught_up`]).
+    /// [`Self::walk`] `stream` into drafts, stopping, with `synced_keys`, at the first page
+    /// with nothing new ([`page_is_caught_up`]).
     async fn walk_drafts<T: serde::de::DeserializeOwned>(
         &self,
         stream: &PagedStream,
@@ -608,12 +572,10 @@ impl GitHubClient {
         Ok(drafts)
     }
 
-    /// Walk `stream`'s `Link: rel="next"` pages, handing each page's elements to `on_page`,
-    /// which breaks when the walk is caught up and should stop there. An element that fails
-    /// to deserialize is skipped with a warning rather than discarding its page (and every
-    /// earlier one); a body that isn't a JSON array still fails the walk, and so does a
-    /// non-empty page where every element fails, a schema break (see
-    /// [`deserialize_lenient`]).
+    /// Walk `stream`'s `Link: rel="next"` pages, handing each page to `on_page`, which
+    /// breaks once caught up. A bad element is skipped with a warning; a body that isn't a
+    /// JSON array fails the walk, as does a page whose every element fails
+    /// ([`deserialize_lenient`]), a schema break.
     async fn walk<T: serde::de::DeserializeOwned>(
         &self,
         stream: &PagedStream,
@@ -724,8 +686,7 @@ impl UrlKey for GitHubClient {
     }
 }
 
-/// Extract the `page` number of the `rel="next"` link from a GitHub `Link` header,
-/// or `None` when there is no next page.
+/// The `page` of a `Link` header's `rel="next"`, if any.
 fn parse_link_next(link: &str) -> Option<u32> {
     let next = link.split(',').find(|part| part.contains("rel=\"next\""))?;
     let url = next.split('<').nth(1)?.split('>').next()?;

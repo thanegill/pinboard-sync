@@ -21,9 +21,13 @@ unused_async_trait_impl = "allow"
 # `format!` then `collect` reads better than `fold` and `write!`, and no such build is hot.
 format_collect = "allow"
 # Restriction picks: `#[expect]` rather than `#[allow]`, so a suppression that stops firing
-# is noticed; no `dbg!` or `todo!` left in; no `unwrap` outside tests (see clippy.toml).
+# is noticed; no `dbg!` or `todo!` left in; no `unwrap` outside tests (see clippy.toml);
+# output through `stdout.rs`, since `println!` panics on a closed pipe, and messages
+# through `log`.
 allow_attributes = "warn"
 dbg_macro = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
 todo = "warn"
 unwrap_used = "warn"
 

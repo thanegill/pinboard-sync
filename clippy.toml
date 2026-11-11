@@ -1,3 +1,24 @@
 allow-unwrap-in-tests = true
 # Names of things, not code identifiers, in prose.
 doc-valid-idents = ["HackerNews", "YouTube", "ClientHello", ".."]
+disallowed-methods = [
+  { path = "std::io::stdout", reason = "write command output through `stdout.rs`, which carries on after a closed pipe" },
+  { path = "std::io::stderr", reason = "write messages through `log`" },
+  { path = "clap::Parser::parse", reason = "parse through `cli::parse_with`, which refuses a flag given at two levels and adds up `-v`" },
+  { path = "clap::Parser::try_parse", reason = "parse through `cli::parse_with`, which refuses a flag given at two levels and adds up `-v`" },
+  { path = "clap::Parser::parse_from", reason = "parse through `cli::parse_with`, which refuses a flag given at two levels and adds up `-v`" },
+  { path = "clap::Parser::try_parse_from", reason = "parse through `cli::parse_with`, which refuses a flag given at two levels and adds up `-v`" },
+  { path = "clap::Parser::update_from", reason = "parse through `cli::parse_with`, which refuses a flag given at two levels and adds up `-v`" },
+  { path = "clap::Parser::try_update_from", reason = "parse through `cli::parse_with`, which refuses a flag given at two levels and adds up `-v`" },
+  { path = "clap::Command::get_matches", reason = "parse through `cli::parse_with`, which refuses a flag given at two levels and adds up `-v`" },
+  { path = "clap::Command::get_matches_mut", reason = "parse through `cli::parse_with`, which refuses a flag given at two levels and adds up `-v`" },
+  { path = "clap::Command::try_get_matches", reason = "parse through `cli::parse_with`, which refuses a flag given at two levels and adds up `-v`" },
+  { path = "clap::Command::get_matches_from", reason = "parse through `cli::parse_with`, which refuses a flag given at two levels and adds up `-v`" },
+  { path = "clap::Command::try_get_matches_from", reason = "parse through `cli::parse_with`, which refuses a flag given at two levels and adds up `-v`" },
+  { path = "reqwest::Client::new", reason = "build from `http::client_builder()`, which bounds connecting and silence and pings idle h2 connections" },
+  { path = "reqwest::Client::builder", reason = "build from `http::client_builder()`, which bounds connecting and silence and pings idle h2 connections" },
+  { path = "reqwest::ClientBuilder::new", reason = "build from `http::client_builder()`, which bounds connecting and silence and pings idle h2 connections" },
+  { path = "reqwest::get", reason = "send through a client built from `http::client_builder()`, which bounds connecting and silence and pings idle h2 connections" },
+  { path = "std::env::temp_dir", reason = "take a unique directory from `tempfile`, in a test through `test_support::scratch_dir`: a fixed path under `temp_dir()` collides with a concurrent run" },
+  { path = "tempfile::env::temp_dir", reason = "take a test's directory from `test_support::scratch_dir`: a fixed path under `temp_dir()` collides with a concurrent `cargo test`" },
+]

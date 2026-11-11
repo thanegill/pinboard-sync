@@ -86,7 +86,7 @@ async fn connect_error_does_not_leak_query_token() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    let http = reqwest::Client::new();
+    let http = client_builder().no_proxy().build().unwrap();
     let url = format!("http://127.0.0.1:{port}/v1/posts/all");
 
     let budget = ConnectBudget::default();

@@ -443,6 +443,10 @@ pub fn client_builder() -> reqwest::ClientBuilder {
 }
 
 /// [`client_builder`] with `read_timeout` in place of [`READ_TIMEOUT`], for tests.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the one place a client's builder is made"
+)]
 pub(crate) fn client_builder_with_read_timeout(read_timeout: Duration) -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)

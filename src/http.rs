@@ -1,5 +1,4 @@
-//! Shared HTTP helpers used by every client: the retrying send, and quoting a response
-//! body in an error.
+//! The HTTP layer every client shares: the retrying send, and quoting a body in an error.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -15,19 +14,16 @@ use time::OffsetDateTime;
 use tower::retry::{Policy, Retry};
 use tower::ServiceExt;
 
-/// The User-Agent the Pinboard, GitHub and Reddit clients send: the crate name and
-/// version. GitHub requires one, and Reddit rejects generic or missing ones.
+/// The crate name and version. GitHub requires a User-Agent, and Reddit rejects a generic
+/// or missing one.
 pub const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
-/// How long one attempt may take to connect, from DNS through the TLS handshake.
-/// hyper-util, under reqwest, splits the TCP part evenly across each address family's
-/// resolved addresses. A connect that runs out of it is a connect error, so it is retried
-/// on [`CONNECT_BACKOFF`].
+/// One attempt's connect, DNS through the TLS handshake. Running out is a connect error, so
+/// it is retried on [`CONNECT_BACKOFF`].
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Bounds the wait from send to the response headers (connect included), then each gap
-/// between body chunks; must outlast [`CONNECT_TIMEOUT`] so a slow connect still takes the
-/// connect backoff.
+/// The wait for the response headers (connect included), then for each body chunk. Longer
+/// than [`CONNECT_TIMEOUT`], so a slow connect still takes the connect backoff.
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 const _: () = assert!(READ_TIMEOUT.as_secs() > CONNECT_TIMEOUT.as_secs());
@@ -42,12 +38,10 @@ const H2_PING_TIMEOUT: Duration = Duration::from_secs(20);
 const _: () =
     assert!(H2_PING_INTERVAL.as_secs() + H2_PING_TIMEOUT.as_secs() < READ_TIMEOUT.as_secs());
 
-/// The waits before each retry of a request that could not establish a connection (a
-/// DNS, TCP or TLS failure). Exponential and long, about 2.5 minutes of waiting in all,
-/// so a resolver or network that is down for a minute or two is ridden out. The attempts
-/// themselves add to that: against a host that drops SYNs each one blocks for
-/// [`CONNECT_TIMEOUT`]. Not every connect failure clears (a bad certificate, a wrong base
-/// URL); those also wait the schedule out before failing.
+/// The waits before each retry of a request that could not connect (DNS, TCP or TLS), about
+/// 2.5 minutes in all, so a resolver or network down for a minute or two is ridden out.
+/// Each attempt can add [`CONNECT_TIMEOUT`] against a host that drops SYNs, and a failure
+/// that never clears (a bad certificate, a wrong base URL) waits it all out too.
 const CONNECT_BACKOFF: [Duration; 5] = [
     Duration::from_secs(5),
     Duration::from_secs(10),
@@ -56,8 +50,8 @@ const CONNECT_BACKOFF: [Duration; 5] = [
     Duration::from_secs(80),
 ];
 
-/// The linear retry schedule for transient failures (a transport error, 429 or 5xx): up to
-/// `attempts` tries in all, waiting `delay * n` before the nth retry.
+/// The retry schedule for a transport error, 429 or 5xx: `attempts` tries in all, waiting
+/// `delay * n` before the nth retry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinearBackoff {
     attempts: u32,
@@ -70,13 +64,13 @@ impl LinearBackoff {
     }
 }
 
-/// 4 tries, 2s, 4s and 6s apart: about 12s in all, enough to ride out a 5xx blip, and given
-/// up long before any rate limit resets.
+/// 4 tries, 2s, 4s and 6s apart: about 12s, enough for a 5xx blip, and given up long before
+/// any rate limit resets.
 pub const DEFAULT_BACKOFF: LinearBackoff = LinearBackoff::new(4, Duration::from_secs(2));
 
-/// One client's connect allowance, per host: the long [`CONNECT_BACKOFF`] wait is spent
-/// once, and a host with no response for longer than that schedule, unbroken, is given up.
-/// Neither is undone within a run.
+/// One client's connect allowance per host: the [`CONNECT_BACKOFF`] wait is spent once, and
+/// a host with no response for longer than that schedule, unbroken, is given up for the
+/// rest of the run.
 #[derive(Default)]
 pub struct ConnectBudget {
     hosts: RefCell<HashMap<String, HostState>>,
@@ -161,8 +155,7 @@ impl HostBudget<'_> {
         );
     }
 
-    /// `started` is when the attempt began, so an outage dates from its first unanswered
-    /// attempt.
+    /// `started` is when the attempt began: an outage dates from its first unanswered one.
     fn record_attempt(&self, started: Outage, unanswered: bool) {
         self.update(|state| {
             if unanswered {
@@ -203,8 +196,7 @@ impl fmt::Display for Unreachable {
 
 impl std::error::Error for Unreachable {}
 
-/// What a request's retry loop does with a response, as a classifier passed to
-/// [`RetryingClient::send_with`] decides it.
+/// What the retry loop does with a response, as a classifier decides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     /// Return it to the caller.
@@ -217,12 +209,11 @@ pub enum Verdict {
 
 /// How tower's [`Retry`] retries one request to `host`: connect failures on
 /// `connect_delays` while the host's long wait is unspent, other failures and
-/// [`Verdict::Backoff`] responses on the `linear` backoff, and a
-/// [`Verdict::RetryOnceAfter`] once. Ending its linear attempts without a response, after
-/// `give_up_after` of unbroken outage, gives the host up.
+/// [`Verdict::Backoff`] on `linear`, and [`Verdict::RetryOnceAfter`] once. Running out of
+/// linear attempts after `give_up_after` of unbroken outage gives the host up.
 ///
-/// `Retry` clones the policy once per request, so its counters start fresh; `attempts` and
-/// `attempt_started` are shared with that clone.
+/// `Retry` clones the policy once per request, so `attempts` and `attempt_started` are
+/// shared with the clone.
 struct RetryPolicy<'a, Res, E> {
     host: HostBudget<'a>,
     linear: LinearBackoff,
@@ -312,8 +303,8 @@ impl<'a, Res, E> RetryPolicy<'a, Res, E> {
     }
 }
 
-/// `None` silently stops retries and their count; reqwest returns it only for a streaming
-/// body, which no request here has.
+/// `None` silently stops the retries and their count; reqwest returns it only for a
+/// streaming body, which no request here has.
 trait Resend: Sized {
     fn resend(&self) -> Option<Self>;
 }
@@ -375,10 +366,9 @@ pub(crate) async fn sleep(delay: Duration) {
     tokio::time::sleep(delay).await;
 }
 
-/// Runs `fut` with every wait recorded instead of slept, returning its output and
-/// the waits in order. For a test that must know how long a request waited without
-/// timing it, or that talks to a real socket and must not sleep: a paused clock
-/// auto-advances to the next timer whenever the runtime idles on I/O.
+/// Runs `fut` with every wait recorded instead of slept, returning its output and the waits
+/// in order. For a test against a real socket, where a paused clock would auto-advance
+/// whenever the runtime idles on I/O.
 #[cfg(test)]
 pub(crate) async fn recording_waits<T>(fut: impl Future<Output = T>) -> (T, Vec<Duration>) {
     RECORDED_WAITS
@@ -404,8 +394,7 @@ fn retry_after(headers: &reqwest::header::HeaderMap, now: OffsetDateTime) -> Opt
     Some((at - now).try_into().unwrap_or(Duration::ZERO))
 }
 
-/// The default classifier, which [`RetryingClient::send`] uses: a 429 or 5xx is transient
-/// and backs off; anything else goes back to the caller.
+/// [`RetryingClient::send`]'s classifier: a 429 or 5xx backs off, anything else returns.
 pub fn backoff_if_transient(resp: &reqwest::Response) -> Verdict {
     status_verdict(resp.status())
 }
@@ -418,9 +407,8 @@ fn status_verdict(status: reqwest::StatusCode) -> Verdict {
     }
 }
 
-/// A classifier that retries a 429 at most once, after the wait its `Retry-After` asks
-/// for, and only when that is at most `max_wait`; any other 429 goes back to the caller.
-/// Every other status is classified as by [`backoff_if_transient`].
+/// A classifier that retries a 429 once, after its `Retry-After`, when that is at most
+/// `max_wait`; any other 429 returns. Other statuses as [`backoff_if_transient`].
 pub fn retry_after_up_to(max_wait: Duration) -> impl Fn(&reqwest::Response) -> Verdict {
     move |resp| {
         retry_after_verdict(
@@ -447,12 +435,9 @@ fn retry_after_verdict(
     }
 }
 
-/// The starting point for every client's `reqwest::Client`. The TLS ClientHello offers
-/// ALPN `h2, http/1.1`, and the client speaks whichever the server picks. Reddit's edge
-/// 403s a ClientHello with no ALPN extension (#78), which `native-tls-alpn` adds.
-/// Connecting (DNS, TCP and the TLS handshake) is bounded by [`CONNECT_TIMEOUT`], and
-/// silence by [`READ_TIMEOUT`]. No overall timeout: it would cap a slow but steady
-/// `posts/all`.
+/// Every client's `reqwest::Client` starts here. Its ClientHello offers ALPN
+/// `h2, http/1.1`, since Reddit's edge 403s one without ALPN (#78). No overall timeout: it
+/// would cap a slow but steady `posts/all`.
 pub fn client_builder() -> reqwest::ClientBuilder {
     client_builder_with_read_timeout(READ_TIMEOUT)
 }
@@ -467,10 +452,8 @@ pub(crate) fn client_builder_with_read_timeout(read_timeout: Duration) -> reqwes
         .http2_keep_alive_while_idle(true)
 }
 
-/// A client's `reqwest::Client` together with how its requests are retried: its
-/// [`LinearBackoff`] and its [`ConnectBudget`]. Every request a service client sends goes
-/// through [`RetryingClient::send`], so the retry settings are chosen once, where the
-/// client is built, rather than at each call.
+/// A `reqwest::Client` with its retry settings, a [`LinearBackoff`] and a
+/// [`ConnectBudget`], chosen once where the client is built for every request it sends.
 pub struct RetryingClient {
     client: reqwest::Client,
     budget: ConnectBudget,
@@ -491,26 +474,15 @@ impl RetryingClient {
         self.client.get(url)
     }
 
-    /// Send a request, retrying *transient* failures. A request that could not establish a
-    /// connection (per `reqwest::Error::is_connect`: any connector failure, so DNS, TCP
-    /// connect, or the TLS handshake, including one that runs past [`CONNECT_TIMEOUT`]) is
-    /// retried on the long exponential [`CONNECT_BACKOFF`], so a short resolver or network
-    /// outage doesn't fail the run, once per host per client (see [`ConnectBudget`], which
-    /// also gives up hosts). Other transport errors (a connection dropped mid-request, or
-    /// no response headers within [`READ_TIMEOUT`]), HTTP 429, and 5xx are retried on the
-    /// client's [`LinearBackoff`]. Responses that are not transient -- 2xx and other 4xx
-    /// (e.g. 401/403/400) -- are returned as-is for the caller to interpret, since retrying
-    /// them would not help.
+    /// Send a request, retrying transient failures. A connect failure (`is_connect`: DNS,
+    /// TCP or TLS, past [`CONNECT_TIMEOUT`] included) waits out [`CONNECT_BACKOFF`] once
+    /// per host ([`ConnectBudget`]); another transport error, a 429 or a 5xx retries on the
+    /// client's [`LinearBackoff`]. Any other response is returned as-is. Only sending is
+    /// retried: a body that stalls afterwards fails the caller's read.
     ///
-    /// Only sending is retried: a body that stalls after this returns fails the caller's
-    /// read.
-    ///
-    /// `build` is called once and the request cloned for each attempt; one that cannot be
-    /// built fails at once as "building `label`".
-    ///
-    /// A transport error is returned without its request URL, for every client: a URL can
-    /// carry a credential in its query (Pinboard's `auth_token`), which `reqwest::Error`
-    /// prints in both `Display` and `Debug`. `label` names the endpoint instead.
+    /// `build` is called once and the request cloned per attempt. A transport error drops
+    /// its request URL, which can carry a credential (Pinboard's `auth_token`) that
+    /// `reqwest::Error` prints; `label` names the endpoint instead.
     pub async fn send(
         &self,
         label: &str,
@@ -519,9 +491,7 @@ impl RetryingClient {
         self.send_with(label, backoff_if_transient, build).await
     }
 
-    /// [`RetryingClient::send`], with `classify` deciding how each response is retried
-    /// instead of [`backoff_if_transient`]. A response it calls [`Verdict::Done`] comes
-    /// back as-is, for the caller to report.
+    /// [`RetryingClient::send`], with `classify` in place of [`backoff_if_transient`].
     pub async fn send_with(
         &self,
         label: &str,
@@ -576,22 +546,19 @@ where
         .inspect(|resp| log::debug!("{}", protocol_debug_line(resp)))
 }
 
-/// How many attempts a response from [`RetryingClient::send`] took, carried in its
-/// extensions.
+/// How many attempts a [`RetryingClient::send`] response took, in its extensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Attempts(u32);
 
-/// Whether `resp` answered a retry, so an earlier attempt may have reached the server and
-/// already taken effect.
+/// Whether `resp` answered a retry, so an earlier attempt may already have taken effect.
 pub fn answered_a_retry(resp: &reqwest::Response) -> bool {
     resp.extensions()
         .get::<Attempts>()
         .is_some_and(|Attempts(attempts)| *attempts > 1)
 }
 
-/// The debug line naming the protocol a response came over, for checking what each
-/// service negotiates. It names the host alone, since the URL can carry a credential in
-/// its query (Pinboard's `auth_token`).
+/// The debug line naming the protocol a response came over. It names the host alone: the
+/// URL can carry a credential (Pinboard's `auth_token`).
 fn protocol_debug_line(resp: &reqwest::Response) -> String {
     format!(
         "{} answered over {:?}",
@@ -617,10 +584,9 @@ pub const ELLIPSIS: &str = "…";
 /// Stands in for a secret [`redact`] removed.
 pub const REDACTED: &str = "[redacted]";
 
-/// `resp`'s body. When the caller acts on what the body says (`decides`), a read cut off
-/// partway is an error under `context`, without the request URL, since a partial body could
-/// pass for a different answer. Otherwise the body only feeds an error excerpt, and a
-/// failed read leaves it empty.
+/// `resp`'s body. When the caller acts on it (`decides`), a read cut off partway is an
+/// error under `context`, without the URL, since a partial body could pass for another
+/// answer; otherwise it only feeds an error excerpt, and a failed read leaves it empty.
 pub async fn read_body(
     resp: reqwest::Response,
     decides: bool,
@@ -633,10 +599,9 @@ pub async fn read_body(
     }
 }
 
-/// The error `"{what}: {excerpt}"`, quoting a response body as [`error_excerpt`] cuts it,
-/// or just `"{what}"` when the body is blank, with [`body_debug_line`] logged at debug
-/// level first so `-v` shows what the excerpt left out. Both carry the body with `secrets`
-/// [redacted](redact) first, so the cut can't leave part of one behind.
+/// The error `"{what}: {excerpt}"` (just `"{what}"` for a blank body), with the whole body
+/// logged at debug level for `-v`. `secrets` are [redacted](redact) before the body is cut
+/// or logged, so the cut can't leave part of one behind.
 pub fn error_with_body(what: &str, body: &str, secrets: &[&str]) -> anyhow::Error {
     let body = redact(body, secrets);
     log::debug!("{}", body_debug_line(what, &body));
@@ -647,15 +612,14 @@ pub fn error_with_body(what: &str, body: &str, secrets: &[&str]) -> anyhow::Erro
     anyhow!("{what}: {excerpt}")
 }
 
-/// Logs [`body_debug_line`] at debug level with `secrets` [redacted](redact), for a body
-/// worth seeing under `-v` whether or not an error quotes it.
+/// Logs a body at debug level with `secrets` [redacted](redact), for one worth seeing under
+/// `-v` that no error quotes.
 pub fn log_body_at_debug(what: &str, body: &str, secrets: &[&str]) {
     log::debug!("{}", body_debug_line(what, &redact(body, secrets)));
 }
 
-/// `text` with every occurrence of each non-empty secret replaced by [`REDACTED`], the
-/// longest first, so a secret that contains another (a whole cookie and its session
-/// value) is replaced whole.
+/// `text` with each non-empty secret replaced by [`REDACTED`], longest first, so one that
+/// contains another (a cookie and its session value) goes whole.
 pub fn redact(text: &str, secrets: &[&str]) -> String {
     let mut longest_first = secrets.to_vec();
     longest_first.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
@@ -667,15 +631,14 @@ pub fn redact(text: &str, secrets: &[&str]) -> String {
         })
 }
 
-/// The debug line [`log_body_at_debug`] logs: the whole body, uncut, as an escaped string
-/// literal, so its newlines can't start what looks like a separate log line in the journal.
+/// The whole body as an escaped string literal, so its newlines can't fake a separate log
+/// line in the journal.
 fn body_debug_line(what: &str, body: &str) -> String {
     format!("{what}; full response body: {body:?}")
 }
 
-/// `text` with its whitespace collapsed to one line and cut to at most
-/// [`ERROR_BODY_MAX_BYTES`] on a char boundary, with [`ELLIPSIS`] marking the cut, so a
-/// large HTML error page stays out of the journal.
+/// `text` on one line, cut on a char boundary to [`ERROR_BODY_MAX_BYTES`] with
+/// [`ELLIPSIS`], so a large HTML error page stays out of the journal.
 fn error_excerpt(text: &str) -> String {
     let one_line = crate::htmltext::collapse_whitespace(text, " ");
     if one_line.len() <= ERROR_BODY_MAX_BYTES {

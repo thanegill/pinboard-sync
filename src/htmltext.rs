@@ -1,30 +1,22 @@
-//! Shape source-provided text for Pinboard. Titles become single-line plain text
-//! (entities decoded, literal angle brackets kept, whitespace collapsed); HackerNews
-//! note bodies (raw Algolia HTML) become Markdown; quoted bodies are wrapped in a
-//! literal `<blockquote>`, which Pinboard renders in the notes field.
+//! Source text shaped for Pinboard: titles as one line of plain text, HackerNews bodies as
+//! Markdown, quoted bodies in a literal `<blockquote>`, which Pinboard renders.
 
 use html5ever::tendril::TendrilSink;
 use html5ever::{local_name, ns, ParseOpts, QualName};
 use markup5ever_rcdom::{NodeData, RcDom};
 
-/// Clean a title (`description`): decode HTML entities and collapse all internal
-/// whitespace to single spaces (trimmed). HN titles are documented as HTML (HN's item
-/// API, which Algolia indexes verbatim), so their entities need decoding, but neither
-/// they nor GitHub's descriptions carry markup, so literal angle brackets (`Vec<String>`,
-/// `vector<T>`) are preserved verbatim rather than dropped as HTML tags. Literal `<`/`>`
-/// are escaped before parsing so html5ever decodes entities without treating a `<...>`
-/// span as an element to strip. Not for Reddit titles, which `raw_json=1` already returns
-/// unescaped. Only for source text, decoded once: `cleanup` never runs a stored Pinboard
-/// title through this, since that title is already plain text and a second decode would
-/// rewrite a literal `&amp;` on every run (it only collapses the whitespace).
+/// A source title as plain text: entities decoded, whitespace collapsed. HN titles are
+/// HTML-escaped but carry no markup, so literal angle brackets (`Vec<String>`) are escaped
+/// before parsing and survive. Not for Reddit titles (`raw_json=1` returns them unescaped),
+/// nor a stored Pinboard title, which a second decode would rewrite every run (`&amp;`):
+/// cleanup only collapses its whitespace.
 pub fn html_to_plain(s: &str) -> String {
     let escaped = s.replace('<', "&lt;").replace('>', "&gt;");
     collapse_whitespace(&body_fragment_text(&escaped), " ")
 }
 
-/// The text of `html` parsed as the contents of a `<body>`: every text node outside a
-/// `<template>`, in document order. For `html_to_plain`'s escaped input, which has no
-/// tags, that is all of it.
+/// The text nodes of `html` parsed as a `<body>`'s contents, outside any `<template>`. For
+/// `html_to_plain`'s escaped input, which has no tags, that is all of it.
 fn body_fragment_text(html: &str) -> String {
     let body = QualName::new(None, ns!(html), local_name!("body"));
     let dom =
@@ -41,8 +33,7 @@ fn body_fragment_text(html: &str) -> String {
     text
 }
 
-/// `text`'s whitespace-separated words joined by `separator`: every run of whitespace
-/// becomes one `separator`, and leading/trailing whitespace is dropped.
+/// `text`'s words joined by `separator`.
 pub fn collapse_whitespace(text: &str, separator: &str) -> String {
     let mut collapsed = String::with_capacity(text.len());
     for word in text.split_whitespace() {
@@ -54,16 +45,14 @@ pub fn collapse_whitespace(text: &str, separator: &str) -> String {
     collapsed
 }
 
-/// Convert a HackerNews note body (raw HTML from Algolia `story_text`/`comment_text`)
-/// to Markdown. Only ever run over HN HTML -- never over Reddit/GitHub bodies, which are
-/// already Markdown/plain and would be corrupted by escaping. Returns the input verbatim
-/// if the converter errors, so a single odd item never aborts the pass.
+/// A HackerNews body (Algolia's HTML) as Markdown, or verbatim if the converter errors, so
+/// one odd item never aborts the pass. Not for Reddit or GitHub text, already Markdown or
+/// plain, which escaping would corrupt.
 pub fn html_to_markdown(s: &str) -> String {
     htmd::convert(s).unwrap_or_else(|_| s.to_string())
 }
 
-/// Wrap quoted remote body content in a literal `<blockquote>` (Pinboard renders HTML
-/// in the notes field). Used by every source.
+/// `s` in a literal `<blockquote>`, which Pinboard renders in notes.
 pub fn blockquote(s: &str) -> String {
     format!("<blockquote>{s}</blockquote>")
 }

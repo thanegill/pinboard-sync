@@ -1,6 +1,5 @@
-//! Starred gists: a second stream of the GitHub source (`/gists/starred`), shaped like a
-//! repo star. A gist is keyed and canonicalized by its id, which both of its URL forms,
-//! `gist.github.com/<id>` and `gist.github.com/<owner>/<id>`, carry.
+//! Starred gists (`/gists/starred`), shaped like a repo star and keyed by id, which both
+//! `gist.github.com/<id>` and `gist.github.com/<owner>/<id>` carry.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -23,8 +22,8 @@ pub(crate) const GIST_HOST: &str = "gist.github.com";
 /// The base tag `gist_tags` adds to the account's `tags` by default.
 const GIST_TAG: &str = "github-gist";
 
-/// Which of a gist's dates is its post date. There is no starred-at date for gists, so the
-/// default dates a gist by when it was synced.
+/// Which of a gist's dates is its post date. Gists have no starred-at date, so by default a
+/// gist is dated when synced.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GistPostDate {
     #[default]
@@ -33,8 +32,8 @@ pub enum GistPostDate {
     Updated,
 }
 
-/// The complaint about a malformed `gist_post_date`, naming the field and never the
-/// value, which could be a credential pasted into the wrong key.
+/// The error for a malformed `gist_post_date`, naming the field, never the value: it could
+/// be a credential pasted into the wrong key.
 const GIST_POST_DATE_EXPECTED: &str = "`gist_post_date` must be `now`, `created` or `updated`";
 
 impl FromStr for GistPostDate {
@@ -81,7 +80,7 @@ impl fmt::Display for GistPostDate {
 }
 
 /// How an account's starred gists are synced and tagged. Each tag field defaults to the
-/// repo stars' own ([`GistConfig::inheriting`]); an empty prefix disables that tag.
+/// repo stars' ([`GistConfig::inheriting`]); an empty prefix disables its tag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GistConfig {
     /// Whether `sync github` reads the starred gists at all.
@@ -93,8 +92,7 @@ pub struct GistConfig {
 }
 
 impl GistConfig {
-    /// The defaults for an account whose repo stars are tagged `tags`, `lang_prefix` and
-    /// `author_prefix`: the same, with `github-gist` added to the base tags.
+    /// The repo stars' tags, with `github-gist` added to the base tags.
     pub fn inheriting(tags: &[String], lang_prefix: &str, author_prefix: &str) -> Self {
         let mut gist_tags = tags.to_vec();
         if !gist_tags.iter().any(|tag| tag == GIST_TAG) {
@@ -117,7 +115,7 @@ pub(crate) struct GitHubGist {
     html_url: String,
     #[serde(default)]
     pub(crate) description: Option<String>,
-    /// Keyed by filename. A file can be `null` in some responses.
+    /// Keyed by filename; a file can be `null`.
     #[serde(default)]
     files: BTreeMap<String, Option<GitHubGistFile>>,
     #[serde(default)]
@@ -140,19 +138,18 @@ struct GitHubGistOwner {
 }
 
 impl GitHubGist {
-    /// The gist's filenames, in the order the notes list them and the title picks from.
+    /// The filenames, in the order the notes list them and the title picks from.
     pub(crate) fn filenames(&self) -> impl Iterator<Item = &str> {
         self.files.keys().map(String::as_str)
     }
 
-    /// The owner's login, if the gist has one (an anonymous gist has none).
+    /// The owner's login; an anonymous gist has none.
     pub(crate) fn owner(&self) -> Option<&str> {
         self.owner.as_ref().map(|owner| owner.login.as_str())
     }
 
-    /// The gist's URL in the `gist.github.com/<owner>/<id>` form `cleanup github`
-    /// canonicalizes to, falling back to the API's `html_url` (which omits the owner)
-    /// for an anonymous gist. `None` (with a warning) if neither parses.
+    /// The `gist.github.com/<owner>/<id>` URL `cleanup github` canonicalizes to, else the
+    /// API's `html_url` for an anonymous gist. `None` (warned) when neither parses.
     pub(crate) fn canonical_url(&self) -> Option<Url> {
         let canonical = match self.owner() {
             Some(owner) => format!("https://{GIST_HOST}/{owner}/{}", self.id),
@@ -163,7 +160,7 @@ impl GitHubGist {
             .ok()
     }
 
-    /// The title `sync` gives the gist: its description, else its first file, else its id.
+    /// Its description, else its first file, else its id.
     pub(crate) fn title(&self) -> String {
         let description = collapse_whitespace(self.description.as_deref().unwrap_or(""), " ");
         if !description.is_empty() {
@@ -174,13 +171,12 @@ impl GitHubGist {
             .map_or_else(|| self.id.clone(), str::to_string)
     }
 
-    /// The notes `sync` gives the gist: [`gist_note`] of its description and filenames.
+    /// [`gist_note`] of its description and filenames.
     pub(crate) fn note(&self) -> String {
         gist_note(self.description.as_deref(), self.filenames())
     }
 
-    /// The derived tags under `cfg`: a `lang:` tag for each distinct file language, in
-    /// file order, then the owner tag.
+    /// A language tag per distinct file language, in file order, then the owner tag.
     pub(crate) fn derived_tags(&self, cfg: &GistConfig) -> Tags {
         let mut tags = Tags::default();
         let languages = self
@@ -200,8 +196,8 @@ impl GitHubGist {
         tags
     }
 
-    /// The gist's post date under `post_date`, in UTC at whole seconds as a star is dated.
-    /// `None` for [`GistPostDate::Now`] or a date that doesn't parse.
+    /// The post date `post_date` picks, at whole UTC seconds as a star's, or `None` for
+    /// [`GistPostDate::Now`] or an unparseable date.
     pub(crate) fn post_date(&self, post_date: GistPostDate) -> Option<time::OffsetDateTime> {
         let date = match post_date {
             GistPostDate::Now => return None,
@@ -212,8 +208,7 @@ impl GitHubGist {
             .and_then(crate::timefmt::utc_whole_seconds)
     }
 
-    /// Shape the gist into a Pinboard draft under `cfg`. `None` (with a warning) if its
-    /// URL doesn't parse.
+    /// The draft, or `None` (with a warning) when its URL doesn't parse.
     pub(crate) fn into_draft(self, cfg: &GistConfig) -> Option<BookmarkDraft> {
         let url = self.canonical_url()?;
         let dedup_key = GitHubKeys
@@ -237,9 +232,8 @@ impl GitHubGist {
     }
 }
 
-/// The notes for a gist: its `description` in a `<blockquote>` (Pinboard renders HTML in
-/// the notes), then a `Files:` line listing `filenames`. Shared by sync and cleanup so
-/// both produce the same shape.
+/// A gist's notes, for sync and cleanup alike: its `description` in a `<blockquote>`, which
+/// Pinboard renders, then a `Files:` line.
 pub(crate) fn gist_note<'a>(
     description: Option<&str>,
     filenames: impl IntoIterator<Item = &'a str>,
@@ -261,10 +255,9 @@ pub(crate) fn is_gist_host(url: &Url) -> bool {
         .is_some_and(|host| host.strip_prefix("www.").unwrap_or(host) == GIST_HOST)
 }
 
-/// The id of a gist-root URL: `gist.github.com/<id>` or `gist.github.com/<owner>/<id>`,
-/// on either [`is_gist_host`] host, ignoring empty segments and every trailing `.git` in
-/// any case, as for a repo name. `None` for anything else: a deep link (a revision, owner
-/// or not, or `/raw`), an owner's gist list (`gist.github.com/<owner>`), or another host.
+/// The id of a gist-root URL (`gist.github.com/<id>` or `gist.github.com/<owner>/<id>`, on
+/// an [`is_gist_host`] host, empty segments and trailing `.git`s ignored as for a repo
+/// name), or `None` for a deep link, an owner's gist list or another host.
 pub(crate) fn gist_root_id(url: &Url) -> Option<String> {
     if !is_gist_host(url) {
         return None;
@@ -277,16 +270,16 @@ pub(crate) fn gist_root_id(url: &Url) -> Option<String> {
     (is_gist_id(id) && !is_commit_sha(id)).then(|| id.to_ascii_lowercase())
 }
 
-/// Whether `segment` is a revision's commit SHA: 40 hex characters, in either case. No
-/// gist id is that long, so neither `gist.github.com/<id>/<sha>` nor a lone SHA is a root.
+/// Whether `segment` is a commit SHA, 40 hex characters. No gist id is that long, so
+/// neither `gist.github.com/<id>/<sha>` nor a lone SHA is a root.
 fn is_commit_sha(segment: &str) -> bool {
     segment.len() == 40 && segment.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// Whether `segment` is a gist id rather than a username: hex, and either all digits (the
-/// oldest gists' numeric ids) or at least 20 characters (20 or 32 since then), which
-/// leaves out short all-hex usernames like `cafe`. An all-digit username's gist list
-/// passes for an id; `cleanup github`'s lookup of it then finds no gist and leaves it.
+/// Whether `segment` is a gist id rather than a username: hex, and all digits (the oldest
+/// ids) or at least 20 characters, which leaves out short hex usernames like `cafe`. An
+/// all-digit username's gist list passes, and `cleanup github`'s lookup of it finds no gist
+/// and leaves it.
 fn is_gist_id(segment: &str) -> bool {
     !segment.is_empty()
         && segment.chars().all(|c| c.is_ascii_hexdigit())

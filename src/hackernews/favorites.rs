@@ -1,5 +1,4 @@
-//! Scraping the item IDs a user favorited from their `/favorites?id=<user>` pages and the
-//! `&comments=t` stream of them.
+//! Scraping a user's favorited item IDs from `/favorites?id=<user>` and `&comments=t`.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -15,15 +14,13 @@ use crate::backup::{RawKind, RawSink};
 use crate::http::{read_body, retry_after_up_to};
 use crate::source::{page_is_caught_up, BookmarkDraft, DedupKey, Halt, SourceError};
 
-/// The longest `Retry-After` a favorites-page 429 is waited out for, once. A 429 asking
-/// for longer, or for nothing, fails the fetch at once rather than holding the run open.
+/// The longest `Retry-After` a favorites-page 429 is waited out for, once. A longer one, or
+/// none, fails the fetch at once rather than holding the run open.
 const FAVORITES_MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
-/// The pause before each favorites page after a fetch's first, the comments stream's
-/// first page included.
+/// The pause before each favorites page after a fetch's first, the comments' first too.
 pub(super) const FAVORITES_PAGE_PAUSE: Duration = Duration::from_millis(500);
-/// Cap on favorites pages followed via the "More" link (30 items per page, so this
-/// covers thousands of favorites). Bounds a malformed or looping "More" link so the
-/// scrape can't spin forever.
+/// The most "More" links followed (30 items a page), so a malformed or looping link can't
+/// spin the scrape forever.
 pub(super) const MAX_FAVORITES_PAGES: usize = 100;
 
 /// One of a user's two favorites listings.
@@ -34,7 +31,7 @@ pub(super) enum FavoritesStream {
 }
 
 impl FavoritesStream {
-    /// The `backup` stream its pages are captured under, which also names it in messages.
+    /// The `backup` stream its pages go under, which also names it in messages.
     fn name(self) -> &'static str {
         match self {
             FavoritesStream::Stories => "favorites",
@@ -60,17 +57,15 @@ pub(super) struct FavoriteIds {
 }
 
 impl HackerNewsClient {
-    /// Collect the item IDs of the `favorites` stream, following the "More" link across
-    /// pages. With `synced_keys`, each page's items are shaped into drafts as it is read,
-    /// and the walk stops at the first page with nothing new ([`is_caught_up`]).
+    /// The item IDs of the `favorites` stream, following "More" links. With `synced_keys`,
+    /// each page's items are shaped into drafts as it is read, and the walk stops at the
+    /// first page with nothing new ([`is_caught_up`]).
     pub(super) async fn collect_ids(
         &self,
         favorites: FavoritesStream,
         synced_keys: Option<&HashSet<DedupKey>>,
         sink: &mut RawSink,
     ) -> Result<FavoriteIds, SourceError> {
-        // The scraped page is the only record of a favorite HN's API never exposes, so
-        // `backup` keeps it verbatim alongside the Algolia details.
         let stream = favorites.name();
         let mut out = Vec::new();
         let mut drafts = HashMap::new();
@@ -106,6 +101,8 @@ impl HackerNewsClient {
                 crate::http::sleep(FAVORITES_PAGE_PAUSE).await;
             }
             let body = self.favorites_page(&url, stream, page).await?;
+            // The scraped page is the only record of a favorite (HN's API has none), so
+            // `backup` keeps it verbatim.
             sink.push(stream, RawKind::Html, &body);
             let (scraped, more) = match parse_favorite_ids(&body) {
                 FavoritesPage::Recognized { ids, more } => (ids, more),
@@ -163,8 +160,8 @@ impl HackerNewsClient {
         Ok(FavoriteIds { ids: out, drafts })
     }
 
-    /// The body of the favorites page at `url`, page `page` of `stream`. A 429 halts the
-    /// walk as [`Halt::RateLimited`], since every later page would draw one too.
+    /// The body of the favorites page at `url`. A 429 halts the walk as
+    /// [`Halt::RateLimited`]: every later page would draw one too.
     async fn favorites_page(
         &self,
         url: &str,
@@ -199,11 +196,8 @@ impl HackerNewsClient {
         Ok(read_body(resp, true, || format!("reading {label} page {page}")).await?)
     }
 
-    /// Resolve an HN "More" href (typically relative, e.g. `favorites?id=u&p=2`)
-    /// against the favorites origin. Relative hrefs resolve against `base`; an
-    /// absolute href whose host differs from `base` is refused (returns `None`)
-    /// so a hostile favorites page can't steer the crawler at an arbitrary host.
-    /// `stream` names the favorites page the link came from, for the warning.
+    /// A "More" href (usually relative, `favorites?id=u&p=2`) resolved against `base`, or
+    /// `None` for another host, so a hostile page can't steer the crawler elsewhere.
     pub(super) fn resolve(&self, href: &str, stream: &str) -> Option<String> {
         let base = Url::parse(&self.base).ok()?;
         let resolved = base.join(href).ok()?;
@@ -218,11 +212,9 @@ impl HackerNewsClient {
     }
 }
 
-/// Whether a favorites page would give `sync` nothing to write: every item on it that
-/// has a draft in `drafts` has its `dedup_key` among `synced_keys`. Favorites list newest
-/// first, so the pages after it hold nothing new either. A page whose items make no draft
-/// at all (gone from Algolia, or unparseable) is caught up too; an empty page proves
-/// nothing.
+/// Whether a favorites page gives `sync` nothing to write: every item with a draft in
+/// `drafts` is among `synced_keys`, as [`page_is_caught_up`] decides. An item that makes no
+/// draft (gone from Algolia, or unparseable) adds nothing.
 pub(super) fn is_caught_up(
     page: &[HackerNewsItemId],
     drafts: &HashMap<HackerNewsItemId, BookmarkDraft>,
@@ -235,9 +227,8 @@ pub(super) fn is_caught_up(
     )
 }
 
-/// Outcome of parsing a favorites page. `Unrecognized` means the page had neither
-/// favorite rows nor the favorites-page marker: HN's markup likely changed, so the
-/// scrape should fail loudly rather than silently import nothing.
+/// A parsed favorites page. `Unrecognized` has neither favorite rows nor the favorites
+/// marker: HN's markup likely changed, so the scrape fails rather than import nothing.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum FavoritesPage {
     Recognized {
@@ -247,11 +238,8 @@ pub(super) enum FavoritesPage {
     Unrecognized,
 }
 
-/// Parse a favorites page: the favorited item IDs (the `id` of each `tr.athing`
-/// row) and the "More" link href, if any. A page with no rows is only accepted as a
-/// (genuinely empty) favorites list when it carries HN's `<html op="favorites">`
-/// marker; otherwise it is [`FavoritesPage::Unrecognized`]. Pure, so it's unit-tested
-/// on sample HTML.
+/// The `id` of each `tr.athing` row and the "More" href. A page with no rows is
+/// [`FavoritesPage::Unrecognized`] unless it has HN's `<html op="favorites">` marker.
 pub(super) fn parse_favorite_ids(html: &str) -> FavoritesPage {
     let elements = document_elements(html);
     let ids: Vec<String> = elements
@@ -292,16 +280,15 @@ impl Element {
             .map(|attr| &*attr.value)
     }
 
-    /// Whether `class` is one of the whitespace-separated tokens of the `class`
-    /// attribute, compared case-sensitively.
+    /// Whether `class` is one of the `class` attribute's tokens, case-sensitively.
     fn has_class(&self, class: &str) -> bool {
         self.attr("class")
             .is_some_and(|classes| classes.split_whitespace().any(|token| token == class))
     }
 }
 
-/// Every element of `html` parsed as a whole document, in document order. A
-/// `<template>`'s contents follow it, as though they were its children.
+/// Every element of `html`, in document order, a `<template>`'s contents after it as though
+/// they were its children.
 fn document_elements(html: &str) -> Vec<Element> {
     let dom = html5ever::parse_document(RcDom::default(), ParseOpts::default()).one(html);
     let mut elements = Vec::new();

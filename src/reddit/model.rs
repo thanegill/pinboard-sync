@@ -1,5 +1,5 @@
-//! Reddit listing data structures and the bookmark-shaping logic
-//! (URL form, subreddit casing, tag construction).
+//! Reddit listing shapes, and how a saved item becomes a bookmark: its URL, subreddit
+//! casing and tags.
 
 use serde::{Deserialize, Deserializer};
 use time::OffsetDateTime;
@@ -28,11 +28,9 @@ pub struct RedditListingPage {
     pub children: Vec<RedditListingEntry>,
 }
 
-/// Deserialize a listing's children, skipping (with a warning) any single entry that
-/// doesn't match `RedditListingEntry` so one malformed item can't discard a whole page. A
-/// body that isn't a JSON array of objects still fails, keeping an anti-bot HTML page
-/// a genuine error. A non-empty page where *every* child fails is also an error (a schema
-/// break) rather than a silently empty page.
+/// A listing's children, skipping (with a warning) an entry that doesn't parse, so one
+/// can't discard a page. A body that isn't a JSON array still fails (an anti-bot HTML
+/// page), as does a non-empty page whose every child fails (a schema break).
 fn deserialize_lenient_children<'de, D>(
     deserializer: D,
 ) -> Result<Vec<RedditListingEntry>, D::Error>
@@ -50,8 +48,7 @@ where
     })
 }
 
-/// A single entry in a listing: `kind` is `t3` (post) or `t1` (comment), and
-/// `fields` holds its payload.
+/// One listing entry: its kind and payload.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RedditListingEntry {
     pub kind: RedditKind,
@@ -70,8 +67,8 @@ pub enum RedditKind {
     Other,
 }
 
-/// From a string only. A derived enum impl would also accept a single-key map such as
-/// `{"t3": null}`, letting a malformed entry through the lenient listing parse.
+/// From a string only: a derived impl would also take `{"t3": null}`, letting a malformed
+/// entry through the lenient listing parse.
 impl<'de> Deserialize<'de> for RedditKind {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(match String::deserialize(deserializer)?.as_str() {
@@ -82,8 +79,7 @@ impl<'de> Deserialize<'de> for RedditKind {
     }
 }
 
-/// The union of the fields we care about across posts and comments. Reddit
-/// returns many more; `serde` ignores the rest.
+/// The post and comment fields read; the rest are ignored.
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct RedditEntryFields {
     /// Fullname, e.g. `t3_abc123`.
@@ -95,7 +91,7 @@ pub struct RedditEntryFields {
     pub permalink: Option<String>,
     #[serde(default)]
     pub over_18: bool,
-    /// Post/comment creation time (unix epoch seconds, as a float).
+    /// Creation time, epoch seconds as a float.
     #[serde(default)]
     pub created_utc: Option<f64>,
     #[serde(default)]
@@ -126,9 +122,9 @@ pub struct RedditEntryFields {
 }
 
 impl RedditEntryFields {
-    /// The Pinboard notes for a Reddit post, shared by sync and cleanup: its `selftext` in
-    /// a literal `<blockquote>`; nothing for an empty self-post, whose `url` is its own
-    /// permalink and so the bookmark URL; else a link post's external `url`, bare.
+    /// A post's notes, for sync and cleanup alike: its `selftext` in a literal
+    /// `<blockquote>`; nothing for an empty self-post, whose `url` is the bookmark's own;
+    /// else a link post's `url`, bare.
     pub(crate) fn post_note(&self) -> String {
         match self.selftext.as_deref().unwrap_or_default() {
             "" if self.is_self => String::new(),
@@ -138,7 +134,7 @@ impl RedditEntryFields {
     }
 }
 
-/// A normalized saved item ready to become a Pinboard bookmark.
+/// A saved post or comment, ready to become a bookmark.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RedditSavedItem {
     pub fullname: String,
@@ -150,7 +146,7 @@ pub struct RedditSavedItem {
     pub over_18: bool,
     pub title: String,
     pub note: String,
-    /// Post/comment creation time (unix epoch seconds), when present.
+    /// Creation time, epoch seconds.
     pub created_utc: Option<f64>,
     /// Reddit author (`author:<name>` tag).
     pub author: Option<String>,
@@ -161,14 +157,11 @@ pub struct RedditSavedItem {
 }
 
 impl RedditListingEntry {
-    /// Convert a listing entry into a `RedditSavedItem`, or `None` if it is neither a
-    /// post (`t3`) nor a comment (`t1`) or is missing the fields we need. `domain`
-    /// is the reddit host used for the parent-thread link prepended to comments.
+    /// The saved item, or `None` for neither a post nor a comment, or one missing a needed
+    /// field. `domain` hosts a comment's parent-thread link.
     ///
-    /// A post/comment missing `subreddit`/`permalink` is dropped *with a warning*: every
-    /// `RedditEntryFields` field is an optional default, so a renamed required subfield
-    /// still deserializes (as `None`) and slips past the listing's all-fail guard -- the
-    /// warning keeps that silent loss visible.
+    /// A missing `subreddit`/`permalink` warns: every field is optional, so a renamed one
+    /// deserializes as `None` past the listing's all-fail guard.
     pub fn into_saved_item(self, domain: &str) -> Option<RedditSavedItem> {
         let kind = self.kind;
         let wire_kind = match kind {
@@ -207,7 +200,6 @@ impl RedditListingEntry {
                 .unwrap_or_else(|| format!("Post in r/{subreddit}"))
         };
 
-        // Media-type tag, posts only and only for image/video content.
         let media_type = if is_comment {
             None
         } else {
@@ -230,9 +222,9 @@ impl RedditListingEntry {
     }
 }
 
-/// The Pinboard notes for a Reddit comment: its `body` in a literal `<blockquote>`, which
-/// Pinboard renders, after the parent-thread link (a bare comment lacks it). Reddit text
-/// is already Markdown (`raw_json=1`), so it is wrapped as-is, never HTML-converted.
+/// A comment's notes: the parent-thread link, if any, then its `body` in a literal
+/// `<blockquote>`, which Pinboard renders. Reddit text is already Markdown (`raw_json=1`),
+/// so it is never converted.
 pub(crate) fn comment_note(body: &str, link_permalink: Option<&str>, domain: &str) -> String {
     let quoted = if body.is_empty() {
         String::new()
@@ -246,8 +238,7 @@ pub(crate) fn comment_note(body: &str, link_permalink: Option<&str>, domain: &st
     }
 }
 
-/// Build the parent-thread URL for a comment from its `link_permalink` (which may
-/// be absolute or a relative path), relative paths resolved against `domain`.
+/// A comment's parent-thread URL from its `link_permalink`, a relative one on `domain`.
 fn parent_thread_url(link_permalink: Option<&str>, domain: &str) -> Option<String> {
     let lp = link_permalink.filter(|s| !s.is_empty())?;
     if lp.starts_with("http") {
@@ -257,8 +248,7 @@ fn parent_thread_url(link_permalink: Option<&str>, domain: &str) -> Option<Strin
     }
 }
 
-/// The media type of a post -- `image` or `video` -- or `None` for text/link
-/// posts, which don't get a `type:` tag.
+/// A post's media type, `image` or `video`, or `None` for a text or link post.
 fn post_media_type(is_video: bool, post_hint: Option<&str>) -> Option<&'static str> {
     if is_video {
         return Some("video");
@@ -270,18 +260,14 @@ fn post_media_type(is_video: bool, post_hint: Option<&str>) -> Option<&'static s
     }
 }
 
-/// One of [`RedditSavedItem::detail_tags`]: `tag`, and the config prefix that starts every
-/// tag of its family.
+/// One of [`RedditSavedItem::detail_tags`], with the prefix that starts its family.
 pub(crate) struct DetailTag<'c> {
     pub family: &'c str,
     pub tag: String,
 }
 
-/// Per-account reddit config: the host used in bookmark/thread URLs plus the tag
-/// vocabulary. `tags` are applied to every bookmark (defaulting to `["reddit"]`);
-/// the `*_prefix`/conditional fields each default to a built-in value, and an empty
-/// string disables that tag. `media_types` is the allowlist of post media types
-/// (`image`/`video`) that get a `media_prefix` tag.
+/// Per-account Reddit config: the host of bookmark and thread URLs, and the tags. An empty
+/// tag or prefix disables it; `media_types` lists the media types tagged `media_prefix`.
 #[derive(Debug, Clone)]
 pub struct RedditConfig {
     pub domain: String,
@@ -312,12 +298,11 @@ impl Default for RedditConfig {
 }
 
 impl RedditSavedItem {
-    /// The bookmark URL: the permalink under the configured reddit `domain`.
+    /// The permalink on the configured `domain`.
     pub fn bookmark_url(&self, domain: &str) -> String {
         format!("https://{domain}{}", self.permalink)
     }
 
-    /// Build the Pinboard tag list for this item from the reddit config.
     pub fn tags(&self, cfg: &RedditConfig) -> Tags {
         let mut tags = Tags::default();
         tags.push_all(&cfg.tags);
@@ -334,9 +319,8 @@ impl RedditSavedItem {
         tags
     }
 
-    /// The author, flair and media-type tags, each with the config prefix that marks its
-    /// family. Shared with `cleanup`, which backfills a family only when the stored
-    /// bookmark has no tag with that prefix.
+    /// The author, flair and media-type tags, each with its family's prefix: `cleanup`
+    /// backfills a family only when the stored bookmark has none of it.
     pub(crate) fn detail_tags<'c>(&self, cfg: &'c RedditConfig) -> Vec<DetailTag<'c>> {
         let mut families: Vec<DetailTag<'c>> = Vec::new();
         let mut push = |family: &'c str, value: &str| {
@@ -356,8 +340,7 @@ impl RedditSavedItem {
         families
     }
 
-    /// Shape this item into a Pinboard draft using the reddit config. `None` (with a
-    /// warning) if the constructed bookmark URL doesn't parse.
+    /// The draft, or `None` (with a warning) when the bookmark URL doesn't parse.
     pub fn into_draft(self, cfg: &RedditConfig) -> Option<BookmarkDraft> {
         let url = match Url::parse(&self.bookmark_url(&cfg.domain)) {
             Ok(url) => url,
@@ -366,7 +349,6 @@ impl RedditSavedItem {
                 return None;
             }
         };
-        // The host-agnostic dedup key, derived from the same URL.
         let dedup_key = RedditKeys::new([cfg.domain.as_str()])
             .dedup_key(&url)
             .unwrap_or_else(|| url.as_str().into());
@@ -387,8 +369,8 @@ impl RedditSavedItem {
     }
 }
 
-/// The instant a Reddit `created_utc` (epoch seconds, as a float) names, at whole
-/// seconds, as both sync and cleanup date a post by it.
+/// A `created_utc` (epoch seconds as a float) at whole seconds, as sync and cleanup both
+/// date a post.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "whole seconds are the point, and `as` saturates a value out of range"
@@ -397,10 +379,8 @@ pub(crate) fn created_at(created_utc: Option<f64>) -> Option<OffsetDateTime> {
     created_utc.and_then(|secs| crate::timefmt::from_unix(secs as i64))
 }
 
-/// Normalize a subreddit name for tagging: lowercase it, keeping the original
-/// case only when it is multi-word camel/Pascal case -- i.e. it has an internal
-/// lowercase->uppercase boundary (`AskReddit`, `ExplainLikeImFive`). Single words
-/// and all-caps lowercase: `rust`/`Rust`/`NEWS` -> `rust`/`rust`/`news`.
+/// A subreddit as tagged: lowercased, unless it has an internal lowercase-to-uppercase
+/// boundary (`AskReddit`). `rust`/`Rust`/`NEWS` -> `rust`/`rust`/`news`.
 pub fn cased_subreddit(subreddit: &str) -> String {
     let multiword_camel = subreddit
         .chars()
@@ -423,8 +403,7 @@ pub fn unwrap_over18(url: &Url) -> Url {
     current
 }
 
-/// If `url` is a reddit `over18` interstitial, return its `dest` target (the `url`
-/// crate percent-decodes the query value).
+/// The `dest` of a Reddit `over18` interstitial.
 fn over18_dest(url: &Url) -> Option<Url> {
     if !host_matches(url.host_str()?, "reddit.com")
         || !url.path().trim_start_matches('/').starts_with("over18")

@@ -231,7 +231,13 @@ async fn write_drafts_passes_each_drafts_toread_and_shared() {
         draft("https://b.test/", false, false),
     ];
     let pinboard = FakePinboard::default();
-    let _ = write_drafts(&pinboard, &drafts, WriteMode::Live).await;
+    assert_eq!(
+        write_drafts(&pinboard, &drafts, WriteMode::Live).await,
+        WriteTally {
+            written: drafts.len(),
+            failed: 0
+        }
+    );
     let added = pinboard.added.borrow();
     assert_eq!(added.len(), 2);
     assert!(added[0].toread && added[0].shared);
@@ -253,7 +259,13 @@ async fn write_drafts_sends_post_date_as_dt_when_set() {
         draft("https://b.test/", None),
     ];
     let pinboard = FakePinboard::default();
-    let _ = write_drafts(&pinboard, &drafts, WriteMode::Live).await;
+    assert_eq!(
+        write_drafts(&pinboard, &drafts, WriteMode::Live).await,
+        WriteTally {
+            written: drafts.len(),
+            failed: 0
+        }
+    );
     let added = pinboard.added.borrow();
     assert_eq!(added[0].dt, "2010-12-11T19:48:02Z");
     assert_eq!(added[1].dt, "");
@@ -490,7 +502,13 @@ async fn new_drafts_are_written_oldest_first() {
         EPOCH,
     );
     let pinboard = FakePinboard::default();
-    let _ = write_drafts(&pinboard, &new, WriteMode::Live).await;
+    assert_eq!(
+        write_drafts(&pinboard, &new, WriteMode::Live).await,
+        WriteTally {
+            written: new.len(),
+            failed: 0
+        }
+    );
     assert_eq!(
         pinboard.added_urls(),
         ["https://a.test/", "https://b.test/", "https://c.test/"]
@@ -513,7 +531,13 @@ async fn a_capped_job_writes_its_newest_drafts_oldest_first() {
         EPOCH,
     );
     let pinboard = FakePinboard::default();
-    let _ = write_drafts(&pinboard, &new, WriteMode::Live).await;
+    assert_eq!(
+        write_drafts(&pinboard, &new, WriteMode::Live).await,
+        WriteTally {
+            written: new.len(),
+            failed: 0
+        }
+    );
     assert_eq!(
         pinboard.added_urls(),
         ["https://c.test/", "https://d.test/"]
@@ -553,7 +577,13 @@ async fn write_after_interrupting(source: &PagedSource, killed_after: usize) -> 
         &job,
         EPOCH,
     );
-    let _ = write_drafts(&pinboard, &first_run[..killed_after], WriteMode::Live).await;
+    assert_eq!(
+        write_drafts(&pinboard, &first_run[..killed_after], WriteMode::Live).await,
+        WriteTally {
+            written: killed_after,
+            failed: 0
+        }
+    );
 
     let account = replay(&[], &pinboard.ops.borrow());
     let second_run = prepare_new_drafts(
@@ -563,7 +593,13 @@ async fn write_after_interrupting(source: &PagedSource, killed_after: usize) -> 
         &job,
         EPOCH,
     );
-    let _ = write_drafts(&pinboard, &second_run, WriteMode::Live).await;
+    assert_eq!(
+        write_drafts(&pinboard, &second_run, WriteMode::Live).await,
+        WriteTally {
+            written: second_run.len(),
+            failed: 0
+        }
+    );
 
     let mut written = pinboard.added_urls();
     written.sort();
@@ -620,7 +656,14 @@ async fn jobs_are_written_in_turn_each_oldest_first_and_the_earlier_keeps_a_shar
         ));
     }
     let pinboard = FakePinboard::default();
-    let _ = write_drafts(&pinboard, &merge_deduped(per_job), WriteMode::Live).await;
+    let merged = merge_deduped(per_job);
+    assert_eq!(
+        write_drafts(&pinboard, &merged, WriteMode::Live).await,
+        WriteTally {
+            written: merged.len(),
+            failed: 0
+        }
+    );
 
     assert_eq!(
         pinboard.added_urls(),

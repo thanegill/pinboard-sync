@@ -57,6 +57,13 @@ unimplemented = "warn"
 unreachable = "warn"
 unused_result_ok = "warn"
 verbose_file_reads = "warn"
+# An error is handled, not dropped: no `expect` outside tests either, no `map_err(|_| ..)`
+# that loses the cause, no `let _ =` on a `#[must_use]` value, and no `unwrap` or `expect`
+# where `?` would pass the error on.
+expect_used = "warn"
+let_underscore_must_use = "warn"
+map_err_ignore = "warn"
+unwrap_in_result = "warn"
 
 [[bin]]
 name = "pinboard-sync"

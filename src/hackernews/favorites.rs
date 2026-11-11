@@ -9,7 +9,7 @@ use log::{debug, warn};
 use markup5ever_rcdom::{NodeData, RcDom};
 use url::Url;
 
-use super::{HackerNewsClient, HackerNewsItemId};
+use super::{HackerNewsClient, HackerNewsItemId, NotHnItemId};
 use crate::backup::{RawKind, RawSink};
 use crate::http::{read_body, retry_after_up_to};
 use crate::source::{page_is_caught_up, BookmarkDraft, DedupKey, Halt, SourceError};
@@ -119,7 +119,7 @@ impl HackerNewsClient {
                 .iter()
                 .filter_map(|id| {
                     id.parse()
-                        .map_err(|_| {
+                        .map_err(|NotHnItemId| {
                             warn!(
                                 "hn {stream} for '{}': skipping a row with the non-numeric \
                                  id {id:?}",

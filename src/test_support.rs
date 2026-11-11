@@ -68,6 +68,10 @@ impl log::Log for CaptureLogger {
             return;
         }
         let line = format!("{} {}", record.level(), record.args());
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "a record logged outside `capturing_logs` is dropped"
+        )]
         let _ = CAPTURED_LOGS.try_with(|lines| lines.borrow_mut().push(line));
     }
 
@@ -191,8 +195,13 @@ pub fn truncated_body_server_with(
                  Connection: close\r\n\r\n",
                 body.len() + 1000
             );
-            let _ = socket.write_all(head.as_bytes());
-            let _ = socket.write_all(body.as_bytes());
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a client that has already given up is the test's to judge"
+            )]
+            let _ = socket
+                .write_all(head.as_bytes())
+                .and_then(|()| socket.write_all(body.as_bytes()));
         }
     });
     base

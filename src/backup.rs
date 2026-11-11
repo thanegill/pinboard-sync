@@ -255,6 +255,10 @@ pub fn merge_html_pages(bodies: &[&str]) -> String {
 
     let mut out = String::new();
     for (i, body) in bodies.iter().enumerate() {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "writing to a `String` cannot fail"
+        )]
         let _ = writeln!(out, "<!-- pinboard-sync page {} -->", i + 1);
         out.push_str(body);
         if !body.ends_with('\n') {

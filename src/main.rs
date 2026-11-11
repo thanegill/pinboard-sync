@@ -282,15 +282,15 @@ mod tests {
     #[test]
     fn config_check_takes_the_file_as_a_positional() {
         let argv = ["pinboard-sync", "config", "check", "pinboard-sync.toml"];
-        match crate::test_support::parse_cli(argv)
+        let Command::Config {
+            action: ConfigAction::Check { file },
+        } = crate::test_support::parse_cli(argv)
             .expect("parses")
             .command
-        {
-            Command::Config {
-                action: ConfigAction::Check { file },
-            } => assert_eq!(file, Path::new("pinboard-sync.toml")),
-            _ => panic!("expected `config check`"),
-        }
+        else {
+            panic!("expected `config check`");
+        };
+        assert_eq!(file, Path::new("pinboard-sync.toml"));
     }
 
     fn check_config_text(text: &str) -> Result<String> {

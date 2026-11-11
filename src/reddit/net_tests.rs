@@ -511,8 +511,9 @@ async fn the_page_cap_stops_without_a_pause_after_the_last_page() {
         .await;
 
     let (entries, waits) = crate::http::recording_waits(reddit_client(&server).fetch_saved()).await;
-    assert_eq!(entries.unwrap().len(), MAX_SAVED_PAGES as usize);
-    assert_eq!(waits, vec![REQUEST_PAUSE; MAX_SAVED_PAGES as usize - 1]);
+    let pages = usize::try_from(MAX_SAVED_PAGES).unwrap();
+    assert_eq!(entries.unwrap().len(), pages);
+    assert_eq!(waits, vec![REQUEST_PAUSE; pages - 1]);
 }
 
 #[tokio::test]
@@ -769,6 +770,7 @@ async fn assert_cleanup_leaves_what_sync_wrote(api_info_blocked: bool) {
 
     #[expect(
         clippy::cast_precision_loss,
+        clippy::as_conversions,
         reason = "a timestamp is far below where f64 loses whole seconds"
     )]
     let now = time::OffsetDateTime::now_utc().unix_timestamp() as f64;

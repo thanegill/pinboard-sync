@@ -64,6 +64,14 @@ expect_used = "warn"
 let_underscore_must_use = "warn"
 map_err_ignore = "warn"
 unwrap_in_result = "warn"
+# Make casts, clones and catch-alls explicit, and test the real code: no `as` (a lossy or
+# sign-changing cast hides there), an `Rc::clone` rather than a `.clone()` that reads like
+# a deep copy, no `_` arm that would swallow a new enum variant, and no `cfg(not(test))`
+# that leaves the real code untested.
+as_conversions = "warn"
+cfg_not_test = "warn"
+clone_on_ref_ptr = "warn"
+wildcard_enum_match_arm = "warn"
 
 [[bin]]
 name = "pinboard-sync"

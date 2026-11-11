@@ -1,8 +1,6 @@
-//! The sync write path: pick the drafts not already on Pinboard, and write them
-//! sequentially (Pinboard rate-limits `posts/add`). Source reads happen in the caller (so
-//! an `--all` run can fetch services concurrently); only the writes are serialized here.
-//! Generic over the [`UrlKey`]/[`BookmarkStore`] ports so it can be unit-tested with
-//! in-memory fakes.
+//! The sync write path: the drafts not already on Pinboard, written in turn, since Pinboard
+//! rate-limits `posts/add`. The caller reads the sources, concurrently. Generic over the
+//! ports, for the in-memory fakes.
 
 use std::collections::HashSet;
 
@@ -16,8 +14,7 @@ use crate::source::{BookmarkDraft, UrlKey};
 use crate::stdout::outln;
 use crate::timefmt::DateOpts;
 
-/// The drafts not already present on Pinboard, matching each existing bookmark URL
-/// through this source's [`UrlKey::dedup_key`].
+/// The drafts not already on Pinboard, by `source`'s [`UrlKey::dedup_key`].
 pub fn filter_new<S: UrlKey>(
     source: &S,
     drafts: Vec<BookmarkDraft>,
@@ -30,15 +27,14 @@ pub fn filter_new<S: UrlKey>(
         .collect()
 }
 
-/// The per-account settings resolved for one sync job: how much to read and write, the
-/// flags stamped onto every new bookmark, and the post-date policy. A `SyncJob` carries one
-/// next to its client, so the per-job transform can run without the concrete client.
+/// One sync job's resolved settings: how much to read and write, the flags stamped on each
+/// new bookmark, and the post-date policy.
 #[derive(Debug, Clone, Copy)]
 pub struct JobSettings {
     pub limit: SyncLimit,
-    /// Whether this account's new bookmarks are queued to read (`--toread`, `toread`).
+    /// Set by `--toread` / `toread`.
     pub read_later: bool,
-    /// Whether this account's new bookmarks are public (`--public`, `public`).
+    /// Set by `--public` / `public`.
     pub public: bool,
     pub dates: DateOpts,
 }
@@ -51,12 +47,10 @@ pub struct JobSettings {
 ///   [`DateOpts::sync_date`] keeps, or clears so Pinboard dates the bookmark now;
 /// - cut to the per-job `limit`, if any, keeping the newest.
 ///
-/// Returned oldest first, the reverse of the source's newest-first order, so a run cut
-/// short leaves the *newest* items unwritten: they sit on the source's first pages, where
-/// the next run's caught-up check sees them and keeps paging down to the written ones.
-/// Newest first, an interrupted backfill would leave page 1 fully written, and the next
-/// run would stop there and never reach the older items. `now` is a parameter so tests
-/// are deterministic.
+/// Returned oldest first, so a run cut short leaves the newest unwritten: they sit on the
+/// source's first pages, where the next run's caught-up check sees them and pages on down.
+/// Newest first, an interrupted backfill would leave page 1 written, and the next run would
+/// stop there and never reach the older items.
 pub fn prepare_new_drafts<S: UrlKey>(
     source: &S,
     drafts: Vec<BookmarkDraft>,
@@ -79,12 +73,9 @@ pub fn prepare_new_drafts<S: UrlKey>(
     new
 }
 
-/// Flatten each job's prepared drafts into one write batch, keeping the first occurrence
-/// of any `dedup_key` so two drafts the dedup logic treats as one item are written once
-/// (matching [`filter_new`]'s existing-key check -- otherwise two fresh drafts whose URLs
-/// differ byte-for-byte but share a key, e.g. two HN favorites of the same article stored
-/// as `http://x` vs `https://x`, would each be written on a first-time run). Order is
-/// preserved: jobs in order, drafts in order within a job.
+/// Every job's drafts as one batch, in order, keeping the first of each `dedup_key`, as
+/// [`filter_new`] matches: two fresh drafts of one item (an article as `http://x` and
+/// `https://x`) would otherwise both be written.
 pub fn merge_deduped(per_job: Vec<Vec<BookmarkDraft>>) -> Vec<BookmarkDraft> {
     let mut seen = HashSet::new();
     per_job
@@ -94,7 +85,6 @@ pub fn merge_deduped(per_job: Vec<Vec<BookmarkDraft>>) -> Vec<BookmarkDraft> {
         .collect()
 }
 
-/// Tally of a write pass: how many drafts were written vs. failed.
 #[must_use]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WriteTally {
@@ -102,10 +92,8 @@ pub struct WriteTally {
     pub failed: usize,
 }
 
-/// Write `drafts` to Pinboard sequentially (the store spaces its own `posts/add` calls).
-/// A single bookmark that fails to write (e.g. a rejected URL) is logged and skipped so
-/// the rest still go through; the failure is reflected in the returned [`WriteTally`]
-/// for a non-zero exit. Writes nothing in [`WriteMode::DryRun`].
+/// Write `drafts` in turn (the store paces its own calls), or in [`WriteMode::DryRun`] only
+/// print them. One that fails is logged and counted, and the rest still go.
 pub async fn write_drafts<P: BookmarkStore>(
     pinboard: &P,
     drafts: &[BookmarkDraft],
@@ -127,14 +115,11 @@ pub async fn write_drafts<P: BookmarkStore>(
             continue;
         }
 
-        // The sync loop already resolved `public`/`read_later` and the post date on the
-        // draft's bookmark, so write it straight through (the client paces itself).
         match pinboard.add(bm).await {
             Ok(()) => {
                 outcome.written += 1;
                 debug!("added {}  [{}]", bm.url, bm.tags.joined());
             }
-            // Log and skip -- one bad bookmark shouldn't abort the rest of the run.
             Err(e) => {
                 outcome.failed += 1;
                 error!("adding bookmark {}: {e:#}", bm.url);

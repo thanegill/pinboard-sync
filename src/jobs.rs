@@ -1,9 +1,6 @@
-//! `sync` jobs: one per account, each a configured source client plus its auth-failure
-//! hook and settings resolved through the flag -> account -> `[defaults.<source>]` ->
-//! `[pinboard]` ladder. [`SourceAccount`] is what lets `sync`, `backup` and `doctor` treat
-//! the three sources through one generic path. The Pinboard client is built here too
-//! ([`open_pinboard`]), as is [`AllRun`], which tallies an `--all` run's failures, and
-//! [`backup_jobs`] builds `backup`'s targets on the same path.
+//! `sync` jobs, one per account: a source client, its hook and its resolved settings.
+//! [`SourceAccount`] gives `sync`, `backup` ([`backup_jobs`]) and `doctor` one path through
+//! every source. Also [`open_pinboard`] and [`AllRun`], an `--all` run's tally.
 
 pub mod backup_jobs;
 
@@ -27,9 +24,7 @@ use crate::settings::{resolve_hook, resolve_job_settings};
 use crate::source::{BookmarkDraft, DedupKey, Source, SourceError, UrlKey};
 use crate::sync::JobSettings;
 
-/// A target an `--all` run could not build, and why. `sync` and `backup` both carry these
-/// out of their build phase so the run can count each one as failed, and still run the
-/// targets that did build.
+/// A target an `--all` run couldn't build, and why: counted as failed while the rest run.
 pub struct SkippedTarget {
     pub label: String,
     pub reason: anyhow::Error,
@@ -65,8 +60,8 @@ impl<T> Built<T> {
     }
 }
 
-/// A target per configured account of `A`, made by `build`. An account that fails to build
-/// is skipped rather than aborting the rest, so the healthy ones still run.
+/// A target per configured account of `A`, made by `build`; one that fails is skipped, so
+/// the rest still run.
 pub fn build_every<A: SourceAccount, T>(
     overrides: &SyncOverrides,
     config: &Config,
@@ -123,8 +118,7 @@ pub fn build_all_jobs(config: &Config, overrides: &SyncOverrides) -> Built<SyncJ
         ))
 }
 
-/// Warn when an environment secret would stand in for the own value of every configured
-/// account of `A`, through [`secrets::warn_if_env_shared`].
+/// [`secrets::warn_if_env_shared`] for `A`'s accounts.
 pub fn warn_shared_env_secrets<A: SourceAccount>(overrides: &SyncOverrides, config: &Config) {
     secrets::warn_if_env_shared(
         A::SOURCE,
@@ -133,8 +127,8 @@ pub fn warn_shared_env_secrets<A: SourceAccount>(overrides: &SyncOverrides, conf
     );
 }
 
-/// The secrets among `flagged` whose CLI flag holds no value the ladder would take, so
-/// that the environment rung is the highest one that can apply.
+/// The secrets among `flagged` whose flag holds no value the ladder would take, so the
+/// environment is the highest rung that can apply.
 fn unflagged(flagged: &[(SecretSpec, Option<&str>)]) -> Vec<SecretSpec> {
     flagged
         .iter()
@@ -154,7 +148,7 @@ pub enum Selection<'a> {
 
 impl<'a> Selection<'a> {
     /// The selection a source's `[account]` and `--all` make. Both at once is refused: it
-    /// would have to ignore the name, even one no account has.
+    /// would ignore the name, even one no account has.
     pub fn new(account: Option<&'a str>, all: bool) -> Result<Self> {
         match (account, all) {
             (Some(_), true) => bail!("--all cannot be combined with an account name"),
@@ -186,10 +180,9 @@ pub struct SyncOverrides {
 }
 
 impl SyncOverrides {
-    /// Take `--on-auth-failure` from before the source subcommand (on `SyncCmd`), else
-    /// the per-source value. The command line refuses it on both sides, so the per-source
-    /// value here is one from after the subcommand or from `PINBOARD_SYNC_ON_AUTH_FAILURE`,
-    /// which the flag outranks.
+    /// `--on-auth-failure` from before the source subcommand, else the per-source value:
+    /// one given after it, or `PINBOARD_SYNC_ON_AUTH_FAILURE`, which the flag outranks. The
+    /// command line refuses both.
     #[must_use]
     pub fn with_top_level_hook(mut self, on_auth_failure: Option<String>) -> Self {
         self.on_auth_failure = on_auth_failure.or(self.on_auth_failure);
@@ -197,8 +190,7 @@ impl SyncOverrides {
     }
 }
 
-/// A configured source client ready to fetch, plus its auth-failure hook and the
-/// account's resolved write settings.
+/// A source client ready to fetch, with its hook and resolved write settings.
 pub struct SyncJob {
     pub client: SourceClient,
     /// Human label for logs, e.g. `reddit[alice]`.
@@ -208,8 +200,9 @@ pub struct SyncJob {
 }
 
 impl SyncJob {
-    /// The source's drafts: read incrementally against `existing` under
-    /// [`SyncLimit::Auto`], else in full.
+    /// The source's drafts, read incrementally against `existing` under
+    /// [`SyncLimit::Auto`], else in full: a capped run leaves older drafts behind pages
+    /// that already look synced, which an incremental read never gets past.
     pub async fn fetch(&self, existing: &[Bookmark]) -> Result<Vec<BookmarkDraft>, SourceError> {
         match self.settings.limit {
             SyncLimit::Auto => self.client.fetch_incremental(existing).await,
@@ -218,8 +211,7 @@ impl SyncJob {
     }
 }
 
-/// A log/display label for a job: `source[account]`, or `source[default]` when no
-/// named account (an implicit CLI/env invocation).
+/// `source[account]`, or `source[default]` for the implicit CLI/env account.
 fn job_label<A: SourceAccount>(account: Option<&A>) -> String {
     format!(
         "{}[{}]",
@@ -228,8 +220,8 @@ fn job_label<A: SourceAccount>(account: Option<&A>) -> String {
     )
 }
 
-/// One of the concrete source clients, unified behind the `Source` port so `--all`
-/// can fetch them concurrently and the dispatch can treat them uniformly.
+/// One of the source clients, behind the `Source` port so `--all` fetches them
+/// concurrently, as one type.
 pub enum SourceClient {
     Reddit(RedditClient),
     GitHub(GitHubClient),
@@ -277,31 +269,27 @@ impl UrlKey for SourceClient {
     }
 }
 
-/// What `sync`, `backup` and `doctor` need from one source's account type beyond
-/// [`config::Account`], so each handles the three sources through one generic path: how
-/// its client is built from an account plus the CLI overrides, and which auth-failure hook
-/// its jobs carry.
+/// What `sync`, `backup` and `doctor` need of a source's account type beyond
+/// [`config::Account`]: how its client is built, and which hook its jobs carry.
 pub trait SourceAccount: config::Account {
     /// The account's own `on_auth_failure` override.
     fn on_auth_failure(&self) -> Option<&str>;
 
-    /// The secrets [`Self::client`] resolves whose CLI flag in `overrides` holds no usable
-    /// value, so that the environment outranks each account's own value.
+    /// The secrets [`Self::client`] resolves whose flag in `overrides` holds no usable
+    /// value, so the environment outranks each account's own.
     fn env_secrets(overrides: &SyncOverrides) -> Vec<SecretSpec>;
 
-    /// The client for `account`, or for the implicit CLI/env account when `None`, with
-    /// its credentials resolved through the secret ladder. `config` is the whole config,
-    /// for what one source needs to know of another's accounts.
+    /// The client for `account`, or the implicit CLI/env account for `None`. `config` is
+    /// the whole config: a source keys URLs on other accounts' domains.
     fn client(
         account: Option<&Self>,
         overrides: &SyncOverrides,
         config: &Config,
     ) -> Result<SourceClient>;
 
-    /// The auth-failure hook for `account`: `top_hook` (the flag or env value the command
-    /// resolved), else the account's, else the per-source default, else `[hooks]`. Both
-    /// `sync` jobs and `cleanup` resolve it here, so a source that never re-authenticates
-    /// can rule a hook out for every command at once.
+    /// The hook for `account`: `top_hook` (the flag or env value), else the account's, the
+    /// per-source default's or `[hooks]`. Every command resolves it here, so a source that
+    /// never re-authenticates rules it out for every command at once.
     fn hook(account: Option<&Self>, top_hook: Option<String>, config: &Config) -> Option<String> {
         resolve_hook(
             top_hook,
@@ -411,8 +399,7 @@ impl SourceAccount for HackerNewsAccount {
     }
 }
 
-/// The `sync` job for `account` (or the implicit CLI/env account): its client, label and
-/// hook, and its settings resolved through [`resolve_job_settings`].
+/// The `sync` job for `account`, or the implicit CLI/env account.
 pub fn build_job<A: SourceAccount>(
     account: Option<&A>,
     overrides: &SyncOverrides,
@@ -426,7 +413,6 @@ pub fn build_job<A: SourceAccount>(
     })
 }
 
-/// Resolve the Pinboard token and build the client (no fetch).
 fn build_pinboard_client(token_flag: Option<String>, config: &Config) -> Result<PinboardClient> {
     let token = SecretSpec::PINBOARD_TOKEN.require(
         token_flag,
@@ -445,9 +431,7 @@ fn pinboard_client_for_token(token: String, config: &Config) -> Result<PinboardC
     PinboardClient::new(token, rate_limit)
 }
 
-/// Build the client and fetch `posts/all` once. Returns the client and the bookmark
-/// set to share across every account in a run (so `posts/all` -- the most rate-limited
-/// endpoint -- is hit once, not once per account).
+/// The client and `posts/all`, read once for the whole run: it is the most rate-limited.
 pub async fn open_pinboard(
     token_flag: Option<String>,
     config: &Config,
@@ -459,9 +443,8 @@ pub async fn open_pinboard(
     Ok((pinboard, bookmarks))
 }
 
-/// Accumulates failures across an `--all` run: each account is attempted, errors
-/// are reported and counted, and the run errors at the end if any account failed or any
-/// bookmark failed to write.
+/// An `--all` run's failures: every account is attempted, and the run fails at the end if
+/// any account or bookmark write did.
 #[derive(Default)]
 pub struct AllRun {
     pub failed: usize,
@@ -476,8 +459,8 @@ impl AllRun {
         }
     }
 
-    /// Count each skipped target as failed, reporting it as `<label> <what>: <reason>`, and
-    /// return their labels.
+    /// Count each skipped target as failed, logged as `<label> <what>: <reason>`; returns
+    /// the skipped labels.
     pub fn record_skipped(&mut self, skipped: Vec<SkippedTarget>, what: &str) -> Vec<String> {
         skipped
             .into_iter()
@@ -490,7 +473,7 @@ impl AllRun {
             .collect()
     }
 
-    /// Count `count` bookmarks that failed to write, already logged one by one.
+    /// Count bookmarks that failed to write, already logged.
     pub fn record_write_failures(&mut self, count: usize) {
         self.write_failed += count;
     }

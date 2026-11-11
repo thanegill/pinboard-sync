@@ -1,5 +1,5 @@
-//! The `sync`, `backup` and `cleanup` subcommands: building each one's jobs from the
-//! parsed command line and the config, and running them.
+//! The `sync`, `backup` and `cleanup` drivers: their jobs from the command line and the
+//! config, and running them.
 
 use std::path::{Path, PathBuf};
 
@@ -49,9 +49,8 @@ pub async fn run_sync(cmd: SyncCmd, config: &Config) -> Result<()> {
     run_sync_jobs(plan.jobs, run, &pinboard, &bookmarks, mode).await
 }
 
-/// What a `sync` invocation resolves to: the jobs, the overrides they were built from,
-/// and the accounts that could not be built, for the run to count as failed. Mirrors
-/// `backup`'s `BackupPlan`.
+/// What a `sync` invocation resolves to: the jobs, their overrides, and the accounts that
+/// couldn't be built, which the run counts as failed.
 struct SyncPlan {
     jobs: Vec<SyncJob>,
     overrides: SyncOverrides,
@@ -107,8 +106,8 @@ fn build_sync_plan(cmd: SyncCmd, config: &Config) -> Result<SyncPlan> {
     })
 }
 
-/// Fetch every job's source concurrently (reads only, on one task), then write the
-/// merged, de-duplicated drafts to Pinboard sequentially (writes are rate-limited).
+/// Fetch every source concurrently, on one task, then write the merged, deduplicated drafts
+/// in turn: writes are rate-limited.
 async fn run_sync_jobs(
     jobs: Vec<SyncJob>,
     mut run: AllRun,
@@ -139,7 +138,6 @@ async fn run_sync_jobs(
     for (job, result) in jobs.iter().zip(fetched) {
         match result {
             Ok(drafts) => per_job.push(drafts),
-            // Surface the failure (firing the hook on Halt::Reauth) but keep going.
             Err(e) => {
                 warn!("{}: fetch failed", job.label);
                 run.record(Err(handle_source_err(e, job.hook.as_deref())));
@@ -157,17 +155,13 @@ async fn run_sync_jobs(
     if !mode.is_dry_run() {
         info!("done: wrote {}, failed {}", outcome.written, outcome.failed);
     }
-    // Non-zero exit if any source failed to fetch or any bookmark failed to write,
-    // but only after attempting every source and every bookmark we could.
     run.record_write_failures(outcome.failed);
     run.finish()
 }
 
 // --- backup ------------------------------------------------------------------
 
-/// Write a snapshot of every selected service: the verbatim API responses under `raw/`
-/// and the same items as domain bookmarks under `normalized/`, plus a `manifest.json`.
-/// Each run replaces the previous snapshot in place.
+/// Snapshot every selected service, replacing the previous snapshot in place.
 pub async fn run_backup(mut cmd: BackupCmd, config: &Config) -> Result<()> {
     let (top_out, top_mode) = (cmd.out.out.take(), WriteMode::from(cmd.dry_run));
     let plan = build_backup_plan(cmd, config)?;
@@ -176,8 +170,7 @@ pub async fn run_backup(mut cmd: BackupCmd, config: &Config) -> Result<()> {
     back_up(plan.jobs, plan.skipped, &dir, mode).await
 }
 
-/// Run every job of a backup plan into `dir`, then write the manifest, failing the run
-/// if any target was `skipped` or failed.
+/// Run every job into `dir`, then the manifest; any skipped or failed target fails it.
 async fn back_up(
     jobs: Vec<BackupJob>,
     skipped: Vec<SkippedTarget>,
@@ -191,18 +184,15 @@ async fn back_up(
     let mut entries = Vec::new();
     let mut removed = Vec::new();
     let mut failed = run.record_skipped(skipped, "was skipped");
-    // Sequential, unlike `sync`: backup writes are local, so concurrency would only
-    // multiply simultaneous API pressure and interleave the dry-run output.
+    // Sequential, unlike `sync`: writes are local, so concurrency only adds API pressure
+    // and interleaves the dry-run output.
     for job in &jobs {
         info!("{}: backing up", job.label);
         match backup::run_job(&job.client, &job.stem, dir, mode).await {
             Ok(outcome) => {
-                // Recorded whether or not the target is trustworthy: it replaced these
-                // files either way, and leaving them out would let the merged manifest
-                // keep the previous run's entry describing what is no longer there.
-                // The reason is stamped onto each entry as well as counted in `failed`,
-                // because a later clean run of a *different* target rewrites `failed` and
-                // would otherwise leave these files looking healthy.
+                // Recorded even when untrustworthy: it replaced these files either way, and
+                // the merged manifest would keep the stale entries. The reason goes on each
+                // entry too, since a later run of another target rewrites `failed`.
                 entries.extend(outcome.written.into_iter().map(|mut e| {
                     e.unusable.clone_from(&outcome.unusable);
                     e
@@ -224,9 +214,8 @@ async fn back_up(
     if mode.is_dry_run() {
         outln!("[dry-run] {} file(s) would be written.", entries.len());
     } else {
-        // Written even on a partial run, carrying `complete: false` and the failed
-        // targets -- a target that failed left its previous files in place, and the
-        // manifest is what stops them passing as part of this run.
+        // Even on a partial run: a failed target's previous files are still there, and the
+        // manifest is what stops them passing as this run's.
         let now = timefmt::to_rfc3339(time::OffsetDateTime::now_utc()).unwrap_or_default();
         backup::write_manifest(dir, &entries, &removed, &failed, &now)?;
         info!(
@@ -238,11 +227,9 @@ async fn back_up(
     run.finish()
 }
 
-/// The snapshot directory: the `--out` given after the target or before it (the command
-/// line refuses both), else `[backup].directory`. There is no built-in default -- writing
-/// a snapshot into an unexpected working directory is worse than an error -- and an empty
-/// `--out` in either place is refused, as an empty `[backup].directory` is, rather than
-/// skipped.
+/// The snapshot directory: `--out`, given after or before the target, else
+/// `[backup].directory`. No built-in default: a snapshot in an unexpected directory is
+/// worse than an error. An empty `--out` is refused, not skipped.
 fn resolve_backup_dir(flags: [Option<String>; 2], config: &Config) -> Result<PathBuf> {
     if flags.iter().flatten().any(|dir| dir.trim().is_empty()) {
         bail!("`--out` must not be empty");
@@ -259,9 +246,7 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
     match (cmd.all, cmd.source) {
         (true, Some(_)) => bail!("--all cannot be combined with a source subcommand"),
         (true, None) => {
-            // Cleanup normalizes the shared Pinboard bookmark set, so it runs once per
-            // source, github then reddit then hackernews, as the first configured account
-            // of each.
+            // Once per source, as its first account: the bookmarks are shared.
             if !config.has_accounts() {
                 bail!("cleanup --all requires a --config with at least one configured account");
             }
@@ -269,8 +254,7 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
             let reddit = cleanup_all_target::<RedditAccount>(&overrides, config)?;
             let hackernews = cleanup_all_target::<HackerNewsAccount>(&overrides, config)?;
             let (pinboard, bookmarks) = open_pinboard(None, config).await?;
-            // One view across all three sources: each writes, and the next must plan
-            // against what it left rather than the pre-run snapshot.
+            // One view for all three: each plans against what the one before left.
             let mode = WriteMode::from(cmd.dry_run);
             let store = CleanupStore::new(&pinboard, AccountView::new(bookmarks), mode);
             let mut run = AllRun::default();
@@ -315,9 +299,8 @@ pub async fn run_cleanup(cmd: CleanupCmd, config: &Config) -> Result<()> {
     }
 }
 
-/// One source's cleanup pass: the account it runs as (`None` for the implicit CLI/env
-/// account) and its dates. Resolved before `posts/all` is read, so a refused run does not
-/// spend that rate-limited call.
+/// One source's cleanup pass: its account (`None` for the implicit CLI/env one) and dates,
+/// resolved before `posts/all` so a refused run doesn't spend that call.
 struct CleanupTarget<'a, A> {
     account: Option<&'a A>,
     dates: DateOpts,
@@ -334,8 +317,8 @@ fn cleanup_target<'a, A: SourceAccount>(
     Ok(CleanupTarget { account, dates })
 }
 
-/// The [`CleanupTarget`] of `cleanup <source> [account]`: the account named `name`, else
-/// the first, else the implicit CLI/env account.
+/// The [`CleanupTarget`] of `cleanup <source> [account]`: the account `name`, else the
+/// first, else the implicit CLI/env one.
 fn source_cleanup_target<'a, A: SourceAccount>(
     name: Option<&str>,
     overrides: &DateFlags,
@@ -350,8 +333,7 @@ fn source_cleanup_target<'a, A: SourceAccount>(
     )
 }
 
-/// The [`CleanupTarget`] of `A`'s pass in `cleanup --all`, run as the source's first
-/// account, or `None` for a source with no accounts.
+/// The [`CleanupTarget`] of `A`'s `cleanup --all` pass, as its first account, or `None`.
 fn cleanup_all_target<'a, A: SourceAccount>(
     overrides: &DateFlags,
     config: &'a Config,
@@ -381,8 +363,7 @@ async fn run_cleanup_github(
     github.run(&store).await
 }
 
-/// A GitHub cleanup pass's API client, the tag config of every configured GitHub account,
-/// its dates and its auth-failure hook.
+/// A GitHub cleanup pass: its client, every account's tag config, its dates and its hook.
 struct GitHubCleanup {
     client: GitHubClient,
     configured: Vec<GitHubConfig>,
@@ -391,7 +372,6 @@ struct GitHubCleanup {
 }
 
 impl GitHubCleanup {
-    /// The pass for `account`, its client built from the flag/account/env token.
     fn build(
         account: Option<&GitHubAccount>,
         token_flag: Option<String>,
@@ -451,9 +431,7 @@ async fn run_cleanup_reddit(
     reddit.run(&store).await
 }
 
-/// A Reddit cleanup pass's options, the `/api/info` client when a step needs one (which
-/// reads the account's saved listing in its place while it is blocked), and its
-/// auth-failure hook.
+/// A Reddit cleanup pass: options, an `/api/info` client when a step needs one, and hook.
 struct RedditCleanup {
     opts: reddit::cleanup::RedditCleanupOpts,
     client: Option<RedditInfoClient>,
@@ -519,9 +497,8 @@ async fn run_cleanup_hackernews(
     hackernews.run(&store).await
 }
 
-/// Build the HackerNews tag config for a cleanup run, letting `--tag-link` override the
-/// config `tag_link`. The override is validated for whitespace like the config value so a
-/// space-bearing marker (which Pinboard would split, matching nothing) fails loudly.
+/// The HackerNews tag config, with `--tag-link` over `tag_link`, checked as the config
+/// value is: Pinboard would split a marker with a space, and it would match nothing.
 fn resolve_hackernews_cleanup_config(
     account: Option<&HackerNewsAccount>,
     link_tag: Option<String>,
@@ -534,9 +511,8 @@ fn resolve_hackernews_cleanup_config(
     Ok(hn_config)
 }
 
-/// A HackerNews cleanup pass's options, on the tag config
-/// [`resolve_hackernews_cleanup_config`] gives, and its Algolia client. It has no hook:
-/// HackerNews is public, so nothing here can be a re-auth to act on.
+/// A HackerNews cleanup pass: its options and Algolia client. No hook: HackerNews is
+/// public, so nothing can need re-authenticating.
 struct HackerNewsCleanup {
     opts: HackerNewsCleanupOpts,
     client: AlgoliaClient,

@@ -1,6 +1,6 @@
-//! Secret resolution: the ladder every credential resolves through -- CLI flag -> `$VAR` ->
-//! `$VAR_FILE` -> config inline -> config `*_file` -- and the names messages give each
-//! rung, so an error can point at the setting a credential came from without quoting it.
+//! The ladder every credential resolves through (CLI flag -> `$VAR` -> `$VAR_FILE` ->
+//! config inline -> config `*_file`), and the name of each rung, so a message points at the
+//! setting a credential came from without quoting it.
 
 use log::warn;
 
@@ -36,8 +36,8 @@ impl SecretRung {
 }
 
 /// One secret's ladder: the setting each rung reads, as messages name it, and the check a
-/// candidate must pass for the ladder to take it. Every message that names where a secret
-/// came from, or where to set a missing one, is built from these.
+/// candidate must pass. Every message naming where a secret came from, or where to set a
+/// missing one, is built from these.
 #[derive(Debug, Clone, Copy)]
 pub struct SecretSpec {
     /// What the secret is, as "missing X" names it.
@@ -117,8 +117,7 @@ impl SecretSpec {
     }
 
     /// Every setting the secret can come from, in ladder order, as "A, B, C, or the
-    /// config's `x` or `x_file`" for a message to follow "set". The two config rungs share
-    /// one entry rather than naming the config twice.
+    /// config's `x` or `x_file`", to follow "set".
     pub fn settings(self) -> String {
         format!("{}, {}", self.flag, self.settings_without_flag())
     }
@@ -146,9 +145,8 @@ impl SecretSpec {
         (self.accepts)(value)
     }
 
-    /// The secret through the ladder -- CLI flag -> `$VAR` -> `$VAR_FILE` -> config inline
-    /// value -> config file path -- with the setting it came from. Every value is trimmed;
-    /// the first candidate [`Self::accepts`] takes wins.
+    /// The secret through the ladder, with the setting it came from: each value trimmed,
+    /// the first [`Self::accepts`] takes wins.
     pub fn resolve(
         self,
         flag: Option<String>,
@@ -158,8 +156,7 @@ impl SecretSpec {
         self.first_accepted(secret_ladder(flag, self.var, cfg_inline, cfg_file))
     }
 
-    /// [`Self::resolve`] for a secret the run cannot do without: none is the
-    /// [`Self::missing`] error.
+    /// [`Self::resolve`] for a secret the run needs: none is [`Self::missing`]'s error.
     pub fn require(
         self,
         flag: Option<String>,
@@ -207,8 +204,8 @@ pub fn missing_reddit_cookie() -> String {
     )
 }
 
-/// The Reddit cookie through its ladder, skipping a candidate that configures no session
-/// (see [`reddit::cookie::is_configured_cookie`]) as a blank one is skipped.
+/// The Reddit cookie through its ladder, skipping one that configures no session
+/// ([`reddit::cookie::is_configured_cookie`]) as a blank one is.
 pub fn resolve_reddit_cookie(
     flag: Option<String>,
     account: Option<&RedditAccount>,
@@ -220,8 +217,7 @@ pub fn resolve_reddit_cookie(
     )
 }
 
-/// The GitHub token through its ladder, with the setting it came from; none is the
-/// missing-token error.
+/// The GitHub token through its ladder; none is the missing-token error.
 pub fn require_github_token(
     flag: Option<String>,
     account: Option<&GitHubAccount>,
@@ -262,10 +258,9 @@ fn secret_ladder_reading(
     ]
 }
 
-/// Warn when an environment rung of `secrets` applies to more than one configured account
-/// of `source`. The ladder puts `$VAR` and `$VAR_FILE` above every account's own value, so
-/// each of those accounts silently uses the one global value. Names the settings, never
-/// their values.
+/// Warn when an environment rung of `secrets` applies to several accounts of `source`: it
+/// sits above each account's own value, so they all silently use it. Names the settings,
+/// never the values.
 pub fn warn_if_env_shared(source: &str, secrets: &[SecretSpec], accounts: usize) {
     if accounts < 2 {
         return;

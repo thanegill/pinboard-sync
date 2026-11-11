@@ -18,8 +18,8 @@ pub enum Tier {
 }
 
 impl Tier {
-    /// The tier as a message names it, for the setting whose CLI flag is `flag`, of
-    /// `source`'s accounts. It names where the value was set, never the value.
+    /// The tier as a message names it, for the setting with CLI flag `flag` on `source`:
+    /// where the value was set, never the value.
     pub fn describe(self, flag: &str, source: &str) -> String {
         match self {
             Tier::Flag => format!("`{flag}`"),
@@ -37,9 +37,7 @@ pub struct Resolved<T> {
     pub from: Tier,
 }
 
-/// Resolve a setting through its precedence tiers, highest first: the CLI flag, else
-/// the account override, else the per-source default, else the resolved `[pinboard]`
-/// global. The first present (`Some`) value wins; the global is the guaranteed fallback.
+/// The first of the flag, the account and the per-source default given, else `global`.
 pub fn resolve_setting<T>(
     flag: Option<T>,
     account: Option<T>,
@@ -101,10 +99,8 @@ impl ResolvedDates {
     }
 }
 
-/// The `use_post_date` trio for an account, each resolved through [`resolve_setting`]
-/// (flag -> account -> per-source default -> `[pinboard]` global, with `max_age_days`
-/// defaulting to [`config::DEFAULT_MAX_AGE_DAYS`]). Shared by every `sync`/`cleanup`
-/// builder.
+/// The `use_post_date` trio for an account, each through [`resolve_setting`], with
+/// `max_age_days` defaulting to [`config::DEFAULT_MAX_AGE_DAYS`].
 pub fn resolve_dates<A: config::Account>(
     overrides: &DateFlags,
     account: Option<&A>,
@@ -136,10 +132,9 @@ pub fn resolve_dates<A: config::Account>(
     }
 }
 
-/// [`resolve_dates`] for a cleanup pass of an `A` account, refused by
-/// [`ResolvedDates::check_redating`]. Config validation rules the pairing out for the
-/// config tiers alone; this catches it when a flag supplies either half. `pass` names the
-/// pass in the error, e.g. "`cleanup github`".
+/// [`resolve_dates`] for a cleanup pass, through [`ResolvedDates::check_redating`]: config
+/// validation covers the config tiers; this catches a flag supplying either half. `pass`
+/// names the pass in the error ("`cleanup github`").
 pub fn resolve_cleanup_dates<A: config::Account>(
     pass: &str,
     overrides: &DateFlags,
@@ -151,11 +146,8 @@ pub fn resolve_cleanup_dates<A: config::Account>(
     Ok(dates.opts())
 }
 
-/// The per-account settings [`build_job`](crate::jobs::build_job) resolves: the
-/// `limit`/`read_later`/`public` trio through [`resolve_setting`] plus the dates through
-/// [`resolve_dates`], each on the flag -> account -> per-source default -> `[pinboard]`
-/// global ladder. The client, its secrets and the hook come from
-/// [`SourceAccount`](crate::jobs::SourceAccount) instead.
+/// The per-account settings [`build_job`](crate::jobs::build_job) resolves, through
+/// [`resolve_setting`] and [`resolve_dates`].
 pub fn resolve_job_settings<A: config::Account>(
     account: Option<&A>,
     overrides: &SyncOverrides,
@@ -188,8 +180,8 @@ pub fn resolve_job_settings<A: config::Account>(
     }
 }
 
-/// The auth-failure hook: resolved flag/env (`overrides.on_auth_failure`) -> per-account
-/// override -> per-source default -> `[hooks]` global.
+/// The auth-failure hook: `flag` (or its env var), else the account's, else the per-source
+/// default, else `[hooks]`.
 pub fn resolve_hook(
     flag: Option<String>,
     account_override: Option<&str>,

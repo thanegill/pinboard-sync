@@ -1,16 +1,12 @@
-//! Date conversions for the `use_post_date` option: a source post date, as epoch seconds
-//! or an RFC 3339 string, becomes the [`OffsetDateTime`] a bookmark carries, and that
-//! becomes the RFC 3339 `dt` Pinboard expects (e.g. `2010-12-11T19:48:02Z`). Also the
-//! option itself, [`DateOpts`], which sync and every cleanup pass apply (resolved through
-//! the config tiers by [`resolve_dates`](crate::settings::resolve_dates)).
+//! Post dates: a source's epoch or RFC 3339 date as the [`OffsetDateTime`] a bookmark
+//! carries, that as Pinboard's `dt`, and the `use_post_date` policy, [`DateOpts`].
 
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
 const SECS_PER_DAY: i128 = 86_400;
 
-/// Parse an RFC 3339 timestamp into an [`OffsetDateTime`], keeping its offset and any
-/// fractional seconds. `None` if it doesn't parse.
+/// An RFC 3339 timestamp, its offset and fractional seconds kept.
 pub fn parse_rfc3339(s: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(s, &Rfc3339).ok()
 }
@@ -21,36 +17,30 @@ pub fn utc_whole_seconds(dt: OffsetDateTime) -> Option<OffsetDateTime> {
         .map(OffsetDateTime::truncate_to_second)
 }
 
-/// Format an [`OffsetDateTime`] as RFC 3339, keeping its offset and any fractional
-/// seconds, or `None` if that fails. Pinboard's `dt` uses [`to_pinboard_dt`] instead.
+/// `dt` as RFC 3339, offset and fractional seconds kept (for Pinboard, [`to_pinboard_dt`]).
 pub fn to_rfc3339(dt: OffsetDateTime) -> Option<String> {
     dt.format(&Rfc3339).ok()
 }
 
-/// Format an [`OffsetDateTime`] as Pinboard's `dt`, which its API documents as
-/// `CCYY-MM-DDThh:mm:ssZ`: UTC, at whole seconds. `None` if it can't be represented.
+/// `dt` as Pinboard's `dt`, `CCYY-MM-DDThh:mm:ssZ`: UTC, at whole seconds.
 pub fn to_pinboard_dt(dt: OffsetDateTime) -> Option<String> {
     utc_whole_seconds(dt).and_then(to_rfc3339)
 }
 
-/// An [`OffsetDateTime`] from unix epoch seconds -- used to lift a source's epoch post
-/// date into the `cleanup` domain form. `None` if out of range.
+/// An [`OffsetDateTime`] from epoch seconds, or `None` out of range.
 pub fn from_unix(secs: i64) -> Option<OffsetDateTime> {
     OffsetDateTime::from_unix_timestamp(secs).ok()
 }
 
-/// Whether a post created at `timestamp` (epoch) is at most `max_age_days` old relative
-/// to `now` (epoch) -- the `use_post_date` backdate cap. Shared by
-/// [`DateOpts::sync_date`] and [`DateOpts::cleanup_date`].
+/// Whether a post at `timestamp` is at most `max_age_days` old at `now`, both epoch
+/// seconds: the backdate cap.
 fn within_age_cap(now: i64, timestamp: i64, max_age_days: u64) -> bool {
     i128::from(now) - i128::from(timestamp) <= i128::from(max_age_days) * SECS_PER_DAY
 }
 
-/// The `use_post_date` policy: whether to date bookmarks by the source date, the backdate
-/// age cap, and whether `cleanup` pushes stale (older-than-cap) items to "now". Resolved
-/// once per account in [`resolve_dates`](crate::settings::resolve_dates); `sync` applies
-/// the first two via [`DateOpts::sync_date`], and a `cleanup` pass applies all three
-/// uniformly via [`DateOpts::cleanup_date`].
+/// The `use_post_date` policy: whether to date by the source date, the backdate age cap,
+/// and whether `cleanup` moves a stale item to now. Resolved per account by
+/// [`resolve_dates`](crate::settings::resolve_dates).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DateOpts {
     pub use_post_date: bool,
@@ -60,10 +50,8 @@ pub struct DateOpts {
 }
 
 impl DateOpts {
-    /// The creation time a new `sync` bookmark is written with. `candidate` is the source
-    /// post time (if known) and `now` the run's time. Returns the source time when dating
-    /// is on and the post is within the cap; otherwise `None`, so Pinboard dates the
-    /// bookmark "now".
+    /// A new `sync` bookmark's date: `candidate`, the source date, when dating is on and it
+    /// is within the cap, else `None`, so Pinboard dates it now.
     pub fn sync_date(
         self,
         candidate: Option<OffsetDateTime>,
@@ -77,12 +65,9 @@ impl DateOpts {
         })
     }
 
-    /// The creation time a `cleanup` re-write should set. `candidate` is the source post
-    /// time (if known) and `existing` the bookmark's current time. Returns the source time
-    /// when dating is on and the post is within the cap; otherwise `now` when the post is
-    /// stale, `stale_to_now` is set and `existing` is unknown or itself outside the cap;
-    /// otherwise `existing` (unchanged). The age cap compares by instant; the RFC3339
-    /// formatting happens at the write boundary.
+    /// A `cleanup` rewrite's date: `candidate`, the source date, when dating is on and it
+    /// is within the cap; else `now` when it is stale, `stale_to_now` is set and `existing`
+    /// is unknown or outside the cap too; else `existing`. The cap compares by instant.
     pub fn cleanup_date(
         self,
         candidate: Option<OffsetDateTime>,
@@ -102,8 +87,8 @@ impl DateOpts {
         }
     }
 
-    /// Whether [`Self::cleanup_date`] would re-date a stale bookmark on every run rather
-    /// than at most once per cap period: with a zero cap every stored date is outside it.
+    /// Whether [`Self::cleanup_date`] would re-date a stale bookmark on every run, not once
+    /// per cap period: with a zero cap, every stored date is outside it.
     pub fn redates_every_run(self) -> bool {
         self.stale_to_now && self.max_age_days == 0
     }

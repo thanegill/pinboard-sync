@@ -49,6 +49,8 @@ CLAUDE.md keeps only what none of those can catch; these house rules are checked
 - An environment variable is read through `secrets::env_var`, which a test fakes with
   `FakeSecretEnv`: `disallowed-methods`, which can't see clap's own `env` reads, so a test
   parses with `test_support::parse_cli`, which drops them.
+- Clap binds no `env` but `PINBOARD_SYNC_ON_AUTH_FAILURE`, so no secret skips its
+  `SecretSpec`: `cli::tests::clap_reads_only_the_hook_variable`.
 - reqwest uses native-tls with ALPN, since Reddit's edge 403s rustls's TLS fingerprint and
   a ClientHello with no ALPN (#78): `deny.toml` bans the `rustls` crate, and
   `http::net_tests::client_hello_offers_alpn_h2_and_http1` checks the ALPN.
@@ -91,9 +93,9 @@ array and `config::Account` impl to `config.rs`, and implement `SourceAccount`
 
 ## Secrets, errors and the hook
 
-**A secret is read only through a `SecretSpec`**, not `secrets::env_var` or clap's `env`:
-its ladder has the `$VAR_FILE` rung through which [`nix/module.nix`](nix/module.nix) passes
-each systemd credential's *path*, keeping values out of the unit environment.
+**A secret is read only through a `SecretSpec`**, not `secrets::env_var`: its ladder has the
+`$VAR_FILE` rung through which [`nix/module.nix`](nix/module.nix) passes each systemd
+credential's *path*, keeping values out of the unit environment.
 
 **A message names the setting a secret came from, never its value**
 (`secrets::ConfiguredSecret`). A response body goes into an error only through

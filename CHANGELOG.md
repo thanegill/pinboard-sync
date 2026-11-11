@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-11
+
 ### Added
 
 - `sync github` also syncs starred gists, on by default (`gists = false` turns it off),
@@ -611,7 +613,8 @@ generalized the tool to multiple sources.
 - **NixOS module** with an `environmentFile` for secrets, and a secret-resolution
   ladder (CLI flag → `$VAR` → `$VAR_FILE` → `~/.pinboardrc`).
 
-[Unreleased]: https://github.com/thanegill/pinboard-sync/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/thanegill/pinboard-sync/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.7.0
 [0.6.0]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.6.0
 [0.5.2]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.5.2
 [0.5.1]: https://github.com/thanegill/pinboard-sync/releases/tag/v0.5.1

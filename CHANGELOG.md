@@ -123,6 +123,8 @@ All notable changes to this project are documented here. The format is based on
   isn't a number, with a warning.
 - An error for an empty response body no longer ends in a dangling `: `.
 - Reddit no longer pauses after its last saved page when the page cap stops it.
+- A malformed `.env` fails `sync`, `cleanup`, `doctor` and `backup`, naming its line,
+  instead of being skipped silently.
 
 ### Security
 

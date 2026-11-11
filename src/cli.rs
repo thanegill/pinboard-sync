@@ -181,6 +181,19 @@ pub enum Command {
     },
 }
 
+impl Command {
+    /// Whether the command reads settings or secrets from the environment, where a `.env`
+    /// puts them, so a `.env` it can't load must fail it. The others print what is built in
+    /// or check a named file, and a stray `.env` above the build directory must not break
+    /// the Nix package build, which runs `completions`, `man` and `config example`.
+    pub const fn reads_environment(&self) -> bool {
+        match self {
+            Self::Sync(_) | Self::Cleanup(_) | Self::Doctor | Self::Backup(_) => true,
+            Self::Completions { .. } | Self::Man | Self::Config { .. } => false,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub enum ConfigAction {
     /// Print a fully-commented example config (every key with its default).
@@ -1166,6 +1179,24 @@ mod tests {
         ] {
             assert!(help.contains(&format!(" {new}")), "{new}");
             assert!(!help.contains(&format!(" {old}")), "{old}");
+        }
+    }
+
+    #[test]
+    fn only_the_commands_that_read_settings_read_the_environment() {
+        for (argv, reads) in [
+            (&["sync", "reddit"][..], true),
+            (&["cleanup", "github"], true),
+            (&["doctor"], true),
+            (&["backup", "pinboard"], true),
+            (&["completions", "bash"], false),
+            (&["man"], false),
+            (&["config", "example"], false),
+            (&["config", "check", "a.toml"], false),
+        ] {
+            let cli = crate::test_support::parse_cli(["pinboard-sync"].iter().chain(argv))
+                .unwrap_or_else(|error| panic!("{argv:?}: {error}"));
+            assert_eq!(cli.command.reads_environment(), reads, "{argv:?}");
         }
     }
 }

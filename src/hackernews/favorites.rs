@@ -215,7 +215,9 @@ impl HackerNewsClient {
 
 /// Whether a favorites page gives `sync` nothing to write: every item with a draft in
 /// `drafts` is among `synced_keys`, as [`page_is_caught_up`] decides. An item that makes no
-/// draft (gone from Algolia, or unparseable) adds nothing.
+/// draft (gone from Algolia, or unparseable) adds nothing. The test is on drafts, not item
+/// IDs: a favorited story whose article was saved by hand dedups by URL and never gets an
+/// `HN Link:` note, so an ID test would page down to every such item on every run.
 pub(super) fn is_caught_up(
     page: &[HackerNewsItemId],
     drafts: &HashMap<HackerNewsItemId, BookmarkDraft>,

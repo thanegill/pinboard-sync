@@ -93,10 +93,6 @@ array and `config::Account` impl to `config.rs`, and implement `SourceAccount`
 incremental read stops at the first caught-up page, which is only right
 newest-starred-first, so the order must not rest on the API's default.
 
-**HackerNews' caught-up test checks drafts, not item IDs** (`favorites::is_caught_up`): a
-favorited story whose article was saved by hand dedups by URL and never gets an `HN Link:`
-note, so an ID test would page down to every such item on every run.
-
 ## Secrets, errors and the hook
 
 **Every secret keeps its `_FILE` form; never add a `$VAR`-only one**

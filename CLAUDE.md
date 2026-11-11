@@ -136,5 +136,3 @@ cookie (#78), so it must not fire the hook.
 - **Nix sees only git-tracked files**: when dev-shell `cargo` passes but `nix flake check`
   says `file not found`, `git add` the new file, or add it to
   [`nix/package.nix`](nix/package.nix)'s fileset if it is outside `src/`.
-- **`SyncSource`, `CleanupSource` and `BackupTarget` spell their variants `Github` and
-  `Hackernews`, not `GitHub`/`HackerNews`**: clap derives the subcommand names from them.

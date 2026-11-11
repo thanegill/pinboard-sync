@@ -1120,6 +1120,25 @@ mod tests {
         assert_eq!(env_of(&["sync"]), None);
     }
 
+    /// Clap reads only the hook's variable: a secret bound to a flag's `env` would skip the
+    /// `SecretSpec` ladder and its `$VAR_FILE` rung, which the NixOS module relies on.
+    #[test]
+    fn clap_reads_only_the_hook_variable() {
+        use std::collections::BTreeSet;
+        fn env_vars(command: &clap::Command) -> BTreeSet<String> {
+            command
+                .get_arguments()
+                .filter_map(clap::Arg::get_env)
+                .map(|var| var.to_string_lossy().into_owned())
+                .chain(command.get_subcommands().flat_map(env_vars))
+                .collect()
+        }
+        assert_eq!(
+            env_vars(&with_globals_at_every_level(Cli::command())),
+            BTreeSet::from(["PINBOARD_SYNC_ON_AUTH_FAILURE".to_owned()])
+        );
+    }
+
     /// `sync --help` tells the user what the hook flag does and where else it comes from,
     /// not how the code resolves it.
     #[test]

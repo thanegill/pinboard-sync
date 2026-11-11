@@ -60,7 +60,7 @@ pub struct LinearBackoff {
 
 impl LinearBackoff {
     pub const fn new(attempts: u32, delay: Duration) -> Self {
-        LinearBackoff { attempts, delay }
+        Self { attempts, delay }
     }
 }
 
@@ -77,7 +77,7 @@ pub struct ConnectBudget {
 }
 
 impl ConnectBudget {
-    fn host<'a>(&'a self, host: &'a str) -> HostBudget<'a> {
+    const fn host<'a>(&'a self, host: &'a str) -> HostBudget<'a> {
         HostBudget { budget: self, host }
     }
 }
@@ -101,13 +101,13 @@ enum Reach {
 }
 
 impl Reach {
-    fn of(err: &reqwest::Error) -> Reach {
+    fn of(err: &reqwest::Error) -> Self {
         if err.is_connect() {
-            Reach::NoConnection
+            Self::NoConnection
         } else if err.is_timeout() {
-            Reach::NoAnswer
+            Self::NoAnswer
         } else {
-            Reach::Reached
+            Self::Reached
         }
     }
 }
@@ -122,7 +122,7 @@ struct Outage {
 impl Outage {
     fn now() -> Self {
         let now = OffsetDateTime::now_utc();
-        Outage {
+        Self {
             began: tokio::time::Instant::now(),
             began_at: now.replace_nanosecond(0).unwrap_or(now),
         }
@@ -150,7 +150,7 @@ impl HostBudget<'_> {
             self.budget
                 .hosts
                 .borrow_mut()
-                .entry(self.host.to_string())
+                .entry(self.host.to_owned())
                 .or_default(),
         );
     }
@@ -174,7 +174,7 @@ impl HostBudget<'_> {
 
     fn unreachable(&self) -> Option<Unreachable> {
         self.state().given_up.map(|since| Unreachable {
-            host: self.host.to_string(),
+            host: self.host.to_owned(),
             since,
         })
     }
@@ -355,7 +355,7 @@ tokio::task_local! {
 }
 
 /// Sleeps for `delay`, or, inside `recording_waits`, records it and returns at once.
-pub(crate) async fn sleep(delay: Duration) {
+pub async fn sleep(delay: Duration) {
     #[cfg(test)]
     if RECORDED_WAITS
         .try_with(|waits| waits.borrow_mut().push(delay))
@@ -370,7 +370,7 @@ pub(crate) async fn sleep(delay: Duration) {
 /// in order. For a test against a real socket, where a paused clock would auto-advance
 /// whenever the runtime idles on I/O.
 #[cfg(test)]
-pub(crate) async fn recording_waits<T>(fut: impl Future<Output = T>) -> (T, Vec<Duration>) {
+pub async fn recording_waits<T>(fut: impl Future<Output = T>) -> (T, Vec<Duration>) {
     RECORDED_WAITS
         .scope(std::cell::RefCell::default(), async {
             let output = fut.await;
@@ -447,7 +447,7 @@ pub fn client_builder() -> reqwest::ClientBuilder {
     clippy::disallowed_methods,
     reason = "the one place a client's builder is made"
 )]
-pub(crate) fn client_builder_with_read_timeout(read_timeout: Duration) -> reqwest::ClientBuilder {
+pub fn client_builder_with_read_timeout(read_timeout: Duration) -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(read_timeout)
@@ -466,7 +466,7 @@ pub struct RetryingClient {
 
 impl RetryingClient {
     pub fn new(client: reqwest::Client, linear: LinearBackoff) -> Self {
-        RetryingClient {
+        Self {
             client,
             budget: ConnectBudget::default(),
             linear,
@@ -574,10 +574,8 @@ fn protocol_debug_line(resp: &reqwest::Response) -> String {
 /// The host and any non-default port of `url`: what a [`ConnectBudget`] tracks.
 fn authority(url: &reqwest::Url) -> String {
     let host = url.host_str().unwrap_or_default();
-    match url.port() {
-        Some(port) => format!("{host}:{port}"),
-        None => host.to_string(),
-    }
+    url.port()
+        .map_or_else(|| host.to_owned(), |port| format!("{host}:{port}"))
 }
 
 /// The longest [`error_excerpt`] returns, in bytes, including [`ELLIPSIS`].
@@ -630,7 +628,7 @@ pub fn redact(text: &str, secrets: &[&str]) -> String {
     longest_first
         .into_iter()
         .filter(|secret| !secret.is_empty())
-        .fold(text.to_string(), |text, secret| {
+        .fold(text.to_owned(), |text, secret| {
             text.replace(secret, REDACTED)
         })
 }

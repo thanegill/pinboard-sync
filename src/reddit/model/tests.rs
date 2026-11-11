@@ -340,8 +340,8 @@ fn notes_wrap_the_quoted_body_and_keep_links_outside() {
     );
     let post_note = |selftext: &str, url: &str, is_self| {
         RedditEntryFields {
-            selftext: Some(selftext.to_string()),
-            url: Some(url.to_string()),
+            selftext: Some(selftext.to_owned()),
+            url: Some(url.to_owned()),
             is_self,
             ..RedditEntryFields::default()
         }

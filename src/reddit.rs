@@ -217,7 +217,7 @@ impl RedditClient {
         config: RedditConfig,
     ) -> anyhow::Result<Self> {
         Ok(Self {
-            session: RedditSession::new(cookie, REDDIT_BASE.to_string())?,
+            session: RedditSession::new(cookie, REDDIT_BASE.to_owned())?,
             username,
             config,
             reddit_domains: Vec::new(),
@@ -278,7 +278,7 @@ pub struct RedditInfoClient {
 impl RedditInfoClient {
     pub fn new(cookie: ConfiguredSecret, username: Option<String>) -> anyhow::Result<Self> {
         Ok(Self {
-            session: RedditSession::new(Some(cookie), REDDIT_BASE.to_string())?,
+            session: RedditSession::new(Some(cookie), REDDIT_BASE.to_owned())?,
             username,
         })
     }
@@ -473,7 +473,7 @@ async fn reddit_body(
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
-        .to_string();
+        .to_owned();
     let refused = status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN;
     let decides = status.is_success() || refused;
     let body = read_body(resp, decides, || {

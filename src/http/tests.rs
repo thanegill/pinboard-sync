@@ -15,9 +15,9 @@ enum Failure {
 impl Failure {
     fn reach(&self) -> Reach {
         match self {
-            Failure::Connect => Reach::NoConnection,
-            Failure::Timeout => Reach::NoAnswer,
-            Failure::Transport => Reach::Reached,
+            Self::Connect => Reach::NoConnection,
+            Self::Timeout => Reach::NoAnswer,
+            Self::Transport => Reach::Reached,
         }
     }
 }

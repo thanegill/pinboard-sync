@@ -108,9 +108,9 @@ fn hn_link_marker_id(note: &str) -> Option<HackerNewsItemId> {
 /// `note` with `hn_link` appended, unless it carries an `HN Link:` line already.
 fn ensure_hn_link_note(note: &str, hn_link: &str) -> String {
     if note.lines().any(is_hn_link_line) {
-        note.to_string()
+        note.to_owned()
     } else if note.is_empty() {
-        hn_link.to_string()
+        hn_link.to_owned()
     } else {
         format!("{note}\n\n{hn_link}")
     }
@@ -165,12 +165,12 @@ impl CleanupPass for HackerNewsCleanupPass<'_> {
         let mut tags = bookmark.tags.clone();
         tags.push_all(&new.tags);
         new.tags = tags;
-        let generated_link = generated_hn_link(&new.note).map(str::to_string);
+        let generated_link = generated_hn_link(&new.note).map(str::to_owned);
         if !bookmark.note.is_empty() {
-            new.note = match generated_link {
-                Some(link) => ensure_hn_link_note(&bookmark.note, &link),
-                None => bookmark.note.clone(),
-            };
+            new.note = generated_link.map_or_else(
+                || bookmark.note.clone(),
+                |link| ensure_hn_link_note(&bookmark.note, &link),
+            );
         }
         Ok(Plan::Bookmark(new))
     }
@@ -256,7 +256,7 @@ mod tests {
         let id = |note: &str| hn_link_marker_id(note).map(|id| id.to_string());
         assert_eq!(
             id("my note\n\n  HN Link:   https://news.ycombinator.com/item?id=42  "),
-            Some("42".to_string())
+            Some("42".to_owned())
         );
         assert_eq!(
             id("see the HN Link: https://news.ycombinator.com/item?id=42"),

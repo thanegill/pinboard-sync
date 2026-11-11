@@ -342,10 +342,11 @@ impl PostInfo for FakeReddit {
         if self.no_username {
             return None;
         }
-        Some(match &self.saved_error {
-            Some(error) => Err(copy_of(error)),
-            None => Ok(self.saved.clone()),
-        })
+        Some(
+            self.saved_error
+                .as_ref()
+                .map_or_else(|| Ok(self.saved.clone()), |error| Err(copy_of(error))),
+        )
     }
 }
 
@@ -438,7 +439,7 @@ pub struct FakePinboard {
 impl FakePinboard {
     /// An empty fake that trims notes as the Pinboard client does (`trims_notes`).
     pub fn trimming() -> Self {
-        FakePinboard {
+        Self {
             trims_notes: true,
             ..Default::default()
         }
@@ -605,7 +606,7 @@ pub async fn synced_account<S: Source>(source: &S, dates: DateOpts) -> Vec<Bookm
 
 /// `written` as `posts/all` returns it after a `posts/add` that landed at `landed`.
 fn read_back(written: Bookmark, landed: OffsetDateTime) -> Bookmark {
-    let flag = |set: bool| if set { "yes" } else { "no" }.to_string();
+    let flag = |set: bool| if set { "yes" } else { "no" }.to_owned();
     let wire = PinboardBookmark {
         url: written.url.to_string(),
         description: written.title,

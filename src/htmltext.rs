@@ -51,7 +51,7 @@ pub fn collapse_whitespace(text: &str, separator: &str) -> String {
 /// one odd item never aborts the pass. Not for Reddit or GitHub text, already Markdown or
 /// plain, which escaping would corrupt.
 pub fn html_to_markdown(s: &str) -> String {
-    htmd::convert(s).unwrap_or_else(|_| s.to_string())
+    htmd::convert(s).unwrap_or_else(|_| s.to_owned())
 }
 
 /// `s` in a literal `<blockquote>`, which Pinboard renders in notes.

@@ -37,8 +37,8 @@ pub enum BackupClient {
 impl BackupSource for BackupClient {
     async fn dump(&self) -> Result<backup::BackupDump, SourceError> {
         match self {
-            BackupClient::Source(c) => c.dump().await,
-            BackupClient::Pinboard(c) => c.dump().await,
+            Self::Source(c) => c.dump().await,
+            Self::Pinboard(c) => c.dump().await,
         }
     }
 }
@@ -148,7 +148,7 @@ fn build_all_backup_plan(config: &Config) -> Result<BackupPlan> {
                  is NOT in this snapshot"
             );
             plan.skipped.push(SkippedTarget {
-                label: "pinboard".to_string(),
+                label: "pinboard".to_owned(),
                 reason: anyhow!("no credential resolved"),
             });
         }
@@ -213,8 +213,8 @@ fn build_pinboard_backup_job(flag: Option<String>, config: &Config) -> Result<Op
     };
     Ok(Some(BackupJob {
         client: BackupClient::Pinboard(pinboard_client_for_token(token, config)?),
-        stem: "pinboard".to_string(),
-        label: "pinboard".to_string(),
+        stem: "pinboard".to_owned(),
+        label: "pinboard".to_owned(),
         hook: None,
     }))
 }

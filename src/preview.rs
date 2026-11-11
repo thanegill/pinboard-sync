@@ -28,9 +28,9 @@ pub fn detail(text: impl Display) -> String {
 /// A note as a preview shows it: `(removed)` for a write that clears it.
 pub fn note(note: &str) -> String {
     if note.is_empty() {
-        "(removed)".to_string()
+        "(removed)".to_owned()
     } else {
-        note.to_string()
+        note.to_owned()
     }
 }
 

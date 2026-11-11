@@ -33,18 +33,18 @@ pub(super) enum FavoritesStream {
 
 impl FavoritesStream {
     /// The `backup` stream its pages go under, which also names it in messages.
-    fn name(self) -> &'static str {
+    const fn name(self) -> &'static str {
         match self {
-            FavoritesStream::Stories => "favorites",
-            FavoritesStream::Comments => "favorites-comments",
+            Self::Stories => "favorites",
+            Self::Comments => "favorites-comments",
         }
     }
 
     /// What the `/favorites` URL appends to read this stream.
-    fn query_suffix(self) -> &'static str {
+    const fn query_suffix(self) -> &'static str {
         match self {
-            FavoritesStream::Stories => "",
-            FavoritesStream::Comments => "&comments=t",
+            Self::Stories => "",
+            Self::Comments => "&comments=t",
         }
     }
 }

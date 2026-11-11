@@ -109,7 +109,7 @@ fn init_logging(verbose: u8) {
 }
 
 /// The log filter for `verbose` repeats of `-v`, when `RUST_LOG` doesn't set one.
-fn default_filter(verbose: u8) -> &'static str {
+const fn default_filter(verbose: u8) -> &'static str {
     match verbose {
         0 => concat!(env!("CARGO_CRATE_NAME"), "=info"),
         1 => concat!(env!("CARGO_CRATE_NAME"), "=debug"),
@@ -129,7 +129,7 @@ fn log_start(command: &str) {
 /// Write a shell completion script for `shell` to stdout.
 fn print_completions(shell: Shell) -> Result<()> {
     let mut cmd = Cli::command();
-    let name = cmd.get_name().to_string();
+    let name = cmd.get_name().to_owned();
     let mut buf = Vec::new();
     clap_complete::generate(shell, &mut cmd, name, &mut buf);
     stdout::write(buf).context("writing the completion script")
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn the_config_path_is_the_flag_then_the_env_var() {
-        let some = |path: &str| Some(path.to_string());
+        let some = |path: &str| Some(path.to_owned());
         assert_eq!(
             config_path(some("flag.toml"), some("env.toml")),
             some("flag.toml")

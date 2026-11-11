@@ -124,12 +124,12 @@ enum RedditAnswer {
 impl RedditAnswer {
     fn response(self, ok_body: &serde_json::Value) -> ResponseTemplate {
         match self {
-            RedditAnswer::Ok => ResponseTemplate::new(200).set_body_json(ok_body),
-            RedditAnswer::Block => ResponseTemplate::new(403).set_body_raw(
+            Self::Ok => ResponseTemplate::new(200).set_body_json(ok_body),
+            Self::Block => ResponseTemplate::new(403).set_body_raw(
                 "<html><body><h1>You've been blocked by network security.</h1></body></html>",
                 "text/html; charset=utf-8",
             ),
-            RedditAnswer::RefusedCookie => ResponseTemplate::new(403).set_body_string("denied"),
+            Self::RefusedCookie => ResponseTemplate::new(403).set_body_string("denied"),
         }
     }
 }

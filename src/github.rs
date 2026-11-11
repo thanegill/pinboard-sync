@@ -86,7 +86,7 @@ pub struct GitHubConfig {
 
 impl Default for GitHubConfig {
     fn default() -> Self {
-        let tags = vec!["github-star".to_string()];
+        let tags = vec!["github-star".to_owned()];
         let lang_prefix = "lang:";
         let author_prefix = "author:github:";
         Self {
@@ -129,9 +129,7 @@ impl GitHubStarredRepo {
 
 /// The owner and [`repo_name`] of a repo-root path: exactly two non-empty segments
 /// (`/owner//repo/` as `/owner/repo`), the last naming a repo.
-pub(crate) fn repo_path<'a>(
-    segments: impl IntoIterator<Item = &'a str>,
-) -> Option<(&'a str, &'a str)> {
+pub fn repo_path<'a>(segments: impl IntoIterator<Item = &'a str>) -> Option<(&'a str, &'a str)> {
     let segments: Vec<&str> = segments
         .into_iter()
         .filter(|segment| !segment.is_empty())
@@ -175,10 +173,9 @@ const HOMEPAGE_SEPARATOR: &str = "\n\nProject homepage: ";
 /// A repo's notes, for sync and cleanup alike: the `description` in a `<blockquote>`, which
 /// Pinboard renders, else the repo URL, then the homepage outside the quote.
 fn github_note(description: Option<&str>, homepage: Option<&str>, html_url: &str) -> String {
-    let mut note = match description.filter(|s| !s.is_empty()) {
-        Some(desc) => blockquote(desc),
-        None => html_url.to_string(),
-    };
+    let mut note = description
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| html_url.to_owned(), blockquote);
     if let Some(home) = homepage.filter(|s| !s.is_empty()) {
         note = format!("{note}{HOMEPAGE_SEPARATOR}{home}");
     }
@@ -267,24 +264,24 @@ fn rate_limit_message(
 
     if let Some(retry_after) = header("retry-after") {
         // Either delta-seconds or an HTTP-date.
-        return Some(match retry_after.parse::<u64>() {
-            Ok(seconds) => format!("GitHub rate limit hit; retry after {seconds}s"),
-            Err(_) => format!("GitHub rate limit hit; retry after {retry_after}"),
-        });
+        return Some(retry_after.parse::<u64>().map_or_else(
+            |_| format!("GitHub rate limit hit; retry after {retry_after}"),
+            |seconds| format!("GitHub rate limit hit; retry after {seconds}s"),
+        ));
     }
     if header("x-ratelimit-remaining") == Some("0") {
         let reset = header("x-ratelimit-reset")
             .and_then(|value| value.parse::<i64>().ok())
             .and_then(crate::timefmt::from_unix)
             .and_then(crate::timefmt::to_rfc3339);
-        return Some(match reset {
-            Some(at) => format!("GitHub rate limit exhausted; it resets at {at}"),
-            None => "GitHub rate limit exhausted".to_string(),
-        });
+        return Some(reset.map_or_else(
+            || "GitHub rate limit exhausted".to_owned(),
+            |at| format!("GitHub rate limit exhausted; it resets at {at}"),
+        ));
     }
     // A secondary limit may carry neither header, leaving only its message.
     if body.to_lowercase().contains("secondary rate limit") {
-        return Some("GitHub secondary rate limit hit; wait a minute before retrying".to_string());
+        return Some("GitHub secondary rate limit hit; wait a minute before retrying".to_owned());
     }
     None
 }
@@ -353,7 +350,7 @@ pub struct GitHubClient {
 
 impl GitHubClient {
     pub fn new(token: ConfiguredSecret, config: GitHubConfig) -> anyhow::Result<Self> {
-        Self::build(token, config, GITHUB_API_BASE.to_string())
+        Self::build(token, config, GITHUB_API_BASE.to_owned())
     }
 
     fn build(token: ConfiguredSecret, config: GitHubConfig, base: String) -> anyhow::Result<Self> {

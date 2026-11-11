@@ -186,8 +186,8 @@ fn repo_root(url: &Url) -> Option<RepoName> {
     }
     let (owner, name) = repo_path(url.path_segments()?)?;
     Some(RepoName {
-        owner: owner.to_string(),
-        name: name.to_string(),
+        owner: owner.to_owned(),
+        name: name.to_owned(),
     })
 }
 

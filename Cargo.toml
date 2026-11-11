@@ -72,6 +72,14 @@ as_conversions = "warn"
 cfg_not_test = "warn"
 clone_on_ref_ptr = "warn"
 wildcard_enum_match_arm = "warn"
+# Named style picks (four nursery, plus restriction's `str_to_string`), not the whole
+# nursery group: that would bring in `future_not_send`, and the client futures are not
+# `Send` by design.
+missing_const_for_fn = "warn"
+option_if_let_else = "warn"
+redundant_pub_crate = "warn"
+str_to_string = "warn"
+use_self = "warn"
 
 [[bin]]
 name = "pinboard-sync"

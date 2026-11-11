@@ -45,7 +45,7 @@ pub struct RedditCleanupOpts {
 impl RedditCleanupOpts {
     /// Whether the pass reads `/api/info`: for NSFW tagging, title fixing or
     /// `use_post_date`. The notes and tag backfill ride on that read.
-    pub fn needs_post_info(&self) -> bool {
+    pub const fn needs_post_info(&self) -> bool {
         self.mark_nsfw || self.fix_titles || self.dates.use_post_date
     }
 

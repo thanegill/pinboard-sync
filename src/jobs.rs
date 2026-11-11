@@ -37,7 +37,7 @@ pub struct Built<T> {
 }
 
 impl<T> Built<T> {
-    fn none() -> Self {
+    const fn none() -> Self {
         Self {
             targets: Vec::new(),
             skipped: Vec::new(),
@@ -53,7 +53,7 @@ impl<T> Built<T> {
 
     /// `self` followed by `more`.
     #[must_use]
-    pub fn and(mut self, more: Built<T>) -> Self {
+    pub fn and(mut self, more: Self) -> Self {
         self.targets.extend(more.targets);
         self.skipped.extend(more.skipped);
         self
@@ -231,9 +231,9 @@ pub enum SourceClient {
 impl Source for SourceClient {
     async fn fetch(&self) -> Result<Vec<BookmarkDraft>, SourceError> {
         match self {
-            SourceClient::Reddit(c) => c.fetch().await,
-            SourceClient::GitHub(c) => c.fetch().await,
-            SourceClient::HackerNews(c) => c.fetch().await,
+            Self::Reddit(c) => c.fetch().await,
+            Self::GitHub(c) => c.fetch().await,
+            Self::HackerNews(c) => c.fetch().await,
         }
     }
 
@@ -242,9 +242,9 @@ impl Source for SourceClient {
         existing: &[Bookmark],
     ) -> Result<Vec<BookmarkDraft>, SourceError> {
         match self {
-            SourceClient::Reddit(c) => c.fetch_incremental(existing).await,
-            SourceClient::GitHub(c) => c.fetch_incremental(existing).await,
-            SourceClient::HackerNews(c) => c.fetch_incremental(existing).await,
+            Self::Reddit(c) => c.fetch_incremental(existing).await,
+            Self::GitHub(c) => c.fetch_incremental(existing).await,
+            Self::HackerNews(c) => c.fetch_incremental(existing).await,
         }
     }
 }
@@ -252,9 +252,9 @@ impl Source for SourceClient {
 impl BackupSource for SourceClient {
     async fn dump(&self) -> Result<backup::BackupDump, SourceError> {
         match self {
-            SourceClient::Reddit(c) => c.dump().await,
-            SourceClient::GitHub(c) => c.dump().await,
-            SourceClient::HackerNews(c) => c.dump().await,
+            Self::Reddit(c) => c.dump().await,
+            Self::GitHub(c) => c.dump().await,
+            Self::HackerNews(c) => c.dump().await,
         }
     }
 }
@@ -262,9 +262,9 @@ impl BackupSource for SourceClient {
 impl UrlKey for SourceClient {
     fn dedup_key(&self, url: &Url) -> Option<DedupKey> {
         match self {
-            SourceClient::Reddit(c) => c.dedup_key(url),
-            SourceClient::GitHub(c) => c.dedup_key(url),
-            SourceClient::HackerNews(c) => c.dedup_key(url),
+            Self::Reddit(c) => c.dedup_key(url),
+            Self::GitHub(c) => c.dedup_key(url),
+            Self::HackerNews(c) => c.dedup_key(url),
         }
     }
 }
@@ -474,7 +474,7 @@ impl AllRun {
     }
 
     /// Count bookmarks that failed to write, already logged.
-    pub fn record_write_failures(&mut self, count: usize) {
+    pub const fn record_write_failures(&mut self, count: usize) {
         self.write_failed += count;
     }
 

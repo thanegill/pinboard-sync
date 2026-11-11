@@ -524,11 +524,11 @@ async fn chained_rewrite_does_not_delete_another_writes_target() {
 
         let deleted = pinboard.deleted.borrow();
         assert!(
-            deleted.contains(&"https://old-a/".to_string()),
+            deleted.contains(&"https://old-a/".to_owned()),
             "{deleted:?}"
         );
         assert!(
-            !deleted.contains(&"https://collide-b/".to_string()),
+            !deleted.contains(&"https://collide-b/".to_owned()),
             "{deleted:?}"
         );
     }
@@ -730,7 +730,7 @@ async fn the_view_never_drifts_from_the_account() {
         }))
     });
     let pinboard = FakePinboard {
-        fail_update_urls: ["https://f/moved".to_string()].into_iter().collect(),
+        fail_update_urls: ["https://f/moved".to_owned()].into_iter().collect(),
         ..FakePinboard::default()
     };
     let store = store(&pinboard, &seed, WriteMode::Live);
@@ -922,7 +922,7 @@ async fn a_merge_whose_delete_fails_reports_the_write_that_landed() {
         }))
     });
     let pinboard = FakePinboard {
-        fail_delete_urls: ["https://mover/".to_string()].into_iter().collect(),
+        fail_delete_urls: ["https://mover/".to_owned()].into_iter().collect(),
         ..FakePinboard::default()
     };
 
@@ -987,7 +987,7 @@ async fn a_rewrite_whose_delete_fails_still_counts_as_written() {
         }))
     });
     let pinboard = FakePinboard {
-        fail_delete_urls: ["https://old/".to_string()].into_iter().collect(),
+        fail_delete_urls: ["https://old/".to_owned()].into_iter().collect(),
         ..FakePinboard::default()
     };
 
@@ -1018,7 +1018,7 @@ async fn a_failed_merge_protects_a_member_another_group_targets() {
         }))
     });
     let pinboard = FakePinboard {
-        fail_update_urls: ["https://collide/".to_string()].into_iter().collect(),
+        fail_update_urls: ["https://collide/".to_owned()].into_iter().collect(),
         ..FakePinboard::default()
     };
 
@@ -1060,7 +1060,7 @@ async fn a_failed_write_refusal_propagates_like_any_other() {
         }))
     });
     let pinboard = FakePinboard {
-        fail_update_urls: ["https://b/".to_string()].into_iter().collect(),
+        fail_update_urls: ["https://b/".to_owned()].into_iter().collect(),
         ..FakePinboard::default()
     };
 
@@ -1092,7 +1092,7 @@ async fn a_failed_move_protects_the_record_it_left_behind() {
             }))
         });
         let pinboard = FakePinboard {
-            fail_update_urls: ["https://elsewhere/".to_string()].into_iter().collect(),
+            fail_update_urls: ["https://elsewhere/".to_owned()].into_iter().collect(),
             ..FakePinboard::default()
         };
 
@@ -1174,7 +1174,7 @@ async fn a_failed_merge_protects_every_url_its_members_left() {
             }))
         });
         let pinboard = FakePinboard {
-            fail_update_urls: ["https://k/".to_string()].into_iter().collect(),
+            fail_update_urls: ["https://k/".to_owned()].into_iter().collect(),
             ..FakePinboard::default()
         };
 
@@ -1232,7 +1232,7 @@ async fn a_failed_move_protects_every_link_of_the_chain_behind_it() {
     // first-appearance order c and b would land before a tried.
     let (books, pass) = chain_of_three();
     let pinboard = FakePinboard {
-        fail_update_urls: ["https://elsewhere/".to_string()].into_iter().collect(),
+        fail_update_urls: ["https://elsewhere/".to_owned()].into_iter().collect(),
         ..FakePinboard::default()
     };
 
@@ -1477,7 +1477,7 @@ async fn a_bookmark_is_not_a_resident_of_its_own_plan() {
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert!(
-        !updated[0].tags.contains(&"drop-me".to_string()),
+        !updated[0].tags.contains(&"drop-me".to_owned()),
         "the plan dropped this tag; merging with itself would bring it back: {updated:?}"
     );
     assert_eq!(
@@ -1526,12 +1526,12 @@ async fn rewrite_onto_a_resident_outside_the_slice_merges_with_it() {
         updated[0].extended
     );
     assert!(
-        updated[0].tags.contains(&"keepme".to_string()),
+        updated[0].tags.contains(&"keepme".to_owned()),
         "{:?}",
         updated[0].tags
     );
     assert!(
-        updated[0].tags.contains(&"moved".to_string()),
+        updated[0].tags.contains(&"moved".to_owned()),
         "{:?}",
         updated[0].tags
     );
@@ -1593,12 +1593,12 @@ async fn rewrite_onto_skipped_resident_merges_with_it() {
     assert!(updated[0].extended.contains("from A"), "{updated:?}");
     assert!(updated[0].extended.contains("from B"), "{updated:?}");
     assert!(
-        updated[0].tags.contains(&"x".to_string()),
+        updated[0].tags.contains(&"x".to_owned()),
         "{:?}",
         updated[0].tags
     );
     assert!(
-        updated[0].tags.contains(&"y".to_string()),
+        updated[0].tags.contains(&"y".to_owned()),
         "{:?}",
         updated[0].tags
     );
@@ -2467,7 +2467,7 @@ async fn a_refusal_behind_a_failed_write_says_the_write_failed() {
         logs.contains(
             &"WARN skipping cleanup write to https://a/: occupied by a bookmark whose own \
               rewrite failed"
-                .to_string()
+                .to_owned()
         ),
         "{logs:#?}"
     );
@@ -2639,7 +2639,7 @@ async fn a_merge_that_stores_nothing_new_only_absorbs() {
 #[tokio::test]
 async fn an_absorb_whose_delete_fails_is_half_applied() {
     let pinboard = FakePinboard {
-        fail_delete_urls: ["https://mover/".to_string()].into(),
+        fail_delete_urls: ["https://mover/".to_owned()].into(),
         ..FakePinboard::trimming()
     };
     let (resident, mover) = long_resident_and_absorbable_mover();
@@ -3169,7 +3169,7 @@ async fn a_copy_cut_earlier_than_the_target_is_absorbed() {
             .note
             .strip_suffix(TRUNCATION_MARKER)
             .unwrap()
-            .to_string()
+            .to_owned()
     };
     assert!(kept(&incumbent).starts_with(&kept(&mover)));
     assert_ne!(kept(&incumbent), kept(&mover), "the two are cut apart");
@@ -3393,11 +3393,7 @@ async fn assert_a_stored_cut_is_kept(stored_extra: usize, plan_extra: usize) {
         title: format!("{base}{}", "T".repeat(stored_extra)),
         ..template
     });
-    let stored_cut = pinboard
-        .kept_of_cut(&mover.note)
-        .unwrap()
-        .trim()
-        .to_string();
+    let stored_cut = pinboard.kept_of_cut(&mover.note).unwrap().trim().to_owned();
     let plan_title = format!("{base}{}", "T".repeat(plan_extra));
     let pass = FakePass(move |bookmark: &Bookmark| {
         let (note, title) = if bookmark.url.as_str() == "https://target/" {
@@ -3406,7 +3402,7 @@ async fn assert_a_stored_cut_is_kept(stored_extra: usize, plan_extra: usize) {
                 bookmark.title.clone(),
             )
         } else {
-            (LONG_USER_TEXT.to_string(), plan_title.clone())
+            (LONG_USER_TEXT.to_owned(), plan_title.clone())
         };
         Ok(Plan::Bookmark(Bookmark {
             url: u("https://target/"),
@@ -3453,7 +3449,7 @@ async fn a_lead_plan_cannot_vouch_for_a_fragment_a_member_stores_cut() {
         title: title_cutting_inside(&pinboard, &template, "https://mover/"),
         ..template
     });
-    let fragment = pinboard.kept_of_cut(&mover.note).unwrap().to_string();
+    let fragment = pinboard.kept_of_cut(&mover.note).unwrap().to_owned();
     let pass = FakePass(|bookmark: &Bookmark| {
         let (note, title) = if bookmark.url.as_str() == "https://target/" {
             (
@@ -3461,7 +3457,7 @@ async fn a_lead_plan_cannot_vouch_for_a_fragment_a_member_stores_cut() {
                 bookmark.title.clone(),
             )
         } else {
-            (LONG_USER_TEXT.to_string(), "T".to_string())
+            (LONG_USER_TEXT.to_owned(), "T".to_owned())
         };
         Ok(Plan::Bookmark(Bookmark {
             url: u("https://target/"),
@@ -3614,7 +3610,7 @@ async fn an_append_to_a_note_just_under_the_budget_is_not_written() {
 fn with_hi_where_no_marker_fits(pinboard: &FakePinboard) -> Bookmark {
     let with_title = |len: usize, note: &str| Bookmark {
         title: "t".repeat(len),
-        note: note.to_string(),
+        note: note.to_owned(),
         tags: tag_list(&["find-hn"]),
         ..bookmark("https://near/")
     };
@@ -4128,7 +4124,7 @@ async fn assert_a_fragment_is_not_credited_after_a_shift(lead_url: &'static str,
         .collect();
     let lead_note = (0..shift)
         .map(|n| format!("extra {n}"))
-        .chain([ID38.to_string()])
+        .chain([ID38.to_owned()])
         .chain(own.iter().cloned())
         .chain(["z".repeat(4000)])
         .collect::<Vec<_>>()
@@ -4136,7 +4132,7 @@ async fn assert_a_fragment_is_not_credited_after_a_shift(lead_url: &'static str,
     let mover_note = own
         .iter()
         .cloned()
-        .chain([ID27.to_string(), "tail".to_string()])
+        .chain([ID27.to_owned(), "tail".to_owned()])
         .collect::<Vec<_>>()
         .join("\n\n");
     let pinboard = FakePinboard::trimming();
@@ -4267,7 +4263,7 @@ async fn a_duplicate_whose_blocks_a_merge_reorders_is_still_absorbed() {
     assert!(pinboard.kept_of_cut(&resident.note).is_none());
     let mover = pinboard.fit(Bookmark {
         title: "T".repeat(45),
-        note: std::iter::once("user annotation".to_string())
+        note: std::iter::once("user annotation".to_owned())
             .chain((0..500).map(filler))
             .collect::<Vec<_>>()
             .join("\n\n"),
@@ -4341,7 +4337,7 @@ async fn a_target_cut_from_the_stored_note_is_not_credited_to_the_merged_block()
         .expect("a title that cuts inside the link");
     let pass = FakePass(move |bookmark: &Bookmark| {
         let note = if bookmark.url.as_str() == "https://base/" {
-            "x".to_string()
+            "x".to_owned()
         } else {
             bookmark.note.clone()
         };
@@ -4471,7 +4467,7 @@ async fn a_block_the_plan_rewrites_is_the_members_own_up_to_the_change_after_an_
 #[tokio::test]
 async fn a_duplicate_whose_stored_block_starts_a_later_block_is_still_absorbed() {
     let link = "HN Link: https://news.ycombinator.com/item?id=1";
-    let full = std::iter::once(link.to_string())
+    let full = std::iter::once(link.to_owned())
         .chain((1..=300u64).flat_map(|n| {
             [
                 format!("{:016x} para", n.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ n),
@@ -4558,7 +4554,7 @@ async fn a_duplicate_whose_stored_cut_starts_a_later_block_is_still_absorbed() {
     };
     let stored_cut = |fitted: &Bookmark| {
         let kept = pinboard.kept_of_cut(&fitted.note).expect("the note is cut");
-        kept.rsplit("\n\n").next().unwrap_or(kept).to_string()
+        kept.rsplit("\n\n").next().unwrap_or(kept).to_owned()
     };
     let incumbent = (200..400)
         .map(|title_len| pinboard.fit(at_target("A".repeat(title_len))))
@@ -4721,7 +4717,7 @@ async fn a_half_applied_merge_names_how_many_absorbed_urls_remain() {
         }))
     });
     let pinboard = FakePinboard {
-        fail_delete_urls: ["https://mover-2/".to_string()].into(),
+        fail_delete_urls: ["https://mover-2/".to_owned()].into(),
         ..FakePinboard::default()
     };
 
@@ -4802,7 +4798,7 @@ async fn a_merge_in_a_cycle_never_deletes_a_url_another_group_writes() {
 /// A Pinboard that refuses every write to `https://target/` as too long, with a 414.
 fn refusing_writes_to_the_target() -> FakePinboard {
     FakePinboard {
-        too_long_urls: ["https://target/".to_string()].into(),
+        too_long_urls: ["https://target/".to_owned()].into(),
         ..FakePinboard::trimming()
     }
 }
@@ -4943,7 +4939,7 @@ async fn a_swap_whose_second_write_is_refused_fails_the_run() {
         }))
     });
     let pinboard = FakePinboard {
-        too_long_urls: ["https://b/".to_string()].into(),
+        too_long_urls: ["https://b/".to_owned()].into(),
         ..FakePinboard::trimming()
     };
 
@@ -4978,7 +4974,7 @@ async fn a_cycle_whose_refusal_strands_a_written_over_record_fails_the_run() {
         }))
     });
     let pinboard = FakePinboard {
-        too_long_urls: ["https://c/".to_string()].into(),
+        too_long_urls: ["https://c/".to_owned()].into(),
         ..FakePinboard::trimming()
     };
 
@@ -5026,7 +5022,7 @@ async fn cycle_with_a_held_back_plan(pinboard: &FakePinboard) -> PassOutcome {
 #[tokio::test]
 async fn a_plan_held_back_from_a_group_a_failed_write_strands_is_still_refused() {
     let pinboard = FakePinboard {
-        fail_update_urls: ["https://c/".to_string()].into(),
+        fail_update_urls: ["https://c/".to_owned()].into(),
         ..FakePinboard::trimming()
     };
     let outcome = cycle_with_a_held_back_plan(&pinboard).await;
@@ -5063,7 +5059,7 @@ async fn a_held_back_plan_counts_once_whichever_write_is_refused() {
 /// note, and says so up front ([`BookmarkStore::can_write`]).
 fn unable_to_write_the_target() -> FakePinboard {
     FakePinboard {
-        unwritable_urls: ["https://target/".to_string()].into(),
+        unwritable_urls: ["https://target/".to_owned()].into(),
         ..FakePinboard::trimming()
     }
 }

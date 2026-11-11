@@ -11,7 +11,7 @@ fn response(status: u16, body: &str) -> reqwest::Response {
     reqwest::Response::from(
         http::Response::builder()
             .status(status)
-            .body(body.to_string())
+            .body(body.to_owned())
             .unwrap(),
     )
 }
@@ -97,7 +97,7 @@ fn html_response(status: u16, body: &str) -> reqwest::Response {
         http::Response::builder()
             .status(status)
             .header("content-type", HTML)
-            .body(body.to_string())
+            .body(body.to_owned())
             .unwrap(),
     )
 }
@@ -186,7 +186,7 @@ async fn keeps_other_403s_as_reauth() {
         http::Response::builder()
             .status(403)
             .header("content-type", "application/json; charset=UTF-8")
-            .body(r#"{"message": "Forbidden", "error": 403}"#.to_string())
+            .body(r#"{"message": "Forbidden", "error": 403}"#.to_owned())
             .unwrap(),
     );
     for (label, resp) in [
@@ -324,7 +324,7 @@ fn every_entry_point_names_a_bare_cookie() {
         source: TEST_COOKIE_SOURCE,
     };
     let sent = |session: &RedditSession| session.cookie.as_ref().map(|c| c.header.clone());
-    let named = Some("reddit_session=bare-value".to_string());
+    let named = Some("reddit_session=bare-value".to_owned());
     let sync = RedditClient::new(
         "psophis".into(),
         Some(configured(" bare-value ")),

@@ -26,12 +26,12 @@ pub enum SecretRung {
 
 impl SecretRung {
     #[cfg(test)]
-    pub const ALL: [SecretRung; 5] = [
-        SecretRung::Flag,
-        SecretRung::Env,
-        SecretRung::EnvFile,
-        SecretRung::ConfigInline,
-        SecretRung::ConfigFile,
+    pub const ALL: [Self; 5] = [
+        Self::Flag,
+        Self::Env,
+        Self::EnvFile,
+        Self::ConfigInline,
+        Self::ConfigFile,
     ];
 }
 
@@ -54,7 +54,7 @@ pub struct SecretSpec {
 }
 
 impl SecretSpec {
-    pub const PINBOARD_TOKEN: SecretSpec = SecretSpec {
+    pub const PINBOARD_TOKEN: Self = Self {
         what: "Pinboard token",
         flag: "--pinboard-token",
         var: "PINBOARD_TOKEN",
@@ -64,7 +64,7 @@ impl SecretSpec {
         config_file: Some("`[pinboard]`'s `token_file`"),
         accepts: is_nonblank,
     };
-    pub const REDDIT_USERNAME: SecretSpec = SecretSpec {
+    pub const REDDIT_USERNAME: Self = Self {
         what: "Reddit username",
         flag: "--reddit-username",
         var: "REDDIT_USERNAME",
@@ -74,7 +74,7 @@ impl SecretSpec {
         config_file: None,
         accepts: is_nonblank,
     };
-    pub const REDDIT_COOKIE: SecretSpec = SecretSpec {
+    pub const REDDIT_COOKIE: Self = Self {
         what: "Reddit cookie",
         flag: "--reddit-cookie",
         var: "REDDIT_COOKIE",
@@ -84,7 +84,7 @@ impl SecretSpec {
         config_file: Some("the config's `cookie_file`"),
         accepts: reddit::cookie::is_configured_cookie,
     };
-    pub const GITHUB_TOKEN: SecretSpec = SecretSpec {
+    pub const GITHUB_TOKEN: Self = Self {
         what: "GitHub token",
         flag: "--github-token",
         var: "GITHUB_TOKEN",
@@ -94,7 +94,7 @@ impl SecretSpec {
         config_file: Some("the config's `token_file`"),
         accepts: is_nonblank,
     };
-    pub const HN_USERNAME: SecretSpec = SecretSpec {
+    pub const HN_USERNAME: Self = Self {
         what: "HackerNews username",
         flag: "--hn-username",
         var: "HN_USERNAME",
@@ -124,14 +124,14 @@ impl SecretSpec {
 
     /// [`Self::settings`] less the flag, for a command that doesn't take it.
     pub fn settings_without_flag(self) -> String {
-        let config = match self.config_file {
-            Some(file) => {
+        let config = self.config_file.map_or_else(
+            || self.config_inline.to_owned(),
+            |file| {
                 let (owner, _) = self.config_inline.rsplit_once(' ').unwrap_or_default();
                 let file_key = file.strip_prefix(owner).unwrap_or(file).trim_start();
                 format!("{} or {file_key}", self.config_inline)
-            }
-            None => self.config_inline.to_string(),
-        };
+            },
+        );
         format!("{}, {}, or {config}", self.env, self.env_file)
     }
 
@@ -173,7 +173,7 @@ impl SecretSpec {
         candidates: impl IntoIterator<Item = (SecretRung, Option<String>)>,
     ) -> Option<ConfiguredSecret> {
         candidates.into_iter().find_map(|(rung, value)| {
-            let value = value?.trim().to_string();
+            let value = value?.trim().to_owned();
             self.accepts(&value).then(|| ConfiguredSecret {
                 value,
                 source: self.source(rung),
@@ -284,7 +284,7 @@ pub fn warn_if_env_shared(source: &str, secrets: &[SecretSpec], accounts: usize)
     clippy::cfg_not_test,
     reason = "tests read the fake environment `FakeSecretEnv` sets, never the developer's real one"
 )]
-pub(crate) fn env_var(var: &str) -> Option<String> {
+pub fn env_var(var: &str) -> Option<String> {
     std::env::var(var).ok()
 }
 
@@ -298,7 +298,7 @@ thread_local! {
 /// that builds a job, resolves a secret or picks a hook can't pick up, or depend on, the
 /// developer's real environment.
 #[cfg(test)]
-pub(crate) fn env_var(var: &str) -> Option<String> {
+pub fn env_var(var: &str) -> Option<String> {
     FAKE_SECRET_ENV.with(|env| env.borrow().get(var).cloned())
 }
 
@@ -325,7 +325,7 @@ fn read_file_secret(path: &str) -> Option<String> {
 fn try_read_file_secret(path: &str) -> std::io::Result<Option<String>> {
     let contents = std::fs::read_to_string(path)?;
     let trimmed = contents.trim();
-    Ok((!trimmed.is_empty()).then(|| trimmed.to_string()))
+    Ok((!trimmed.is_empty()).then(|| trimmed.to_owned()))
 }
 
 pub fn resolve_pinboard_token(flag: Option<String>, pb: &PinboardConfig) -> Option<String> {
@@ -351,7 +351,7 @@ impl FakeSecretEnv {
                 env.insert(var.to_string(), value.to_string());
             }
         });
-        FakeSecretEnv {
+        Self {
             vars: vars.iter().map(|(var, _)| var.to_string()).collect(),
         }
     }
@@ -630,13 +630,7 @@ mod tests {
 
     #[test]
     fn github_token_names_the_setting_it_came_from() {
-        let ladder = [
-            None,
-            None,
-            None,
-            Some(" \n".to_string()),
-            Some("tok".into()),
-        ];
+        let ladder = [None, None, None, Some(" \n".to_owned()), Some("tok".into())];
         let from_file = SecretSpec::GITHUB_TOKEN
             .first_accepted(SecretRung::ALL.into_iter().zip(ladder))
             .unwrap();

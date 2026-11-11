@@ -89,7 +89,7 @@ impl DateOpts {
 
     /// Whether [`Self::cleanup_date`] would re-date a stale bookmark on every run, not once
     /// per cap period: with a zero cap, every stored date is outside it.
-    pub fn redates_every_run(self) -> bool {
+    pub const fn redates_every_run(self) -> bool {
         self.stale_to_now && self.max_age_days == 0
     }
 }

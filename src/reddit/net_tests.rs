@@ -595,12 +595,9 @@ async fn cleanup_looks_up_comments_by_their_own_fullname_in_the_post_batch() {
             .unwrap()
     };
     let tags = tags_of("https://old.reddit.com/r/rust/comments/a/x/");
-    assert!(
-        tags.contains(&"author:reddit:alice".to_string()),
-        "{tags:?}"
-    );
+    assert!(tags.contains(&"author:reddit:alice".to_owned()), "{tags:?}");
     let tags = tags_of("https://old.reddit.com/r/rust/comments/a/x/c/");
-    assert!(tags.contains(&"author:reddit:bob".to_string()), "{tags:?}");
+    assert!(tags.contains(&"author:reddit:bob".to_owned()), "{tags:?}");
 }
 
 fn truncated_client(
@@ -957,11 +954,7 @@ async fn a_blocked_api_info_falls_back_to_the_saved_listing() {
         .post_note();
     assert_eq!(covered.extended, saved_note);
     for tag in ["nsfw", "author:reddit:alice", "subreddit:news", "reddit"] {
-        assert!(
-            covered.tags.contains(&tag.to_string()),
-            "{:?}",
-            covered.tags
-        );
+        assert!(covered.tags.contains(&tag.to_owned()), "{:?}", covered.tags);
     }
 
     let url_only = written("https://old.reddit.com/r/rust/comments/zzz/y/");

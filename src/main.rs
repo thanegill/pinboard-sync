@@ -8,6 +8,7 @@ mod commands;
 mod config;
 mod doctor;
 mod domains;
+mod dotenv;
 mod github;
 mod hackernews;
 mod hook;
@@ -43,13 +44,14 @@ use config::Config;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    #[expect(
-        clippy::let_underscore_must_use,
-        reason = "a missing, unreadable or malformed `.env` is ignored"
-    )]
-    let _ = dotenvy::dotenv();
+    let loaded_dotenv = dotenv::load();
     let cli = Cli::parse_args();
     init_logging(cli.verbose);
+    if cli.command.reads_environment() {
+        if let Err(e) = loaded_dotenv {
+            return exit_code(Err(e));
+        }
+    }
 
     let result = async {
         match cli.command {

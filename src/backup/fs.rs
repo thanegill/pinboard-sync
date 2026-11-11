@@ -9,8 +9,7 @@ use anyhow::{Context, Result};
 /// Candidate names [`create_new_temp`] tries before giving up.
 const TEMP_FILE_ATTEMPTS: usize = 100;
 
-/// Create `dir` (and its parents) mode 0700. A snapshot holds every private bookmark, so
-/// the directory is no more readable than the files in it.
+/// Create `dir` and its parents mode 0700, no more readable than the files in it.
 pub(super) fn create_private_dir(dir: &Path) -> Result<()> {
     use std::os::unix::fs::DirBuilderExt;
 
@@ -24,10 +23,8 @@ pub(super) fn create_private_dir(dir: &Path) -> Result<()> {
         .with_context(|| format!("creating {}", dir.display()))
 }
 
-/// Atomically replace `path` with `body`: write a private, fsync'd temp file next to it
-/// and rename it over the target. A partial or crashed write leaves the previous snapshot
-/// intact rather than truncating it. Snapshots hold every private bookmark, so the file
-/// is created mode 0600.
+/// Atomically replace `path` with `body`, through a private, fsync'd temp file renamed over
+/// it, so a crashed write leaves the previous snapshot intact.
 pub(super) fn write_atomically(path: &Path, body: &str) -> Result<()> {
     let dir = path
         .parent()
@@ -49,9 +46,8 @@ pub(super) fn write_atomically(path: &Path, body: &str) -> Result<()> {
         })
 }
 
-/// Open `tmp` as a brand-new mode-0600 regular file. `create_new` (`O_EXCL`) never follows
-/// a pre-existing symlink and never reuses an existing file's contents or permissions, so
-/// the 0600 promise holds; a path that already exists errors with `AlreadyExists` instead.
+/// Open `tmp` as a new mode-0600 file. `create_new` (`O_EXCL`) never follows a symlink or
+/// reuses an existing file, so the mode holds; an existing path is `AlreadyExists`.
 fn open_new_private(tmp: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -62,9 +58,8 @@ fn open_new_private(tmp: &Path) -> std::io::Result<std::fs::File> {
         .open(tmp)
 }
 
-/// Create a fresh, private temp file next to the backup target and return it with its path.
-/// Each attempt mixes fresh entropy into the name, so a leftover temp from a crashed run
-/// (even one with this pid) can't be reused; `open_new_private` guarantees the file is new.
+/// A new private temp file in `dir`, with its path. Each name draws fresh entropy, so a
+/// crashed run's leftover, even with this pid, is never reused.
 pub(super) fn create_backup_tmp(dir: &Path, file_name: &str) -> Result<(PathBuf, std::fs::File)> {
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -80,9 +75,8 @@ pub(super) fn create_backup_tmp(dir: &Path, file_name: &str) -> Result<(PathBuf,
     })
 }
 
-/// Open a fresh private temp file in `dir`, drawing candidate names from `next_name` and
-/// retrying whenever the chosen path already exists (a leftover temp, a squatter). Bounded
-/// so a name generator that keeps yielding a colliding name can't spin forever.
+/// A new private temp file in `dir`, trying names from `next_name` while the path exists,
+/// at most [`TEMP_FILE_ATTEMPTS`] times.
 fn create_new_temp(
     dir: &Path,
     mut next_name: impl FnMut() -> String,
@@ -103,8 +97,7 @@ fn create_new_temp(
         .with_context(|| format!("creating a unique backup temp file in {}", dir.display()))
 }
 
-/// Write `body` to the already-opened temp `file` and fsync it, so the bytes are on disk
-/// before the caller renames it over the real target.
+/// Write `body` to `file` and fsync it, so the bytes are on disk before the rename.
 fn write_backup_tmp(tmp: &Path, file: &mut std::fs::File, body: &str) -> Result<()> {
     use std::io::Write;
 

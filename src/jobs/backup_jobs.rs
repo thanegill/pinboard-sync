@@ -1,7 +1,6 @@
-//! `backup` jobs: one per target, each a client that can [`dump`](BackupSource::dump) plus
-//! the stem its files are named by. Built from the same [`SourceAccount`] path as `sync`
-//! jobs, so account selection and the secret ladder behave identically, with Pinboard as
-//! one more target.
+//! `backup` jobs, one per target: a client that can [`dump`](BackupSource::dump) and the
+//! stem its files are named by. Built through [`SourceAccount`] as `sync` jobs are, so
+//! account selection and the secret ladder match, with Pinboard as one more target.
 
 use anyhow::{anyhow, bail, Context, Result};
 use log::warn;
@@ -28,12 +27,9 @@ pub struct BackupJob {
     pub hook: Option<String>,
 }
 
-/// A backup target's client. Pinboard is a `BookmarkStore`, not a `Source`, so it can't
-/// join `SourceClient` -- but it implements the same `BackupSource` port, so the driver
-/// treats all four identically.
+/// A backup target's client: Pinboard is no `Source`, so it can't join `SourceClient`.
 pub enum BackupClient {
-    /// Boxed: a `SourceClient` is several times the size of a `PinboardClient`, so an
-    /// unboxed variant would make every job pay the larger footprint.
+    /// Boxed: a `SourceClient` is several times a `PinboardClient`'s size.
     Source(Box<SourceClient>),
     Pinboard(PinboardClient),
 }
@@ -47,12 +43,11 @@ impl BackupSource for BackupClient {
     }
 }
 
-/// What a `backup` invocation resolves to: the jobs, anything it could not cover, and the
-/// target-level `--out`/`--dry-run`. Mirrors `run_sync`'s `(all, source)` match.
+/// What a `backup` invocation resolves to: its jobs, what it couldn't cover, and its
+/// target's own `--out` and `--dry-run`.
 pub struct BackupPlan {
     pub jobs: Vec<BackupJob>,
-    /// Targets that couldn't be built at all (a credential that won't resolve). Counted as
-    /// failures, so a run that quietly missed one can't report itself complete.
+    /// Targets that couldn't be built, each a failure, so the run can't pass as complete.
     pub skipped: Vec<SkippedTarget>,
     pub out: Option<String>,
     pub mode: WriteMode,
@@ -118,8 +113,8 @@ pub fn build_backup_plan(cmd: BackupCmd, config: &Config) -> Result<BackupPlan> 
     }
 }
 
-/// The plan of `backup --all`: every configured account of every source, then the Pinboard
-/// account, with whatever could not be built recorded as skipped.
+/// The plan of `backup --all`: every account of every source, then Pinboard, with what
+/// couldn't be built skipped.
 fn build_all_backup_plan(config: &Config) -> Result<BackupPlan> {
     let overrides = SyncOverrides {
         on_auth_failure: on_auth_failure_from_env(),
@@ -145,10 +140,8 @@ fn build_all_backup_plan(config: &Config) -> Result<BackupPlan> {
     let has_source_targets = !plan.jobs.is_empty() || !plan.skipped.is_empty();
     match build_pinboard_backup_job(None, config)? {
         Some(job) => plan.jobs.push(job),
-        // Silence here would be the worst outcome: a nightly `--all` that quietly stops
-        // covering Pinboard (an unprovisioned sops secret makes the ladder warn and yield
-        // `None`) while still exiting 0. Recorded as a failed target so the manifest says
-        // `complete: false`.
+        // Never silent: an unprovisioned sops secret would quietly drop Pinboard from a
+        // nightly run that still exits 0. A failed target makes the manifest incomplete.
         None if has_source_targets => {
             warn!(
                 "backup --all: no Pinboard token resolved — the Pinboard account \
@@ -170,8 +163,7 @@ fn build_all_backup_plan(config: &Config) -> Result<BackupPlan> {
     Ok(plan)
 }
 
-/// The backup plan for one source, selecting by name / first / every account. Reuses
-/// `build_job` so account selection and the whole secret ladder behave as in `sync`.
+/// The backup plan for one source's `selection`, through `build_job` as in `sync`.
 fn build_source_backup_plan<A: SourceAccount>(
     selection: Selection,
     overrides: &SyncOverrides,
@@ -189,8 +181,7 @@ fn build_source_backup_plan<A: SourceAccount>(
     })
 }
 
-/// Wrap one account's `SyncJob` as a backup job, keeping its client and auth hook and
-/// discarding the write-only settings (`limit`, `toread`, dates) backup has no use for.
+/// One account's `SyncJob` as a backup job, without the settings only a write uses.
 fn build_backup_job<A: SourceAccount>(
     account: Option<&A>,
     overrides: &SyncOverrides,
@@ -214,8 +205,8 @@ fn build_backup_job<A: SourceAccount>(
     })
 }
 
-/// The Pinboard backup job, or `None` when no token is configured -- so `backup --all`
-/// still backs up the sources on a machine that only holds source credentials.
+/// The Pinboard backup job, or `None` with no token, so `backup --all` still covers the
+/// sources on a machine without one.
 fn build_pinboard_backup_job(flag: Option<String>, config: &Config) -> Result<Option<BackupJob>> {
     let Some(token) = resolve_pinboard_token(flag, &config.pinboard) else {
         return Ok(None);

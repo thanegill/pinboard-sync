@@ -72,7 +72,7 @@ async fn client_hello_offers_alpn_h2_and_http1() {
         socket.read_exact(&mut hello[5..]).unwrap();
         hello
     });
-    let http = client_builder().no_proxy().build().unwrap();
+    let http = client_builder().build().unwrap();
 
     let sent = http.get(format!("https://127.0.0.1:{port}/")).send().await;
 
@@ -86,7 +86,7 @@ async fn connect_error_does_not_leak_query_token() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    let http = client_builder().no_proxy().build().unwrap();
+    let http = client_builder().build().unwrap();
     let url = format!("http://127.0.0.1:{port}/v1/posts/all");
 
     let budget = ConnectBudget::default();
@@ -121,7 +121,7 @@ async fn connect_error_does_not_leak_query_token() {
 async fn a_stalled_connect_times_out_onto_the_connect_backoff() {
     let silent_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = silent_listener.local_addr().unwrap().port();
-    let http = client_builder().no_proxy().build().unwrap();
+    let http = client_builder().build().unwrap();
     let start = tokio::time::Instant::now();
 
     let sent = tokio::time::timeout(
@@ -246,11 +246,7 @@ async fn h2_get(http: &reqwest::Client, url: &str) -> (Result<reqwest::Response>
 }
 
 fn h2_client() -> reqwest::Client {
-    client_builder()
-        .no_proxy()
-        .http2_prior_knowledge()
-        .build()
-        .unwrap()
+    client_builder().http2_prior_knowledge().build().unwrap()
 }
 
 #[tokio::test]
@@ -354,7 +350,6 @@ async fn a_connection_retired_between_requests_costs_no_retry() {
 /// one-second read timeout.
 fn h2_pinging_client() -> reqwest::Client {
     client_builder()
-        .no_proxy()
         .http2_prior_knowledge()
         .read_timeout(Duration::from_secs(1))
         .http2_keep_alive_interval(Duration::from_millis(100))
@@ -554,7 +549,6 @@ async fn a_body_that_stalls_does_not_count_against_its_host() {
 
 fn short_read_timeout_client() -> reqwest::Client {
     client_builder_with_read_timeout(SHORT_READ_TIMEOUT)
-        .no_proxy()
         .build()
         .unwrap()
 }
@@ -707,7 +701,7 @@ async fn client_builder_times_a_silent_server_out_at_the_read_timeout() {
         )]
         let _ = held.recv();
     });
-    let http = client_builder().no_proxy().build().unwrap();
+    let http = client_builder().build().unwrap();
     let url = format!("http://127.0.0.1:{port}/");
     let first = http.get(&url).send().await.unwrap().text().await.unwrap();
     assert_eq!(first, "ok");

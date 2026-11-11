@@ -38,7 +38,7 @@ impl Halt {
     /// The operator-facing explanation, without the variant's prefix.
     pub fn message(&self) -> &str {
         match self {
-            Halt::Reauth(message) | Halt::RateLimited(message) | Halt::Blocked(message) => message,
+            Self::Reauth(message) | Self::RateLimited(message) | Self::Blocked(message) => message,
         }
     }
 
@@ -46,9 +46,9 @@ impl Halt {
     #[must_use]
     pub fn map_message(self, f: impl FnOnce(String) -> String) -> Self {
         match self {
-            Halt::Reauth(message) => Halt::Reauth(f(message)),
-            Halt::RateLimited(message) => Halt::RateLimited(f(message)),
-            Halt::Blocked(message) => Halt::Blocked(f(message)),
+            Self::Reauth(message) => Self::Reauth(f(message)),
+            Self::RateLimited(message) => Self::RateLimited(f(message)),
+            Self::Blocked(message) => Self::Blocked(f(message)),
         }
     }
 }
@@ -59,8 +59,8 @@ impl SourceError {
     /// silently loses the hook.
     pub fn into_anyhow(self) -> anyhow::Error {
         match self {
-            SourceError::Halted(halt) => anyhow::anyhow!(halt.message().to_string()),
-            SourceError::Other(e) => e,
+            Self::Halted(halt) => anyhow::anyhow!(halt.message().to_owned()),
+            Self::Other(e) => e,
         }
     }
 }
@@ -94,7 +94,7 @@ impl From<String> for DedupKey {
 
 impl From<&str> for DedupKey {
     fn from(key: &str) -> Self {
-        Self(key.to_string())
+        Self(key.to_owned())
     }
 }
 

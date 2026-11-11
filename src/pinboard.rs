@@ -32,11 +32,11 @@ const BACKOFF: LinearBackoff = LinearBackoff::new(5, RATE_LIMIT);
 const MAX_URL_BYTES: usize = 8100;
 /// The longest `posts/add` URL Pinboard takes, encoded, scheme and host included: its nginx
 /// caps the request line (8201 bytes passed and 8202 got a 414, measured 2026-11-04).
-pub(crate) const PINBOARD_URL_LIMIT: usize = 8201;
+pub const PINBOARD_URL_LIMIT: usize = 8201;
 /// The 414 retry's floor: below it, the 414 is returned.
 const MIN_URL_BYTES: usize = 500;
 /// Ends a trimmed `extended`, so the cut shows in the bookmark.
-pub(crate) const TRUNCATION_MARKER: &str = "… [truncated]";
+pub const TRUNCATION_MARKER: &str = "… [truncated]";
 
 /// What `posts/add` does on a 414 anyway.
 #[derive(Clone, Copy)]
@@ -139,7 +139,7 @@ impl TryFrom<PinboardBookmark> for Bookmark {
             }
             parsed
         };
-        Ok(Bookmark {
+        Ok(Self {
             url,
             title: b.description,
             note: b.extended,
@@ -169,7 +169,7 @@ impl PinboardClient {
         Self::build(
             auth_token,
             rate_limit,
-            PINBOARD_BASE.to_string(),
+            PINBOARD_BASE.to_owned(),
             client_builder(),
         )
     }
@@ -321,7 +321,7 @@ impl PinboardClient {
         let dt = b
             .timestamp
             .and_then(crate::timefmt::to_pinboard_dt)
-            .unwrap_or_else(|| DT_PLACEHOLDER.to_string());
+            .unwrap_or_else(|| DT_PLACEHOLDER.to_owned());
         measure(&self.add_params(b, &tags, Some(&dt)))
     }
 
@@ -357,7 +357,7 @@ impl PinboardClient {
         };
 
         if url_len(extended) <= room {
-            return extended.to_string();
+            return extended.to_owned();
         }
 
         // Measured, not computed: percent-encoding expands bytes unevenly.
@@ -376,7 +376,7 @@ impl PinboardClient {
         if best + TRUNCATION_MARKER.len() >= extended.len()
             && url_len(extended) <= PINBOARD_URL_LIMIT
         {
-            return extended.to_string();
+            return extended.to_owned();
         }
         let marked = format!("{}{}", &extended[..best], TRUNCATION_MARKER);
         if url_len(&marked) <= PINBOARD_URL_LIMIT {
@@ -447,7 +447,7 @@ impl PinboardClient {
     }
 
     #[cfg(test)]
-    pub fn rate_limit(&self) -> Duration {
+    pub const fn rate_limit(&self) -> Duration {
         self.rate_limit
     }
 }
@@ -590,7 +590,7 @@ mod tests {
     use crate::http::{ELLIPSIS, ERROR_BODY_MAX_BYTES};
 
     fn test_client() -> PinboardClient {
-        PinboardClient::with_base_url("user:tok".into(), PINBOARD_BASE.to_string()).unwrap()
+        PinboardClient::with_base_url("user:tok".into(), PINBOARD_BASE.to_owned()).unwrap()
     }
 
     /// A bookmark whose note is too long for a `posts/add` URL, dated `timestamp`.
@@ -892,7 +892,7 @@ mod tests {
             .iter()
             .map(|&(key, value)| match key {
                 "description" => (key, title.clone()),
-                _ => (key, value.to_string()),
+                _ => (key, value.to_owned()),
             })
             .collect()
     }
@@ -928,7 +928,7 @@ mod tests {
 
         assert_eq!(
             fit_with_fields_of(&c, PINBOARD_URL_LIMIT - marker_cost, &long),
-            (TRUNCATION_MARKER.to_string(), PINBOARD_URL_LIMIT)
+            (TRUNCATION_MARKER.to_owned(), PINBOARD_URL_LIMIT)
         );
         let room_for_less = PINBOARD_URL_LIMIT - marker_cost + 1;
         assert_eq!(fit_with_fields_of(&c, room_for_less, &long).0, "");

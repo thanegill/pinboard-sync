@@ -72,9 +72,9 @@ pub enum RedditKind {
 impl<'de> Deserialize<'de> for RedditKind {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(match String::deserialize(deserializer)?.as_str() {
-            "t3" => RedditKind::Post,
-            "t1" => RedditKind::Comment,
-            _ => RedditKind::Other,
+            "t3" => Self::Post,
+            "t1" => Self::Comment,
+            _ => Self::Other,
         })
     }
 }
@@ -125,7 +125,7 @@ impl RedditEntryFields {
     /// A post's notes, for sync and cleanup alike: its `selftext` in a literal
     /// `<blockquote>`; nothing for an empty self-post, whose `url` is the bookmark's own;
     /// else a link post's `url`, bare.
-    pub(crate) fn post_note(&self) -> String {
+    pub fn post_note(&self) -> String {
         match self.selftext.as_deref().unwrap_or_default() {
             "" if self.is_self => String::new(),
             "" => self.url.clone().unwrap_or_default(),
@@ -225,7 +225,7 @@ impl RedditListingEntry {
 /// A comment's notes: the parent-thread link, if any, then its `body` in a literal
 /// `<blockquote>`, which Pinboard renders. Reddit text is already Markdown (`raw_json=1`),
 /// so it is never converted.
-pub(crate) fn comment_note(body: &str, link_permalink: Option<&str>, domain: &str) -> String {
+pub fn comment_note(body: &str, link_permalink: Option<&str>, domain: &str) -> String {
     let quoted = if body.is_empty() {
         String::new()
     } else {
@@ -242,7 +242,7 @@ pub(crate) fn comment_note(body: &str, link_permalink: Option<&str>, domain: &st
 fn parent_thread_url(link_permalink: Option<&str>, domain: &str) -> Option<String> {
     let lp = link_permalink.filter(|s| !s.is_empty())?;
     if lp.starts_with("http") {
-        Some(lp.to_string())
+        Some(lp.to_owned())
     } else {
         Some(format!("https://{domain}{lp}"))
     }
@@ -261,7 +261,7 @@ fn post_media_type(is_video: bool, post_hint: Option<&str>) -> Option<&'static s
 }
 
 /// One of [`RedditSavedItem::detail_tags`], with the prefix that starts its family.
-pub(crate) struct DetailTag<'c> {
+pub struct DetailTag<'c> {
     pub family: &'c str,
     pub tag: String,
 }
@@ -321,7 +321,7 @@ impl RedditSavedItem {
 
     /// The author, flair and media-type tags, each with its family's prefix: `cleanup`
     /// backfills a family only when the stored bookmark has none of it.
-    pub(crate) fn detail_tags<'c>(&self, cfg: &'c RedditConfig) -> Vec<DetailTag<'c>> {
+    pub fn detail_tags<'c>(&self, cfg: &'c RedditConfig) -> Vec<DetailTag<'c>> {
         let mut families: Vec<DetailTag<'c>> = Vec::new();
         let mut push = |family: &'c str, value: &str| {
             families.extend(prefixed(family, value).map(|tag| DetailTag { family, tag }));
@@ -376,7 +376,7 @@ impl RedditSavedItem {
     clippy::as_conversions,
     reason = "whole seconds are the point, and `as` saturates a value out of range"
 )]
-pub(crate) fn created_at(created_utc: Option<f64>) -> Option<OffsetDateTime> {
+pub fn created_at(created_utc: Option<f64>) -> Option<OffsetDateTime> {
     created_utc.and_then(|secs| crate::timefmt::from_unix(secs as i64))
 }
 
@@ -388,7 +388,7 @@ pub fn cased_subreddit(subreddit: &str) -> String {
         .zip(subreddit.chars().skip(1))
         .any(|(a, b)| a.is_lowercase() && b.is_uppercase());
     if multiword_camel {
-        subreddit.to_string()
+        subreddit.to_owned()
     } else {
         subreddit.to_lowercase()
     }

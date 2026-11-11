@@ -67,17 +67,17 @@ async fn normalizes_url_tags_nsfw_and_title() {
     );
     assert_eq!(updated[0].description, "Real Title");
     assert!(
-        updated[0].tags.contains(&"reddit".to_string()),
+        updated[0].tags.contains(&"reddit".to_owned()),
         "{:?}",
         updated[0].tags
     );
     assert!(
-        updated[0].tags.contains(&"subreddit:news".to_string()),
+        updated[0].tags.contains(&"subreddit:news".to_owned()),
         "{:?}",
         updated[0].tags
     );
     assert!(
-        updated[0].tags.contains(&"nsfw".to_string()),
+        updated[0].tags.contains(&"nsfw".to_owned()),
         "{:?}",
         updated[0].tags
     );
@@ -128,12 +128,12 @@ async fn marks_nsfw_with_configured_tag_not_literal_nsfw() {
     let updated = pinboard.updated.borrow();
     assert_eq!(updated.len(), 1);
     assert!(
-        updated[0].tags.contains(&"adult".to_string()),
+        updated[0].tags.contains(&"adult".to_owned()),
         "{:?}",
         updated[0].tags
     );
     assert!(
-        !updated[0].tags.contains(&"nsfw".to_string()),
+        !updated[0].tags.contains(&"nsfw".to_owned()),
         "{:?}",
         updated[0].tags
     );
@@ -508,8 +508,8 @@ async fn keeps_a_note_that_only_starts_like_the_rebuild_or_a_cut_of_it() {
     // The www host forces a URL rewrite, so each run writes and shows the note it keeps.
     let reddit = self_post_info("the authoritative body text");
     for note in [
-        "<blockquote>the authoritative".to_string(),
-        "<blockquote>the authoritative body text</blockquote> and my own words".to_string(),
+        "<blockquote>the authoritative".to_owned(),
+        "<blockquote>the authoritative body text</blockquote> and my own words".to_owned(),
         format!("<blockquote>the authoritative{TRUNCATION_MARKER} and my own words"),
         format!("<blockquote>another body{TRUNCATION_MARKER}"),
     ] {
@@ -1175,21 +1175,21 @@ async fn a_blocked_api_info_plans_from_the_saved_listing() {
     let written = |url: &str| updated.iter().find(|u| u.url == url).unwrap();
     let saved = written("https://old.reddit.com/r/rust/comments/saved/x/");
     assert_eq!(saved.description, "Saved Title");
-    assert!(saved.tags.contains(&"nsfw".to_string()), "{:?}", saved.tags);
+    assert!(saved.tags.contains(&"nsfw".to_owned()), "{:?}", saved.tags);
     let gone = written("https://old.reddit.com/r/rust/comments/gone/y/");
     assert_eq!(gone.description, "Reddit - Dive into anything");
-    assert!(!gone.tags.contains(&"nsfw".to_string()), "{:?}", gone.tags);
+    assert!(!gone.tags.contains(&"nsfw".to_owned()), "{:?}", gone.tags);
     let comment = written("https://old.reddit.com/r/rust/comments/thread/z/cmt/");
     assert_eq!(comment.description, "Thread");
     assert!(
-        comment.tags.contains(&"nsfw".to_string()),
+        comment.tags.contains(&"nsfw".to_owned()),
         "{:?}",
         comment.tags
     );
     let answered = written("https://old.reddit.com/r/rust/comments/answered/w/");
     assert_eq!(answered.description, "Info Title");
     assert!(
-        !answered.tags.contains(&"nsfw".to_string()),
+        !answered.tags.contains(&"nsfw".to_owned()),
         "{:?}",
         answered.tags
     );
@@ -1243,7 +1243,7 @@ async fn logs_and_skips_a_failing_update_then_continues() {
             bookmark("https://www.reddit.com/r/rust/comments/a/x/", "T", "reddit"),
             bookmark("https://www.reddit.com/r/rust/comments/b/y/", "T", "reddit"),
         ],
-        fail_update_urls: ["https://old.reddit.com/r/rust/comments/a/x/".to_string()]
+        fail_update_urls: ["https://old.reddit.com/r/rust/comments/a/x/".to_owned()]
             .into_iter()
             .collect(),
         ..Default::default()

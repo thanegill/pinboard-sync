@@ -7,7 +7,7 @@ fn page(stream: &'static str, kind: RawKind, body: &str) -> RawPage {
     RawPage {
         stream,
         kind,
-        body: body.to_string(),
+        body: body.to_owned(),
     }
 }
 
@@ -646,7 +646,7 @@ fn a_narrowed_run_merges_into_the_manifest_instead_of_replacing_it() {
         files.iter().find(|f| f["path"] == path).unwrap()["generated_at"]
             .as_str()
             .unwrap()
-            .to_string()
+            .to_owned()
     };
     assert_eq!(at("raw/pinboard.json"), "2026-08-29T00:00:00Z");
     assert_eq!(
@@ -784,7 +784,7 @@ fn a_partial_file_stays_marked_after_a_later_clean_run_of_another_target() {
         pages: None,
         bytes: 2,
         generated_at: String::new(),
-        unusable: unusable.map(str::to_string),
+        unusable: unusable.map(str::to_owned),
     };
 
     write_manifest(

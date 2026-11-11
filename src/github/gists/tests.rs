@@ -193,13 +193,13 @@ fn gist_root_id_finds_the_id_with_or_without_an_owner() {
         assert_eq!(root(&www), Some(ID.into()), "{www}");
     }
     for not_a_root in [
-        "https://gist.github.com/someone".to_string(),
-        "https://gist.github.com/deadbeef".to_string(),
-        "https://gist.github.com/starred".to_string(),
+        "https://gist.github.com/someone".to_owned(),
+        "https://gist.github.com/deadbeef".to_owned(),
+        "https://gist.github.com/starred".to_owned(),
         format!("https://gist.github.com/someone/{ID}/0123abc"),
         format!("https://gist.githubusercontent.com/someone/{ID}/raw"),
         format!("https://github.com/someone/{ID}"),
-        "https://gist.github.com/".to_string(),
+        "https://gist.github.com/".to_owned(),
         format!("https://www.www.gist.github.com/{ID}"),
         format!("https://api.gist.github.com/{ID}"),
     ] {
@@ -272,10 +272,9 @@ proptest! {
         git_suffix in "(\\.[gG][iI][tT]){0,2}",
         suffix in prop::sample::select(vec!["", "/", "?file=a.rs", "#file-a-rs"]),
     ) {
-        let path = match &stored_owner {
-            Some(stored_owner) => format!("{stored_owner}/{id}"),
-            None => id.clone(),
-        };
+        let path = stored_owner
+            .as_ref()
+            .map_or_else(|| id.clone(), |stored_owner| format!("{stored_owner}/{id}"));
         let stored = url(&format!("{scheme}://{host}/{path}{git_suffix}{suffix}"));
         let id = id.to_ascii_lowercase();
         prop_assert_eq!(gist_root_id(&stored), Some(id.clone()), "{}", stored);
@@ -316,10 +315,10 @@ proptest! {
         git_suffix in "(\\.[gG][iI][tT]){0,2}",
         suffix in prop::sample::select(vec!["", "/", "?file=a.rs", "#file-a-rs"]),
     ) {
-        let path = match &owner {
-            Some(owner) => format!("{owner}/{id}/{revision}{git_suffix}"),
-            None => format!("{id}/{revision}{git_suffix}"),
-        };
+        let path = owner.as_ref().map_or_else(
+            || format!("{id}/{revision}{git_suffix}"),
+            |owner| format!("{owner}/{id}/{revision}{git_suffix}"),
+        );
         let stored = url(&format!("https://{host}/{path}{suffix}"));
         prop_assert_eq!(gist_root_id(&stored), None, "{}", stored);
         let own_url = format!("{GIST_HOST}/{}", path.to_ascii_lowercase());

@@ -17,7 +17,7 @@ use crate::source::{BookmarkDraft, UrlKey};
 use crate::tags::{prefixed, Tags};
 
 /// The host gists live on.
-pub(crate) const GIST_HOST: &str = "gist.github.com";
+pub const GIST_HOST: &str = "gist.github.com";
 
 /// The base tag `gist_tags` adds to the account's `tags` by default.
 const GIST_TAG: &str = "github-gist";
@@ -44,7 +44,7 @@ impl FromStr for GistPostDate {
             "now" => Ok(Self::Now),
             "created" => Ok(Self::Created),
             "updated" => Ok(Self::Updated),
-            _ => Err(GIST_POST_DATE_EXPECTED.to_string()),
+            _ => Err(GIST_POST_DATE_EXPECTED.to_owned()),
         }
     }
 }
@@ -96,13 +96,13 @@ impl GistConfig {
     pub fn inheriting(tags: &[String], lang_prefix: &str, author_prefix: &str) -> Self {
         let mut gist_tags = tags.to_vec();
         if !gist_tags.iter().any(|tag| tag == GIST_TAG) {
-            gist_tags.push(GIST_TAG.to_string());
+            gist_tags.push(GIST_TAG.to_owned());
         }
         Self {
             enabled: true,
             tags: gist_tags,
-            lang_prefix: lang_prefix.to_string(),
-            author_prefix: author_prefix.to_string(),
+            lang_prefix: lang_prefix.to_owned(),
+            author_prefix: author_prefix.to_owned(),
             post_date: GistPostDate::Now,
         }
     }
@@ -110,11 +110,11 @@ impl GistConfig {
 
 /// A gist, as `/gists/starred` and `/gists/{id}` return it.
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct GitHubGist {
-    pub(crate) id: String,
+pub struct GitHubGist {
+    pub id: String,
     html_url: String,
     #[serde(default)]
-    pub(crate) description: Option<String>,
+    pub description: Option<String>,
     /// Keyed by filename; a file can be `null`.
     #[serde(default)]
     files: BTreeMap<String, Option<GitHubGistFile>>,
@@ -139,45 +139,45 @@ struct GitHubGistOwner {
 
 impl GitHubGist {
     /// The filenames, in the order the notes list them and the title picks from.
-    pub(crate) fn filenames(&self) -> impl Iterator<Item = &str> {
+    pub fn filenames(&self) -> impl Iterator<Item = &str> {
         self.files.keys().map(String::as_str)
     }
 
     /// The owner's login; an anonymous gist has none.
-    pub(crate) fn owner(&self) -> Option<&str> {
+    pub fn owner(&self) -> Option<&str> {
         self.owner.as_ref().map(|owner| owner.login.as_str())
     }
 
     /// The `gist.github.com/<owner>/<id>` URL `cleanup github` canonicalizes to, else the
     /// API's `html_url` for an anonymous gist. `None` (warned) when neither parses.
-    pub(crate) fn canonical_url(&self) -> Option<Url> {
-        let canonical = match self.owner() {
-            Some(owner) => format!("https://{GIST_HOST}/{owner}/{}", self.id),
-            None => self.html_url.clone(),
-        };
+    pub fn canonical_url(&self) -> Option<Url> {
+        let canonical = self.owner().map_or_else(
+            || self.html_url.clone(),
+            |owner| format!("https://{GIST_HOST}/{owner}/{}", self.id),
+        );
         Url::parse(&canonical)
             .map_err(|e| warn!("skipping github gist with unparseable URL {canonical}: {e}"))
             .ok()
     }
 
     /// Its description, else its first file, else its id.
-    pub(crate) fn title(&self) -> String {
+    pub fn title(&self) -> String {
         let description = collapse_whitespace(self.description.as_deref().unwrap_or(""), " ");
         if !description.is_empty() {
             return description;
         }
         self.filenames()
             .next()
-            .map_or_else(|| self.id.clone(), str::to_string)
+            .map_or_else(|| self.id.clone(), str::to_owned)
     }
 
     /// [`gist_note`] of its description and filenames.
-    pub(crate) fn note(&self) -> String {
+    pub fn note(&self) -> String {
         gist_note(self.description.as_deref(), self.filenames())
     }
 
     /// A language tag per distinct file language, in file order, then the owner tag.
-    pub(crate) fn derived_tags(&self, cfg: &GistConfig) -> Tags {
+    pub fn derived_tags(&self, cfg: &GistConfig) -> Tags {
         let mut tags = Tags::default();
         let languages = self
             .files
@@ -198,7 +198,7 @@ impl GitHubGist {
 
     /// The post date `post_date` picks, at whole UTC seconds as a star's, or `None` for
     /// [`GistPostDate::Now`] or an unparseable date.
-    pub(crate) fn post_date(&self, post_date: GistPostDate) -> Option<time::OffsetDateTime> {
+    pub fn post_date(&self, post_date: GistPostDate) -> Option<time::OffsetDateTime> {
         let date = match post_date {
             GistPostDate::Now => return None,
             GistPostDate::Created => self.created_at.as_deref(),
@@ -209,7 +209,7 @@ impl GitHubGist {
     }
 
     /// The draft, or `None` (with a warning) when its URL doesn't parse.
-    pub(crate) fn into_draft(self, cfg: &GistConfig) -> Option<BookmarkDraft> {
+    pub fn into_draft(self, cfg: &GistConfig) -> Option<BookmarkDraft> {
         let url = self.canonical_url()?;
         let dedup_key = GitHubKeys
             .dedup_key(&url)
@@ -234,7 +234,7 @@ impl GitHubGist {
 
 /// A gist's notes, for sync and cleanup alike: its `description` in a `<blockquote>`, which
 /// Pinboard renders, then a `Files:` line.
-pub(crate) fn gist_note<'a>(
+pub fn gist_note<'a>(
     description: Option<&str>,
     filenames: impl IntoIterator<Item = &'a str>,
 ) -> String {
@@ -250,7 +250,7 @@ pub(crate) fn gist_note<'a>(
 }
 
 /// Whether `url` is on the gist host, bare or with the `www.` alias that `github.com` has.
-pub(crate) fn is_gist_host(url: &Url) -> bool {
+pub fn is_gist_host(url: &Url) -> bool {
     url.host_str()
         .is_some_and(|host| host.strip_prefix("www.").unwrap_or(host) == GIST_HOST)
 }
@@ -258,7 +258,7 @@ pub(crate) fn is_gist_host(url: &Url) -> bool {
 /// The id of a gist-root URL (`gist.github.com/<id>` or `gist.github.com/<owner>/<id>`, on
 /// an [`is_gist_host`] host, empty segments and trailing `.git`s ignored as for a repo
 /// name), or `None` for a deep link, an owner's gist list or another host.
-pub(crate) fn gist_root_id(url: &Url) -> Option<String> {
+pub fn gist_root_id(url: &Url) -> Option<String> {
     if !is_gist_host(url) {
         return None;
     }

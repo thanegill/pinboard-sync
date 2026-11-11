@@ -65,7 +65,7 @@ impl TryFrom<AlgoliaHit> for HackerNewsItem {
         .into_iter()
         .find(|kind| h.tags.iter().any(|tag| tag == kind.as_str()))
         .unwrap_or_default();
-        Ok(HackerNewsItem {
+        Ok(Self {
             id: h.object_id.parse()?,
             kind,
             by: h.author.unwrap_or_default(),
@@ -86,7 +86,7 @@ pub struct AlgoliaClient {
 
 impl AlgoliaClient {
     pub fn new() -> anyhow::Result<Self> {
-        Self::build(ALGOLIA_BASE.to_string())
+        Self::build(ALGOLIA_BASE.to_owned())
     }
 
     pub(super) fn build(base: String) -> anyhow::Result<Self> {
@@ -98,7 +98,7 @@ impl AlgoliaClient {
 
     /// A client on another API base, for tests.
     #[cfg(test)]
-    pub(crate) fn with_base_url(base: String) -> Self {
+    pub fn with_base_url(base: String) -> Self {
         Self::build(base).unwrap()
     }
 

@@ -69,9 +69,9 @@ async fn cleanup_merges_a_story_into_a_separately_saved_article() {
         "{written:?}"
     );
     assert!(written.extended.contains("HN Link:"), "{written:?}");
-    assert!(written.tags.contains(&"keepme".to_string()), "{written:?}");
+    assert!(written.tags.contains(&"keepme".to_owned()), "{written:?}");
     assert!(
-        written.tags.contains(&"hackernews".to_string()),
+        written.tags.contains(&"hackernews".to_owned()),
         "{written:?}"
     );
     assert_eq!(
@@ -122,7 +122,7 @@ async fn cleanup_rewrites_story_url_and_deletes_old() {
     assert_eq!(updated[0].url, "https://example.com/x");
     assert_eq!(updated[0].description, "Cool");
     assert!(
-        updated[0].tags.contains(&"mine".to_string()),
+        updated[0].tags.contains(&"mine".to_owned()),
         "{:?}",
         updated[0].tags
     );
@@ -177,7 +177,7 @@ async fn cleanup_preserves_existing_note_on_text_post() {
     assert_eq!(updated[0].url, "https://news.ycombinator.com/item?id=7");
     assert_eq!(updated[0].extended, stored_note);
     assert!(
-        updated[0].tags.contains(&"hackernews:ask-hn".to_string()),
+        updated[0].tags.contains(&"hackernews:ask-hn".to_owned()),
         "{:?}",
         updated[0].tags
     );
@@ -232,17 +232,17 @@ async fn link_discussions_adds_hn_link_to_tagged_article() {
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].url, "https://example.com/x");
     assert!(
-        updated[0].tags.contains(&"hackernews".to_string()),
+        updated[0].tags.contains(&"hackernews".to_owned()),
         "{:?}",
         updated[0].tags
     );
     assert!(
-        !updated[0].tags.contains(&"find-hn".to_string()),
+        !updated[0].tags.contains(&"find-hn".to_owned()),
         "{:?}",
         updated[0].tags
     );
     assert!(
-        updated[0].tags.contains(&"reading".to_string()),
+        updated[0].tags.contains(&"reading".to_owned()),
         "{:?}",
         updated[0].tags
     );
@@ -334,7 +334,7 @@ async fn run_with_failing_lookups(with_item: bool) -> String {
     }
     let pinboard = FakePinboard {
         all,
-        fail_update_urls: ["https://example.com/story".to_string()].into(),
+        fail_update_urls: ["https://example.com/story".to_owned()].into(),
         ..Default::default()
     };
     let client = algolia_client(&algolia);

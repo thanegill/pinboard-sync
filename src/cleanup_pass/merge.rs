@@ -54,7 +54,7 @@ pub(super) fn merge_bookmarks(lead: &Bookmark, rest: &[&Bookmark]) -> Bookmark {
         .map(|b| b.title.as_str())
         .find(|t| !t.is_empty())
         .unwrap_or_default()
-        .to_string();
+        .to_owned();
 
     let timestamp = group().filter_map(|b| b.timestamp).min();
 

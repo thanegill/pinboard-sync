@@ -42,7 +42,7 @@ mod tests {
             clippy::unwrap_in_result,
             reason = "a URL without a host is a broken test, not a `None` suffix"
         )]
-        let host = u.host_str().unwrap().to_string();
+        let host = u.host_str().unwrap().to_owned();
         let path = u.path().trim_end_matches('/').to_ascii_lowercase();
         dedup_key_suffix(&host, &path, &u)
     }

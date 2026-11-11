@@ -37,10 +37,10 @@ pub enum RawKind {
 }
 
 impl RawKind {
-    fn extension(self) -> &'static str {
+    const fn extension(self) -> &'static str {
         match self {
-            RawKind::Json => "json",
-            RawKind::Html => "html",
+            Self::Json => "json",
+            Self::Html => "html",
         }
     }
 }
@@ -71,7 +71,7 @@ impl RawSink {
     }
 
     /// A sink that retains every body, in push order.
-    pub fn collecting() -> Self {
+    pub const fn collecting() -> Self {
         Self {
             enabled: true,
             pages: Vec::new(),
@@ -84,7 +84,7 @@ impl RawSink {
             self.pages.push(RawPage {
                 stream,
                 kind,
-                body: body.to_string(),
+                body: body.to_owned(),
             });
         }
     }
@@ -144,7 +144,7 @@ impl From<&Bookmark> for ExportBookmark {
 impl From<&BookmarkDraft> for ExportBookmark {
     fn from(d: &BookmarkDraft) -> Self {
         Self {
-            dedup_key: Some(d.dedup_key.as_str().to_string()),
+            dedup_key: Some(d.dedup_key.as_str().to_owned()),
             ..Self::from(&d.bookmark)
         }
     }
@@ -182,10 +182,10 @@ pub enum Count {
 }
 
 impl Count {
-    fn parts(self) -> (&'static str, usize) {
+    const fn parts(self) -> (&'static str, usize) {
         match self {
-            Count::Items(n) => ("items", n),
-            Count::Pages(n) => ("pages", n),
+            Self::Items(n) => ("items", n),
+            Self::Pages(n) => ("pages", n),
         }
     }
 }
@@ -214,9 +214,9 @@ pub fn slug(name: Option<&str>) -> String {
     }
     let trimmed = out.trim_matches('-');
     if trimmed.is_empty() {
-        "default".to_string()
+        "default".to_owned()
     } else {
-        trimmed.to_string()
+        trimmed.to_owned()
     }
 }
 
@@ -286,7 +286,7 @@ pub fn layout(stem: &str, dump: &BackupDump) -> Result<Vec<BackupFile>> {
         let kind = pages.first().map_or(RawKind::Json, |p| p.kind);
         let bodies: Vec<&str> = pages.iter().map(|p| p.body.as_str()).collect();
         let name = if stream == PRIMARY_STREAM {
-            stem.to_string()
+            stem.to_owned()
         } else {
             format!("{stem}-{stream}")
         };
@@ -567,8 +567,9 @@ pub fn write_manifest(
     // Merged, not replaced: a narrowed run (`backup pinboard`) would otherwise leave the
     // other targets' files undescribed.
     let path = dir.join("manifest.json");
-    let mut files: Vec<ManifestEntry> = match std::fs::read_to_string(&path) {
-        Ok(text) => match serde_json::from_str::<Manifest>(&text) {
+    let mut files: Vec<ManifestEntry> = std::fs::read_to_string(&path).map_or_else(
+        |_| Vec::new(),
+        |text| match serde_json::from_str::<Manifest>(&text) {
             Ok(m) => m.files,
             // Never silent: this undoes the merge.
             Err(e) => {
@@ -580,12 +581,11 @@ pub fn write_manifest(
                 Vec::new()
             }
         },
-        Err(_) => Vec::new(),
-    };
+    );
     files.retain(|f| !removed.contains(&f.path));
     for entry in entries {
         let mut entry = entry.clone();
-        entry.generated_at = generated_at.to_string();
+        generated_at.clone_into(&mut entry.generated_at);
         match files.iter_mut().find(|f| f.path == entry.path) {
             Some(existing) => *existing = entry,
             None => files.push(entry),
@@ -597,8 +597,8 @@ pub fn write_manifest(
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
     let body = serde_json::to_string_pretty(&Manifest {
-        generated_at: generated_at.to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        generated_at: generated_at.to_owned(),
+        version: env!("CARGO_PKG_VERSION").to_owned(),
         complete: failed.is_empty(),
         failed: failed.to_vec(),
         files,

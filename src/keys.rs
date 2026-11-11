@@ -110,7 +110,7 @@ pub struct HackerNewsKeys {
 
 impl HackerNewsKeys {
     /// Keys a Reddit article by `reddit`, on the accounts' `reddit_domain`s.
-    pub fn new(reddit: RedditKeys) -> Self {
+    pub const fn new(reddit: RedditKeys) -> Self {
         Self {
             reddit,
             github: GitHubKeys,
@@ -172,7 +172,7 @@ mod tests {
         let key = |s: &str| {
             GitHubKeys
                 .dedup_key(&url(s))
-                .map(|key| key.as_str().to_string())
+                .map(|key| key.as_str().to_owned())
         };
         for alias in [
             "https://github.com/Owner/Repo",
@@ -212,7 +212,7 @@ mod tests {
         let key = |s: &str| {
             GitHubKeys
                 .dedup_key(&url(s))
-                .map(|key| key.as_str().to_string())
+                .map(|key| key.as_str().to_owned())
         };
         let id = "aa5a315d61ae9438b18d";
         for alias in [
@@ -250,7 +250,7 @@ mod tests {
         let key = |s: &str| {
             GitHubKeys
                 .dedup_key(&url(s))
-                .map(|key| key.as_str().to_string())
+                .map(|key| key.as_str().to_owned())
         };
         let id = "aa5a315d61ae9438b18d";
         for (doubled, single) in [
@@ -363,7 +363,7 @@ mod tests {
     fn key(raw: &str) -> Option<String> {
         RedditKeys::new(["old.reddit.com"])
             .dedup_key(&url(raw))
-            .map(|key| key.as_str().to_string())
+            .map(|key| key.as_str().to_owned())
     }
 
     #[test]

@@ -86,17 +86,21 @@ pub(super) fn unnamed_cookie_warning(source: &str) -> String {
 /// What to do about a refused session, naming the setting the cookie came from, or the
 /// settings to use when none was configured.
 pub(super) fn refused_cookie_advice(cookie_source: Option<&str>) -> String {
-    match cookie_source {
-        Some(source) => format!(
-            "The cookie from {source} has likely expired or isn't a reddit_session value; \
-             re-copy reddit_session from a logged-in browser."
-        ),
-        None => format!(
-            "No Reddit cookie is configured; set {} to reddit_session from a logged-in \
-             browser.",
-            SecretSpec::REDDIT_COOKIE.settings()
-        ),
-    }
+    cookie_source.map_or_else(
+        || {
+            format!(
+                "No Reddit cookie is configured; set {} to reddit_session from a logged-in \
+                 browser.",
+                SecretSpec::REDDIT_COOKIE.settings()
+            )
+        },
+        |source| {
+            format!(
+                "The cookie from {source} has likely expired or isn't a reddit_session \
+                 value; re-copy reddit_session from a logged-in browser."
+            )
+        },
+    )
 }
 
 /// Whether `raw` configures a session at all ([`NoSession`]), so secret resolution skips
@@ -109,12 +113,16 @@ pub fn is_configured_cookie(raw: &str) -> bool {
 /// double quotes an env file or shell can leave around it, before or after the blank pairs
 /// go (`"abc";=`). So no `;` starts, ends or doubles in it, and it is its own
 /// `without_blank_pairs`. A lone quote is kept.
+#[expect(
+    clippy::assigning_clones,
+    reason = "`inner` borrows `value`, so it can't be cloned into it"
+)]
 fn without_blank_pairs(raw: &str) -> String {
     let is_edge = |c: char| c == ';' || c.is_whitespace();
-    let mut value = raw.trim_matches(is_edge).to_string();
+    let mut value = raw.trim_matches(is_edge).to_owned();
     loop {
         if let Some(inner) = quoted_inner(&value) {
-            value = inner.trim_matches(is_edge).to_string();
+            value = inner.trim_matches(is_edge).to_owned();
             continue;
         }
         let nonblank = nonblank_pairs(&value);
@@ -132,7 +140,7 @@ fn nonblank_pairs(raw: &str) -> String {
         .collect::<Vec<_>>()
         .join(";")
         .trim()
-        .to_string()
+        .to_owned()
 }
 
 /// What double quotes around all of `value` wrap, or `None`.
@@ -170,14 +178,14 @@ impl TryFrom<&str> for CookieForm {
         if sessions.peek().is_some() {
             return sessions
                 .any(|session| !is_blank(session))
-                .then_some(CookieForm::Named)
+                .then_some(Self::Named)
                 .ok_or(NoSession);
         }
         Ok(
             if value.contains(';') || value.trim_end_matches('=').contains('=') {
-                CookieForm::OtherCookies
+                Self::OtherCookies
             } else {
-                CookieForm::Bare
+                Self::Bare
             },
         )
     }
@@ -212,7 +220,7 @@ fn with_one_session(value: &str) -> String {
             }
         })
         .collect();
-    pairs.join(";").trim().to_string()
+    pairs.join(";").trim().to_owned()
 }
 
 #[cfg(test)]

@@ -217,7 +217,7 @@ impl RedditClient {
         config: RedditConfig,
     ) -> anyhow::Result<Self> {
         Ok(Self {
-            session: RedditSession::new(cookie, REDDIT_BASE.to_string())?,
+            session: RedditSession::new(cookie, REDDIT_BASE.to_owned())?,
             username,
             config,
             reddit_domains: Vec::new(),
@@ -278,7 +278,7 @@ pub struct RedditInfoClient {
 impl RedditInfoClient {
     pub fn new(cookie: ConfiguredSecret, username: Option<String>) -> anyhow::Result<Self> {
         Ok(Self {
-            session: RedditSession::new(Some(cookie), REDDIT_BASE.to_string())?,
+            session: RedditSession::new(Some(cookie), REDDIT_BASE.to_owned())?,
             username,
         })
     }
@@ -473,7 +473,7 @@ async fn reddit_body(
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
-        .to_string();
+        .to_owned();
     let refused = status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN;
     let decides = status.is_success() || refused;
     let body = read_body(resp, decides, || {
@@ -587,7 +587,7 @@ impl RedditSession {
 #[cfg(test)]
 impl RedditClient {
     /// Test constructor reading `username`'s saved listing from a mock server.
-    pub(crate) fn with_base_url(cookie: Option<String>, username: &str, base: String) -> Self {
+    pub fn with_base_url(cookie: Option<String>, username: &str, base: String) -> Self {
         Self {
             session: RedditSession::with_base_url(cookie, base),
             username: username.into(),
@@ -601,11 +601,7 @@ impl RedditClient {
 impl RedditInfoClient {
     /// Test constructor looking posts up, and reading `username`'s saved listing, on a mock
     /// server.
-    pub(crate) fn with_base_url(
-        cookie: Option<String>,
-        username: Option<&str>,
-        base: String,
-    ) -> Self {
+    pub fn with_base_url(cookie: Option<String>, username: Option<&str>, base: String) -> Self {
         Self {
             session: RedditSession::with_base_url(cookie, base),
             username: username.map(String::from),
@@ -613,7 +609,7 @@ impl RedditInfoClient {
     }
 
     /// Whose saved listing the client reads in place of a blocked `/api/info`.
-    pub(crate) fn username(&self) -> Option<&str> {
+    pub fn username(&self) -> Option<&str> {
         self.username.as_deref()
     }
 }

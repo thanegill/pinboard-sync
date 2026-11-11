@@ -22,10 +22,10 @@ impl Tier {
     /// where the value was set, never the value.
     pub fn describe(self, flag: &str, source: &str) -> String {
         match self {
-            Tier::Flag => format!("`{flag}`"),
-            Tier::Account => "the account".to_string(),
-            Tier::SourceDefault => format!("`[defaults.{source}]`"),
-            Tier::Global => "`[pinboard]`".to_string(),
+            Self::Flag => format!("`{flag}`"),
+            Self::Account => "the account".to_owned(),
+            Self::SourceDefault => format!("`[defaults.{source}]`"),
+            Self::Global => "`[pinboard]`".to_owned(),
         }
     }
 }
@@ -71,7 +71,7 @@ pub struct ResolvedDates {
 }
 
 impl ResolvedDates {
-    pub fn opts(self) -> DateOpts {
+    pub const fn opts(self) -> DateOpts {
         DateOpts {
             use_post_date: self.use_post_date.value,
             max_age_days: self.max_age_days.value,
@@ -188,8 +188,8 @@ pub fn resolve_hook(
     source_override: Option<&str>,
     config: &Config,
 ) -> Option<String> {
-    flag.or_else(|| account_override.map(str::to_string))
-        .or_else(|| source_override.map(str::to_string))
+    flag.or_else(|| account_override.map(str::to_owned))
+        .or_else(|| source_override.map(str::to_owned))
         .or_else(|| config.hooks.on_auth_failure.clone())
 }
 

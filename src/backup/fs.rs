@@ -172,7 +172,7 @@ mod tests {
 
         // First candidate collides with the pre-existing file; the loop must retry the
         // fresh one rather than reuse or truncate "taken".
-        let mut names = ["taken", "fresh"].into_iter().map(str::to_string);
+        let mut names = ["taken", "fresh"].into_iter().map(str::to_owned);
         let (tmp, _file) = create_new_temp(dir, || names.next().unwrap()).unwrap();
 
         assert_eq!(tmp, dir.join("fresh"));
@@ -187,7 +187,7 @@ mod tests {
 
         // A generator that never yields a free name exhausts the bounded loop and surfaces
         // the last AlreadyExists rather than spinning forever.
-        let err = create_new_temp(dir, || "always".to_string()).unwrap_err();
+        let err = create_new_temp(dir, || "always".to_owned()).unwrap_err();
         assert_eq!(
             err.downcast_ref::<std::io::Error>()
                 .map(std::io::Error::kind),

@@ -218,10 +218,10 @@ fn parse_favorite_ids_reads_rows_and_more_link() {
 #[test]
 fn resolve_follows_same_host_but_refuses_foreign_host() {
     let client = HackerNewsClient::with_base_urls(
-        "u".to_string(),
+        "u".to_owned(),
         HackerNewsConfig::default(),
-        "https://news.ycombinator.com".to_string(),
-        "https://hn.algolia.com".to_string(),
+        "https://news.ycombinator.com".to_owned(),
+        "https://hn.algolia.com".to_owned(),
     );
     assert_eq!(
         client.resolve("favorites?id=u&p=2", "favorites").as_deref(),

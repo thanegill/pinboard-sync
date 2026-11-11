@@ -51,7 +51,7 @@ async fn a_merge_returns_the_first_delete_error_and_still_tries_the_rest() {
     // Later errors are only logged. The caller reports the one it gets verbatim, so it must
     // name the URL that first went wrong.
     let pinboard = FakePinboard {
-        fail_delete_urls: ["https://a/".to_string(), "https://b/".to_string()]
+        fail_delete_urls: ["https://a/".to_owned(), "https://b/".to_owned()]
             .into_iter()
             .collect(),
         ..FakePinboard::default()
@@ -106,7 +106,7 @@ async fn a_failed_delete_does_not_strand_the_remaining_absorbed_urls() {
 #[tokio::test]
 async fn a_failed_write_reports_nothing_written_and_deletes_nothing() {
     let pinboard = FakePinboard {
-        fail_update_urls: ["https://target/".to_string()].into_iter().collect(),
+        fail_update_urls: ["https://target/".to_owned()].into_iter().collect(),
         ..Default::default()
     };
     let old = url("https://old/");
@@ -146,7 +146,7 @@ async fn the_snapshot_reflects_this_runs_writes() {
 #[tokio::test]
 async fn the_snapshot_keeps_what_a_refused_write_left() {
     let pinboard = FakePinboard {
-        too_long_urls: ["https://a/".to_string()].into(),
+        too_long_urls: ["https://a/".to_owned()].into(),
         ..FakePinboard::default()
     };
     let store = CleanupStore::new(
@@ -163,7 +163,7 @@ async fn the_snapshot_keeps_what_a_refused_write_left() {
 #[tokio::test]
 async fn a_refused_merge_deletes_nothing() {
     let pinboard = FakePinboard {
-        too_long_urls: ["https://a/".to_string()].into(),
+        too_long_urls: ["https://a/".to_owned()].into(),
         ..FakePinboard::default()
     };
     let absorbed = url("https://b/");
@@ -179,7 +179,7 @@ async fn a_refused_merge_deletes_nothing() {
 #[tokio::test]
 async fn a_refused_move_keeps_its_old_url() {
     let pinboard = FakePinboard {
-        too_long_urls: ["https://a/".to_string()].into(),
+        too_long_urls: ["https://a/".to_owned()].into(),
         ..FakePinboard::default()
     };
     let old = url("https://b/");
@@ -269,7 +269,7 @@ async fn an_add_is_sent_only_live_and_seen_either_way() {
 #[tokio::test]
 async fn a_failed_write_leaves_the_view_alone() {
     let fake = FakePinboard {
-        fail_update_urls: ["https://b/".to_string()].into_iter().collect(),
+        fail_update_urls: ["https://b/".to_owned()].into_iter().collect(),
         ..Default::default()
     };
     let store = CleanupStore::new(

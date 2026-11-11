@@ -93,12 +93,12 @@ enum HackerNewsItemKind {
 
 impl HackerNewsItemKind {
     /// HN's own name for the kind, as `_tags` spells it.
-    fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
-            HackerNewsItemKind::Story => "story",
-            HackerNewsItemKind::Comment => "comment",
-            HackerNewsItemKind::Poll => "poll",
-            HackerNewsItemKind::Job => "job",
+            Self::Story => "story",
+            Self::Comment => "comment",
+            Self::Poll => "poll",
+            Self::Job => "job",
         }
     }
 }
@@ -217,7 +217,7 @@ pub struct HackerNewsClient {
 
 impl HackerNewsClient {
     pub fn new(username: String, config: HackerNewsConfig) -> anyhow::Result<Self> {
-        Self::build(username, config, HN_BASE.to_string(), AlgoliaClient::new()?)
+        Self::build(username, config, HN_BASE.to_owned(), AlgoliaClient::new()?)
     }
 
     fn build(
@@ -332,7 +332,7 @@ impl std::fmt::Display for HackerNewsItemId {
 
 impl HackerNewsItemId {
     /// `hn:<id>`, the key a favorited item dedups on however its bookmark is stored.
-    pub(crate) fn dedup_key(&self) -> DedupKey {
+    pub fn dedup_key(&self) -> DedupKey {
         format!("hn:{self}").into()
     }
 }
@@ -390,7 +390,7 @@ impl From<&HackerNewsItemId> for Url {
         reason = "an id is only digits, which always parse"
     )]
     fn from(id: &HackerNewsItemId) -> Self {
-        Url::parse(&format!("{HN_BASE}/item?id={}", id.0))
+        Self::parse(&format!("{HN_BASE}/item?id={}", id.0))
             .expect("HN item permalink is a valid URL")
     }
 }
@@ -419,7 +419,7 @@ fn special_type(title: &str) -> Option<String> {
 
 #[cfg(test)]
 impl HackerNewsClient {
-    pub(crate) fn with_base_urls(
+    pub fn with_base_urls(
         username: String,
         config: HackerNewsConfig,
         base: String,

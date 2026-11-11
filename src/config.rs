@@ -193,7 +193,7 @@ impl SyncLimit {
     }
 
     /// The cap on new bookmarks written, if any.
-    pub fn write_cap(self) -> Option<NonZeroUsize> {
+    pub const fn write_cap(self) -> Option<NonZeroUsize> {
         match self {
             Self::Max(cap) => Some(cap),
             Self::Auto | Self::All => None,
@@ -215,7 +215,7 @@ impl FromStr for SyncLimit {
             count => count
                 .parse::<NonZeroUsize>()
                 .map(Self::Max)
-                .map_err(|_| SYNC_LIMIT_EXPECTED.to_string()),
+                .map_err(|_| SYNC_LIMIT_EXPECTED.to_owned()),
         }
     }
 }
@@ -288,7 +288,7 @@ pub struct RedditAccount {
 
 impl Config {
     /// Whether any account of any source is configured.
-    pub fn has_accounts(&self) -> bool {
+    pub const fn has_accounts(&self) -> bool {
         !(self.reddit.is_empty() && self.github.is_empty() && self.hackernews.is_empty())
     }
 
@@ -302,7 +302,7 @@ impl Config {
 
     /// Parse and [validate](Self::validate) a config.
     pub fn parse(text: &str) -> Result<Self> {
-        let config: Config = toml::from_str(text)
+        let config: Self = toml::from_str(text)
             .map_err(|e| anyhow!("parsing config: {}", describe_toml_error(&e, text)))?;
         config.validate()?;
         Ok(config)
@@ -453,7 +453,7 @@ fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
 /// Error if a tag or prefix holds whitespace or a comma, which Pinboard splits on or
 /// forbids. The error names `setting`, never the value, which may be a credential pasted
 /// into the wrong key.
-pub(crate) fn check_taggable(setting: &str, value: &str) -> Result<()> {
+pub fn check_taggable(setting: &str, value: &str) -> Result<()> {
     if value.chars().any(char::is_whitespace) {
         bail!("{setting} must not contain whitespace");
     }
@@ -554,8 +554,8 @@ fn check_domain(field: &str, value: Option<&str>) -> Result<()> {
 /// The account's [`RedditConfig`], each field defaulting.
 impl From<&RedditAccount> for RedditConfig {
     fn from(account: &RedditAccount) -> Self {
-        let d = RedditConfig::default();
-        RedditConfig {
+        let d = Self::default();
+        Self {
             domain: account.reddit_domain.clone().unwrap_or(d.domain),
             tags: account.tags.clone().unwrap_or(d.tags),
             subreddit_prefix: account
@@ -610,7 +610,7 @@ impl GitHubConfig {
     /// defaulting, a gist tag field to the stars', and `gist_post_date` to
     /// `[defaults.github]`, then `now`.
     pub fn resolve(account: Option<&GitHubAccount>, defaults: &GitHubDefaults) -> Self {
-        let d = GitHubConfig::default();
+        let d = Self::default();
         let field = |pick: fn(&GitHubAccount) -> Option<&String>, default: String| {
             account.and_then(pick).cloned().unwrap_or(default)
         };
@@ -636,7 +636,7 @@ impl GitHubConfig {
             )
             .value,
         };
-        GitHubConfig {
+        Self {
             tags,
             lang_prefix,
             author_prefix,
@@ -673,8 +673,8 @@ pub struct HackerNewsAccount {
 /// The account's [`HackerNewsConfig`], each field defaulting.
 impl From<&HackerNewsAccount> for HackerNewsConfig {
     fn from(account: &HackerNewsAccount) -> Self {
-        let d = HackerNewsConfig::default();
-        HackerNewsConfig {
+        let d = Self::default();
+        Self {
             tags: account.tags.clone().unwrap_or(d.tags),
             comment: account.tag_comment.clone().unwrap_or(d.comment),
             author_prefix: account.tag_author_prefix.clone().unwrap_or(d.author_prefix),
@@ -981,14 +981,14 @@ pub fn select_account<'a, T: Account>(
     accounts: &'a [T],
     name: Option<&str>,
 ) -> Result<Option<&'a T>> {
-    match name {
-        Some(n) => accounts
-            .iter()
-            .find(|a| a.account_name() == Some(n))
-            .map(Some)
-            .ok_or_else(|| anyhow!("no account named '{n}' configured")),
-        None => Ok(accounts.first()),
-    }
+    let Some(n) = name else {
+        return Ok(accounts.first());
+    };
+    accounts
+        .iter()
+        .find(|a| a.account_name() == Some(n))
+        .map(Some)
+        .ok_or_else(|| anyhow!("no account named '{n}' configured"))
 }
 
 #[cfg(test)]

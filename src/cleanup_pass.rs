@@ -67,8 +67,8 @@ impl Plan {
     /// The planned bookmark, or `None` for the two write-nothing variants.
     pub fn bookmark(self) -> Option<Bookmark> {
         match self {
-            Plan::Bookmark(bookmark) => Some(bookmark),
-            Plan::Unchanged | Plan::Skipped => None,
+            Self::Bookmark(bookmark) => Some(bookmark),
+            Self::Unchanged | Self::Skipped => None,
         }
     }
 }
@@ -141,10 +141,10 @@ enum Refusal {
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Refusal::Unreadable => "occupied by a bookmark this pass could not read",
-            Refusal::OccupiedByRefused => "occupied by a rewrite that was itself refused",
-            Refusal::WriteFailed => "occupied by a bookmark whose own rewrite failed",
-            Refusal::TooLong => "occupied by a bookmark whose rewrite is too long for Pinboard",
+            Self::Unreadable => "occupied by a bookmark this pass could not read",
+            Self::OccupiedByRefused => "occupied by a rewrite that was itself refused",
+            Self::WriteFailed => "occupied by a bookmark whose own rewrite failed",
+            Self::TooLong => "occupied by a bookmark whose rewrite is too long for Pinboard",
         })
     }
 }
@@ -563,21 +563,22 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
                 .get(key)
                 .map(|resident| resident.public)
                 .or_else(|| incumbent_of(members, key).map(|at| members[at].planned.public));
-            let agreed = match staying {
-                Some(public) => Some(public),
-                None => members
+            let agreed = staying.or_else(|| {
+                members
                     .first()
                     .map(|member| member.planned.public)
-                    .filter(|first| members.iter().all(|m| m.planned.public == *first)),
-            };
+                    .filter(|first| members.iter().all(|m| m.planned.public == *first))
+            });
             let members = members_at(groups, key);
-            let (kept, refused): (Vec<_>, Vec<_>) = match agreed {
-                Some(public) => members
-                    .iter()
-                    .copied()
-                    .partition(|member| member.planned.public == public),
-                None => (Vec::new(), members.clone()),
-            };
+            let (kept, refused): (Vec<_>, Vec<_>) = agreed.map_or_else(
+                || (Vec::new(), members.clone()),
+                |public| {
+                    members
+                        .iter()
+                        .copied()
+                        .partition(|member| member.planned.public == public)
+                },
+            );
             if refused.is_empty() {
                 continue;
             }
@@ -597,23 +598,27 @@ impl<'p, S: BookmarkStore> HoldBacks<'_, 'p, S> {
         } in held_back
         {
             let describe = |public| if public { "public" } else { "private" };
-            let (why, preview_tail) = match staying {
-                Some(staying) => (
-                    format!(
-                        "it is {}, but {target} is {}",
-                        describe(mover_public),
-                        describe(staying)
-                    ),
-                    format!(", which is {}", describe(staying)),
-                ),
-                None => (
-                    format!(
-                        "the bookmarks moving there disagree about whether it should be \
-                         public, and nothing is stored at {target} to settle it"
-                    ),
-                    " with bookmarks that disagree about visibility".to_string(),
-                ),
-            };
+            let (why, preview_tail) = staying.map_or_else(
+                || {
+                    (
+                        format!(
+                            "the bookmarks moving there disagree about whether it should be \
+                             public, and nothing is stored at {target} to settle it"
+                        ),
+                        " with bookmarks that disagree about visibility".to_owned(),
+                    )
+                },
+                |staying| {
+                    (
+                        format!(
+                            "it is {}, but {target} is {}",
+                            describe(mover_public),
+                            describe(staying)
+                        ),
+                        format!(", which is {}", describe(staying)),
+                    )
+                },
+            );
             self.hold_back_mover(
                 &mover,
                 target,
@@ -847,7 +852,7 @@ fn lead_of(members: &[Member<'_>], key: &Url, resident: bool) -> Option<usize> {
 
 /// What of `note` a store keeps: all of it, or the part before the cut.
 fn kept_text<S: BookmarkStore>(store: &S, note: &str) -> String {
-    store.kept_of_cut(note).unwrap_or(note).to_string()
+    store.kept_of_cut(note).unwrap_or(note).to_owned()
 }
 
 /// The writing phase's shared state: the store, the URLs planned writes still own, the
@@ -1215,16 +1220,13 @@ fn holds_what_it_keeps<S: BookmarkStore>(
         return true;
     }
     let index = kept.whole_count();
-    match kept.cut_block {
-        Some(block) => {
-            held.holds_start(&kept, index, block, kept.cut)
-                || (!stores(block, index, kept.cut)
-                    && carried.holds_start(&kept, index, block, kept.cut))
-        }
+    let Some(block) = kept.cut_block else {
         // Cut from a note already cut there, so only this start of the block is known.
         // Blocks before it count in any order: a merge appends what its lead lacks.
-        None => held.starts_like(&kept),
-    }
+        return held.starts_like(&kept);
+    };
+    held.holds_start(&kept, index, block, kept.cut)
+        || (!stores(block, index, kept.cut) && carried.holds_start(&kept, index, block, kept.cut))
 }
 
 /// The length of the longest common prefix of `a` and `b`, on a char boundary.
@@ -1317,14 +1319,11 @@ impl<'n> Kept<'n> {
         if self.cut.is_empty() || !self.cut.starts_with(fragment) {
             return false;
         }
-        match self.cut_block {
-            Some(own) => own == block,
-            None => {
-                block.starts_with(self.cut)
-                    && sorted_blocks(self.whole_blocks())
-                        == sorted_blocks(note.blocks().take(index))
-            }
+        if let Some(own) = self.cut_block {
+            return own == block;
         }
+        block.starts_with(self.cut)
+            && sorted_blocks(self.whole_blocks()) == sorted_blocks(note.blocks().take(index))
     }
 }
 
@@ -1362,13 +1361,11 @@ fn merge_members<'p, S: BookmarkStore>(
 ) -> Merge<'p> {
     // The record that stays leads: the resident, else the member stored here, whose *plan*
     // leads, since merging its stored record back in would resurrect what the plan removed.
-    let (survivor, lifted) = match resident {
-        Some(resident) => (Some(resident), None),
-        None => match incumbent_of(members, key) {
-            Some(at) => (Some(members[at].planned), Some(at)),
-            None => (None, None),
-        },
-    };
+    let lifted = resident
+        .is_none()
+        .then(|| incumbent_of(members, key))
+        .flatten();
+    let survivor = resident.or_else(|| lifted.map(|at| members[at].planned));
     let mut movers = members
         .iter()
         .enumerate()

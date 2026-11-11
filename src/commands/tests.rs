@@ -110,7 +110,7 @@ async fn a_dry_sync_reports_no_write_tally() {
 
     result.unwrap();
     assert!(
-        logs.contains(&"INFO 0 new bookmark(s) to write (dry run)".to_string()),
+        logs.contains(&"INFO 0 new bookmark(s) to write (dry run)".to_owned()),
         "{logs:?}"
     );
     assert!(

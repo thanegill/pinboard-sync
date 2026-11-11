@@ -33,8 +33,8 @@ pub struct Cli {
 
 impl Cli {
     /// The process's arguments through [`parse_with`], exiting with clap's usage error.
-    pub fn parse_args() -> Cli {
-        parse_with(Cli::command(), std::env::args_os()).unwrap_or_else(|error| error.exit())
+    pub fn parse_args() -> Self {
+        parse_with(Self::command(), std::env::args_os()).unwrap_or_else(|error| error.exit())
     }
 }
 
@@ -468,8 +468,8 @@ impl DateFlags {
     /// Each date flag from whichever side of the source subcommand gave it: before
     /// (`top_overrides`) or after (`self`). The command line refuses both.
     #[must_use]
-    pub fn with_top_level(self, top_overrides: &DateFlags) -> DateFlags {
-        DateFlags {
+    pub fn with_top_level(self, top_overrides: &Self) -> Self {
+        Self {
             use_post_date: top_overrides.use_post_date.or(self.use_post_date),
             max_age_days: top_overrides.max_age_days.or(self.max_age_days),
             stale_to_now: top_overrides.stale_to_now.or(self.stale_to_now),
@@ -543,7 +543,7 @@ pub struct RedditCleanupArgs {
 /// A sync's date flags; `stale_to_now` is cleanup-only.
 impl From<&SyncFlags> for DateFlags {
     fn from(flags: &SyncFlags) -> Self {
-        DateFlags {
+        Self {
             use_post_date: flags.use_post_date,
             max_age_days: flags.max_age_days,
             stale_to_now: None,
@@ -556,30 +556,30 @@ impl From<&SyncFlags> for DateFlags {
 
 impl From<RedditBackupArgs> for SyncOverrides {
     fn from(args: RedditBackupArgs) -> Self {
-        SyncOverrides {
+        Self {
             reddit_username: args.reddit_username,
             reddit_cookie: args.reddit_cookie,
             on_auth_failure: args.on_auth_failure,
-            ..SyncOverrides::default()
+            ..Self::default()
         }
     }
 }
 
 impl From<GitHubBackupArgs> for SyncOverrides {
     fn from(args: GitHubBackupArgs) -> Self {
-        SyncOverrides {
+        Self {
             github_token: args.github_token,
             on_auth_failure: args.on_auth_failure,
-            ..SyncOverrides::default()
+            ..Self::default()
         }
     }
 }
 
 impl From<HackerNewsBackupArgs> for SyncOverrides {
     fn from(args: HackerNewsBackupArgs) -> Self {
-        SyncOverrides {
+        Self {
             hackernews_username: args.username,
-            ..SyncOverrides::default()
+            ..Self::default()
         }
     }
 }
@@ -587,13 +587,13 @@ impl From<HackerNewsBackupArgs> for SyncOverrides {
 /// The secret/operational overrides a single-source `sync reddit` supplies.
 impl From<RedditSyncArgs> for SyncOverrides {
     fn from(args: RedditSyncArgs) -> Self {
-        SyncOverrides {
+        Self {
             reddit_username: args.reddit_username,
             reddit_cookie: args.reddit_cookie,
             on_auth_failure: args.on_auth_failure,
             flags: args.flags,
             mode: args.dry_run.into(),
-            ..SyncOverrides::default()
+            ..Self::default()
         }
     }
 }
@@ -601,12 +601,12 @@ impl From<RedditSyncArgs> for SyncOverrides {
 /// The secret/operational overrides a single-source `sync github` supplies.
 impl From<GitHubSyncArgs> for SyncOverrides {
     fn from(args: GitHubSyncArgs) -> Self {
-        SyncOverrides {
+        Self {
             github_token: args.github_token,
             on_auth_failure: args.on_auth_failure,
             flags: args.flags,
             mode: args.dry_run.into(),
-            ..SyncOverrides::default()
+            ..Self::default()
         }
     }
 }
@@ -614,18 +614,18 @@ impl From<GitHubSyncArgs> for SyncOverrides {
 /// The secret/operational overrides a single-source `sync hackernews` supplies.
 impl From<HackerNewsSyncArgs> for SyncOverrides {
     fn from(args: HackerNewsSyncArgs) -> Self {
-        SyncOverrides {
+        Self {
             hackernews_username: args.username,
             flags: args.flags,
             mode: args.dry_run.into(),
-            ..SyncOverrides::default()
+            ..Self::default()
         }
     }
 }
 
 impl From<HackerNewsCleanupArgs> for HackerNewsCleanupOverrides {
     fn from(args: HackerNewsCleanupArgs) -> Self {
-        HackerNewsCleanupOverrides {
+        Self {
             link_discussions: args.link_discussions,
             link_tag: args.link_tag,
         }
@@ -634,7 +634,7 @@ impl From<HackerNewsCleanupArgs> for HackerNewsCleanupOverrides {
 
 impl From<RedditCleanupArgs> for RedditCleanupOverrides {
     fn from(args: RedditCleanupArgs) -> Self {
-        RedditCleanupOverrides {
+        Self {
             cookie: args.reddit_cookie,
             mark_nsfw: !args.no_nsfw,
             fix_titles: !args.no_titles,
@@ -1054,7 +1054,7 @@ mod tests {
             );
             assert_eq!(
                 error.get(clap::error::ContextKind::InvalidArg),
-                Some(&clap::error::ContextValue::String(old_flag.to_string())),
+                Some(&clap::error::ContextValue::String(old_flag.to_owned())),
                 "{argv:?}"
             );
         }
@@ -1103,7 +1103,7 @@ mod tests {
                 .expect("takes --on-auth-failure");
             flag.get_env().map(|var| var.to_string_lossy().into_owned())
         };
-        let env = Some("PINBOARD_SYNC_ON_AUTH_FAILURE".to_string());
+        let env = Some("PINBOARD_SYNC_ON_AUTH_FAILURE".to_owned());
 
         for path in [
             ["sync", "reddit"],

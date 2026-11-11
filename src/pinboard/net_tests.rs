@@ -703,7 +703,7 @@ mod between_the_budget_and_the_limit {
             dry.preview,
             [
                 format!("[dry-run] {}", stored.url),
-                "          (refused: too long for Pinboard even with no note)".to_string(),
+                "          (refused: too long for Pinboard even with no note)".to_owned(),
             ]
         );
         let live = cleanup(&client, &stored, &retagged, WriteMode::Live).await;
@@ -1014,7 +1014,7 @@ mod under_a_lower_limit {
             Self(
                 moves
                     .iter()
-                    .map(|(from, to)| ((*from).to_string(), (*to).to_string()))
+                    .map(|(from, to)| ((*from).to_owned(), (*to).to_owned()))
                     .collect(),
             )
         }
@@ -1093,7 +1093,7 @@ mod under_a_lower_limit {
                     .url
                     .query_pairs()
                     .find(|(name, _)| name == "extended")
-                    .map_or_else(|| url.to_string(), |(_, value)| value.into_owned())
+                    .map_or_else(|| url.to_owned(), |(_, value)| value.into_owned())
             })
             .collect()
     }

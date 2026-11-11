@@ -29,7 +29,7 @@ impl Tags {
     /// empty one would make a cleanup plan differ from storage every run.
     pub fn push(&mut self, tag: &str) {
         if !tag.is_empty() {
-            self.0.insert(tag.to_string());
+            self.0.insert(tag.to_owned());
         }
     }
 
@@ -67,13 +67,13 @@ impl Tags {
     }
 
     /// Whether the two hold different tags, whatever their order.
-    pub fn differs_from(&self, other: &Tags) -> bool {
+    pub fn differs_from(&self, other: &Self) -> bool {
         self.0 != other.0
     }
 }
 
 impl PartialEq for Tags {
-    fn eq(&self, other: &Tags) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         self.0.iter().eq(&other.0)
     }
 }

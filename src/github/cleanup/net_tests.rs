@@ -186,22 +186,22 @@ async fn cleanup_refresh_rewrites_renamed_repo_and_language() {
     // Hand-written notes are kept: only a note in the tool's shape is rebuilt.
     assert_eq!(updated[0].extended, "notes");
     assert!(
-        updated[0].tags.contains(&"lang:rust".to_string()),
+        updated[0].tags.contains(&"lang:rust".to_owned()),
         "{:?}",
         updated[0].tags
     );
     assert!(
-        !updated[0].tags.contains(&"lang:python".to_string()),
+        !updated[0].tags.contains(&"lang:python".to_owned()),
         "{:?}",
         updated[0].tags
     );
     assert!(
-        updated[0].tags.contains(&"github-star".to_string()),
+        updated[0].tags.contains(&"github-star".to_owned()),
         "{:?}",
         updated[0].tags
     );
     assert!(
-        updated[0].tags.contains(&"mine".to_string()),
+        updated[0].tags.contains(&"mine".to_owned()),
         "{:?}",
         updated[0].tags
     );
@@ -777,10 +777,10 @@ fn github_client(server: &MockServer) -> GitHubClient {
 const GIST_ID: &str = "aa5a315d61ae9438b18d";
 
 fn gist_url(owner: Option<&str>) -> String {
-    match owner {
-        Some(owner) => format!("https://gist.github.com/{owner}/{GIST_ID}"),
-        None => format!("https://gist.github.com/{GIST_ID}"),
-    }
+    owner.map_or_else(
+        || format!("https://gist.github.com/{GIST_ID}"),
+        |owner| format!("https://gist.github.com/{owner}/{GIST_ID}"),
+    )
 }
 
 /// The gist `{GIST_ID}` by `someone` described "Fresh", with one Rust file and the dates
@@ -844,7 +844,7 @@ async fn cleanup_plans_a_starred_gist_from_the_starred_list() {
 #[tokio::test]
 async fn cleanup_with_gists_off_leaves_gists_alone() {
     let server = MockServer::start().await;
-    for gist_path in ["/gists/starred".to_string(), format!("/gists/{GIST_ID}")] {
+    for gist_path in ["/gists/starred".to_owned(), format!("/gists/{GIST_ID}")] {
         Mock::given(method("GET"))
             .and(path(gist_path))
             .respond_with(ResponseTemplate::new(404))

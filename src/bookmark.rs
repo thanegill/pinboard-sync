@@ -35,7 +35,7 @@ impl Bookmark {
     /// instant. `public` and `read_later` aren't compared: the driver makes them match
     /// first, in `cleanup_pass::HoldBacks::hold_back_visibility_mismatches` and
     /// `cleanup_pass::merge_members`, before any diff is taken.
-    pub fn diff(&self, new: &Bookmark) -> Vec<(&'static str, String)> {
+    pub fn diff(&self, new: &Self) -> Vec<(&'static str, String)> {
         let mut changes = Vec::new();
         if new.url != self.url {
             changes.push(("url", new.url.to_string()));
@@ -315,9 +315,9 @@ pub enum WriteMode {
 impl From<bool> for WriteMode {
     fn from(dry_run: bool) -> Self {
         if dry_run {
-            WriteMode::DryRun
+            Self::DryRun
         } else {
-            WriteMode::Live
+            Self::Live
         }
     }
 }
@@ -325,7 +325,7 @@ impl From<bool> for WriteMode {
 impl WriteMode {
     /// A dry run when either one is: `--dry-run` may come before or after the subcommand.
     #[must_use]
-    pub fn or(self, other: WriteMode) -> Self {
+    pub fn or(self, other: Self) -> Self {
         if self.is_dry_run() {
             self
         } else {
@@ -334,7 +334,7 @@ impl WriteMode {
     }
 
     pub fn is_dry_run(self) -> bool {
-        self == WriteMode::DryRun
+        self == Self::DryRun
     }
 }
 
@@ -363,7 +363,7 @@ pub struct CleanupStore<'a, P> {
 }
 
 impl<'a, P: BookmarkStore> CleanupStore<'a, P> {
-    pub fn new(inner: &'a P, view: AccountView, mode: WriteMode) -> Self {
+    pub const fn new(inner: &'a P, view: AccountView, mode: WriteMode) -> Self {
         Self {
             inner,
             view: std::cell::RefCell::new(view),

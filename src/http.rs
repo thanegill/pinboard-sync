@@ -437,7 +437,8 @@ fn retry_after_verdict(
 
 /// Every client's `reqwest::Client` starts here. Its ClientHello offers ALPN
 /// `h2, http/1.1`, since Reddit's edge 403s one without ALPN (#78). No overall timeout: it
-/// would cap a slow but steady `posts/all`.
+/// would cap a slow but steady `posts/all`. In a test it ignores `HTTP_PROXY` and the like,
+/// so a developer's proxy never sees a request meant for a mock server.
 pub fn client_builder() -> reqwest::ClientBuilder {
     client_builder_with_read_timeout(READ_TIMEOUT)
 }
@@ -448,12 +449,17 @@ pub fn client_builder() -> reqwest::ClientBuilder {
     reason = "the one place a client's builder is made"
 )]
 pub fn client_builder_with_read_timeout(read_timeout: Duration) -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(read_timeout)
         .http2_keep_alive_interval(H2_PING_INTERVAL)
         .http2_keep_alive_timeout(H2_PING_TIMEOUT)
-        .http2_keep_alive_while_idle(true)
+        .http2_keep_alive_while_idle(true);
+    if cfg!(test) {
+        builder.no_proxy()
+    } else {
+        builder
+    }
 }
 
 /// A `reqwest::Client` with its retry settings, a [`LinearBackoff`] and a

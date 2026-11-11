@@ -863,3 +863,19 @@ fn debug_line_keeps_the_whole_body_escaped_on_one_line() {
     );
     assert!(!line.contains(['\n', '\r']), "{line}");
 }
+
+/// A test's client has no proxy, not even the one `HTTP_PROXY` and the like set, so a
+/// developer's proxy can't see a request meant for a mock server. Setting those variables
+/// would reach every test in the process, so this reads the built client's `Debug`, which
+/// lists `proxies` once there is any.
+#[test]
+fn a_test_client_ignores_the_proxy_environment() {
+    let proxied = client_builder()
+        .proxy(reqwest::Proxy::all("http://127.0.0.1:9").unwrap())
+        .build()
+        .unwrap();
+    assert!(format!("{proxied:?}").contains("proxies"), "{proxied:?}");
+
+    let client = client_builder().build().unwrap();
+    assert!(!format!("{client:?}").contains("proxies"), "{client:?}");
+}

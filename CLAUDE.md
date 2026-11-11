@@ -43,8 +43,8 @@ CLAUDE.md keeps only what none of those can catch; these house rules are checked
 - Command output goes through [`src/stdout.rs`](src/stdout.rs) and messages through `log`:
   `print_stdout`, `print_stderr`, and `disallowed-methods` on `io::stdout` and `io::stderr`.
 - The command line is parsed by `cli::parse_with`: `disallowed-methods`.
-- Clients start from `http::client_builder()` (timeouts, h2 pings): `disallowed-methods`,
-  which can't see `Client::default()` or `ClientBuilder::default()`, so call neither.
+- Clients start from `http::client_builder()` (timeouts, h2 pings, no proxy in a test):
+  `disallowed-methods`, which misses `Client::default()` and `ClientBuilder::default()`.
 - A test's directory comes from `test_support::scratch_dir`: `disallowed-methods`.
 - An environment variable is read through `secrets::env_var`, which a test fakes with
   `FakeSecretEnv`: `disallowed-methods`, which can't see clap's own `env` reads, so a test

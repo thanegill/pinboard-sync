@@ -491,7 +491,7 @@ fn check_tags(field: &str, values: Option<&[String]>) -> Result<()> {
 }
 
 /// Error if two accounts of a source would write the same backup files, so that every
-/// `backup --all` fails in `check_stem_collisions`: their [`Named::account_name`]s (a
+/// `backup --all` fails in `check_stem_collisions`: their [`Account::account_name`]s (a
 /// `name`, or for Reddit and HackerNews a `username`) [`slug`] alike. Slugging lowercases
 /// and folds punctuation, so `a.b` and `a/b`, or `Alice` and `alice`, collide; no name,
 /// an empty one and `default` all slug to `default`. `remedy` names the fields that
@@ -843,30 +843,6 @@ impl fmt::Debug for GitHubAccount {
     }
 }
 
-/// An account that can be selected by name (`sync <source> <name>`). The selector is
-/// the explicit `name`, falling back to the account's `username` where it has one.
-pub trait Named {
-    fn account_name(&self) -> Option<&str>;
-}
-
-impl Named for RedditAccount {
-    fn account_name(&self) -> Option<&str> {
-        self.name.as_deref().or(self.username.as_deref())
-    }
-}
-
-impl Named for GitHubAccount {
-    fn account_name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-}
-
-impl Named for HackerNewsAccount {
-    fn account_name(&self) -> Option<&str> {
-        self.name.as_deref().or(self.username.as_deref())
-    }
-}
-
 /// One source's account type: where its accounts and `[defaults.<source>]` live in the
 /// config, and the per-account settings shared across every source. Each setting returns
 /// the account-level override, or `None` to fall through to the per-source default and
@@ -874,9 +850,13 @@ impl Named for HackerNewsAccount {
 /// generically (see [`resolve_setting`](crate::settings::resolve_setting) and
 /// [`resolve_dates`](crate::settings::resolve_dates)). The method names normalize the two
 /// longer field names (`post_date_max_age_days`, `cleanup_stale_to_now`).
-pub trait Account: Named + Sized {
+pub trait Account: Sized {
     /// The source's name in messages, job labels, backup file stems and `doctor` lines.
     const SOURCE: &'static str;
+
+    /// The name the account is selected by (`sync <source> <name>`): its `name`, else its
+    /// `username` where it has one.
+    fn account_name(&self) -> Option<&str>;
 
     /// The source's configured accounts (`[[reddit]]` and so on).
     fn configured(config: &Config) -> &[Self];
@@ -894,6 +874,10 @@ pub trait Account: Named + Sized {
 
 impl Account for RedditAccount {
     const SOURCE: &'static str = "reddit";
+
+    fn account_name(&self) -> Option<&str> {
+        self.name.as_deref().or(self.username.as_deref())
+    }
 
     fn configured(config: &Config) -> &[Self] {
         &config.reddit
@@ -931,6 +915,10 @@ impl Account for RedditAccount {
 impl Account for GitHubAccount {
     const SOURCE: &'static str = "github";
 
+    fn account_name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
     fn configured(config: &Config) -> &[Self] {
         &config.github
     }
@@ -966,6 +954,10 @@ impl Account for GitHubAccount {
 
 impl Account for HackerNewsAccount {
     const SOURCE: &'static str = "hackernews";
+
+    fn account_name(&self) -> Option<&str> {
+        self.name.as_deref().or(self.username.as_deref())
+    }
 
     fn configured(config: &Config) -> &[Self] {
         &config.hackernews
@@ -1012,7 +1004,7 @@ pub fn own_then_configured<'a, C>(
 /// Pick the account named `name`, or the first account when `name` is `None`.
 /// Returns `Ok(None)` only when there are no configured accounts and no name was
 /// given (the caller then falls back to CLI flags / env for a single account).
-pub fn select_account<'a, T: Named>(
+pub fn select_account<'a, T: Account>(
     accounts: &'a [T],
     name: Option<&str>,
 ) -> Result<Option<&'a T>> {

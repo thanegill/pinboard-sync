@@ -93,15 +93,11 @@ array and `config::Account` impl to `config.rs`, and implement `SourceAccount`
 incremental read stops at the first caught-up page, which is only right
 newest-starred-first, so the order must not rest on the API's default.
 
-**HackerNews' caught-up test checks drafts, not item IDs** (`favorites::is_caught_up`): a
-favorited story whose article was saved by hand dedups by URL and never gets an `HN Link:`
-note, so an ID test would page down to every such item on every run.
-
 ## Secrets, errors and the hook
 
-**Every secret keeps its `_FILE` form; never add a `$VAR`-only one**
-([`nix/module.nix`](nix/module.nix)). The NixOS service feeds sops-nix *paths* through
-`$VAR_FILE`, keeping values out of the unit environment.
+**A secret is read only through a `SecretSpec`**, not `secrets::env_var` or clap's `env`:
+its ladder has the `$VAR_FILE` rung through which [`nix/module.nix`](nix/module.nix) passes
+each systemd credential's *path*, keeping values out of the unit environment.
 
 **A message names the setting a secret came from, never its value**
 (`secrets::ConfiguredSecret`). A response body goes into an error only through
@@ -140,5 +136,3 @@ cookie (#78), so it must not fire the hook.
 - **Nix sees only git-tracked files**: when dev-shell `cargo` passes but `nix flake check`
   says `file not found`, `git add` the new file, or add it to
   [`nix/package.nix`](nix/package.nix)'s fileset if it is outside `src/`.
-- **`SyncSource`, `CleanupSource` and `BackupTarget` spell their variants `Github` and
-  `Hackernews`, not `GitHub`/`HackerNews`**: clap derives the subcommand names from them.

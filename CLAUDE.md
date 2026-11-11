@@ -46,6 +46,9 @@ CLAUDE.md keeps only what none of those can catch; these house rules are checked
 - Clients start from `http::client_builder()` (timeouts, h2 pings): `disallowed-methods`,
   which can't see `Client::default()` or `ClientBuilder::default()`, so call neither.
 - A test's directory comes from `test_support::scratch_dir`: `disallowed-methods`.
+- An environment variable is read through `secrets::env_var`, which a test fakes with
+  `FakeSecretEnv`: `disallowed-methods`, which can't see clap's own `env` reads, so a test
+  parses with `test_support::parse_cli`, which drops them.
 - reqwest uses native-tls with ALPN, since Reddit's edge 403s rustls's TLS fingerprint and
   a ClientHello with no ALPN (#78): `deny.toml` bans the `rustls` crate, and
   `http::net_tests::client_hello_offers_alpn_h2_and_http1` checks the ALPN.
@@ -134,9 +137,6 @@ cookie (#78), so it must not fire the hook.
   test expects. Run the fetch inside `http::recording_waits` and send a client's new pause
   through `http::sleep`; otherwise a `net_tests` case against a dead port sleeps the real
   ~2.5-minute `CONNECT_BACKOFF`.
-- **Tests never read the real environment**: `secrets::env_var` sees only what a
-  `secrets::FakeSecretEnv` guard sets, and `std::env::set_var` silently has no effect. Parse
-  with `test_support::parse_cli`, which drops clap's `env` fallbacks.
 - **Nix sees only git-tracked files**: when dev-shell `cargo` passes but `nix flake check`
   says `file not found`, `git add` the new file, or add it to
   [`nix/package.nix`](nix/package.nix)'s fileset if it is outside `src/`.

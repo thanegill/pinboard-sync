@@ -46,9 +46,8 @@ fn collecting_sink_preserves_order_and_stream() {
 
 #[test]
 fn merging_preserves_every_field_but_reorders_keys() {
-    // `serde_json` is built without `preserve_order`, so a `Value::Object` is a
-    // BTreeMap and merging re-serializes with keys sorted. Pinned here because the
-    // docs promise *fields*, not bytes -- see `merge_json_pages`.
+    // Without `preserve_order` a merge re-serializes with keys sorted, which is fine:
+    // `merge_json_pages` promises fields, not bytes.
     let (merged, _) = merge_json_pages(&[r#"[{"zeta":1,"alpha":2,"href":"x"}]"#]).unwrap();
     assert_eq!(
         serde_json::to_string(&merged).unwrap(),
@@ -184,7 +183,6 @@ fn layout_names_one_file_per_stream_plus_the_normalized_half() {
             "normalized/hackernews-me.json",
         ]
     );
-    // Both envelopes survive whole in the merged raw file.
     assert_eq!(files[0].count, Count::Pages(2), "envelopes count as pages");
     assert_eq!(files[2].count, Count::Items(1));
 }
@@ -210,9 +208,8 @@ fn layout_flattens_a_source_whose_pages_are_arrays() {
 
 #[test]
 fn a_stream_that_produced_nothing_still_overwrites_its_file() {
-    // An emptied HackerNews favorites list makes zero Algolia requests. Without an
-    // unconditional primary stream, `raw/*.json` would keep last run's hits next to a
-    // freshly emptied `normalized/*.json` -- the two halves silently disagreeing.
+    // An emptied HackerNews favorites list makes no Algolia request, and `raw/*.json` must
+    // not keep last run's hits beside an emptied `normalized/*.json`.
     let dump = BackupDump {
         raw: vec![page("favorites", RawKind::Html, "<a>none</a>")],
         records: Ok(vec![]),
@@ -245,8 +242,7 @@ fn a_failed_normalization_keeps_the_raw_half_and_drops_the_normalized_one() {
     );
 }
 
-/// Put a real file behind a manifest entry: `write_manifest` reconciles against the
-/// directory, so an entry with no file on disk is (correctly) dropped.
+/// Put a real file behind a manifest entry, as `write_manifest` drops one with no file.
 fn touch(dir: &Path, rel: &str) {
     let path = dir.join(rel);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -313,7 +309,6 @@ fn write_files_creates_the_tree_and_replaces_atomically() {
     .unwrap();
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "[1]");
 
-    // A second run overwrites in place and leaves no temp behind.
     write_files(
         dir,
         &[json_file("raw/pinboard.json", "[2]")],
@@ -358,9 +353,8 @@ fn a_bad_body_anywhere_leaves_every_previous_file_intact() {
     )
     .unwrap();
 
-    // A 200 that isn't a JSON array (proxy page, empty body) or a connection dropped
-    // mid-array must not clobber a good snapshot -- and because every file is checked
-    // before any is written, a bad *second* file can't leave the first replaced.
+    // A 200 that isn't a JSON array, or one cut off mid-array, must not clobber a good
+    // snapshot. Every file is checked first, so a bad second one can't replace the first.
     for bad in [
         "",
         "  ",
@@ -389,8 +383,7 @@ fn a_bad_body_anywhere_leaves_every_previous_file_intact() {
     assert!(!dir.join("raw/reddit-main.json").exists());
 }
 
-/// A source that hands back a fixed payload, so the driver can be exercised without
-/// any network.
+/// A source that hands back a fixed payload.
 struct FakeSource(&'static str);
 
 impl BackupSource for FakeSource {
@@ -442,10 +435,8 @@ async fn dry_run_writes_nothing_and_refuses_what_the_real_run_would() {
         .unwrap();
     assert!(!dir.join("raw").exists(), "a dry run touches no files");
 
-    // A dry run must not bless a plan the real run would abort on -- an operator
-    // validating a config behind a captive portal would otherwise see "would be
-    // written" and conclude the setup is good. (A non-JSON body is rejected by the
-    // merge before `check_writable` sees it; either way the run fails.)
+    // A dry run must not bless a plan the real run aborts on, such as a captive portal's
+    // page, or an operator validating a config would think it good.
     let err = run_job(
         &FakeSource("<html>portal</html>"),
         "pinboard",
@@ -479,9 +470,8 @@ async fn a_truncated_dump_is_written_but_reported_failed() {
     let scratch = scratch_dir("backup-truncated");
     let dir = scratch.path();
 
-    // The files are still written -- a partial snapshot beats none -- but the target
-    // is reported failed so it lands in the manifest's `failed` list. Silently
-    // replacing a complete snapshot with a truncated one is the failure mode here.
+    // The files are still written, as a partial snapshot beats none, but the target is
+    // reported failed, so a truncated snapshot never silently replaces a complete one.
     let outcome = run_job(&TruncatedSource, "github-main", dir, WriteMode::Live)
         .await
         .unwrap();
@@ -489,9 +479,8 @@ async fn a_truncated_dump_is_written_but_reported_failed() {
     assert!(msg.contains("100-page cap"), "{msg}");
     assert!(msg.contains("incomplete"), "{msg}");
     assert!(dir.join("raw/github-main.json").exists());
-    // The entries come back even though the target is unusable, so the caller can
-    // record what actually landed. Dropping them would leave the merged manifest
-    // describing the *previous* run's file at this same path.
+    // The entries still come back, or the merged manifest would describe the previous run's
+    // file at this path.
     assert!(
         outcome
             .written
@@ -516,10 +505,8 @@ fn a_failed_target_updates_its_manifest_entry_rather_than_keeping_the_old_one() 
     };
     write_manifest(dir, &[big], &[], &[], "2026-08-01T00:00:00Z").unwrap();
 
-    // The next run hits a page cap: the file is replaced by a much smaller one and
-    // the target is reported failed. Because the manifest *merges*, dropping this
-    // run's entry would leave the month-old one vouching for 3000 items in a file
-    // that now holds one -- worse than having no entry at all.
+    // A page cap replaces the file with a much smaller one. Since the manifest merges,
+    // dropping this entry would leave the old one vouching for 3000 items in a file of one.
     let small = ManifestEntry {
         path: "raw/github-main.json".into(),
         items: Some(1),
@@ -601,8 +588,8 @@ fn a_corrupt_previous_manifest_is_reported_not_silently_dropped() {
     touch(dir, "raw/pinboard.json");
     std::fs::write(dir.join("manifest.json"), "{ truncated").unwrap();
 
-    // It still writes (the manifest is metadata, not the backup) but the entries it
-    // couldn't read are gone, so this must not pass silently -- see the `warn!`.
+    // It still writes, since the manifest is metadata, not the backup, but must warn that
+    // the unreadable entries are gone.
     let entry = ManifestEntry {
         path: "raw/pinboard.json".into(),
         items: Some(1),
@@ -630,7 +617,6 @@ fn a_narrowed_run_merges_into_the_manifest_instead_of_replacing_it() {
         unusable: None,
     };
 
-    // A full run describes two targets...
     touch(dir, "raw/pinboard.json");
     touch(dir, "raw/github-main.json");
     write_manifest(
@@ -641,9 +627,8 @@ fn a_narrowed_run_merges_into_the_manifest_instead_of_replacing_it() {
         "2026-08-01T00:00:00Z",
     )
     .unwrap();
-    // ...then `backup pinboard` refreshes only one. Replacing the manifest would leave
-    // github's file present but undescribed -- the stale-file-behind-a-fresh-timestamp
-    // problem the manifest exists to prevent.
+    // `backup pinboard` refreshes only one target; replacing the manifest would leave the
+    // other's file undescribed behind a fresh timestamp.
     write_manifest(
         dir,
         &[entry("raw/pinboard.json")],
@@ -676,9 +661,8 @@ async fn a_dry_run_reports_the_same_verdict_as_the_real_run() {
     let scratch = scratch_dir("backup-dry-verdict");
     let dir = scratch.path();
 
-    // The whole point of `--dry-run` is validating a config before trusting the
-    // timer. If it reported a clean plan for a target the real run flags, an operator
-    // would conclude the setup is good and only find out from the journal.
+    // `--dry-run` validates a config before trusting the timer, so it must flag what the
+    // real run flags.
     let dry = run_job(&TruncatedSource, "github-main", dir, WriteMode::DryRun)
         .await
         .unwrap();
@@ -719,9 +703,8 @@ async fn a_stale_removal_never_costs_the_report_of_what_was_written() {
         .await
         .unwrap();
 
-    // The raw half landed, so it must be reported whatever happened afterwards:
-    // returning `Err` from this path would drop its entry and leave the merged
-    // manifest describing the previous run's version of a file that just changed.
+    // The raw half landed, so it is reported; an `Err` would leave the merged manifest
+    // describing the previous run's file.
     assert!(
         outcome
             .written
@@ -758,8 +741,7 @@ async fn a_stale_removal_that_fails_reports_it_without_losing_the_write() {
     );
     let reason = outcome.unusable.expect("the removal failure is reported");
     assert!(reason.contains("removing stale"), "{reason}");
-    // The file is still there, so its entry must not be dropped -- `removed` stays
-    // empty and the manifest keeps describing what is actually on disk.
+    // The file is still there, so its entry must not be dropped.
     assert!(outcome.removed.is_empty(), "{:?}", outcome.removed);
     scratch.close().unwrap();
 }
@@ -784,8 +766,8 @@ fn a_write_that_fails_partway_still_reports_the_files_it_replaced() {
     .unwrap_err();
 
     assert!(format!("{err:#}").contains("normalized"), "{err:#}");
-    // The first file was replaced before the failure. Reporting it is what stops the
-    // merged manifest from keeping the previous run's entry for a file that changed.
+    // The first file was replaced before the failure, so it is reported, or the merged
+    // manifest keeps its old entry.
     assert_eq!(written.len(), 1);
     assert_eq!(written[0].path, "raw/pinboard.json");
 }
@@ -805,7 +787,6 @@ fn a_partial_file_stays_marked_after_a_later_clean_run_of_another_target() {
         unusable: unusable.map(str::to_string),
     };
 
-    // Run 1: github truncated.
     write_manifest(
         dir,
         &[entry(
@@ -818,9 +799,8 @@ fn a_partial_file_stays_marked_after_a_later_clean_run_of_another_target() {
     )
     .unwrap();
 
-    // Run 2: a clean `backup pinboard`. It rewrites `complete`/`failed`, so without a
-    // per-entry flag github's partial file would become indistinguishable from a
-    // healthy one -- `generated_at` only ever answers "when", not "trustworthy".
+    // A clean `backup pinboard` rewrites `complete`/`failed`, so only a per-entry flag
+    // still marks github's file partial.
     write_manifest(
         dir,
         &[entry("raw/pinboard.json", None)],
@@ -854,12 +834,9 @@ fn probe_creates_nothing_and_reports_a_missing_directory() {
         "the probe file is removed"
     );
 
-    // A missing directory is reported, never created. Creating it would report ✓ for
-    // a typo'd path, and -- run as root against the NixOS default -- would leave a
-    // root-owned /var/lib/pinboard-sync where systemd expects to manage a symlink
-    // into /var/lib/private, breaking what the check exists to validate.
-    // A directory that doesn't exist yet is healthy -- `backup` creates it on its
-    // first run -- so it must not be a `doctor` failure, and must not be created here.
+    // A missing directory is healthy, as `backup` creates it, but the probe must not: run
+    // as root against the NixOS default, it would leave a root-owned /var/lib/pinboard-sync
+    // where systemd manages a symlink into /var/lib/private.
     let missing = dir.join("nested");
     assert_eq!(probe_writable(&missing).unwrap(), DirProbe::WillBeCreated);
     assert!(!missing.exists(), "the probe must not create it");

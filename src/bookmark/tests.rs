@@ -1,8 +1,7 @@
 use super::*;
 use crate::test_support::{strings, tag_list, url, FakePinboard};
 
-/// A stored bookmark at `url`, titled "T", with `note`: the fixture every test here
-/// builds its account from.
+/// A stored bookmark at `url`, titled "T", with `note`.
 fn at(url: &str, note: &str) -> Bookmark {
     Bookmark {
         title: "T".into(),
@@ -28,9 +27,8 @@ async fn a_merge_reports_the_write_and_every_delete_that_landed() {
 
 #[tokio::test]
 async fn a_merge_never_deletes_its_own_target() {
-    // The merged record is written to the target, so deleting that URL as "absorbed"
-    // would undo the write. Callers build `old_urls` excluding it, but this is a public
-    // default method and the guard is what makes it safe to call with anything.
+    // Deleting the target as absorbed would undo the write. Callers exclude it from
+    // `old_urls`, but the guard makes this public default method safe with anything.
     let pinboard = FakePinboard::default();
     let target = url("https://target/");
     let absorbed = url("https://absorbed/");
@@ -50,10 +48,8 @@ async fn a_merge_never_deletes_its_own_target() {
 
 #[tokio::test]
 async fn a_merge_returns_the_first_delete_error_and_still_tries_the_rest() {
-    // Only one error can be carried out to the caller, and it is the *first* -- later
-    // ones are logged instead. Asserting which one it is matters: the caller reports it
-    // verbatim, so keeping the last would name a different URL than the one that first
-    // went wrong.
+    // Later errors are only logged. The caller reports the one it gets verbatim, so it must
+    // name the URL that first went wrong.
     let pinboard = FakePinboard {
         fail_delete_urls: ["https://a/".to_string(), "https://b/".to_string()]
             .into_iter()
@@ -84,9 +80,8 @@ async fn a_merge_returns_the_first_delete_error_and_still_tries_the_rest() {
 
 #[tokio::test]
 async fn a_failed_delete_does_not_strand_the_remaining_absorbed_urls() {
-    // Absorbed URLs are independent. Abandoning the rest on the first failure leaves
-    // more duplicate records behind than necessary, and the caller still has to know
-    // the write itself landed so it doesn't treat the target as untouched.
+    // Absorbed URLs are independent, and the caller must still learn the write landed so it
+    // doesn't treat the target as untouched.
     let old_a = url("https://old-a/");
     let old_b = url("https://old-b/");
     let old_c = url("https://old-c/");
@@ -132,8 +127,7 @@ async fn a_failed_write_reports_nothing_written_and_deletes_nothing() {
 
 #[tokio::test]
 async fn the_snapshot_reflects_this_runs_writes() {
-    // A later pass plans from the snapshot, so it has to show what an earlier pass
-    // wrote, which the `posts/all` read before the run does not.
+    // A later pass plans from the snapshot, so it must show what an earlier pass wrote.
     let pinboard = FakePinboard::default();
     let store = CleanupStore::new(
         &pinboard,
@@ -219,8 +213,7 @@ fn a_snapshot_holds_only_what_keep_accepts_in_order() {
 
 #[tokio::test]
 async fn a_write_is_visible_to_the_next_read_without_refetching() {
-    // The whole point: a later pass in the same run asks what occupies a URL and gets
-    // what an earlier pass put there, not what `posts/all` said before it ran.
+    // A later pass asking what occupies a URL gets what an earlier pass put there.
     let fake = FakePinboard::default();
     let store = CleanupStore::new(
         &fake,
@@ -240,9 +233,7 @@ async fn a_write_is_visible_to_the_next_read_without_refetching() {
 
 #[tokio::test]
 async fn a_dry_run_updates_the_view_but_writes_nothing() {
-    // A preview must show the same changes a real run makes, including ones a later
-    // pass only makes because an earlier one wrote -- so the view moves, the store
-    // does not.
+    // A preview must show what a later pass changes because an earlier one wrote.
     let fake = FakePinboard::default();
     let store = CleanupStore::new(
         &fake,
@@ -301,17 +292,14 @@ async fn a_failed_write_leaves_the_view_alone() {
 
 #[test]
 fn preserves_posts_all_order_across_writes_and_deletes() {
-    // Order is load-bearing, not cosmetic: a merge takes the first group member's
-    // note verbatim, so iteration order decides which note survives. A HashMap alone
-    // would make that vary run to run.
+    // A merge takes the first member's note verbatim, so iteration order decides which note
+    // survives and must not vary run to run.
     let mut view = AccountView::new(vec![at("https://c/", ""), at("https://a/", "")]);
     assert_eq!(urls(&view), vec!["https://c/", "https://a/"]);
 
-    // An in-place update keeps its position rather than moving to the end.
     view.insert(&at("https://c/", "updated"));
     assert_eq!(urls(&view), vec!["https://c/", "https://a/"]);
 
-    // A brand-new URL appends.
     view.insert(&at("https://b/", ""));
     assert_eq!(urls(&view), vec!["https://c/", "https://a/", "https://b/"]);
 
@@ -322,8 +310,7 @@ fn preserves_posts_all_order_across_writes_and_deletes() {
 
 #[test]
 fn reinserting_a_removed_url_does_not_duplicate_it() {
-    // A tombstone left in the order would let a later `insert` of the same URL append a
-    // second entry, and `iter()` would yield it twice for a later pass to plan twice.
+    // A tombstone left in the order would make `iter()` yield the reinserted URL twice.
     let mut view = AccountView::new(vec![at("https://a/", ""), at("https://b/", "")]);
     view.remove(&url("https://a/"));
     view.insert(&at("https://a/", "back"));
@@ -344,9 +331,8 @@ fn insert_upserts_and_remove_drops() {
 
 #[test]
 fn duplicate_urls_in_posts_all_keep_the_first_rather_than_vanishing() {
-    // `wire_to_bookmarks` does not dedup and `Url::parse` normalizes (default ports,
-    // a root path's trailing slash), so two wire rows can land on one parsed URL.
-    // Dropping one silently would hide a bookmark from every pass.
+    // `Url::parse` normalizes default ports and a root path's slash, so two wire rows can
+    // land on one URL. The view keeps the first, so no bookmark vanishes from every pass.
     let view = AccountView::new(vec![
         at("https://dup.example/", "first"),
         at("https://dup.example:443/", "second"),

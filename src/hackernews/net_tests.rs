@@ -14,8 +14,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 #[tokio::test]
 async fn fetch_scrapes_favorites_then_reads_items() {
     let hn = MockServer::start().await;
-    // Stories favorites page: one story id, no More link. (The `comments`-absent
-    // matcher keeps this from also serving the comments-page request below.)
+    // The `comments`-absent matcher keeps this from serving the comments page too.
     Mock::given(method("GET"))
         .and(path("/favorites"))
         .and(query_param("id", "psophis"))
@@ -26,7 +25,6 @@ async fn fetch_scrapes_favorites_then_reads_items() {
         )
         .mount(&hn)
         .await;
-    // Comments favorites page (comments=t): one comment id.
     Mock::given(method("GET"))
         .and(path("/favorites"))
         .and(query_param("comments", "t"))
@@ -38,7 +36,6 @@ async fn fetch_scrapes_favorites_then_reads_items() {
         .mount(&hn)
         .await;
 
-    // Algolia returns both items (story + comment) in one batched search.
     let algolia = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/search"))
@@ -71,8 +68,7 @@ async fn fetch_scrapes_favorites_then_reads_items() {
 
 #[tokio::test]
 async fn fetch_errors_when_favorites_markup_breaks() {
-    // A recognizable page whose favorites structure is gone (no rows, no marker)
-    // must fail loudly rather than silently importing nothing.
+    // A page whose favorites structure is gone must fail rather than import nothing.
     let hn = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/favorites"))
@@ -109,8 +105,7 @@ async fn fetch_errors_when_favorites_markup_breaks() {
 
 #[tokio::test]
 async fn fetch_succeeds_on_genuinely_empty_favorites() {
-    // Both favorites pages are empty but carry the marker: a recognized empty
-    // list, so the fetch succeeds with no drafts (Algolia is never queried).
+    // Both pages are empty but carry the favorites marker.
     let hn = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/favorites"))
@@ -572,7 +567,6 @@ async fn dump_captures_both_scraped_pages_and_the_algolia_response() {
     let client = hackernews_client(hn.uri(), algolia.uri());
     let dump = crate::http::recording_waits(client.dump()).await.0.unwrap();
 
-    // Three streams' worth of pages: two scraped HTML pages and one Algolia response.
     let by_stream = |s: &str| -> Vec<&crate::backup::RawPage> {
         dump.raw.iter().filter(|p| p.stream == s).collect()
     };
@@ -601,7 +595,6 @@ async fn dump_captures_both_scraped_pages_and_the_algolia_response() {
         ]
     );
 
-    // End to end: fetch through the driver and land the snapshot on disk.
     let scratch = crate::test_support::scratch_dir("hn-backup-e2e");
     let dir = scratch.path();
     crate::http::recording_waits(crate::backup::run_job(

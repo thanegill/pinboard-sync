@@ -246,9 +246,8 @@ async fn add_retries_after_414_then_succeeds() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use wiremock::{Request, Respond};
 
-    // 414 on the first hit (URL too long), then `done` -- the client should shrink
-    // the notes and retry rather than failing. A stateful responder makes the
-    // sequence deterministic (two ambiguous mocks don't reliably order).
+    // A 414, then `done`: the client shrinks the notes and retries. Two overlapping mocks
+    // don't order reliably, so one stateful responder.
     struct FailFirst(AtomicUsize);
     impl Respond for FailFirst {
         fn respond(&self, _: &Request) -> ResponseTemplate {
@@ -581,9 +580,9 @@ async fn add_stops_halving_once_the_fields_besides_the_note_are_over_the_next_bu
     );
 }
 
-/// A bookmark whose fields leave no room under the budget but some under Pinboard's limit:
-/// written with what fits there, stored as `fit` predicts, and left alone by the next
-/// cleanup run. One over the limit is refused before anything is sent.
+/// A bookmark with no room under the budget but some under Pinboard's limit is written with
+/// what fits, stored as `fit` predicts, and left alone by the next run. One over the limit
+/// is refused before anything is sent.
 mod between_the_budget_and_the_limit {
     use super::*;
     use crate::bookmark::{AccountView, CleanupStore, WriteMode};
@@ -807,7 +806,6 @@ async fn all_parses_bookmarks() {
         "https://old.reddit.com/r/rust/comments/a/x/"
     );
     assert_eq!(all[0].tags, vec!["reddit", "subreddit:rust"]);
-    // The ISO-8601 `time` is parsed into a timestamp on read.
     assert_eq!(all[0].timestamp, crate::timefmt::from_unix(1_577_836_800)); // 2020-01-01T00:00:00Z
     assert_eq!(all[1].timestamp, None); // empty time -> no timestamp
 }
@@ -826,7 +824,6 @@ async fn all_skips_bookmark_with_unparseable_href() {
         .mount(&server)
         .await;
 
-    // The unparseable href is skipped (logged); the valid bookmark still comes through.
     let all = client(&server).all().await.unwrap();
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].url.as_str(), "https://example.com/");
@@ -846,9 +843,8 @@ async fn all_keeps_bookmark_with_unparseable_time() {
         .mount(&server)
         .await;
 
-    // A bookmark whose (non-empty) time won't parse is kept with no timestamp, not
-    // dropped: dropping it would evict its URL from sync's dedup set and make the next
-    // `sync` re-add (and clobber) it. The valid bookmark still comes through too.
+    // An unparseable time is kept as no timestamp: dropping the bookmark would evict it
+    // from sync's dedup set, and the next `sync` would clobber it.
     let all = client(&server).all().await.unwrap();
     assert_eq!(all.len(), 2);
     assert_eq!(all[0].url.as_str(), "https://example.com/bad-time/");
@@ -860,9 +856,7 @@ async fn all_keeps_bookmark_with_unparseable_time() {
 #[tokio::test]
 async fn export_all_returns_body_verbatim() {
     let server = MockServer::start().await;
-    // Raw body carrying `meta`/`hash` and an unparseable `href` -- both of which the
-    // parsed `all()` path drops. `export_all` must return the bytes untouched, so
-    // assert against a raw string (not re-serialized JSON).
+    // `meta`, `hash` and an unparseable `href`, all dropped by `all()`, come back verbatim.
     let body = r#"[{"href":"not a url","description":"bad","meta":"abc","hash":"def"},
 {"href":"https://example.com/","description":"E","meta":"123","hash":"456"}]"#;
     Mock::given(method("GET"))
@@ -879,15 +873,14 @@ async fn export_all_returns_body_verbatim() {
 #[tokio::test]
 async fn dump_hits_posts_all_exactly_once() {
     let server = MockServer::start().await;
-    // One entry has an unparseable `href`: it stays in the raw body but is skipped by
-    // the parsed half, which is the discrepancy the two halves exist to record.
+    // An unparseable `href` stays in the raw half but not the parsed one, the discrepancy
+    // the two halves record.
     let body = r#"[{"href":"not a url","description":"bad","meta":"abc"},
 {"href":"https://example.com/","description":"E","meta":"123","hash":"456"}]"#;
     Mock::given(method("GET"))
         .and(path("/posts/all"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
-        // `posts/all` is rate-limited to one call per five minutes -- far longer than
-        // the retry budget -- so a second call in one run would 429 and fail the target.
+        // `posts/all` allows one call per five minutes; a second would fail the target.
         .expect(1)
         .mount(&server)
         .await;

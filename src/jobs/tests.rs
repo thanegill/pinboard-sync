@@ -15,9 +15,8 @@ fn the_pinboard_write_pause_is_rate_limit_secs_else_three_seconds() {
     assert_eq!(pause(None), Duration::from_secs(3));
 }
 
-/// Override values chosen so each setting is distinct from the others and from the
-/// `Config::default()` globals -- so a builder that wires a flag into the *wrong*
-/// `SyncJob` field (e.g. `public` into the `read_later` slot) fails the assertions.
+/// Each value differs from the others and from the `Config::default()` globals, so a flag
+/// wired into the wrong `SyncJob` field fails.
 fn wiring_overrides() -> SyncOverrides {
     SyncOverrides {
         flags: SyncFlags {
@@ -164,10 +163,7 @@ fn a_save_on_another_reddit_accounts_mirror_is_not_re_added() {
     assert!(new.is_empty(), "re-added: {:?}", new[0].bookmark.url);
 }
 
-/// `sync --all`'s build phase must isolate a per-account build failure so the
-/// healthy accounts still yield jobs. Here a GitHub account with no resolvable
-/// token (no inline token, no `token_file`, and this test sets no fake `$GITHUB_TOKEN`)
-/// fails to build; it must be counted, not abort the whole run.
+/// With no token a GitHub account fails to build; `sync --all` counts it and goes on.
 #[test]
 fn build_all_jobs_isolates_a_failing_account() {
     let config = Config {

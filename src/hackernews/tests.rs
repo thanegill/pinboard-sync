@@ -80,10 +80,8 @@ fn story_with_url_bookmarks_the_article_with_hn_link_in_notes() {
 
 #[test]
 fn story_whose_article_url_is_an_hn_item_keys_on_the_id() {
-    // A meta post whose submitted article URL is itself an HN item permalink. The
-    // draft is bookmarked at that URL, so its dedup key must match how the stored
-    // bookmark reads back through `HackerNewsClient::dedup_key` (`hn:<id>`) -- a
-    // generic host+path key drops the `id` query and re-adds it every sync.
+    // A meta post whose article is itself an HN item. Its key must match the stored
+    // bookmark's `hn:<id>`: a host+path key drops the `id` query, so every sync re-adds it.
     let article = "https://news.ycombinator.com/item?id=999";
     let d = item(json!({
         "id": 42, "type": "story", "by": "alice",
@@ -110,10 +108,8 @@ fn text_post_without_url_bookmarks_the_hn_permalink() {
         "https://news.ycombinator.com/item?id=7"
     );
     assert_eq!(d.dedup_key, "hn:7");
-    // The bookmark URL is already the HN permalink, so the notes carry only the post
-    // text (no redundant `HN Link:`), with the inner HTML converted to Markdown.
+    // At the HN permalink already, so no redundant `HN Link:`.
     assert_eq!(d.bookmark.note, "<blockquote>details</blockquote>");
-    // Ask HN: -> special-type tag.
     assert!(
         d.bookmark.tags.has("hackernews:ask-hn"),
         "{:?}",
@@ -132,13 +128,11 @@ fn text_post_without_text_has_empty_notes() {
         d.bookmark.url.as_str(),
         "https://news.ycombinator.com/item?id=8"
     );
-    // No text and no redundant HN link: nothing to put in the notes.
     assert_eq!(d.bookmark.note, "");
 }
 
 #[test]
 fn html_title_is_plain_and_html_body_becomes_markdown_blockquote() {
-    // An article story (has a url), so the notes keep the `HN Link:` discussion line.
     let d = item(json!({
         "id": 11, "type": "story", "by": "dave",
         "title": "Rust&#x27;s &amp; more", "url": "https://example.com/a",
@@ -146,9 +140,7 @@ fn html_title_is_plain_and_html_body_becomes_markdown_blockquote() {
     }))
     .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default())
     .unwrap();
-    // Title: entities decoded, tags stripped, single line.
     assert_eq!(d.bookmark.title, "Rust's & more");
-    // Body: HTML converted to Markdown, wrapped in a literal <blockquote>.
     assert_eq!(
         d.bookmark.note,
         "HN Link: https://news.ycombinator.com/item?id=11\n\n<blockquote>see [x](https://x.com) > y</blockquote>"
@@ -192,9 +184,7 @@ fn comment_bookmarks_permalink_with_comment_tag() {
 
 #[test]
 fn into_draft_skips_story_with_unparseable_article_url() {
-    // A story whose article URL doesn't parse is dropped rather than producing a
-    // draft with no URL. (Comments/text posts use the HN permalink, which always
-    // parses, so only article stories can hit this.)
+    // Only an article story can hit this: other items use the HN permalink, which parses.
     let draft = item(json!({ "id": 5, "type": "story", "by": "ann", "url": "not a url" }))
         .into_draft(&HackerNewsConfig::default(), &HackerNewsKeys::default());
     assert!(draft.is_none(), "{draft:?}");
@@ -233,12 +223,10 @@ fn resolve_follows_same_host_but_refuses_foreign_host() {
         "https://news.ycombinator.com".to_string(),
         "https://hn.algolia.com".to_string(),
     );
-    // Relative "More" links resolve against the favorites origin.
     assert_eq!(
         client.resolve("favorites?id=u&p=2", "favorites").as_deref(),
         Some("https://news.ycombinator.com/favorites?id=u&p=2")
     );
-    // An absolute same-host link is followed.
     assert_eq!(
         client
             .resolve(
@@ -257,8 +245,7 @@ fn resolve_follows_same_host_but_refuses_foreign_host() {
 
 #[test]
 fn parse_favorite_ids_accepts_empty_list_with_marker() {
-    // A genuinely empty favorites list: no rows, but the favorites-page marker
-    // is present, so it is a recognized (empty) page, not a markup break.
+    // No rows, but the favorites-page marker is there.
     let html = r#"<html op="favorites"><body><table id="hnmain"></table></body></html>"#;
     let FavoritesPage::Recognized { ids, more } = parse_favorite_ids(html) else {
         panic!("expected an empty favorites list to be recognized");
@@ -269,8 +256,7 @@ fn parse_favorite_ids_accepts_empty_list_with_marker() {
 
 #[test]
 fn parse_favorite_ids_flags_markup_break() {
-    // A recognizable HTML page whose favorites structure is gone: no rows and no
-    // favorites marker means HN changed the markup.
+    // No rows and no favorites marker means HN changed the markup.
     let html = r#"<html op="news"><body><div>Nothing here.</div></body></html>"#;
     assert_eq!(parse_favorite_ids(html), FavoritesPage::Unrecognized);
 }
@@ -389,7 +375,6 @@ fn parse_favorite_ids_reads_real_empty_favorites_pages() {
 fn hn_item_id_extracts_only_from_hn_item_urls() {
     let id = HackerNewsItemId::try_from(&url("https://news.ycombinator.com/item?id=42")).unwrap();
     assert_eq!(id.to_string(), "42");
-    // And round-trips back to the discussion permalink.
     assert_eq!(
         Url::from(&id).as_str(),
         "https://news.ycombinator.com/item?id=42"

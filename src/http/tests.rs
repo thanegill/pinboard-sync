@@ -47,9 +47,8 @@ fn retry_429_once(status: &u16) -> Verdict {
     }
 }
 
-/// Retry over a canned sequence of outcomes (status code, or `Err`), counting
-/// how many attempts were made. 429/5xx are transient, and `Failure::Connect` gets
-/// the three-step `NO_CONNECT_BACKOFF` on a fresh budget.
+/// Retry over canned outcomes, counting attempts. 429 and 5xx are transient, and
+/// `Failure::Connect` gets the three-step `NO_CONNECT_BACKOFF` on a fresh budget.
 async fn run(outcomes: Vec<Result<u16, Failure>>, max: u32) -> (Result<u16, Failure>, usize) {
     run_on(&ConnectBudget::default(), outcomes, max).await
 }
@@ -320,12 +319,10 @@ async fn does_not_retry_4xx_or_2xx() {
 
 #[tokio::test]
 async fn gives_up_after_max_attempts() {
-    // Persistent 5xx: returns the last response after exhausting attempts.
     let (result, calls) = run(vec![Ok(500), Ok(500), Ok(500)], 3).await;
     assert_eq!(result, Ok(500));
     assert_eq!(calls, 3);
 
-    // Persistent transport error: returns the error after exhausting attempts.
     let (result, calls) = run(
         vec![
             Err(Failure::Transport),

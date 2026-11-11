@@ -32,9 +32,8 @@ async fn repo_lookup_reports_an_exhausted_rate_limit_with_its_reset() {
     assert!(message.contains("2026-08-30"), "{message}");
 }
 
-/// GitHub's docs make both headers optional on a secondary limit -- "Otherwise, wait
-/// for at least one minute before retrying" -- leaving the body's error message as the
-/// only signal. Missing it drops us back to the per-bookmark 403 this exists to fix.
+/// GitHub's docs make both headers optional on a secondary limit, leaving the body's
+/// message as the only signal; missed, every remaining bookmark 403s in turn.
 #[tokio::test]
 async fn a_secondary_rate_limit_is_recognised_by_its_message_alone() {
     let server = MockServer::start().await;
@@ -54,8 +53,7 @@ async fn a_secondary_rate_limit_is_recognised_by_its_message_alone() {
     );
 }
 
-/// A 403 without the rate-limit signature is a real permission denial and must stay
-/// an ordinary error -- mapping it to a rate limit would stop the pass wrongly.
+/// A 403 without the rate-limit signature is a real denial, which must not stop the pass.
 #[tokio::test]
 async fn a_plain_403_is_not_treated_as_a_rate_limit() {
     let server = MockServer::start().await;
@@ -136,7 +134,6 @@ async fn starred_error_quotes_a_capped_one_line_excerpt() {
 #[tokio::test]
 async fn fetch_paginates_via_link_header_and_sends_token() {
     let server = MockServer::start().await;
-    // Page 1 advertises a next page via the Link header.
     Mock::given(method("GET"))
         .and(path("/user/starred"))
         .and(query_param("page", "1"))
@@ -158,7 +155,6 @@ async fn fetch_paginates_via_link_header_and_sends_token() {
         )
         .mount(&server)
         .await;
-    // Page 2 is the last (no Link header).
     Mock::given(method("GET"))
         .and(path("/user/starred"))
         .and(query_param("page", "2"))
@@ -177,7 +173,6 @@ async fn fetch_paginates_via_link_header_and_sends_token() {
         drafts[0].bookmark.tags,
         vec!["github-star", "lang:rust", "author:github:a"]
     );
-    // The star time becomes the draft bookmark's timestamp.
     assert_eq!(
         drafts[0].bookmark.timestamp,
         crate::timefmt::parse_rfc3339("2023-01-02T03:04:05Z")
@@ -187,8 +182,7 @@ async fn fetch_paginates_via_link_header_and_sends_token() {
 
 #[tokio::test]
 async fn fetch_terminates_when_next_link_loops_back() {
-    // A malformed `Link: rel="next"` that points back to the same page must not
-    // loop forever: the visited-page guard breaks out after the repeat.
+    // A `Link: rel="next"` pointing back to the same page must not loop forever.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/user/starred"))
@@ -216,8 +210,6 @@ async fn fetch_terminates_when_next_link_loops_back() {
 #[tokio::test]
 async fn fetch_skips_malformed_element_and_keeps_the_good_repos() {
     let server = MockServer::start().await;
-    // The page mixes a valid starred entry with one missing the required `repo`
-    // fields: the bad element is dropped, the good one survives.
     Mock::given(method("GET"))
         .and(path("/user/starred"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([
@@ -236,9 +228,7 @@ async fn fetch_skips_malformed_element_and_keeps_the_good_repos() {
 
 #[tokio::test]
 async fn fetch_errors_when_a_whole_page_fails_to_parse() {
-    // A schema break (here: every element missing the `repo` object) drops every
-    // element. A non-empty page that parses to zero repos must error rather than
-    // return an empty success that makes sync exit 0 having imported nothing.
+    // A schema break drops every element; success would let sync exit 0, importing nothing.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/user/starred"))
@@ -256,7 +246,6 @@ async fn fetch_errors_when_a_whole_page_fails_to_parse() {
 
 #[tokio::test]
 async fn fetch_empty_page_is_ok() {
-    // A genuinely empty starred list is legitimate: no error, no drafts.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/user/starred"))
@@ -408,8 +397,7 @@ async fn dump_keeps_the_fields_the_typed_shape_drops() {
                   "full_name": "a/one",
                   "html_url": "https://github.com/a/one",
                   "language": "Rust",
-                  // None of these survive into `GitHubStarredRepo`; a backup of the
-                  // typed struct would lose them, so the raw body is what we keep.
+                  // Dropped by `GitHubStarredRepo`, so only the raw body keeps them.
                   "stargazers_count": 1234,
                   "license": { "spdx_id": "MIT" },
                   "topics": ["cli", "rust"],

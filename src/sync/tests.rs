@@ -11,10 +11,9 @@ use url::Url;
 
 const EPOCH: OffsetDateTime = OffsetDateTime::UNIX_EPOCH;
 
-/// A source serving one or more streams of pages, each newest first and concatenated
-/// in order (as HackerNews serves stories then comments). Its incremental read stops
-/// each stream at its first caught-up page, as the real sources' do. Its dedup key is
-/// the URL itself.
+/// A source serving streams of pages, each newest first, concatenated in order as
+/// HackerNews serves stories then comments. Its incremental read stops each stream at its
+/// first caught-up page; its dedup key is the URL.
 struct PagedSource {
     streams: Vec<Vec<Vec<BookmarkDraft>>>,
 }
@@ -134,10 +133,8 @@ async fn filter_new_skips_present_then_write_adds_the_rest() {
 
 #[tokio::test]
 async fn present_bookmark_with_unparseable_time_still_dedups() {
-    // A stored bookmark whose Pinboard `time` won't parse must remain in the dedup set.
-    // It reaches this path through `Bookmark::try_from` (timestamp becomes None), and
-    // its draft must count as already-present, not new -- otherwise sync re-adds the
-    // URL and clobbers its date/title/tags/notes.
+    // A stored `time` that won't parse reads back as no timestamp. Missing from the dedup
+    // set, the bookmark would be re-added, clobbering its date, title, tags and notes.
     let reddit = FakeReddit {
         saved: vec![post("t3_a", "/r/rust/comments/a/x/")],
         ..Default::default()
@@ -304,7 +301,6 @@ async fn prepare_new_drafts_stamps_flags_and_clears_dates_outside_the_age_cap() 
     let drafts = reddit.fetch().await.unwrap();
     let new = prepare_new_drafts(&reddit, drafts, &[], &job, from_unix(now).unwrap());
     assert_eq!(new.len(), 2);
-    // The resolved flags are stamped onto every new draft.
     assert!(new
         .iter()
         .all(|d| d.bookmark.read_later && d.bookmark.public));
@@ -361,7 +357,6 @@ async fn prepare_new_drafts_truncates_to_the_per_job_limit() {
         EPOCH,
     );
     assert_eq!(all.len(), 3);
-    // A positive limit caps the batch.
     let capped = prepare_new_drafts(
         &reddit,
         reddit.fetch().await.unwrap(),
@@ -374,10 +369,7 @@ async fn prepare_new_drafts_truncates_to_the_per_job_limit() {
 
 #[tokio::test]
 async fn prepare_new_drafts_dedups_within_the_batch_before_applying_the_limit() {
-    // Two drafts sharing a dedup_key must collapse to one BEFORE the limit truncation,
-    // so `limit` counts distinct items. Otherwise the duplicate consumes a slot and
-    // crowds out a genuinely new item (which merge_deduped then drops when it collapses
-    // the pair across jobs).
+    // Deduped after the limit, a duplicate would take a slot and crowd out a new item.
     let draft = |url: &str, key: &str| BookmarkDraft {
         bookmark: Bookmark {
             title: "T".into(),
@@ -399,14 +391,11 @@ async fn prepare_new_drafts_dedups_within_the_batch_before_applying_the_limit() 
     );
     let keys: Vec<&str> = new.iter().map(|d| d.dedup_key.as_str()).collect();
     assert_eq!(keys, vec!["kB", "k"]);
-    // The kept duplicate is the first occurrence.
     assert_eq!(new[1].bookmark.url.as_str(), "http://example.com/x");
 }
 
 #[tokio::test]
 async fn merge_deduped_writes_a_url_shared_across_jobs_once() {
-    // Two jobs each yield the same reddit post; merged it appears once, so the
-    // writer adds the URL a single time.
     let reddit = FakeReddit {
         saved: vec![post("t3_a", "/r/rust/comments/a/x/")],
         ..Default::default()
@@ -428,10 +417,8 @@ async fn merge_deduped_writes_a_url_shared_across_jobs_once() {
 
 #[tokio::test]
 async fn merge_deduped_collapses_drafts_sharing_a_dedup_key_with_differing_urls() {
-    // Two fresh drafts in one batch that share a dedup_key but whose URLs differ
-    // byte-for-byte (e.g. two HN favorites of the same article stored as http vs https)
-    // must collapse to one write -- matching filter_new's existing-key check, so a
-    // first-time run doesn't create two bookmarks for one item.
+    // Like two HN favorites of one article over http and https, which a first run must not
+    // save as two bookmarks.
     let draft = |url: &str, key: &str| BookmarkDraft {
         bookmark: Bookmark {
             title: "T".into(),
@@ -444,7 +431,6 @@ async fn merge_deduped_collapses_drafts_sharing_a_dedup_key_with_differing_urls(
         vec![draft("https://example.com/x", "hn:1")],
     ]);
     assert_eq!(merged.len(), 1);
-    // The first occurrence is kept.
     assert_eq!(merged[0].bookmark.url.as_str(), "http://example.com/x");
 }
 
@@ -482,7 +468,6 @@ async fn write_drafts_logs_and_skips_a_failing_bookmark() {
     pinboard.fail_add_urls.insert("https://bad.test/".into());
 
     let outcome = write_drafts(&pinboard, &drafts, WriteMode::Live).await;
-    // The bad one is skipped; the ones on either side still go through.
     assert_eq!(outcome.written, 2);
     assert_eq!(outcome.failed, 1);
     assert_eq!(

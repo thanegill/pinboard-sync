@@ -3,7 +3,6 @@ use crate::test_support::{stored_at, FakePinboard, NO_DATING};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// A HackerNews cleanup that can't read its items fails the run.
 #[tokio::test]
 async fn a_hackernews_cleanup_fails_when_algolia_refuses_its_items() {
     let algolia = MockServer::start().await;
@@ -33,8 +32,6 @@ async fn a_hackernews_cleanup_fails_when_algolia_refuses_its_items() {
     );
 }
 
-/// An `--all` run where one account's fetch fails and the other's bookmark fails to write
-/// reports both, as the run's error.
 #[tokio::test]
 async fn a_sync_run_reports_failed_writes_beside_a_failed_account() {
     let hn = MockServer::start().await;

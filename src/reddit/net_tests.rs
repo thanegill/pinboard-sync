@@ -9,7 +9,6 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 #[tokio::test]
 async fn fetch_saved_sends_cookie_paginates_and_parses_metadata() {
     let server = MockServer::start().await;
-    // Page 1 (no `after`) returns a cursor and a richly-tagged post.
     Mock::given(method("GET"))
         .and(path("/user/psophis/saved.json"))
         .and(header("cookie", "reddit_session=secret"))
@@ -24,7 +23,6 @@ async fn fetch_saved_sends_cookie_paginates_and_parses_metadata() {
         })))
         .mount(&server)
         .await;
-    // Page 2 (after=t3_first) is the last.
     Mock::given(method("GET"))
         .and(path("/user/psophis/saved.json"))
         .and(query_param("after", "t3_first"))
@@ -151,9 +149,7 @@ async fn info_maps_a_login_redirect_to_reauth_without_following_it() {
 
 #[tokio::test]
 async fn fetch_saved_terminates_when_after_cursor_loops() {
-    // A pathological listing that keeps returning the same non-null `after` with a
-    // non-empty page would loop forever without the visited-cursor guard. It must
-    // stop after re-seeing the cursor rather than hanging / growing `out` unbounded.
+    // A listing returning the same `after` with a non-empty page must not loop forever.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/user/psophis/saved.json"))
@@ -168,8 +164,6 @@ async fn fetch_saved_terminates_when_after_cursor_loops() {
         .await;
 
     let client = reddit_client(&server);
-    // Page 1 (no cursor) records the cursor; page 2 (after=t3_loop) re-sees it and
-    // breaks, so exactly two pages are fetched.
     let (entries, waits) = crate::http::recording_waits(client.fetch_saved()).await;
     assert_eq!(entries.unwrap().len(), 2);
     assert_eq!(waits, [REQUEST_PAUSE]);
@@ -177,9 +171,8 @@ async fn fetch_saved_terminates_when_after_cursor_loops() {
 
 #[tokio::test]
 async fn fetch_errors_when_a_non_empty_listing_yields_no_drafts() {
-    // Every entry deserializes (all fields are optional) but lacks the required
-    // subreddit/permalink, so all are dropped. A non-empty listing that produces
-    // zero drafts must error rather than silently import nothing.
+    // Every entry lacks the required subreddit and permalink; a non-empty listing with no
+    // drafts must error, not silently import nothing.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/user/psophis/saved.json"))
@@ -202,8 +195,6 @@ async fn fetch_errors_when_a_non_empty_listing_yields_no_drafts() {
 
 #[tokio::test]
 async fn fetch_keeps_a_good_entry_and_drops_a_schema_broken_sibling() {
-    // One entry is well-formed, the other is missing subreddit/permalink. The good
-    // one survives (and the bad one is warned + dropped), so fetch succeeds.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/user/psophis/saved.json"))
@@ -229,7 +220,6 @@ async fn fetch_keeps_a_good_entry_and_drops_a_schema_broken_sibling() {
 
 #[tokio::test]
 async fn fetch_empty_listing_is_ok() {
-    // A genuinely empty saved listing (nothing saved) is a success, not an error.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/user/psophis/saved.json"))
@@ -644,8 +634,7 @@ async fn a_saved_page_cut_off_mid_body_is_a_read_error() {
 
 #[tokio::test]
 async fn a_403_cut_off_mid_body_does_not_ask_for_a_new_cookie() {
-    // Without the whole page there is no telling the block (whose cookie is fine) from a
-    // refused cookie, so the hook must not send the operator after the cookie.
+    // Without the whole page a block, whose cookie is fine, looks like a refused cookie.
     let client = truncated_client(
         "403 Forbidden",
         "text/html; charset=utf-8",

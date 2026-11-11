@@ -3,8 +3,7 @@ use crate::test_support::url;
 use serde_json::json;
 
 /// Header-level cases for [`rate_limit_message`], kept off the network: a 429 through
-/// `RetryingClient::send` would spend the full retry budget (~12s) before the body is
-/// ever read, which is too slow to pay on every `cargo test`.
+/// `RetryingClient::send` spends the ~12s retry budget first.
 fn headers(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
     let mut map = reqwest::header::HeaderMap::new();
     for (name, value) in pairs {
@@ -42,8 +41,7 @@ fn retry_after_as_seconds_reads_as_a_duration() {
 
 #[test]
 fn a_success_is_never_a_rate_limit() {
-    // The status gate matters: a 200 carrying an exhausted budget is the *last*
-    // request that succeeded, not a refusal.
+    // A 200 carrying an exhausted budget is the last request that succeeded, not a refusal.
     assert_eq!(
         rate_limit_message(
             reqwest::StatusCode::OK,
@@ -178,7 +176,6 @@ fn a_star_is_dated_in_utc_at_whole_seconds() {
 
 #[test]
 fn into_draft_skips_repo_with_unparseable_url() {
-    // A repo whose `html_url` doesn't parse is dropped rather than producing a draft.
     let draft = repo(json!({ "full_name": "o/r", "html_url": "not a url" }))
         .into_draft(&GitHubConfig::default());
     assert!(draft.is_none(), "{draft:?}");
@@ -190,7 +187,6 @@ fn github_note_wraps_description_and_keeps_homepage_outside() {
         github_note(Some("A thing"), Some("https://h"), "https://github.com/o/r"),
         "<blockquote>A thing</blockquote>\n\nProject homepage: https://h"
     );
-    // No description: fall back to the URL, no blockquote.
     assert_eq!(
         github_note(None, None, "https://github.com/o/r"),
         "https://github.com/o/r"
@@ -203,8 +199,7 @@ fn github_note_wraps_description_and_keeps_homepage_outside() {
 
 #[test]
 fn language_with_spaces_is_slugged() {
-    // GitHub languages like "Jupyter Notebook" must not produce a space in the
-    // tag (Pinboard would split it into two tags).
+    // Pinboard would split a tag with a space into two.
     let d = repo(json!({
         "full_name": "o/r", "html_url": "https://github.com/o/r",
         "language": "Jupyter Notebook"
@@ -225,7 +220,6 @@ fn draft_without_description_or_language() {
     }))
     .into_draft(&GitHubConfig::default())
     .unwrap();
-    // Missing description falls back to the URL; no language -> no lang tag.
     assert_eq!(d.bookmark.note, "https://github.com/o/r");
     assert_eq!(d.bookmark.tags, vec!["github-star", "author:github:o"]);
 }
@@ -270,7 +264,6 @@ fn parse_link_next_extracts_next_page() {
     let with_per_page = "<https://api.github.com/user/starred?sort=created&direction=desc\
                          &per_page=100&page=3>; rel=\"next\"";
     assert_eq!(parse_link_next(with_per_page), Some(3));
-    // No next link (last page).
     assert_eq!(
         parse_link_next("<https://api.github.com/user/starred?page=1>; rel=\"prev\""),
         None
@@ -335,13 +328,12 @@ fn dedup_key_only_matches_github() {
         Some("github.com/o/r".into())
     );
     assert_eq!(c.dedup_key(&url("https://example.com/o/r")), None);
-    // The www. alias folds onto the bare host so it dedups against a github.com
-    // star with the same owner/repo.
+    // The www. alias folds onto the bare host, to dedup against a github.com star.
     assert_eq!(
         c.dedup_key(&url("https://www.github.com/o/r")),
         Some("github.com/o/r".into())
     );
-    // Other subdomains keep their own host in the key (they are not repo stars).
+    // Other subdomains keep their host: they are not repo stars.
     assert_eq!(
         c.dedup_key(&url("https://gist.github.com/user/abcd1234")),
         Some("gist.github.com/user/abcd1234".into())

@@ -24,4 +24,12 @@ disallowed-methods = [
   { path = "reqwest::get", reason = "send through a client built from `http::client_builder()`, which bounds connecting and silence and pings idle h2 connections" },
   { path = "std::env::temp_dir", reason = "take a unique directory from `tempfile`, in a test through `test_support::scratch_dir`: a fixed path under `temp_dir()` collides with a concurrent run" },
   { path = "tempfile::env::temp_dir", reason = "take a test's directory from `test_support::scratch_dir`: a fixed path under `temp_dir()` collides with a concurrent `cargo test`" },
+  { path = "std::env::var", reason = "read through `secrets::env_var`, which a test fakes with `FakeSecretEnv`, so no test sees the developer's real environment" },
+  { path = "std::env::var_os", reason = "read through `secrets::env_var`, which a test fakes with `FakeSecretEnv`, so no test sees the developer's real environment" },
+  { path = "std::env::vars", reason = "read through `secrets::env_var`, which a test fakes with `FakeSecretEnv`, so no test sees the developer's real environment" },
+  { path = "std::env::vars_os", reason = "read through `secrets::env_var`, which a test fakes with `FakeSecretEnv`, so no test sees the developer's real environment" },
+  { path = "dotenvy::var", reason = "read through `secrets::env_var`, which a test fakes with `FakeSecretEnv`, so no test sees the developer's real environment" },
+  { path = "dotenvy::vars", reason = "read through `secrets::env_var`, which a test fakes with `FakeSecretEnv`, so no test sees the developer's real environment" },
+  { path = "std::env::set_var", reason = "the run reads the environment through `secrets::env_var`, so a test sets it with `FakeSecretEnv`, not the process environment" },
+  { path = "std::env::remove_var", reason = "the run reads the environment through `secrets::env_var`, so a test clears it with `FakeSecretEnv`, not the process environment" },
 ]

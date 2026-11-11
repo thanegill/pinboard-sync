@@ -11,9 +11,11 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# Kept on htmd's versions (Cargo.toml). A second copy still compiles, so only
-# this ban catches it.
 deny = [
+    # Every test is offline, so only production would see a switch to rustls.
+    { crate = "rustls", reason = "Reddit's edge 403s rustls's TLS fingerprint, so reqwest is built with native-tls" },
+    # Kept on htmd's versions (Cargo.toml). A second copy still compiles, so only
+    # this ban catches it.
     { crate = "html5ever", deny-multiple-versions = true },
     { crate = "markup5ever_rcdom", deny-multiple-versions = true },
 ]

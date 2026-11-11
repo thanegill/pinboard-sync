@@ -584,11 +584,10 @@ async fn cleanup_refuses_a_zero_cap_with_stale_to_now_before_reading_pinboard() 
             cleanup_error("", &[&both[..], &[source]].concat()).await,
             flags(&pass)
         );
-        // The old name, a hidden alias, still names the new flag in the message.
         assert_eq!(
             cleanup_error(
                 "[pinboard]\ncleanup_stale_to_now = true\n",
-                &[source, "--max-age-days", "0"]
+                &[source, "--post-date-max-age-days", "0"]
             )
             .await,
             refused(&pass, "`--post-date-max-age-days`", "`[pinboard]`")

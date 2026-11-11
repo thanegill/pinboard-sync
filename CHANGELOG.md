@@ -34,9 +34,10 @@ All notable changes to this project are documented here. The format is based on
 - **Breaking:** the flake is built with flake-parts. Its `flake-utils` input is now
   `flake-parts`, so a `follows` on it fails, and its `nixosModules` can be imported as
   before but no longer called as functions.
-- Four flags are renamed: `--max-age-days` to `--post-date-max-age-days`, `--stale-to-now`
-  to `--cleanup-stale-to-now`, `--link-tag` to `--tag-link`, and HackerNews' `--username`
-  to `--hn-username`. `--help`, the completions and messages use the new names.
+- **Breaking:** four flags are renamed: `--max-age-days` to `--post-date-max-age-days`,
+  `--stale-to-now` to `--cleanup-stale-to-now`, `--link-tag` to `--tag-link`, and
+  HackerNews' `--username` to `--hn-username`. The old names are refused, and `--help`,
+  the completions and messages use the new names.
 - The next `cleanup github` adds `author:github:<owner>` to each synced star, once.
 - A long note keeps about twice as much text before it is cut: the request URL may now run
   to just under Pinboard's 8201-byte limit. Only the note is ever cut.
@@ -50,11 +51,6 @@ All notable changes to this project are documented here. The format is based on
 - `sync --help` describes `--on-auth-failure` in one line, and `--help` puts environment
   variables in backticks.
 - `sync <source> --all` with no account of that source names the source.
-
-### Deprecated
-
-- `--max-age-days`, `--stale-to-now`, `--link-tag` and HackerNews' `--username` still
-  work, as hidden aliases of their new names, for this release only.
 
 ### Removed
 

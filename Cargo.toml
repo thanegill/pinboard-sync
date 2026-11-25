@@ -117,7 +117,7 @@ env_logger = { version = "0.11", default-features = false }
 time = { version = "0.3", default-features = false, features = ["std", "formatting", "parsing"] }
 # HN note bodies are raw HTML (Algolia story_text/comment_text); htmd converts them to
 # Markdown. Pure-Rust, built on html5ever and markup5ever_rcdom.
-htmd = "0.5"
+htmd = "0.6"
 # Favorites pages and titles. Keep on htmd's versions, or a second html5ever returns.
 html5ever = "0.38"
 markup5ever_rcdom = "0.38"
